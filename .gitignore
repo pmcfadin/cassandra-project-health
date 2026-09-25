@@ -42,10 +42,11 @@ data/
 *.parquet
 *.duckdb
 
-# Site build output
-_site/
-build/
-site/
+# Site build output (repo-root build output only — not src/project_health/site/,
+# the generator package itself, per issue #8)
+/_site/
+/build/
+/site/
 *.tmp
 
 # Test coverage

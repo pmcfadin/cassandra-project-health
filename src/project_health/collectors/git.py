@@ -172,6 +172,7 @@ class GitCollectionResult:
     commits_collected: int
     bot_commits_excluded: int
     unparsed_reviewed_by_count: int
+    placeholder_reviewer_commits: int
     unparsed_reviewed_by_examples: list[dict] = field(default_factory=list)
 
 
@@ -211,6 +212,7 @@ class GitCollector:
         unparsed_examples: list[dict] = []
         bot_excluded = 0
         commits_collected = 0
+        placeholder_reviewer_count = 0
 
         for commit in _iter_commits(repo_path, range_arg):
             if _is_bot(commit.author_email, bot_patterns):
@@ -243,29 +245,35 @@ class GitCollector:
                         unparsed_examples.append({"sha": commit.sha, "message": commit.message})
                 continue
 
-            issue_keys: Sequence[str | None] = attribution.issue_keys or (None,)
-            for issue_key in issue_keys:
-                for reviewer in attribution.reviewers:
-                    review_rows.append(
-                        {
-                            "event_id": (
-                                f"git:{repo_label}:{commit.sha}:review:"
-                                f"{reviewer}:{issue_key or 'none'}"
-                            ),
-                            "source": "commit_trailer",
-                            "reviewer_identity_id": None,
-                            "reviewer_raw_type": "git_name",
-                            "reviewer_raw_value": reviewer,
-                            "author_identity_id": None,
-                            "author_raw_type": "git_email",
-                            "author_raw_value": author_email_lower,
-                            "issue_key": issue_key,
-                            "repo": repo_label,
-                            "occurred_at": commit.occurred_at,
-                            "evidence": attribution.matched_text,
-                            "source_snapshot_id": source_snapshot_id,
-                        }
-                    )
+            # Count commits that had any placeholder reviewers (issue #18).
+            if attribution.placeholder_reviewers:
+                placeholder_reviewer_count += 1
+
+            # Only emit review_event rows if there are non-placeholder reviewers.
+            if attribution.reviewers:
+                issue_keys: Sequence[str | None] = attribution.issue_keys or (None,)
+                for issue_key in issue_keys:
+                    for reviewer in attribution.reviewers:
+                        review_rows.append(
+                            {
+                                "event_id": (
+                                    f"git:{repo_label}:{commit.sha}:review:"
+                                    f"{reviewer}:{issue_key or 'none'}"
+                                ),
+                                "source": "commit_trailer",
+                                "reviewer_identity_id": None,
+                                "reviewer_raw_type": "git_name",
+                                "reviewer_raw_value": reviewer,
+                                "author_identity_id": None,
+                                "author_raw_type": "git_email",
+                                "author_raw_value": author_email_lower,
+                                "issue_key": issue_key,
+                                "repo": repo_label,
+                                "occurred_at": commit.occurred_at,
+                                "evidence": attribution.matched_text,
+                                "source_snapshot_id": source_snapshot_id,
+                            }
+                        )
 
         next_watermark = _run_git(repo_path, ["rev-parse", ref]).strip()
 
@@ -276,6 +284,7 @@ class GitCollector:
             commits_collected=commits_collected,
             bot_commits_excluded=bot_excluded,
             unparsed_reviewed_by_count=unparsed_count,
+            placeholder_reviewer_commits=placeholder_reviewer_count,
             unparsed_reviewed_by_examples=unparsed_examples,
         )
 

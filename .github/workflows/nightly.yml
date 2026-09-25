@@ -1,0 +1,180 @@
+name: Nightly
+
+# ARCHITECTURE.md §7.1: incremental collection per source -> full metric
+# recompute -> regenerate dashboard -> deploy to Pages.
+#
+# The cron minute is deliberately off-the-hour (§7.1): GitHub's own docs warn
+# that `schedule` can be delayed during periods of high load, and high-load
+# times include the start of every hour.
+on:
+  schedule:
+    - cron: '17 6 * * *'
+  workflow_dispatch:
+
+# ARCHITECTURE.md §7.2: nightly/monthly-edition/backfill all write to the
+# `data` branch, so they share one concurrency group. A queued run waits
+# behind an in-progress one rather than cancelling it -- cancelling mid-write
+# risks a half-committed Parquet partition.
+concurrency:
+  group: data-branch-writer
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    # First run crawls all of JIRA (~215 pages, ~2 min) plus a full blobless
+    # clone of apache/cassandra; 60 min gives ample headroom under GitHub's
+    # 6-hour hard job limit (ARCHITECTURE.md §7.2).
+    timeout-minutes: 60
+    outputs:
+      pipeline-success: ${{ steps.pipeline.outcome == 'success' }}
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          path: main
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install project-health
+        working-directory: main
+        run: pip install -e .
+
+      - name: Compute cache key (calendar week)
+        id: cache-week
+        run: echo "week=$(date -u +%G-W%V)" >> "$GITHUB_OUTPUT"
+
+      # ARCHITECTURE.md §4.1: actions/cache is a build *accelerator* only,
+      # never the durable store -- the real history lives on the `data`
+      # branch. If this cache is missing (evicted, or a new week), the
+      # collector's clone_or_fetch falls back to a blobless
+      # `git clone --filter=blob:none --no-checkout`.
+      - name: Cache apache/cassandra clone
+        uses: actions/cache@v4
+        with:
+          path: work/apache-cassandra
+          key: apache-cassandra-clone-${{ steps.cache-week.outputs.week }}
+          restore-keys: |
+            apache-cassandra-clone-
+
+      - name: Check whether the data branch exists
+        id: data-branch
+        working-directory: main
+        run: |
+          if git ls-remote --exit-code --heads origin data > /dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # ARCHITECTURE.md §4.2: the orphan `data` branch, checked out into
+      # ./data, holding raw/, snapshots/, manifests/, state/.
+      - name: Checkout data branch
+        if: steps.data-branch.outputs.exists == 'true'
+        uses: actions/checkout@v4
+        with:
+          ref: data
+          path: data
+
+      - name: Create orphan data branch (first run)
+        if: steps.data-branch.outputs.exists == 'false'
+        run: |
+          set -euo pipefail
+          mkdir -p data
+          cd data
+          git init -q -b data
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          mkdir -p raw snapshots manifests state
+          cat > README.md <<'EOF'
+          # data
+
+          Orphan branch holding cassandra-project-health's collected data
+          (ARCHITECTURE.md §4.2). Not part of `main`'s history.
+
+          ```
+          raw/<source>/<table>/date=YYYY-MM-DD/part-*.parquet   # append-only, one partition per run
+          snapshots/<run_id>/metrics.parquet                     # full computed-metric output for that run
+          manifests/<run_id>.json                                 # run manifest (ARCHITECTURE.md §5)
+          state/                                                  # per-source watermarks + last-good-run pointers
+          ```
+
+          Written by `.github/workflows/nightly.yml`. Do not edit by hand.
+          EOF
+          touch raw/.gitkeep snapshots/.gitkeep manifests/.gitkeep state/.gitkeep
+          git add README.md raw/.gitkeep snapshots/.gitkeep manifests/.gitkeep state/.gitkeep
+          git commit -q -m "chore: initialize orphan data branch"
+          git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git push -q origin data
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Run pipeline
+        id: pipeline
+        working-directory: main
+        continue-on-error: true
+        env:
+          # ARCHITECTURE.md §7.4: prefer the higher-rate-limit classic PAT if
+          # the repo owner has configured one; fall back to the built-in
+          # token. Not consumed by any M0 collector yet (git + JIRA need no
+          # GitHub auth) -- wired through now for the GitHub PR source (§2.1).
+          PROJECT_HEALTH_GITHUB_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+        run: |
+          project-health run \
+            --project projects/cassandra.yaml \
+            --data-dir ../data \
+            --workdir ../work/apache-cassandra \
+            --site-out ../site \
+            --identity-overrides identity_overrides.yaml \
+            --trigger "${{ github.event_name }}"
+
+      - name: Commit and push data branch
+        working-directory: data
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if ! git remote get-url origin > /dev/null 2>&1; then
+            git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          fi
+          git add raw snapshots manifests state
+          if git diff --cached --quiet; then
+            echo "No new data to commit"
+          else
+            git commit -m "data: nightly collection run ($(date -u +%Y-%m-%dT%H:%M:%SZ))"
+            git push origin HEAD:data
+          fi
+
+      # ARCHITECTURE.md §7.3: deploy only if the pipeline (metric
+      # computation) succeeded -- a failed run must never publish a
+      # half-computed dashboard. The data branch commit above still runs
+      # regardless, since raw partitions/watermarks are valid even when
+      # metrics computation itself failed.
+      - name: Upload Pages artifact
+        if: steps.pipeline.outcome == 'success'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    if: needs.build.outputs.pipeline-success == 'true'
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    permissions:
+      pages: write
+      id-token: write
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

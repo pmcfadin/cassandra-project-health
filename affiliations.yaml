@@ -1,0 +1,20 @@
+# Organizational affiliations for contributors
+#
+# This file maintains curated, dated organization affiliations for Cassandra contributors.
+# See docs/spec/ARCHITECTURE.md for the full schema.
+#
+# Contributors may open PRs to add or update their own entries.
+# Unresolved affiliations remain "unknown" (never guessed from domains or profiles).
+# Only aggregate org distributions are published — individual affiliations are private.
+#
+# Format: each entry maps email (preferred) or GitHub handle to a list of dated affiliations.
+#
+# Example:
+# contributor@example.com:
+#   - org: Example Corp
+#     start: 2020-01-01
+#     end: 2022-12-31
+#   - org: Another Inc
+#     start: 2023-01-01
+
+# Placeholder: empty list until first contributions.

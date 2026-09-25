@@ -1,0 +1,78 @@
+# Cassandra project configuration — placeholder
+# Schema defined in docs/spec/ARCHITECTURE.md §2.1. Values below follow that schema's shape;
+# treat this file as a starting point to review before the collectors are built, not final config.
+
+project:
+  id: cassandra
+  display_name: Apache Cassandra
+  homepage: https://cassandra.apache.org
+
+# One or more repos; the git adapter clones/fetches each. cassandra-website is illustrative —
+# confirm whether it should be in scope before enabling it.
+repos:
+  - owner: apache
+    name: cassandra
+    default_branch: trunk
+  # - owner: apache
+  #   name: cassandra-website
+  #   default_branch: main
+
+issue_tracker:
+  type: jira                       # selects core/adapters/jira.py
+  base_url: https://issues.apache.org/jira
+  project_key: CASSANDRA
+
+pull_requests:
+  type: github                     # selects core/adapters/github.py; GitHub PRs cover only
+  repos: [apache/cassandra]        # part of review activity per DECISIONS.md — JIRA is primary for Cassandra
+
+mailing_lists:
+  type: ponymail                   # selects core/adapters/ponymail.py
+  domain: cassandra.apache.org
+  lists: [dev, user, commits]
+  metadata_only: true              # Phase 1 (D1): sender, timestamp, thread structure — no body
+
+roster:
+  type: asf_whimsy                 # selects core/adapters/asf_roster.py
+  committee_info_url: https://whimsy.apache.org/public/committee-info.json
+  podling: false
+
+releases:
+  type: github_releases
+  repos: [apache/cassandra]
+
+affiliations_file: affiliations.yaml   # D6: curated, PR-reviewed, dated ranges
+
+# Applied by identity resolution before any metric counts a contributor.
+# Placeholder set — data-probe.md found zero bot commits in git history for this repo,
+# so this list matters more for GitHub/JIRA identities; review before enabling.
+bot_patterns:
+  - field: git_author_email
+    regex: '(?i)noreply@github\.com$|\[bot\]'
+  - field: github_login
+    regex: '(?i)-bot$|^dependabot'
+  - field: jira_username
+    regex: '(?i)^svn-role$|^git-role$'   # ASF infra service accounts
+
+reviewer_extraction:
+  # Two independent sources, cross-checked against each other (ARCHITECTURE.md §3.1).
+  commit_trailer:
+    type: commit_message_regex
+    # Cassandra's commit convention: "patch by X; reviewed by Y for CASSANDRA-NNNNN"
+    pattern: '(?i)patch\s+by\s+(?P<patch_by>.+?)\s*;\s*reviewed\s+by\s+(?P<reviewed_by>.+?)\s+for\s+(?P<issue_key>CASSANDRA-\d+)'
+    exclude_merge_commits: true    # required — merge commits carry no trailer of their own and
+                                    # distort denominators (data-probe.md Corrections; ARCHITECTURE.md §3.1)
+  jira_fields:
+    type: jira_custom_field
+    reviewers_field: customfield_12313420   # "Reviewers", multi-user (11,125 CASSANDRA issues populated)
+    reviewer_field: customfield_10022        # "Reviewer", single-user, older/legacy (7,104 issues populated)
+  reliable_from: "2017-01-01"      # coverage is patchier before this; see ARCHITECTURE.md §3.1, METRICS.md §0.4
+
+baseline_window:
+  trailing_months: 24        # SCORING.md §4.1: status vs. own trailing 24-completed-month baseline
+  min_completed_months: 12   # below this, dimension status renders "insufficient data" (SCORING.md §5.1)
+
+slack:                       # phase 2b only; absent/null until PMC + Infra gates clear (D1)
+  enabled: false
+  workspace: null
+  channels: []

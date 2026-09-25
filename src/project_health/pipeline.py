@@ -26,6 +26,14 @@ run, end to end:
    §7.3's "if metric computation fails ... the site is not redeployed". A
    source failing to *collect* is not this: metrics still compute from
    whatever raw data already exists, and the run's exit code stays 0.
+5. If metric computation *succeeds* but a registered metric
+   (`metrics.registry.METRIC_IDS`) produced zero `metric_value` rows (issue
+   #24 — e.g. a collector/engine contract mismatch silently zeroing a metric
+   out on real data), the manifest's `status` is `'degraded'` and
+   `metrics_missing` lists the missing metric id(s); the run still exits
+   non-zero so this is never silently green, but the site **is** still
+   (re)generated, so the gap is visible there too rather than the whole
+   deploy blocking on it.
 
 ## Read-time dedupe (document per issue #9)
 
@@ -75,7 +83,7 @@ from project_health import storage
 from project_health.collectors.git import GitCollector, clone_or_fetch, github_clone_url
 from project_health.collectors.jira import JiraCollector
 from project_health.config import ProjectConfig
-from project_health.metrics import compute_all
+from project_health.metrics import METRIC_IDS, compute_all
 from project_health.normalize.identity import (
     extract_raw_identifiers,
     load_overrides,
@@ -427,19 +435,37 @@ def run_pipeline(
 
     completed_at = datetime.now(timezone.utc)
     metrics_computed: list[str] = []
+    metrics_missing: list[str] = []
     exit_code = 0
 
     if metrics_table is not None:
         _write_metrics_snapshot(data_dir, run_id, metrics_table)
+        metric_rows = metrics_table.to_pylist()
         metrics_computed = sorted(
-            {
-                f"{row['metric_id']}@{row['definition_version']}"
-                for row in metrics_table.to_pylist()
-            }
+            {f"{row['metric_id']}@{row['definition_version']}" for row in metric_rows}
         )
+        # A *registered* metric (metrics.registry.METRIC_IDS) that produced
+        # zero metric_value rows this run is a silent failure -- most often a
+        # contract mismatch between a collector and the engine (issue #24) --
+        # not the same thing as a metric with data below its sample floor
+        # (that still emits an `insufficient_data` row and is never
+        # "missing"). Surface it loudly rather than letting the manifest say
+        # `status: ok` while a metric quietly produced nothing.
+        computed_metric_ids = {row["metric_id"] for row in metric_rows}
+        metrics_missing = sorted(set(METRIC_IDS) - computed_metric_ids)
         _log("metrics_computed", run_id=run_id, metrics=metrics_computed)
+        if metrics_missing:
+            _log("metrics_missing", run_id=run_id, metrics_missing=metrics_missing)
+            exit_code = 1
     else:
         exit_code = 1
+
+    if metrics_table is None:
+        run_status = "failed"
+    elif metrics_missing:
+        run_status = "degraded"
+    else:
+        run_status = "ok"
 
     manifest = build_manifest(
         run_id=run_id,
@@ -451,8 +477,9 @@ def run_pipeline(
         metrics_computed=metrics_computed,
         data_branch_commit=None,
         site_deploy_status=None,
-        status="ok" if metrics_table is not None else "failed",
+        status=run_status,
         error=metrics_error,
+        metrics_missing=metrics_missing,
     )
 
     out_path = manifest_path(data_dir, run_id)

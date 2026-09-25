@@ -388,6 +388,62 @@ class TestMetricsFailure:
         assert loaded.run_id == result.run_id
 
 
+# --- Degraded run: a registered metric produced zero rows (issue #24) -------
+
+
+class TestDegradedMetrics:
+    def test_registered_metric_with_zero_rows_marks_manifest_degraded_and_exits_nonzero(
+        self, tmp_path, config, git_workdir, monkeypatch
+    ):
+        """A registered metric (metrics.registry.METRIC_IDS) that computes
+        successfully but yields zero `metric_value` rows -- e.g. issue #24's
+        collector/engine `event_type` mismatch -- must never look like a
+        clean `status: ok` run: the manifest is `degraded`, the metric is
+        named in `metrics_missing`, and the CLI's exit code is non-zero. The
+        site is still generated (§7.3 only blocks the site on a metrics
+        *exception*, not on a metric quietly coming back empty) so the gap
+        is visible there too.
+        """
+        from project_health.metrics import compute_all as real_compute_all
+
+        data_dir = tmp_path / "data"
+        site_out = tmp_path / "site"
+        transport = _paginated_transport({0: PAGE_1, 5: PAGE_2, 10: EMPTY_PAGE})
+
+        def _drop_stale_jira_rate(*args, **kwargs):
+            table = real_compute_all(*args, **kwargs)
+            keep = [r for r in table.to_pylist() if r["metric_id"] != "stale_jira_rate"]
+            if not keep:
+                return table.schema.empty_table()
+            return pa.Table.from_pylist(keep, schema=table.schema)
+
+        monkeypatch.setattr("project_health.pipeline.compute_all", _drop_stale_jira_rate)
+
+        result = run_pipeline(
+            config=config,
+            data_dir=data_dir,
+            workdir=git_workdir,
+            site_out=site_out,
+            now=NOW,
+            code_sha="abc1234",
+            jira_collector_factory=_jira_factory(transport),
+        )
+
+        assert result.exit_code != 0
+        assert result.manifest["status"] == "degraded"
+        assert result.manifest["metrics_missing"] == ["stale_jira_rate"]
+        assert "stale_jira_rate" not in {
+            m.split("@")[0] for m in result.manifest["metrics_computed"]
+        }
+        # the site is still (re)generated -- a degraded metrics stage isn't
+        # the same failure mode as compute_all raising.
+        assert result.manifest["site_deploy_status"] == "ok"
+        assert (site_out / "index.html").is_file()
+
+        loaded = load_manifest(data_dir, result.run_id)
+        assert loaded.run_id == result.run_id
+
+
 # --- Read-time dedupe --------------------------------------------------------
 
 

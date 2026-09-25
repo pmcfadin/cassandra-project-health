@@ -10,9 +10,17 @@ from __future__ import annotations
 
 import pyarrow as pa
 
+from project_health.schema.event_types import CODE_COMMIT, CONTRIBUTION_EVENT_TYPES
 from project_health.schema.tables import TABLE_SCHEMAS
 
-__all__ = ["TABLE_SCHEMAS", "SchemaValidationError", "get_schema", "validate"]
+__all__ = [
+    "TABLE_SCHEMAS",
+    "SchemaValidationError",
+    "get_schema",
+    "validate",
+    "CODE_COMMIT",
+    "CONTRIBUTION_EVENT_TYPES",
+]
 
 
 class SchemaValidationError(ValueError):

@@ -1,0 +1,33 @@
+{
+  "completed_at": "2026-09-25T23:49:11.918047+00:00",
+  "data_branch_commit": null,
+  "metrics_computed": [
+    "active_contributors_monthly@1.0",
+    "median_resolution_latency_jira@1.0",
+    "new_contributors_monthly@1.0",
+    "reviewer_hhi@1.0",
+    "stale_jira_rate@1.0",
+    "unique_reviewers_monthly@1.0"
+  ],
+  "metrics_missing": [],
+  "metrics_skipped_insufficient_data": [],
+  "pipeline_code_sha": "9a8c7dd42bf5639e2c3d3d9e36023edecb11c966",
+  "run_id": "2026-09-25T234711Z-9a8c7dd",
+  "site_deploy_status": "ok",
+  "sources": {
+    "git": {
+      "placeholder_reviewer_commits": 9,
+      "records_collected": 18874,
+      "status": "ok",
+      "watermark": "sha:17137ce34bd2fa89bc296e2d61d59eac9957b787"
+    },
+    "jira": {
+      "records_collected": 21483,
+      "status": "ok",
+      "watermark": "2026-09-25T23:46:35+00:00"
+    }
+  },
+  "started_at": "2026-09-25T23:47:11.837120+00:00",
+  "status": "ok",
+  "trigger": "workflow_dispatch"
+}

@@ -1,0 +1,304 @@
+{
+    "expand": "schema,names",
+    "startAt": 0,
+    "maxResults": 5,
+    "total": 3288,
+    "issues": [
+        {
+            "expand": "operations,versionedRepresentations,editmeta,changelog,renderedFields",
+            "id": "13668524",
+            "self": "https://issues.apache.org/jira/rest/api/2/issue/13668524",
+            "key": "CASSANDRA-21717",
+            "fields": {
+                "summary": "CVE-2026-54512.jackson-databind contains the general-purpose data-binding functionality and tree-model for Jackson Data Processor.",
+                "customfield_12313420": null,
+                "resolutiondate": null,
+                "created": "2026-09-25T12:14:41.000+0000",
+                "reporter": {
+                    "self": "https://issues.apache.org/jira/rest/api/2/user?username=Kaps_11",
+                    "name": "Kaps_11",
+                    "key": "kaps_11",
+                    "avatarUrls": {
+                        "48x48": "https://issues.apache.org/jira/secure/useravatar?avatarId=34044",
+                        "24x24": "https://issues.apache.org/jira/secure/useravatar?size=small&avatarId=34044",
+                        "16x16": "https://issues.apache.org/jira/secure/useravatar?size=xsmall&avatarId=34044",
+                        "32x32": "https://issues.apache.org/jira/secure/useravatar?size=medium&avatarId=34044"
+                    },
+                    "displayName": "Kapil Shewate",
+                    "active": true,
+                    "timeZone": "Etc/UTC"
+                },
+                "customfield_10022": null,
+                "assignee": null,
+                "updated": "2026-09-25T12:17:34.000+0000",
+                "status": {
+                    "self": "https://issues.apache.org/jira/rest/api/2/status/10722",
+                    "description": "",
+                    "iconUrl": "https://issues.apache.org/jira/images/icons/statuses/generic.png",
+                    "name": "Triage Needed",
+                    "id": "10722",
+                    "statusCategory": {
+                        "self": "https://issues.apache.org/jira/rest/api/2/statuscategory/2",
+                        "id": 2,
+                        "key": "new",
+                        "colorName": "blue-gray",
+                        "name": "To Do"
+                    }
+                }
+            }
+        },
+        {
+            "expand": "operations,versionedRepresentations,editmeta,changelog,renderedFields",
+            "id": "13668412",
+            "self": "https://issues.apache.org/jira/rest/api/2/issue/13668412",
+            "key": "CASSANDRA-21716",
+            "fields": {
+                "summary": "Accord can drop read results when using the IN clause",
+                "customfield_12313420": null,
+                "resolutiondate": null,
+                "created": "2026-09-24T20:43:35.000+0000",
+                "reporter": {
+                    "self": "https://issues.apache.org/jira/rest/api/2/user?username=alanwang599",
+                    "name": "alanwang599",
+                    "key": "JIRAUSER311248",
+                    "avatarUrls": {
+                        "48x48": "https://issues.apache.org/jira/secure/useravatar?avatarId=10452",
+                        "24x24": "https://issues.apache.org/jira/secure/useravatar?size=small&avatarId=10452",
+                        "16x16": "https://issues.apache.org/jira/secure/useravatar?size=xsmall&avatarId=10452",
+                        "32x32": "https://issues.apache.org/jira/secure/useravatar?size=medium&avatarId=10452"
+                    },
+                    "displayName": "Alan Wang",
+                    "active": true,
+                    "timeZone": "Etc/UTC"
+                },
+                "customfield_10022": null,
+                "assignee": {
+                    "self": "https://issues.apache.org/jira/rest/api/2/user?username=alanwang599",
+                    "name": "alanwang599",
+                    "key": "JIRAUSER311248",
+                    "avatarUrls": {
+                        "48x48": "https://issues.apache.org/jira/secure/useravatar?avatarId=10452",
+                        "24x24": "https://issues.apache.org/jira/secure/useravatar?size=small&avatarId=10452",
+                        "16x16": "https://issues.apache.org/jira/secure/useravatar?size=xsmall&avatarId=10452",
+                        "32x32": "https://issues.apache.org/jira/secure/useravatar?size=medium&avatarId=10452"
+                    },
+                    "displayName": "Alan Wang",
+                    "active": true,
+                    "timeZone": "Etc/UTC"
+                },
+                "updated": "2026-09-25T10:22:27.000+0000",
+                "status": {
+                    "self": "https://issues.apache.org/jira/rest/api/2/status/10002",
+                    "description": "A patch for this issue has been uploaded to JIRA by a contributor.",
+                    "iconUrl": "https://issues.apache.org/jira/images/icons/statuses/document.png",
+                    "name": "Patch Available",
+                    "id": "10002",
+                    "statusCategory": {
+                        "self": "https://issues.apache.org/jira/rest/api/2/statuscategory/4",
+                        "id": 4,
+                        "key": "indeterminate",
+                        "colorName": "yellow",
+                        "name": "In Progress"
+                    }
+                }
+            }
+        },
+        {
+            "expand": "operations,versionedRepresentations,editmeta,changelog,renderedFields",
+            "id": "13668357",
+            "self": "https://issues.apache.org/jira/rest/api/2/issue/13668357",
+            "key": "CASSANDRA-21715",
+            "fields": {
+                "summary": "Add * wildcard in excluded index hints",
+                "customfield_12313420": [
+                    {
+                        "self": "https://issues.apache.org/jira/rest/api/2/user?username=adelapena",
+                        "name": "adelapena",
+                        "key": "adelapena",
+                        "avatarUrls": {
+                            "48x48": "https://issues.apache.org/jira/secure/useravatar?ownerId=adelapena&avatarId=19865",
+                            "24x24": "https://issues.apache.org/jira/secure/useravatar?size=small&ownerId=adelapena&avatarId=19865",
+                            "16x16": "https://issues.apache.org/jira/secure/useravatar?size=xsmall&ownerId=adelapena&avatarId=19865",
+                            "32x32": "https://issues.apache.org/jira/secure/useravatar?size=medium&ownerId=adelapena&avatarId=19865"
+                        },
+                        "displayName": "Andres de la Pe\u00f1a",
+                        "active": true,
+                        "timeZone": "Europe/London"
+                    },
+                    {
+                        "self": "https://issues.apache.org/jira/rest/api/2/user?username=maedhroz",
+                        "name": "maedhroz",
+                        "key": "maedhroz",
+                        "avatarUrls": {
+                            "48x48": "https://issues.apache.org/jira/secure/useravatar?ownerId=maedhroz&avatarId=20072",
+                            "24x24": "https://issues.apache.org/jira/secure/useravatar?size=small&ownerId=maedhroz&avatarId=20072",
+                            "16x16": "https://issues.apache.org/jira/secure/useravatar?size=xsmall&ownerId=maedhroz&avatarId=20072",
+                            "32x32": "https://issues.apache.org/jira/secure/useravatar?size=medium&ownerId=maedhroz&avatarId=20072"
+                        },
+                        "displayName": "Caleb Rackliffe",
+                        "active": true,
+                        "timeZone": "America/Los_Angeles"
+                    }
+                ],
+                "resolutiondate": null,
+                "created": "2026-09-24T15:43:11.000+0000",
+                "reporter": {
+                    "self": "https://issues.apache.org/jira/rest/api/2/user?username=galarcel",
+                    "name": "galarcel",
+                    "key": "JIRAUSER314758",
+                    "avatarUrls": {
+                        "48x48": "https://issues.apache.org/jira/secure/useravatar?avatarId=34058",
+                        "24x24": "https://issues.apache.org/jira/secure/useravatar?size=small&avatarId=34058",
+                        "16x16": "https://issues.apache.org/jira/secure/useravatar?size=xsmall&avatarId=34058",
+                        "32x32": "https://issues.apache.org/jira/secure/useravatar?size=medium&avatarId=34058"
+                    },
+                    "displayName": "Mauricio Audirac-Mart\u00ednez",
+                    "active": true,
+                    "timeZone": "Etc/UTC"
+                },
+                "customfield_10022": null,
+                "assignee": {
+                    "self": "https://issues.apache.org/jira/rest/api/2/user?username=galarcel",
+                    "name": "galarcel",
+                    "key": "JIRAUSER314758",
+                    "avatarUrls": {
+                        "48x48": "https://issues.apache.org/jira/secure/useravatar?avatarId=34058",
+                        "24x24": "https://issues.apache.org/jira/secure/useravatar?size=small&avatarId=34058",
+                        "16x16": "https://issues.apache.org/jira/secure/useravatar?size=xsmall&avatarId=34058",
+                        "32x32": "https://issues.apache.org/jira/secure/useravatar?size=medium&avatarId=34058"
+                    },
+                    "displayName": "Mauricio Audirac-Mart\u00ednez",
+                    "active": true,
+                    "timeZone": "Etc/UTC"
+                },
+                "updated": "2026-09-25T17:03:44.000+0000",
+                "status": {
+                    "self": "https://issues.apache.org/jira/rest/api/2/status/10722",
+                    "description": "",
+                    "iconUrl": "https://issues.apache.org/jira/images/icons/statuses/generic.png",
+                    "name": "Triage Needed",
+                    "id": "10722",
+                    "statusCategory": {
+                        "self": "https://issues.apache.org/jira/rest/api/2/statuscategory/2",
+                        "id": 2,
+                        "key": "new",
+                        "colorName": "blue-gray",
+                        "name": "To Do"
+                    }
+                }
+            }
+        },
+        {
+            "expand": "operations,versionedRepresentations,editmeta,changelog,renderedFields",
+            "id": "13668230",
+            "self": "https://issues.apache.org/jira/rest/api/2/issue/13668230",
+            "key": "CASSANDRA-21714",
+            "fields": {
+                "summary": "Fix Use-After-Free in Zstd Dictionary Compressor When Cache Eviction Races In-Flight Compression",
+                "customfield_12313420": null,
+                "resolutiondate": null,
+                "created": "2026-09-23T23:37:23.000+0000",
+                "reporter": {
+                    "self": "https://issues.apache.org/jira/rest/api/2/user?username=ycai",
+                    "name": "ycai",
+                    "key": "ycai",
+                    "avatarUrls": {
+                        "48x48": "https://issues.apache.org/jira/secure/useravatar?avatarId=34044",
+                        "24x24": "https://issues.apache.org/jira/secure/useravatar?size=small&avatarId=34044",
+                        "16x16": "https://issues.apache.org/jira/secure/useravatar?size=xsmall&avatarId=34044",
+                        "32x32": "https://issues.apache.org/jira/secure/useravatar?size=medium&avatarId=34044"
+                    },
+                    "displayName": "Yifan Cai",
+                    "active": true,
+                    "timeZone": "America/Los_Angeles"
+                },
+                "customfield_10022": null,
+                "assignee": {
+                    "self": "https://issues.apache.org/jira/rest/api/2/user?username=ycai",
+                    "name": "ycai",
+                    "key": "ycai",
+                    "avatarUrls": {
+                        "48x48": "https://issues.apache.org/jira/secure/useravatar?avatarId=34044",
+                        "24x24": "https://issues.apache.org/jira/secure/useravatar?size=small&avatarId=34044",
+                        "16x16": "https://issues.apache.org/jira/secure/useravatar?size=xsmall&avatarId=34044",
+                        "32x32": "https://issues.apache.org/jira/secure/useravatar?size=medium&avatarId=34044"
+                    },
+                    "displayName": "Yifan Cai",
+                    "active": true,
+                    "timeZone": "America/Los_Angeles"
+                },
+                "updated": "2026-09-24T22:35:01.000+0000",
+                "status": {
+                    "self": "https://issues.apache.org/jira/rest/api/2/status/10002",
+                    "description": "A patch for this issue has been uploaded to JIRA by a contributor.",
+                    "iconUrl": "https://issues.apache.org/jira/images/icons/statuses/document.png",
+                    "name": "Patch Available",
+                    "id": "10002",
+                    "statusCategory": {
+                        "self": "https://issues.apache.org/jira/rest/api/2/statuscategory/4",
+                        "id": 4,
+                        "key": "indeterminate",
+                        "colorName": "yellow",
+                        "name": "In Progress"
+                    }
+                }
+            }
+        },
+        {
+            "expand": "operations,versionedRepresentations,editmeta,changelog,renderedFields",
+            "id": "13668229",
+            "self": "https://issues.apache.org/jira/rest/api/2/issue/13668229",
+            "key": "CASSANDRA-21713",
+            "fields": {
+                "summary": "Ensure that List Prepends are deterministic for Accord",
+                "customfield_12313420": null,
+                "resolutiondate": null,
+                "created": "2026-09-23T23:21:50.000+0000",
+                "reporter": {
+                    "self": "https://issues.apache.org/jira/rest/api/2/user?username=alanwang599",
+                    "name": "alanwang599",
+                    "key": "JIRAUSER311248",
+                    "avatarUrls": {
+                        "48x48": "https://issues.apache.org/jira/secure/useravatar?avatarId=10452",
+                        "24x24": "https://issues.apache.org/jira/secure/useravatar?size=small&avatarId=10452",
+                        "16x16": "https://issues.apache.org/jira/secure/useravatar?size=xsmall&avatarId=10452",
+                        "32x32": "https://issues.apache.org/jira/secure/useravatar?size=medium&avatarId=10452"
+                    },
+                    "displayName": "Alan Wang",
+                    "active": true,
+                    "timeZone": "Etc/UTC"
+                },
+                "customfield_10022": null,
+                "assignee": {
+                    "self": "https://issues.apache.org/jira/rest/api/2/user?username=alanwang599",
+                    "name": "alanwang599",
+                    "key": "JIRAUSER311248",
+                    "avatarUrls": {
+                        "48x48": "https://issues.apache.org/jira/secure/useravatar?avatarId=10452",
+                        "24x24": "https://issues.apache.org/jira/secure/useravatar?size=small&avatarId=10452",
+                        "16x16": "https://issues.apache.org/jira/secure/useravatar?size=xsmall&avatarId=10452",
+                        "32x32": "https://issues.apache.org/jira/secure/useravatar?size=medium&avatarId=10452"
+                    },
+                    "displayName": "Alan Wang",
+                    "active": true,
+                    "timeZone": "Etc/UTC"
+                },
+                "updated": "2026-09-24T00:07:51.000+0000",
+                "status": {
+                    "self": "https://issues.apache.org/jira/rest/api/2/status/10002",
+                    "description": "A patch for this issue has been uploaded to JIRA by a contributor.",
+                    "iconUrl": "https://issues.apache.org/jira/images/icons/statuses/document.png",
+                    "name": "Patch Available",
+                    "id": "10002",
+                    "statusCategory": {
+                        "self": "https://issues.apache.org/jira/rest/api/2/statuscategory/4",
+                        "id": 4,
+                        "key": "indeterminate",
+                        "colorName": "yellow",
+                        "name": "In Progress"
+                    }
+                }
+            }
+        }
+    ]
+}

@@ -1,0 +1,405 @@
+{
+    "expand": "schema,names",
+    "startAt": 0,
+    "maxResults": 5,
+    "total": 11125,
+    "issues": [
+        {
+            "expand": "operations,versionedRepresentations,editmeta,changelog,renderedFields",
+            "id": "13668197",
+            "self": "https://issues.apache.org/jira/rest/api/2/issue/13668197",
+            "key": "CASSANDRA-21712",
+            "fields": {
+                "summary": "Speed up IndexStreamingTest",
+                "customfield_12313420": [
+                    {
+                        "self": "https://issues.apache.org/jira/rest/api/2/user?username=maedhroz",
+                        "name": "maedhroz",
+                        "key": "maedhroz",
+                        "avatarUrls": {
+                            "48x48": "https://issues.apache.org/jira/secure/useravatar?ownerId=maedhroz&avatarId=20072",
+                            "24x24": "https://issues.apache.org/jira/secure/useravatar?size=small&ownerId=maedhroz&avatarId=20072",
+                            "16x16": "https://issues.apache.org/jira/secure/useravatar?size=xsmall&ownerId=maedhroz&avatarId=20072",
+                            "32x32": "https://issues.apache.org/jira/secure/useravatar?size=medium&ownerId=maedhroz&avatarId=20072"
+                        },
+                        "displayName": "Caleb Rackliffe",
+                        "active": true,
+                        "timeZone": "America/Los_Angeles"
+                    }
+                ],
+                "resolutiondate": null,
+                "created": "2026-09-23T16:46:45.000+0000",
+                "reporter": {
+                    "self": "https://issues.apache.org/jira/rest/api/2/user?username=frankgh",
+                    "name": "frankgh",
+                    "key": "frankgh",
+                    "avatarUrls": {
+                        "48x48": "https://issues.apache.org/jira/secure/useravatar?avatarId=10452",
+                        "24x24": "https://issues.apache.org/jira/secure/useravatar?size=small&avatarId=10452",
+                        "16x16": "https://issues.apache.org/jira/secure/useravatar?size=xsmall&avatarId=10452",
+                        "32x32": "https://issues.apache.org/jira/secure/useravatar?size=medium&avatarId=10452"
+                    },
+                    "displayName": "Francisco Guerrero",
+                    "active": true,
+                    "timeZone": "America/Los_Angeles"
+                },
+                "customfield_10022": null,
+                "assignee": {
+                    "self": "https://issues.apache.org/jira/rest/api/2/user?username=frankgh",
+                    "name": "frankgh",
+                    "key": "frankgh",
+                    "avatarUrls": {
+                        "48x48": "https://issues.apache.org/jira/secure/useravatar?avatarId=10452",
+                        "24x24": "https://issues.apache.org/jira/secure/useravatar?size=small&avatarId=10452",
+                        "16x16": "https://issues.apache.org/jira/secure/useravatar?size=xsmall&avatarId=10452",
+                        "32x32": "https://issues.apache.org/jira/secure/useravatar?size=medium&avatarId=10452"
+                    },
+                    "displayName": "Francisco Guerrero",
+                    "active": true,
+                    "timeZone": "America/Los_Angeles"
+                },
+                "updated": "2026-09-25T21:38:41.000+0000",
+                "status": {
+                    "self": "https://issues.apache.org/jira/rest/api/2/status/10723",
+                    "description": "",
+                    "iconUrl": "https://issues.apache.org/jira/images/icons/statuses/generic.png",
+                    "name": "Review In Progress",
+                    "id": "10723",
+                    "statusCategory": {
+                        "self": "https://issues.apache.org/jira/rest/api/2/statuscategory/4",
+                        "id": 4,
+                        "key": "indeterminate",
+                        "colorName": "yellow",
+                        "name": "In Progress"
+                    }
+                }
+            }
+        },
+        {
+            "expand": "operations,versionedRepresentations,editmeta,changelog,renderedFields",
+            "id": "13665747",
+            "self": "https://issues.apache.org/jira/rest/api/2/issue/13665747",
+            "key": "CASSANDRA-21671",
+            "fields": {
+                "summary": "Fix compressed scan read-ahead buffer Block leak and chunk-cache pollution by scans",
+                "customfield_12313420": [
+                    {
+                        "self": "https://issues.apache.org/jira/rest/api/2/user?username=maedhroz",
+                        "name": "maedhroz",
+                        "key": "maedhroz",
+                        "avatarUrls": {
+                            "48x48": "https://issues.apache.org/jira/secure/useravatar?ownerId=maedhroz&avatarId=20072",
+                            "24x24": "https://issues.apache.org/jira/secure/useravatar?size=small&ownerId=maedhroz&avatarId=20072",
+                            "16x16": "https://issues.apache.org/jira/secure/useravatar?size=xsmall&ownerId=maedhroz&avatarId=20072",
+                            "32x32": "https://issues.apache.org/jira/secure/useravatar?size=medium&ownerId=maedhroz&avatarId=20072"
+                        },
+                        "displayName": "Caleb Rackliffe",
+                        "active": true,
+                        "timeZone": "America/Los_Angeles"
+                    },
+                    {
+                        "self": "https://issues.apache.org/jira/rest/api/2/user?username=frankgh",
+                        "name": "frankgh",
+                        "key": "frankgh",
+                        "avatarUrls": {
+                            "48x48": "https://issues.apache.org/jira/secure/useravatar?avatarId=10452",
+                            "24x24": "https://issues.apache.org/jira/secure/useravatar?size=small&avatarId=10452",
+                            "16x16": "https://issues.apache.org/jira/secure/useravatar?size=xsmall&avatarId=10452",
+                            "32x32": "https://issues.apache.org/jira/secure/useravatar?size=medium&avatarId=10452"
+                        },
+                        "displayName": "Francisco Guerrero",
+                        "active": true,
+                        "timeZone": "America/Los_Angeles"
+                    },
+                    {
+                        "self": "https://issues.apache.org/jira/rest/api/2/user?username=samueldlightfoot",
+                        "name": "samueldlightfoot",
+                        "key": "JIRAUSER302824",
+                        "avatarUrls": {
+                            "48x48": "https://issues.apache.org/jira/secure/useravatar?avatarId=10452",
+                            "24x24": "https://issues.apache.org/jira/secure/useravatar?size=small&avatarId=10452",
+                            "16x16": "https://issues.apache.org/jira/secure/useravatar?size=xsmall&avatarId=10452",
+                            "32x32": "https://issues.apache.org/jira/secure/useravatar?size=medium&avatarId=10452"
+                        },
+                        "displayName": "Sam Lightfoot",
+                        "active": true,
+                        "timeZone": "Europe/London"
+                    }
+                ],
+                "resolutiondate": "2026-09-25T19:01:14.000+0000",
+                "created": "2026-09-09T22:03:50.000+0000",
+                "reporter": {
+                    "self": "https://issues.apache.org/jira/rest/api/2/user?username=rustyrazorblade",
+                    "name": "rustyrazorblade",
+                    "key": "rustyrazorblade",
+                    "avatarUrls": {
+                        "48x48": "https://issues.apache.org/jira/secure/useravatar?avatarId=10452",
+                        "24x24": "https://issues.apache.org/jira/secure/useravatar?size=small&avatarId=10452",
+                        "16x16": "https://issues.apache.org/jira/secure/useravatar?size=xsmall&avatarId=10452",
+                        "32x32": "https://issues.apache.org/jira/secure/useravatar?size=medium&avatarId=10452"
+                    },
+                    "displayName": "Jon Haddad",
+                    "active": true,
+                    "timeZone": "Etc/UTC"
+                },
+                "customfield_10022": null,
+                "assignee": {
+                    "self": "https://issues.apache.org/jira/rest/api/2/user?username=rustyrazorblade",
+                    "name": "rustyrazorblade",
+                    "key": "rustyrazorblade",
+                    "avatarUrls": {
+                        "48x48": "https://issues.apache.org/jira/secure/useravatar?avatarId=10452",
+                        "24x24": "https://issues.apache.org/jira/secure/useravatar?size=small&avatarId=10452",
+                        "16x16": "https://issues.apache.org/jira/secure/useravatar?size=xsmall&avatarId=10452",
+                        "32x32": "https://issues.apache.org/jira/secure/useravatar?size=medium&avatarId=10452"
+                    },
+                    "displayName": "Jon Haddad",
+                    "active": true,
+                    "timeZone": "Etc/UTC"
+                },
+                "updated": "2026-09-25T19:02:02.000+0000",
+                "status": {
+                    "self": "https://issues.apache.org/jira/rest/api/2/status/5",
+                    "description": "A resolution has been taken, and it is awaiting verification by reporter. From here issues are either reopened, or are closed.",
+                    "iconUrl": "https://issues.apache.org/jira/images/icons/statuses/resolved.png",
+                    "name": "Resolved",
+                    "id": "5",
+                    "statusCategory": {
+                        "self": "https://issues.apache.org/jira/rest/api/2/statuscategory/3",
+                        "id": 3,
+                        "key": "done",
+                        "colorName": "green",
+                        "name": "Done"
+                    }
+                }
+            }
+        },
+        {
+            "expand": "operations,versionedRepresentations,editmeta,changelog,renderedFields",
+            "id": "13667375",
+            "self": "https://issues.apache.org/jira/rest/api/2/issue/13667375",
+            "key": "CASSANDRA-21700",
+            "fields": {
+                "summary": "Index hints serialization rejects a count that the validation accepts",
+                "customfield_12313420": [
+                    {
+                        "self": "https://issues.apache.org/jira/rest/api/2/user?username=jeremiah",
+                        "name": "jeremiah",
+                        "key": "JIRAUSER308715",
+                        "avatarUrls": {
+                            "48x48": "https://issues.apache.org/jira/secure/useravatar?ownerId=JIRAUSER308715&avatarId=54542",
+                            "24x24": "https://issues.apache.org/jira/secure/useravatar?size=small&ownerId=JIRAUSER308715&avatarId=54542",
+                            "16x16": "https://issues.apache.org/jira/secure/useravatar?size=xsmall&ownerId=JIRAUSER308715&avatarId=54542",
+                            "32x32": "https://issues.apache.org/jira/secure/useravatar?size=medium&ownerId=JIRAUSER308715&avatarId=54542"
+                        },
+                        "displayName": "Jeremiah Jordan",
+                        "active": true,
+                        "timeZone": "Etc/UTC"
+                    }
+                ],
+                "resolutiondate": null,
+                "created": "2026-09-18T21:37:45.000+0000",
+                "reporter": {
+                    "self": "https://issues.apache.org/jira/rest/api/2/user?username=mck",
+                    "name": "mck",
+                    "key": "michaelsembwever",
+                    "avatarUrls": {
+                        "48x48": "https://issues.apache.org/jira/secure/useravatar?ownerId=michaelsembwever&avatarId=40741",
+                        "24x24": "https://issues.apache.org/jira/secure/useravatar?size=small&ownerId=michaelsembwever&avatarId=40741",
+                        "16x16": "https://issues.apache.org/jira/secure/useravatar?size=xsmall&ownerId=michaelsembwever&avatarId=40741",
+                        "32x32": "https://issues.apache.org/jira/secure/useravatar?size=medium&ownerId=michaelsembwever&avatarId=40741"
+                    },
+                    "displayName": "Michael Semb Wever",
+                    "active": true,
+                    "timeZone": "Europe/Oslo"
+                },
+                "customfield_10022": null,
+                "assignee": {
+                    "self": "https://issues.apache.org/jira/rest/api/2/user?username=mck",
+                    "name": "mck",
+                    "key": "michaelsembwever",
+                    "avatarUrls": {
+                        "48x48": "https://issues.apache.org/jira/secure/useravatar?ownerId=michaelsembwever&avatarId=40741",
+                        "24x24": "https://issues.apache.org/jira/secure/useravatar?size=small&ownerId=michaelsembwever&avatarId=40741",
+                        "16x16": "https://issues.apache.org/jira/secure/useravatar?size=xsmall&ownerId=michaelsembwever&avatarId=40741",
+                        "32x32": "https://issues.apache.org/jira/secure/useravatar?size=medium&ownerId=michaelsembwever&avatarId=40741"
+                    },
+                    "displayName": "Michael Semb Wever",
+                    "active": true,
+                    "timeZone": "Europe/Oslo"
+                },
+                "updated": "2026-09-25T19:01:43.000+0000",
+                "status": {
+                    "self": "https://issues.apache.org/jira/rest/api/2/status/10221",
+                    "description": "",
+                    "iconUrl": "https://issues.apache.org/jira/images/icons/statuses/generic.png",
+                    "name": "Ready to Commit",
+                    "id": "10221",
+                    "statusCategory": {
+                        "self": "https://issues.apache.org/jira/rest/api/2/statuscategory/4",
+                        "id": 4,
+                        "key": "indeterminate",
+                        "colorName": "yellow",
+                        "name": "In Progress"
+                    }
+                }
+            }
+        },
+        {
+            "expand": "operations,versionedRepresentations,editmeta,changelog,renderedFields",
+            "id": "13668357",
+            "self": "https://issues.apache.org/jira/rest/api/2/issue/13668357",
+            "key": "CASSANDRA-21715",
+            "fields": {
+                "summary": "Add * wildcard in excluded index hints",
+                "customfield_12313420": [
+                    {
+                        "self": "https://issues.apache.org/jira/rest/api/2/user?username=adelapena",
+                        "name": "adelapena",
+                        "key": "adelapena",
+                        "avatarUrls": {
+                            "48x48": "https://issues.apache.org/jira/secure/useravatar?ownerId=adelapena&avatarId=19865",
+                            "24x24": "https://issues.apache.org/jira/secure/useravatar?size=small&ownerId=adelapena&avatarId=19865",
+                            "16x16": "https://issues.apache.org/jira/secure/useravatar?size=xsmall&ownerId=adelapena&avatarId=19865",
+                            "32x32": "https://issues.apache.org/jira/secure/useravatar?size=medium&ownerId=adelapena&avatarId=19865"
+                        },
+                        "displayName": "Andres de la Pe\u00f1a",
+                        "active": true,
+                        "timeZone": "Europe/London"
+                    },
+                    {
+                        "self": "https://issues.apache.org/jira/rest/api/2/user?username=maedhroz",
+                        "name": "maedhroz",
+                        "key": "maedhroz",
+                        "avatarUrls": {
+                            "48x48": "https://issues.apache.org/jira/secure/useravatar?ownerId=maedhroz&avatarId=20072",
+                            "24x24": "https://issues.apache.org/jira/secure/useravatar?size=small&ownerId=maedhroz&avatarId=20072",
+                            "16x16": "https://issues.apache.org/jira/secure/useravatar?size=xsmall&ownerId=maedhroz&avatarId=20072",
+                            "32x32": "https://issues.apache.org/jira/secure/useravatar?size=medium&ownerId=maedhroz&avatarId=20072"
+                        },
+                        "displayName": "Caleb Rackliffe",
+                        "active": true,
+                        "timeZone": "America/Los_Angeles"
+                    }
+                ],
+                "resolutiondate": null,
+                "created": "2026-09-24T15:43:11.000+0000",
+                "reporter": {
+                    "self": "https://issues.apache.org/jira/rest/api/2/user?username=galarcel",
+                    "name": "galarcel",
+                    "key": "JIRAUSER314758",
+                    "avatarUrls": {
+                        "48x48": "https://issues.apache.org/jira/secure/useravatar?avatarId=34058",
+                        "24x24": "https://issues.apache.org/jira/secure/useravatar?size=small&avatarId=34058",
+                        "16x16": "https://issues.apache.org/jira/secure/useravatar?size=xsmall&avatarId=34058",
+                        "32x32": "https://issues.apache.org/jira/secure/useravatar?size=medium&avatarId=34058"
+                    },
+                    "displayName": "Mauricio Audirac-Mart\u00ednez",
+                    "active": true,
+                    "timeZone": "Etc/UTC"
+                },
+                "customfield_10022": null,
+                "assignee": {
+                    "self": "https://issues.apache.org/jira/rest/api/2/user?username=galarcel",
+                    "name": "galarcel",
+                    "key": "JIRAUSER314758",
+                    "avatarUrls": {
+                        "48x48": "https://issues.apache.org/jira/secure/useravatar?avatarId=34058",
+                        "24x24": "https://issues.apache.org/jira/secure/useravatar?size=small&avatarId=34058",
+                        "16x16": "https://issues.apache.org/jira/secure/useravatar?size=xsmall&avatarId=34058",
+                        "32x32": "https://issues.apache.org/jira/secure/useravatar?size=medium&avatarId=34058"
+                    },
+                    "displayName": "Mauricio Audirac-Mart\u00ednez",
+                    "active": true,
+                    "timeZone": "Etc/UTC"
+                },
+                "updated": "2026-09-25T17:03:44.000+0000",
+                "status": {
+                    "self": "https://issues.apache.org/jira/rest/api/2/status/10722",
+                    "description": "",
+                    "iconUrl": "https://issues.apache.org/jira/images/icons/statuses/generic.png",
+                    "name": "Triage Needed",
+                    "id": "10722",
+                    "statusCategory": {
+                        "self": "https://issues.apache.org/jira/rest/api/2/statuscategory/2",
+                        "id": 2,
+                        "key": "new",
+                        "colorName": "blue-gray",
+                        "name": "To Do"
+                    }
+                }
+            }
+        },
+        {
+            "expand": "operations,versionedRepresentations,editmeta,changelog,renderedFields",
+            "id": "13642107",
+            "self": "https://issues.apache.org/jira/rest/api/2/issue/13642107",
+            "key": "CASSANDRA-21175",
+            "fields": {
+                "summary": "Upgrade to Netty 4.2",
+                "customfield_12313420": [
+                    {
+                        "self": "https://issues.apache.org/jira/rest/api/2/user?username=mck",
+                        "name": "mck",
+                        "key": "michaelsembwever",
+                        "avatarUrls": {
+                            "48x48": "https://issues.apache.org/jira/secure/useravatar?ownerId=michaelsembwever&avatarId=40741",
+                            "24x24": "https://issues.apache.org/jira/secure/useravatar?size=small&ownerId=michaelsembwever&avatarId=40741",
+                            "16x16": "https://issues.apache.org/jira/secure/useravatar?size=xsmall&ownerId=michaelsembwever&avatarId=40741",
+                            "32x32": "https://issues.apache.org/jira/secure/useravatar?size=medium&ownerId=michaelsembwever&avatarId=40741"
+                        },
+                        "displayName": "Michael Semb Wever",
+                        "active": true,
+                        "timeZone": "Europe/Oslo"
+                    }
+                ],
+                "resolutiondate": null,
+                "created": "2026-02-15T10:12:16.000+0000",
+                "reporter": {
+                    "self": "https://issues.apache.org/jira/rest/api/2/user?username=dnk",
+                    "name": "dnk",
+                    "key": "dnk",
+                    "avatarUrls": {
+                        "48x48": "https://issues.apache.org/jira/secure/useravatar?ownerId=dnk&avatarId=53432",
+                        "24x24": "https://issues.apache.org/jira/secure/useravatar?size=small&ownerId=dnk&avatarId=53432",
+                        "16x16": "https://issues.apache.org/jira/secure/useravatar?size=xsmall&ownerId=dnk&avatarId=53432",
+                        "32x32": "https://issues.apache.org/jira/secure/useravatar?size=medium&ownerId=dnk&avatarId=53432"
+                    },
+                    "displayName": "Dmitry Konstantinov",
+                    "active": true,
+                    "timeZone": "Europe/London"
+                },
+                "customfield_10022": null,
+                "assignee": {
+                    "self": "https://issues.apache.org/jira/rest/api/2/user?username=dnk",
+                    "name": "dnk",
+                    "key": "dnk",
+                    "avatarUrls": {
+                        "48x48": "https://issues.apache.org/jira/secure/useravatar?ownerId=dnk&avatarId=53432",
+                        "24x24": "https://issues.apache.org/jira/secure/useravatar?size=small&ownerId=dnk&avatarId=53432",
+                        "16x16": "https://issues.apache.org/jira/secure/useravatar?size=xsmall&ownerId=dnk&avatarId=53432",
+                        "32x32": "https://issues.apache.org/jira/secure/useravatar?size=medium&ownerId=dnk&avatarId=53432"
+                    },
+                    "displayName": "Dmitry Konstantinov",
+                    "active": true,
+                    "timeZone": "Europe/London"
+                },
+                "updated": "2026-09-25T16:30:40.000+0000",
+                "status": {
+                    "self": "https://issues.apache.org/jira/rest/api/2/status/10723",
+                    "description": "",
+                    "iconUrl": "https://issues.apache.org/jira/images/icons/statuses/generic.png",
+                    "name": "Review In Progress",
+                    "id": "10723",
+                    "statusCategory": {
+                        "self": "https://issues.apache.org/jira/rest/api/2/statuscategory/4",
+                        "id": 4,
+                        "key": "indeterminate",
+                        "colorName": "yellow",
+                        "name": "In Progress"
+                    }
+                }
+            }
+        }
+    ]
+}

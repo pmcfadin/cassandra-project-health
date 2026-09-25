@@ -94,22 +94,37 @@ _TRAILING_ISSUE_RE = re.compile(
 # dropped).
 _REVIEWED_BY_PHRASE_RE = re.compile(r"(?i)reviewed\s+by")
 
+# Placeholder reviewer names that should be filtered out (issue #18).
+# These are matched case-insensitively, so stored in lowercase.
+_PLACEHOLDER_NAMES = frozenset(("tbd", "tba", "none", "nobody", "n/a", "na", "?", "unknown"))
+
 
 @dataclass(frozen=True)
 class ReviewAttribution:
     """One parsed commit-trailer reviewer attribution.
 
-    ``reviewers`` and ``issue_keys`` are each de-duplicated, order-preserved
-    lists; either may be empty (a trailer can name reviewers without a "for
-    <issue>" clause), but ``reviewers`` is never empty on a returned
-    ``ReviewAttribution`` — :meth:`ReviewerExtractor.extract` returns
-    ``None`` instead when no reviewer name could be parsed.
+    ``reviewers``, ``issue_keys``, and ``placeholder_reviewers`` are each
+    de-duplicated, order-preserved lists; either may be empty. ``reviewers``
+    may be empty when a commit has only placeholder reviewers (issue #18).
+
+    :meth:`ReviewerExtractor.extract` returns ``None`` if no line matches
+    the "reviewed by" trailer shape or if the regex matched but no names
+    (placeholder or real) could be extracted.
+
+    ``placeholder_reviewers`` records which reviewer names were dropped because
+    they matched placeholder patterns (TBD, none, n/a, etc.; see _PLACEHOLDER_NAMES).
     """
 
     patch_by: str | None
     reviewers: tuple[str, ...]
     issue_keys: tuple[str, ...]
     matched_text: str
+    placeholder_reviewers: tuple[str, ...] = ()
+
+
+def _is_placeholder(name: str) -> bool:
+    """True if `name` matches a placeholder pattern (case-insensitive)."""
+    return name.lower() in _PLACEHOLDER_NAMES
 
 
 def _clean_name(raw: str) -> str:
@@ -168,9 +183,13 @@ class ReviewerExtractor:
         """Parse the first reviewer trailer line in `commit_message`.
 
         Returns ``None`` if no line matches the "reviewed by" trailer shape,
-        or if a line matches but no reviewer name survives cleaning (e.g. an
-        empty ``reviewed by`` clause). Never returns an attribution with an
-        empty ``reviewers`` tuple.
+        or if a line matches but no reviewer name (real or placeholder) survives
+        cleaning (e.g. an empty ``reviewed by`` clause).
+
+        Returns a ReviewAttribution with empty ``reviewers`` but non-empty
+        ``placeholder_reviewers`` when a trailer matched but contained only
+        placeholder names (issue #18); the GitCollector counts these to signal
+        data quality issues.
         """
         match = _TRAILER_LINE_RE.search(commit_message)
         if match is None:
@@ -189,9 +208,23 @@ class ReviewerExtractor:
                 issue_tail = trailing.group("tail_keys")
                 reviewed_by_raw = reviewed_by_raw[: trailing.start()]
 
-        reviewers = _split_names(reviewed_by_raw)
-        if not reviewers:
+        all_names = _split_names(reviewed_by_raw)
+
+        # Return None if no names at all (empty reviewed_by clause).
+        if not all_names:
             return None
+
+        # Separate actual reviewers from placeholders (issue #18).
+        reviewers_list = []
+        placeholders_list = []
+        for name in all_names:
+            if _is_placeholder(name):
+                placeholders_list.append(name)
+            else:
+                reviewers_list.append(name)
+
+        reviewers = tuple(reviewers_list)
+        placeholders = tuple(placeholders_list)
 
         patch_by_raw = match.group("patch_by")
         patch_by = _clean_name(patch_by_raw) if patch_by_raw else None
@@ -202,4 +235,5 @@ class ReviewerExtractor:
             reviewers=reviewers,
             issue_keys=issue_keys,
             matched_text=match.group(0).strip(),
+            placeholder_reviewers=placeholders,
         )

@@ -284,3 +284,92 @@ class TestGitCollectorIncremental:
         assert second.contribution_event.num_rows == 0
         assert second.review_event.num_rows == 0
         assert second.next_watermark == first.next_watermark
+
+
+class TestPlaceholderReviewerCounts:
+    """Test counting of commits with placeholder reviewers (issue #18)."""
+
+    def _collect(self, built_repo, cassandra_config, watermark=None, snapshot_id="snap-1"):
+        return GitCollector().collect(
+            repo_path=built_repo,
+            repo_label=REPO_LABEL,
+            default_branch="trunk",
+            watermark=watermark,
+            bot_patterns=cassandra_config.bot_patterns,
+            source_snapshot_id=snapshot_id,
+        )
+
+    def test_placeholder_only_commits_have_count_but_no_review_rows(
+        self, built_repo, cassandra_config
+    ):
+        collector = GitCollector()
+        first = collector.collect(
+            repo_path=built_repo,
+            repo_label=REPO_LABEL,
+            default_branch="trunk",
+            watermark=None,
+            bot_patterns=cassandra_config.bot_patterns,
+            source_snapshot_id="snap-1",
+        )
+
+        # Add a commit with only placeholder reviewers
+        _add_commit(
+            built_repo,
+            author_name="Test Author",
+            author_email="test@example.com",
+            message="patch by Test Author; reviewed by TBD for CASSANDRA-999",
+            filename="placeholder_test.txt",
+        )
+
+        second = collector.collect(
+            repo_path=built_repo,
+            repo_label=REPO_LABEL,
+            default_branch="trunk",
+            watermark=first.next_watermark,
+            bot_patterns=cassandra_config.bot_patterns,
+            source_snapshot_id="snap-2",
+        )
+
+        assert second.commits_collected == 1
+        assert second.placeholder_reviewer_commits == 1
+        # No review rows should be emitted for placeholder-only reviewers
+        assert second.review_event.num_rows == 0
+
+    def test_mixed_reviewers_commit_counted_and_has_review_rows(
+        self, built_repo, cassandra_config
+    ):
+        collector = GitCollector()
+        first = collector.collect(
+            repo_path=built_repo,
+            repo_label=REPO_LABEL,
+            default_branch="trunk",
+            watermark=None,
+            bot_patterns=cassandra_config.bot_patterns,
+            source_snapshot_id="snap-1",
+        )
+
+        # Add a commit with mixed reviewers (real + placeholder)
+        _add_commit(
+            built_repo,
+            author_name="Test Author",
+            author_email="test@example.com",
+            message="patch by Test Author; reviewed by Bob Author and TBD for CASSANDRA-888",
+            filename="mixed_test.txt",
+        )
+
+        second = collector.collect(
+            repo_path=built_repo,
+            repo_label=REPO_LABEL,
+            default_branch="trunk",
+            watermark=first.next_watermark,
+            bot_patterns=cassandra_config.bot_patterns,
+            source_snapshot_id="snap-2",
+        )
+
+        assert second.commits_collected == 1
+        assert second.placeholder_reviewer_commits == 1
+        # Review row should be emitted only for non-placeholder reviewers
+        assert second.review_event.num_rows == 1
+        review_row = second.review_event.to_pylist()[0]
+        assert review_row["reviewer_raw_value"] == "Bob Author"
+        assert review_row["issue_key"] == "CASSANDRA-888"

@@ -278,3 +278,131 @@ class TestUnparsedButContainsReviewedByIsDetectable:
         extractor = ReviewerExtractor()
         assert extractor.extract(message) is None
         assert looks_like_reviewer_trailer(message) is True
+
+
+class TestPlaceholderReviewerFiltering:
+    """Real apache/cassandra trailers with placeholder reviewer names (issue #18).
+
+    Placeholder names (TBD, TBA, none, n/a, etc.) should be excluded from
+    reviewers and tracked in placeholder_reviewers, to avoid polluting
+    reviewer metrics with data-quality signals.
+    """
+
+    def setup_method(self):
+        self.extractor = ReviewerExtractor()
+
+    def test_tbd_only_returns_attribution_with_empty_reviewers(self):
+        # Real message from apache/cassandra CASSANDRA-21430
+        message = "patch by Francisco Guerrero; reviewed by TBD for CASSANDRA-21430"
+        attribution = self.extractor.extract(message)
+        assert attribution is not None
+        assert attribution.reviewers == ()
+        assert attribution.placeholder_reviewers == ("TBD",)
+        assert attribution.issue_keys == ("CASSANDRA-21430",)
+
+    def test_tbd_only_cassandra_21342_returns_attribution_with_empty_reviewers(self):
+        # Real message from apache/cassandra CASSANDRA-21342
+        message = "patch by Patrick McFadin; reviewed by TBD for CASSANDRA-21342"
+        attribution = self.extractor.extract(message)
+        assert attribution is not None
+        assert attribution.reviewers == ()
+        assert attribution.placeholder_reviewers == ("TBD",)
+
+    def test_tbd_only_cassandra_20539_returns_attribution_with_empty_reviewers(self):
+        # Real message from apache/cassandra CASSANDRA-20539
+        message = (
+            "Patch by Francisco Guerrerro, Doug Rohrer; reviewed by TBD "
+            "for CASSANDRA-20539"
+        )
+        attribution = self.extractor.extract(message)
+        assert attribution is not None
+        assert attribution.reviewers == ()
+        assert attribution.placeholder_reviewers == ("TBD",)
+
+    def test_tbd_only_cassandra_20423_returns_attribution_with_empty_reviewers(self):
+        # Real message from apache/cassandra CASSANDRA-20423
+        message = "Patch by Dmitry Konstantinov; reviewed by TBD for CASSANDRA-20423"
+        attribution = self.extractor.extract(message)
+        assert attribution is not None
+        assert attribution.reviewers == ()
+        assert attribution.placeholder_reviewers == ("TBD",)
+
+    def test_tbd_only_cassandra_11301_returns_attribution_with_empty_reviewers(self):
+        # Real message from apache/cassandra CASSANDRA-11301
+        message = "patch by Stefania Alborghetti; reviewed by TBD for CASSANDRA-11301"
+        attribution = self.extractor.extract(message)
+        assert attribution is not None
+        assert attribution.reviewers == ()
+        assert attribution.placeholder_reviewers == ("TBD",)
+
+    def test_mixed_real_and_placeholder_reviewers_filters_placeholder(self):
+        # Mixed case: one real reviewer and one placeholder
+        message = "reviewed by Alice Author and TBD for CASSANDRA-1"
+        attribution = self.extractor.extract(message)
+        assert attribution is not None
+        assert attribution.reviewers == ("Alice Author",)
+        assert attribution.placeholder_reviewers == ("TBD",)
+        assert attribution.issue_keys == ("CASSANDRA-1",)
+
+    def test_placeholder_case_insensitive_tba(self):
+        message = "patch by Bob; reviewed by Alice and tba for CASSANDRA-100"
+        attribution = self.extractor.extract(message)
+        assert attribution is not None
+        assert attribution.reviewers == ("Alice",)
+        assert attribution.placeholder_reviewers == ("tba",)
+
+    def test_placeholder_case_insensitive_none(self):
+        message = "patch by Bob; reviewed by Alice and NONE for CASSANDRA-100"
+        attribution = self.extractor.extract(message)
+        assert attribution is not None
+        assert attribution.reviewers == ("Alice",)
+        assert attribution.placeholder_reviewers == ("NONE",)
+
+    def test_placeholder_nobody(self):
+        message = "patch by Bob; reviewed by Alice and nobody for CASSANDRA-100"
+        attribution = self.extractor.extract(message)
+        assert attribution is not None
+        assert attribution.reviewers == ("Alice",)
+        assert attribution.placeholder_reviewers == ("nobody",)
+
+    def test_placeholder_n_a(self):
+        message = "patch by Bob; reviewed by Alice and n/a for CASSANDRA-100"
+        attribution = self.extractor.extract(message)
+        assert attribution is not None
+        assert attribution.reviewers == ("Alice",)
+        assert attribution.placeholder_reviewers == ("n/a",)
+
+    def test_placeholder_na(self):
+        message = "patch by Bob; reviewed by Alice and na for CASSANDRA-100"
+        attribution = self.extractor.extract(message)
+        assert attribution is not None
+        assert attribution.reviewers == ("Alice",)
+        assert attribution.placeholder_reviewers == ("na",)
+
+    def test_placeholder_question_mark(self):
+        message = "patch by Bob; reviewed by Alice and ? for CASSANDRA-100"
+        attribution = self.extractor.extract(message)
+        assert attribution is not None
+        assert attribution.reviewers == ("Alice",)
+        assert attribution.placeholder_reviewers == ("?",)
+
+    def test_placeholder_unknown(self):
+        message = "patch by Bob; reviewed by Alice and unknown for CASSANDRA-100"
+        attribution = self.extractor.extract(message)
+        assert attribution is not None
+        assert attribution.reviewers == ("Alice",)
+        assert attribution.placeholder_reviewers == ("unknown",)
+
+    def test_multiple_placeholders_all_filtered(self):
+        message = "patch by Bob; reviewed by TBD, TBA, none for CASSANDRA-100"
+        attribution = self.extractor.extract(message)
+        assert attribution is not None
+        assert attribution.reviewers == ()
+        assert attribution.placeholder_reviewers == ("TBD", "TBA", "none")
+
+    def test_multiple_mixed_reviewers_and_placeholders(self):
+        message = "patch by Bob; reviewed by Alice, TBD, Charlie, unknown for CASSANDRA-100"
+        attribution = self.extractor.extract(message)
+        assert attribution is not None
+        assert attribution.reviewers == ("Alice", "Charlie")
+        assert attribution.placeholder_reviewers == ("TBD", "unknown")

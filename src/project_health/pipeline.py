@@ -1,0 +1,473 @@
+"""Pipeline runner (ARCHITECTURE.md §4.2-4.4, §5, §7.3, §11; issue #9).
+
+`run_pipeline(...)` orchestrates one collection + metrics + (optional) site
+run, end to end:
+
+1. For each active source (`git`, `jira`): collect from that source's stored
+   watermark, write the validated raw partitions
+   (`project_health.storage.write_partition`), and only *then* advance the
+   watermark (ARCHITECTURE.md §4.3 — "the watermark is updated only after
+   that source's raw partitions are written successfully"). A source that
+   raises (after its own collector's internal retries are exhausted) is
+   marked `'failed'` in the run manifest, pointing at its
+   `last_good_snapshot` (the last run_id that source succeeded on,
+   ARCHITECTURE.md §7.3); the run continues rather than aborting.
+2. Identity resolution and metric computation always run over the **entire**
+   accumulated raw cache — every partition ever written for every source,
+   not just what this run collected (D3: "never incremental"). This is what
+   makes a failed source's stale-but-still-used raw data, and a
+   successful-but-empty collection, both produce the same metric output as
+   if nothing had changed.
+3. `snapshots/<run_id>/metrics.parquet` and `manifests/<run_id>.json` are
+   written (`project_health.provenance.build_manifest`); the manifest is the
+   run's primary observability artifact (ARCHITECTURE.md §11).
+4. If metric computation itself raises (a bug, not a source outage), the run
+   exits non-zero and the site is **not** (re)generated — ARCHITECTURE.md
+   §7.3's "if metric computation fails ... the site is not redeployed". A
+   source failing to *collect* is not this: metrics still compute from
+   whatever raw data already exists, and the run's exit code stays 0.
+
+## Read-time dedupe (document per issue #9)
+
+Raw data is append-only (D3) and JIRA's watermark carries a deliberate
+overlap margin (`collectors/jira.py`'s `WATERMARK_SAFETY_MARGIN` — JQL's
+minute-granularity `updated >=` filter can't express an exact boundary), so
+consecutive runs' raw `issue`/`review_event` partitions can (and routinely
+will) both contain a row for the same issue / same (issue, reviewer) pair.
+Rather than trying to collect exactly-once (impossible given the JQL
+precision limit), this module dedupes at *read* time, before identity
+resolution or metrics ever see the rows — the raw partitions themselves are
+never rewritten or deleted:
+
+- `issue` rows are deduped on `issue_key`, keeping the row with the latest
+  `updated_at` (a re-fetched issue's later snapshot is always at least as
+  current as an earlier one).
+- `review_event` rows sourced from JIRA (`source == 'jira_field'`) are
+  deduped on `(issue_key, reviewer_raw_value)`, keeping the latest
+  `occurred_at`. This can't reuse `event_id` as a natural key the way the
+  `issue` table's `issue_key` works: `collectors/jira.py` mints a fresh
+  `uuid4()` `event_id` on every fetch, so the same reviewer credit gets a
+  different `event_id` each time its issue is re-fetched.
+- `review_event` rows sourced from a git commit trailer (`source ==
+  'commit_trailer'`) are **not** deduped this way: `collectors/git.py`'s
+  watermark is an exact, exclusive commit-SHA range, so the same commit is
+  never re-collected, and that source's `event_id` is a deterministic
+  function of `(repo, sha, reviewer, issue_key)` — a real duplicate there
+  would indicate a bug, not an expected overlap, and this module doesn't
+  paper over that by deduping it away.
+"""
+
+from __future__ import annotations
+
+import json
+import subprocess
+import sys
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+import pyarrow as pa
+import pyarrow.parquet as pq
+
+from project_health import storage
+from project_health.collectors.git import GitCollector, clone_or_fetch, github_clone_url
+from project_health.collectors.jira import JiraCollector
+from project_health.config import ProjectConfig
+from project_health.metrics import compute_all
+from project_health.normalize.identity import (
+    extract_raw_identifiers,
+    load_overrides,
+    resolve_identities,
+)
+from project_health.provenance import (
+    build_manifest,
+    read_last_good_snapshot,
+    record_last_good_snapshot,
+)
+from project_health.site.generate import generate as generate_site
+from project_health.site.manifest import manifest_path
+
+ALL_SOURCES: tuple[str, ...] = ("git", "jira")
+
+
+def _log(event: str, **fields: Any) -> None:
+    """One JSON-lines structured log record to stdout (ARCHITECTURE.md §11)."""
+    record = {"timestamp": datetime.now(timezone.utc).isoformat(), "event": event, **fields}
+    print(json.dumps(record, default=str), file=sys.stdout, flush=True)
+
+
+def get_pipeline_code_sha() -> str:
+    """The pipeline's own `main`-branch commit SHA (ARCHITECTURE.md §5).
+
+    Prefers `GITHUB_SHA` (set by GitHub Actions) so a workflow run stamps
+    the SHA the runner actually checked out; falls back to `git rev-parse
+    HEAD` against this package's own repo checkout for local runs. Returns
+    `"unknown"` if neither is available (e.g. an installed, non-editable,
+    non-git checkout) rather than raising — a missing code SHA shouldn't be
+    able to crash an otherwise-successful run.
+    """
+    import os
+
+    env_sha = os.environ.get("GITHUB_SHA")
+    if env_sha:
+        return env_sha
+
+    repo_root = Path(__file__).resolve().parents[2]
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo_root), "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return "unknown"
+    return result.stdout.strip()
+
+
+def make_run_id(started_at: datetime, code_sha: str) -> str:
+    """`YYYY-MM-DDTHHMMSSZ-<shortsha>` (UTC), per issue #9's run_id format."""
+    utc = started_at.astimezone(timezone.utc)
+    return f"{utc.strftime('%Y-%m-%dT%H%M%SZ')}-{code_sha[:7]}"
+
+
+class MetricsComputationError(RuntimeError):
+    """Raised (internally) when metric computation fails.
+
+    Not surfaced to callers of `run_pipeline` — it's caught there so the
+    run's manifest and exit code can reflect ARCHITECTURE.md §7.3's "the
+    deploy step is gated on that job's success" without an uncaught
+    traceback replacing the manifest write.
+    """
+
+
+@dataclass(frozen=True)
+class RunResult:
+    """Return value of `run_pipeline`."""
+
+    run_id: str
+    manifest_path: Path
+    manifest: dict[str, Any]
+    exit_code: int
+
+
+# --- Read-time dedupe (see module docstring) ---------------------------
+
+
+def _dedupe_issue_rows(table: pa.Table) -> pa.Table:
+    """Keep the latest `updated_at` row per `issue_key`."""
+    if table.num_rows == 0:
+        return table
+    best: dict[str, dict[str, Any]] = {}
+    for row in table.to_pylist():
+        key = row["issue_key"]
+        current = best.get(key)
+        if current is None or row["updated_at"] > current["updated_at"]:
+            best[key] = row
+    kept = sorted(best.values(), key=lambda r: r["issue_key"])
+    return pa.Table.from_pylist(kept, schema=table.schema)
+
+
+def _dedupe_jira_review_events(table: pa.Table) -> pa.Table:
+    """Keep the latest `occurred_at` row per `(issue_key, reviewer_raw_value)`.
+
+    Only meaningful for `source == 'jira_field'` rows (see module
+    docstring); this function is only ever called on the `raw/jira/
+    review_event` table, which contains nothing else.
+    """
+    if table.num_rows == 0:
+        return table
+    best: dict[tuple[str | None, str], dict[str, Any]] = {}
+    for row in table.to_pylist():
+        key = (row["issue_key"], row["reviewer_raw_value"])
+        current = best.get(key)
+        if current is None or row["occurred_at"] > current["occurred_at"]:
+            best[key] = row
+    kept = sorted(
+        best.values(), key=lambda r: (r["issue_key"] or "", r["reviewer_raw_value"], r["event_id"])
+    )
+    return pa.Table.from_pylist(kept, schema=table.schema)
+
+
+# --- Per-source collection -----------------------------------------------
+
+
+def _collect_git(
+    config: ProjectConfig,
+    data_dir: Path,
+    workdir: Path,
+    run_id: str,
+    started_at: datetime,
+) -> dict[str, Any]:
+    if not config.repos:
+        return {
+            "status": "failed",
+            "watermark": None,
+            "records_collected": 0,
+            "last_good_snapshot": read_last_good_snapshot(data_dir, "git"),
+            "reason": "no repos configured under projects/<id>.yaml `repos:`",
+        }
+
+    repo_cfg = config.repos[0]
+    repo_label = f"{repo_cfg.owner}/{repo_cfg.name}"
+    watermark = storage.read_watermark(data_dir, "git")
+    snapshot_id = f"{run_id}:git"
+
+    _log("source_collect_started", source="git", repo=repo_label, watermark=watermark)
+    try:
+        clone_or_fetch(github_clone_url(repo_cfg.owner, repo_cfg.name), workdir)
+        result = GitCollector().collect(
+            repo_path=workdir,
+            repo_label=repo_label,
+            default_branch=repo_cfg.default_branch,
+            watermark=watermark,
+            bot_patterns=config.bot_patterns,
+            source_snapshot_id=snapshot_id,
+        )
+        partition_date = started_at.date()
+        storage.write_partition(
+            data_dir, "git", "contribution_event", partition_date, run_id, result.contribution_event
+        )
+        storage.write_partition(
+            data_dir, "git", "review_event", partition_date, run_id, result.review_event
+        )
+        storage.write_watermark(data_dir, "git", result.next_watermark)
+        record_last_good_snapshot(data_dir, "git", run_id)
+        _log(
+            "source_collect_succeeded",
+            source="git",
+            records_collected=result.commits_collected,
+            bot_commits_excluded=result.bot_commits_excluded,
+            placeholder_reviewer_commits=result.placeholder_reviewer_commits,
+            next_watermark=result.next_watermark,
+        )
+        return {
+            "status": "ok",
+            "watermark": f"sha:{result.next_watermark}",
+            "records_collected": result.commits_collected,
+            # Data-quality signal (issue #18): commits whose trailer named
+            # only a placeholder reviewer (`TBD`, `none`, `n/a`, ...) -- those
+            # commits emit no review_event row, but the count itself is worth
+            # surfacing in the manifest rather than silently dropped.
+            "placeholder_reviewer_commits": result.placeholder_reviewer_commits,
+        }
+    except Exception as exc:  # noqa: BLE001 - a source outage must never abort the run (§7.3)
+        _log("source_collect_failed", source="git", error=str(exc))
+        return {
+            "status": "failed",
+            "watermark": watermark,
+            "records_collected": 0,
+            "last_good_snapshot": read_last_good_snapshot(data_dir, "git"),
+            "reason": str(exc),
+        }
+
+
+def _collect_jira(
+    config: ProjectConfig,
+    data_dir: Path,
+    run_id: str,
+    started_at: datetime,
+    max_issues: int | None,
+    collector_factory: Callable[[ProjectConfig], JiraCollector] | None,
+) -> dict[str, Any]:
+    watermark = storage.read_watermark(data_dir, "jira")
+    snapshot_id = f"{run_id}:jira"
+
+    _log("source_collect_started", source="jira", watermark=watermark)
+    collector = (collector_factory or JiraCollector)(config)
+    try:
+        result = collector.collect(
+            watermark=watermark, snapshot_id=snapshot_id, max_issues=max_issues
+        )
+        partition_date = started_at.date()
+        storage.write_partition(data_dir, "jira", "issue", partition_date, run_id, result.issues)
+        storage.write_partition(
+            data_dir, "jira", "review_event", partition_date, run_id, result.review_events
+        )
+        if result.next_watermark:
+            storage.write_watermark(data_dir, "jira", result.next_watermark)
+        record_last_good_snapshot(data_dir, "jira", run_id)
+        _log(
+            "source_collect_succeeded",
+            source="jira",
+            records_collected=result.issue_count,
+            review_event_count=result.review_event_count,
+            next_watermark=result.next_watermark,
+        )
+        return {
+            "status": "ok",
+            "watermark": result.next_watermark,
+            "records_collected": result.issue_count,
+        }
+    except Exception as exc:  # noqa: BLE001 - a source outage must never abort the run (§7.3)
+        _log("source_collect_failed", source="jira", error=str(exc))
+        return {
+            "status": "failed",
+            "watermark": watermark,
+            "records_collected": 0,
+            "last_good_snapshot": read_last_good_snapshot(data_dir, "jira"),
+            "reason": str(exc),
+        }
+    finally:
+        collector.close()
+
+
+def _write_metrics_snapshot(data_dir: Path, run_id: str, metrics_table: pa.Table) -> Path:
+    snapshot_dir = Path(data_dir) / "snapshots" / run_id
+    snapshot_dir.mkdir(parents=True, exist_ok=True)
+    path = snapshot_dir / "metrics.parquet"
+    pq.write_table(metrics_table, path)
+    return path
+
+
+# --- Orchestration ----------------------------------------------------------
+
+
+def run_pipeline(
+    *,
+    config: ProjectConfig,
+    data_dir: str | Path,
+    workdir: str | Path,
+    sources: Sequence[str] | None = None,
+    site_out: str | Path | None = None,
+    max_jira_issues: int | None = None,
+    now: datetime | None = None,
+    code_sha: str | None = None,
+    identity_overrides_path: str | Path | None = None,
+    trigger: str = "manual",
+    jira_collector_factory: Callable[[ProjectConfig], JiraCollector] | None = None,
+) -> RunResult:
+    """Run one collect -> identity -> metrics -> manifest (-> site) pass.
+
+    `now` and `code_sha` are injectable (not defaulted to wall-clock/`git
+    rev-parse` internally) so tests can make a run fully deterministic;
+    production callers (the CLI) leave both `None`.
+
+    `jira_collector_factory`, given, replaces the default
+    `JiraCollector(config)` construction — this is how tests inject a
+    `JiraCollector` wired to an offline `httpx.MockTransport` (and a
+    sleep-free retry loop) without `run_pipeline` needing to know about
+    every one of `JiraCollector`'s tuning knobs.
+    """
+    data_dir = Path(data_dir)
+    workdir = Path(workdir)
+
+    active_sources = list(sources) if sources else list(ALL_SOURCES)
+    unknown = set(active_sources) - set(ALL_SOURCES)
+    if unknown:
+        raise ValueError(f"unknown source(s) {sorted(unknown)}; expected one of {ALL_SOURCES}")
+
+    started_at = now if now is not None else datetime.now(timezone.utc)
+    if started_at.tzinfo is None:
+        started_at = started_at.replace(tzinfo=timezone.utc)
+    resolved_code_sha = code_sha or get_pipeline_code_sha()
+    run_id = make_run_id(started_at, resolved_code_sha)
+
+    _log(
+        "run_started",
+        run_id=run_id,
+        sources=active_sources,
+        pipeline_code_sha=resolved_code_sha,
+    )
+
+    source_results: dict[str, dict[str, Any]] = {}
+    if "git" in active_sources:
+        source_results["git"] = _collect_git(config, data_dir, workdir, run_id, started_at)
+    if "jira" in active_sources:
+        source_results["jira"] = _collect_jira(
+            config, data_dir, run_id, started_at, max_jira_issues, jira_collector_factory
+        )
+
+    # D3: identity resolution and metrics always recompute from the ENTIRE
+    # accumulated raw cache, regardless of which sources were active (or
+    # failed) this run — a failed source's previous raw data is still used
+    # (§7.3), and a source that wasn't asked to run this time still
+    # contributes its prior history.
+    contribution_event = storage.read_table(data_dir, "git", "contribution_event")
+    git_review_event = storage.read_table(data_dir, "git", "review_event")
+    jira_review_event = _dedupe_jira_review_events(
+        storage.read_table(data_dir, "jira", "review_event")
+    )
+    review_event = pa.concat_tables([git_review_event, jira_review_event])
+    issue = _dedupe_issue_rows(storage.read_table(data_dir, "jira", "issue"))
+
+    overrides = []
+    if identity_overrides_path is not None and Path(identity_overrides_path).is_file():
+        overrides = load_overrides(identity_overrides_path)
+
+    raw_identifiers = extract_raw_identifiers(
+        contribution_events=contribution_event,
+        review_events=review_event,
+        issues=issue,
+    )
+    resolution = resolve_identities(raw_identifiers, overrides, now=started_at)
+
+    metrics_table: pa.Table | None = None
+    metrics_error: str | None = None
+    try:
+        metrics_table = compute_all(
+            {
+                "contribution_event": contribution_event,
+                "review_event": review_event,
+                "issue": issue,
+                "identity_link": resolution.identity_link,
+            },
+            as_of=started_at.date(),
+            run_id=run_id,
+            computed_at=started_at,
+            config=config,
+        )
+    except Exception as exc:  # noqa: BLE001 - deliberately broad: any metrics
+        # failure must exit non-zero and skip the site (§7.3), never
+        # partially publish.
+        metrics_error = f"{type(exc).__name__}: {exc}"
+        _log("metrics_computation_failed", error=metrics_error)
+
+    completed_at = datetime.now(timezone.utc)
+    metrics_computed: list[str] = []
+    exit_code = 0
+
+    if metrics_table is not None:
+        _write_metrics_snapshot(data_dir, run_id, metrics_table)
+        metrics_computed = sorted(
+            {
+                f"{row['metric_id']}@{row['definition_version']}"
+                for row in metrics_table.to_pylist()
+            }
+        )
+        _log("metrics_computed", run_id=run_id, metrics=metrics_computed)
+    else:
+        exit_code = 1
+
+    manifest = build_manifest(
+        run_id=run_id,
+        trigger=trigger,
+        started_at=started_at,
+        completed_at=completed_at,
+        pipeline_code_sha=resolved_code_sha,
+        sources=source_results,
+        metrics_computed=metrics_computed,
+        data_branch_commit=None,
+        site_deploy_status=None,
+        status="ok" if metrics_table is not None else "failed",
+        error=metrics_error,
+    )
+
+    out_path = manifest_path(data_dir, run_id)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+    _log("manifest_written", run_id=run_id, path=str(out_path))
+
+    # ARCHITECTURE.md §7.3: a metrics-stage failure means the site is never
+    # (re)generated — the previous good deployment stays live.
+    if metrics_table is not None and site_out is not None:
+        generate_site(data_dir, run_id, site_out, now=completed_at)
+        manifest["site_deploy_status"] = "ok"
+        out_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+        _log("site_generated", run_id=run_id, out_dir=str(site_out))
+
+    _log("run_completed", run_id=run_id, status=manifest["status"], exit_code=exit_code)
+
+    return RunResult(run_id=run_id, manifest_path=out_path, manifest=manifest, exit_code=exit_code)

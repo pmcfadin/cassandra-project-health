@@ -26,9 +26,10 @@ from __future__ import annotations
 import csv
 import io
 import json
+import math
 import shutil
 from dataclasses import dataclass
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -230,6 +231,62 @@ def _write_csv(path: Path, series: MetricSeries, manifest: RunManifest) -> None:
 
 # --- Vega-Lite chart spec ----------------------------------------------------
 
+# All six M0 metrics are monthly windows (METRICS.md §1); this is how many
+# days before the earliest data month's start / after the latest data
+# month's end the x-domain is padded (issue #16) — enough that a
+# single-point series (e.g. `stale_jira_rate` in M0) doesn't sit on the
+# plot's edge, and that the last point of a long series doesn't render
+# flush against the right edge where its mark would otherwise clip.
+_X_DOMAIN_PAD_DAYS = 15
+
+# Target roughly this many x-axis ticks regardless of how many months of
+# history a series has (issue #16: "sensible tick count").
+_TARGET_TICK_COUNT = 6
+
+
+def _month_tick_step(points: list[MetricPoint]) -> int:
+    """Month interval between x-axis ticks, so a long history doesn't
+    crowd the axis with one label per month."""
+    months = {(p.window_end.year, p.window_end.month) for p in points}
+    month_count = len(months) or 1
+    return max(1, math.ceil(month_count / _TARGET_TICK_COUNT))
+
+
+def _month_floor(d: date) -> date:
+    """The first day of `d`'s month."""
+    return date(d.year, d.month, 1)
+
+
+def _month_ceil_exclusive(d: date) -> date:
+    """The first day of the month *after* `d`'s month."""
+    if d.month == 12:
+        return date(d.year + 1, 1, 1)
+    return date(d.year, d.month + 1, 1)
+
+
+def _padded_month_domain(points: list[MetricPoint]) -> list[str] | None:
+    """A `[start, end]` ISO-date domain padded past the data's actual
+    month range, or `None` when there are no points to plot.
+
+    Anchored to calendar-month boundaries (not the raw point dates)
+    because the x-axis ticks (`_month_tick_step`, `timeUnit: yearmonth`)
+    land on month starts: padding by a fixed number of days around a
+    single point's raw date, instead of around its *month*, can push the
+    domain's start past that month's own boundary — leaving the only
+    visible tick on the *next* month, not the one the point is actually
+    in. A single point has a zero-width data range; without this padding,
+    Vega-Lite's default "nice" rounding falls back to hour-level ticks for
+    a zero-span temporal domain — this is the "05 PM" bug (issue #16) —
+    and the point renders exactly on the plot's edge.
+    """
+    if not points:
+        return None
+    dates = [p.window_end for p in points]
+    pad = timedelta(days=_X_DOMAIN_PAD_DAYS)
+    start = _month_floor(min(dates)) - pad
+    end = _month_ceil_exclusive(max(dates)) + pad
+    return [start.isoformat(), end.isoformat()]
+
 
 def _vega_lite_spec(series: MetricSeries) -> dict[str, Any]:
     """Build the chart's Vega-Lite spec.
@@ -244,16 +301,51 @@ def _vega_lite_spec(series: MetricSeries) -> dict[str, Any]:
         {"window_end": point.window_end.isoformat(), "value": point.value}
         for point in series.points
     ]
+
+    x_axis: dict[str, Any] = {
+        "format": "%b %Y",
+        "tickCount": {"interval": "month", "step": _month_tick_step(series.points)},
+    }
+    x_encoding: dict[str, Any] = {
+        "field": "window_end",
+        "type": "temporal",
+        "timeUnit": "yearmonth",
+        "title": None,
+        "axis": x_axis,
+    }
+    domain = _padded_month_domain(series.points)
+    if domain is not None:
+        # `nice: False` because the domain is already explicitly padded —
+        # letting Vega-Lite "nice"-round it further is what produces the
+        # zero-span/hour-tick bug above for a single point.
+        x_encoding["scale"] = {"domain": domain, "nice": False}
+
+    y_axis: dict[str, Any] = {"format": series.meta.axis_format}
+    if series.meta.axis_label_expr is not None:
+        y_axis["labelExpr"] = series.meta.axis_label_expr
+
     return {
         "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
         "width": "container",
         "height": 150,
+        # Vega-Lite's default autosize (`contains: "content"`) treats
+        # `width` as the plotting rectangle only, so the Y-axis tick
+        # labels' width is added *outside* it — the rendered SVG ends up
+        # wider than the container app.js measured, and that overhang is
+        # what let the line/points run past the plot's right edge (issue
+        # #16). `contains: "padding"` instead makes `width` the budget for
+        # the *whole* chart (axis labels included), so it never exceeds
+        # the container.
+        "autosize": {"type": "fit-x", "contains": "padding"},
         "background": None,
         "data": {"values": values},
-        "mark": {"type": "line", "point": True},
+        # `clip: True` keeps the line/point mark inside the plot area at
+        # any container width (issue #16) even if a future data point ever
+        # falls outside the padded domain above.
+        "mark": {"type": "line", "point": True, "clip": True},
         "encoding": {
-            "x": {"field": "window_end", "type": "temporal", "title": None},
-            "y": {"field": "value", "type": "quantitative", "title": None},
+            "x": x_encoding,
+            "y": {"field": "value", "type": "quantitative", "title": None, "axis": y_axis},
             "tooltip": [
                 {"field": "window_end", "type": "temporal", "title": "Month", "format": "%b %Y"},
                 {

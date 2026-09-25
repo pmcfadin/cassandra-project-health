@@ -29,6 +29,27 @@ _VEGA_FORMAT = {
     "days": ".1f",
 }
 
+# Y-axis tick label formats (issue #16 follow-up to #8: the axis showed a
+# bare 0-1 fraction, e.g. "0.4", for percent metrics instead of the same
+# unit the tooltip already uses). Distinct from `_VEGA_FORMAT` because axis
+# ticks favor terser labels than a tooltip can afford — percent rounds to a
+# whole number (`.0%` -> "40%") instead of the tooltip's one-decimal
+# precision.
+_AXIS_FORMAT = {
+    "count": ",.0f",
+    "ratio": ".3f",
+    "percent": ".0%",
+    "days": ".1f",
+}
+
+# A Vega-Lite axis `labelExpr` suffix appended after `_AXIS_FORMAT` renders
+# each tick, for value_kinds whose formatted number alone is ambiguous
+# without a unit (a bare "14.2" tick reads as nothing in particular, unlike
+# "40%" or "0.350", which are already self-describing).
+_AXIS_LABEL_SUFFIX = {
+    "days": " d",
+}
+
 
 @dataclass(frozen=True)
 class MetricMeta:
@@ -62,6 +83,25 @@ class MetricMeta:
     def vega_format(self) -> str:
         """d3-format specifier for this metric's value in a chart tooltip."""
         return _VEGA_FORMAT[self.value_kind]
+
+    @property
+    def axis_format(self) -> str:
+        """d3-format specifier for this metric's Y-axis tick labels.
+
+        Applied to the axis itself (issue #16), not just the tooltip, so a
+        percent metric's axis reads "40%" rather than "0.4".
+        """
+        return _AXIS_FORMAT[self.value_kind]
+
+    @property
+    def axis_label_expr(self) -> str | None:
+        """Vega-Lite axis `labelExpr` that appends a unit suffix to the
+        `axis_format`-formatted tick label (e.g. "14.2" -> "14.2 d"), or
+        `None` when `axis_format` alone is unambiguous."""
+        suffix = _AXIS_LABEL_SUFFIX.get(self.value_kind)
+        if suffix is None:
+            return None
+        return f"datum.label + {suffix!r}"
 
     @property
     def tooltip_title(self) -> str:

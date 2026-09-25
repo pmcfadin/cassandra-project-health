@@ -1,0 +1,37 @@
+# Manual identity-merge decisions (ARCHITECTURE.md §3, unresolved-identity rule).
+#
+# Two person_identity rows are never silently merged by the pipeline
+# (src/project_health/normalize/identity.py). Merging a provisional identity
+# into another requires a human-authored, PR-reviewed entry here — the same
+# review discipline as affiliations.yaml (D6). Each entry produces a *new*
+# identity_link row (linked_by='manual:<reviewer>') carrying the evidence
+# text below; it never rewrites or deletes an existing identity_link or
+# person_identity row (append-only, per ARCHITECTURE.md §3 / D2).
+#
+# Fields (all required):
+#   source_type / source_value     - the raw identifier being merged. Its own
+#                                     naively-resolved identity is left as-is;
+#                                     this only adds an additional link.
+#   into_source_type / into_source_value
+#                                   - the raw identifier whose (naively
+#                                     resolved) person_identity the identifier
+#                                     above should also resolve to.
+#   reviewer                       - GitHub username of the human who
+#                                     reviewed and approved this merge in the
+#                                     pull request that added this entry.
+#   evidence                       - human-readable justification (what, and
+#                                     how it was confirmed).
+#
+# Example (illustrative only — do not uncomment without a real, evidenced PR
+# review):
+#
+#   - source_type: git_name
+#     source_value: "Jane Doe"
+#     into_source_type: git_email
+#     into_source_value: "jane@x.org"
+#     reviewer: pmcfadin
+#     evidence: >
+#       Jane confirmed on CASSANDRA-12345 that the "Jane Doe" commit-trailer
+#       credit and jane@x.org are the same person.
+
+[]

@@ -42,7 +42,7 @@ from project_health.collectors.reviewer_trailer import (
     looks_like_reviewer_trailer,
 )
 from project_health.config import BotPattern
-from project_health.schema import get_schema, validate
+from project_health.schema import CODE_COMMIT, get_schema, validate
 
 # Field separator (unit separator) / record separator (record separator) —
 # control characters vanishingly unlikely to appear in real commit
@@ -229,7 +229,7 @@ class GitCollector:
                     "author_raw_type": "git_email",
                     "author_raw_value": author_email_lower,
                     "author_display_name": commit.author_name,
-                    "event_type": "code_commit",
+                    "event_type": CODE_COMMIT,
                     "occurred_at": commit.occurred_at,
                     "repo": repo_label,
                     "source_ref": commit.sha,

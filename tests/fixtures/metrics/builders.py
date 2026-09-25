@@ -19,15 +19,16 @@ from datetime import datetime
 import pyarrow as pa
 
 from project_health.normalize.identity import extract_raw_identifiers, resolve_identities
-from project_health.schema import get_schema, validate
+from project_health.schema import CODE_COMMIT, get_schema, validate
 
 
 def contribution_events(rows: list[dict]) -> pa.Table:
     """Build a `contribution_event` table.
 
     Required per row: `author_raw_type`, `author_raw_value`, `occurred_at`.
-    Optional: `author_display_name`, `event_type` (default `"commit"`),
-    `repo`, `source_ref`, `event_id`, `source_snapshot_id`.
+    Optional: `author_display_name`, `event_type` (default
+    `schema.CODE_COMMIT`, matching what `collectors/git.py` actually writes
+    -- issue #24), `repo`, `source_ref`, `event_id`, `source_snapshot_id`.
     """
     built = [
         {
@@ -36,7 +37,7 @@ def contribution_events(rows: list[dict]) -> pa.Table:
             "author_raw_type": row["author_raw_type"],
             "author_raw_value": row["author_raw_value"],
             "author_display_name": row.get("author_display_name"),
-            "event_type": row.get("event_type", "commit"),
+            "event_type": row.get("event_type", CODE_COMMIT),
             "occurred_at": row["occurred_at"],
             "repo": row.get("repo", "apache/cassandra"),
             "source_ref": row.get("source_ref", f"sha-{i}"),

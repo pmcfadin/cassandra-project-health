@@ -47,7 +47,7 @@ import pyarrow as pa
 
 from project_health.config import ProjectConfig
 from project_health.metrics.windows import add_months, month_end, month_start, trailing_12m_window
-from project_health.schema import get_schema, validate
+from project_health.schema import CODE_COMMIT, get_schema, validate
 
 DEFINITION_VERSION = "1.0"
 
@@ -258,10 +258,11 @@ def _active_contributors_monthly(
             ON ri.source_type = ce.author_raw_type AND ri.source_value = ce.author_raw_value
         LEFT JOIN bot_identifier bi
             ON bi.raw_type = ce.author_raw_type AND bi.raw_value = ce.author_raw_value
-        WHERE ce.event_type = 'commit' AND bi.raw_value IS NULL
+        WHERE ce.event_type = ? AND bi.raw_value IS NULL
         GROUP BY 1
         ORDER BY 1
-        """
+        """,
+        [CODE_COMMIT],
     ).fetchall()
     counts: dict[date, int] = dict(rows)
     if not counts:
@@ -298,14 +299,15 @@ def _new_contributors_monthly(
                 ON ri.source_type = ce.author_raw_type AND ri.source_value = ce.author_raw_value
             LEFT JOIN bot_identifier bi
                 ON bi.raw_type = ce.author_raw_type AND bi.raw_value = ce.author_raw_value
-            WHERE ce.event_type = 'commit' AND bi.raw_value IS NULL
+            WHERE ce.event_type = ? AND bi.raw_value IS NULL
             GROUP BY 1
         )
         SELECT date_trunc('month', first_at)::DATE AS month_start, COUNT(*) AS n
         FROM first_commit
         GROUP BY 1
         ORDER BY 1
-        """
+        """,
+        [CODE_COMMIT],
     ).fetchall()
     counts: dict[date, int] = dict(rows)
     if not counts:

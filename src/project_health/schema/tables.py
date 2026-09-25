@@ -68,7 +68,8 @@ CONTRIBUTION_EVENT = pa.schema(
         pa.field("author_raw_type", pa.string(), nullable=False),
         pa.field("author_raw_value", pa.string(), nullable=False),
         pa.field("author_display_name", pa.string(), nullable=True),
-        # event_type: e.g. 'commit' | 'pr_open' | 'pr_merge' | 'issue_open' | 'issue_resolve'
+        # event_type: one of `schema.event_types.CONTRIBUTION_EVENT_TYPES`
+        # ('code_commit' today; METRICS.md §0.3)
         pa.field("event_type", pa.string(), nullable=False),
         pa.field("occurred_at", TIMESTAMP_UTC, nullable=False),
         pa.field("repo", pa.string(), nullable=True),

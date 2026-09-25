@@ -47,21 +47,34 @@ def build_manifest(
     site_deploy_status: str | None,
     status: str,
     error: str | None = None,
+    metrics_missing: list[str] | None = None,
 ) -> dict[str, Any]:
     """Build the run-manifest dict (ARCHITECTURE.md §5).
 
-    `status` ('ok' | 'failed') and `error` are this pipeline's own top-level
-    run-outcome fields, additional to the illustrative §5 example — they're
-    what makes a metrics-stage failure (§7.3: "the site is not redeployed")
-    visible directly in the committed manifest, not only via the CLI's exit
-    code. `project_health.site.manifest.RunManifest` accepts (and ignores)
-    any field it doesn't model, so adding these never breaks that loader.
+    `status` ('ok' | 'degraded' | 'failed') and `error` are this pipeline's
+    own top-level run-outcome fields, additional to the illustrative §5
+    example — they're what makes a metrics-stage failure (§7.3: "the site is
+    not redeployed") visible directly in the committed manifest, not only via
+    the CLI's exit code. `project_health.site.manifest.RunManifest` accepts
+    (and ignores) any field it doesn't model, so adding these never breaks
+    that loader.
+
+    `metrics_missing` (issue #24) lists every *registered*
+    (`metrics.registry.METRIC_IDS`) metric that produced zero `metric_value`
+    rows this run -- e.g. a contract mismatch between a collector and the
+    engine silently zeroing a metric out, the failure mode issue #24 fixes.
+    A metric with data but below its sample floor is not "missing": it still
+    emits a `flag='insufficient_data'` row (METRICS.md §0.6) and is never
+    listed here. Callers pass `status='degraded'` whenever `metrics_missing`
+    is non-empty; this function doesn't compute `status` itself, only
+    defaults `metrics_missing` to `[]` and writes whatever `status` it's
+    given.
 
     Every M0 metric emits one row per window even when that window is below
     its sample floor (`flag='insufficient_data'`, METRICS.md §0.6) — a
-    metric is never entirely skipped, so `metrics_skipped_insufficient_data`
-    is always `[]` here; it's still written for schema parity with §5's
-    example shape.
+    metric is never entirely skipped for that reason, so
+    `metrics_skipped_insufficient_data` is always `[]` here; it's still
+    written for schema parity with §5's example shape.
     """
     manifest: dict[str, Any] = {
         "run_id": run_id,
@@ -72,6 +85,7 @@ def build_manifest(
         "sources": sources,
         "metrics_computed": metrics_computed,
         "metrics_skipped_insufficient_data": [],
+        "metrics_missing": list(metrics_missing) if metrics_missing else [],
         "data_branch_commit": data_branch_commit,
         "site_deploy_status": site_deploy_status,
         "status": status,

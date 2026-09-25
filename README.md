@@ -35,7 +35,7 @@ project-health run \
 The command completes in ~2 minutes on first run (full git and JIRA crawl). Output includes collected metrics, run manifest, and status.
 
 **Exit codes:**
-- Exit 0: `status: ok` (all sources succeeded, all registered metrics produced data)
+- Exit 0: `status: ok` (all registered metrics produced data). A failed source does not change this: it is marked `failed` in the manifest, its last good data is reused, and the site shows a staleness badge for it.
 - Exit 1: `status: degraded` (a registered metric produced no rows) or `status: failed` (metrics computation error)
 
 ## Data

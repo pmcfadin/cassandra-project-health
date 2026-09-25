@@ -141,6 +141,21 @@ def _build_site(tmp_path: Path, rows: list[dict] | None = None, **manifest_kwarg
     return out_dir
 
 
+def _extract_vega_spec(html_text: str, aria_label: str) -> dict:
+    """Pull one card's embedded Vega-Lite spec out of the rendered HTML.
+
+    Mirrors what `app.js` does with `el.getAttribute("data-vega-spec")` —
+    Jinja's autoescape turns `"` into `&#34;` inside the single-quoted
+    attribute, which a browser decodes on `getAttribute` but a raw string
+    search doesn't, so this decodes it the same way before parsing JSON.
+    """
+    idx = html_text.index(f'aria-label="{aria_label}"')
+    card_start = html_text.rfind('<div class="chart"', 0, idx)
+    spec_start = html_text.index("data-vega-spec='", card_start) + len("data-vega-spec='")
+    spec_end = html_text.index("'", spec_start)
+    return json.loads(html_module.unescape(html_text[spec_start:spec_end]))
+
+
 # --- File layout + JSON/CSV content -----------------------------------------
 
 
@@ -368,6 +383,88 @@ def test_chart_tooltip_uses_metric_specific_format_and_title(tmp_path):
     value_tooltip = spec["encoding"]["tooltip"][1]
     assert value_tooltip["format"] == ".3f"
     assert value_tooltip["title"] == "Reviewer Concentration (HHI) (0-1)"
+
+
+# --- Chart axis: month granularity, axis format, no edge clipping (#16) -----
+
+
+def test_single_point_series_uses_month_axis_with_padded_domain(tmp_path):
+    """A single-point series (`stale_jira_rate` in M0) must render a
+    month-level x axis, not the "05 PM" hour-level ticks a zero-span
+    temporal domain falls back to by default, and the lone point must not
+    sit exactly on the domain's edge.
+    """
+    metric_id = "stale_jira_rate"
+    rows = [_metric_value_row(metric_id, date(2026, 5, 1), date(2026, 5, 31), 0.1, 20, "ok")]
+    for other_id in M0_METRICS:
+        if other_id == metric_id:
+            continue
+        rows.append(_metric_value_row(other_id, date(2026, 5, 1), date(2026, 5, 31), 1.0, 6, "ok"))
+
+    out_dir = _build_site(tmp_path, rows=rows)
+    html_text = (out_dir / "index.html").read_text()
+    spec = _extract_vega_spec(html_text, "History chart for Stale JIRA Issue Rate")
+
+    x_enc = spec["encoding"]["x"]
+    assert x_enc["timeUnit"] == "yearmonth"
+    assert x_enc["axis"]["format"] == "%b %Y"
+
+    point_date = date(2026, 5, 31).isoformat()
+    domain_start, domain_end = x_enc["scale"]["domain"]
+    # Strictly inside the domain, not flush against either edge.
+    assert domain_start < point_date < domain_end
+
+
+def test_multi_point_series_domain_extends_past_last_point(tmp_path):
+    """The x-domain must extend past the last plotted point so its mark
+    doesn't render flush against the plot's right edge (issue #16: "Line/
+    points extend past the plot's right edge").
+    """
+    out_dir = _build_site(tmp_path)  # _default_rows(): points through 2026-09-24
+    html_text = (out_dir / "index.html").read_text()
+    spec = _extract_vega_spec(html_text, "History chart for Reviewer Concentration (HHI)")
+
+    x_enc = spec["encoding"]["x"]
+    first_point_date = date(2026, 7, 31).isoformat()  # _default_rows()'s first window_end
+    last_point_date = date(2026, 9, 24).isoformat()  # _default_rows()'s last window_end
+    domain_start, domain_end = x_enc["scale"]["domain"]
+    assert domain_start < first_point_date
+    assert domain_end > last_point_date
+
+    # The mark is clipped to the plot area too, as a second line of
+    # defense against any point that ever does fall outside the domain.
+    assert spec["mark"]["clip"] is True
+
+
+def test_y_axis_format_matches_metric_value_kind(tmp_path):
+    """Each metric's Y axis must use its own d3 format, the same units the
+    tooltip already shows (issue #16: a percent metric's axis showed a
+    bare 0-1 fraction, e.g. "0.4", instead of "40%").
+    """
+    out_dir = _build_site(tmp_path)
+    html_text = (out_dir / "index.html").read_text()
+
+    def y_axis(aria_label: str) -> dict:
+        return _extract_vega_spec(html_text, aria_label)["encoding"]["y"]["axis"]
+
+    assert y_axis("History chart for Stale JIRA Issue Rate")["format"] == ".0%"
+    assert y_axis("History chart for Reviewer Concentration (HHI)")["format"] == ".3f"
+    assert y_axis("History chart for Active Contributors")["format"] == ",.0f"
+
+    days_axis = y_axis("History chart for Median JIRA Resolution Latency")
+    assert days_axis["format"] == ".1f"
+    assert days_axis["labelExpr"] == "datum.label + ' d'"
+
+
+def test_metric_meta_axis_format_and_label_expr_by_kind():
+    assert M0_METRICS["active_contributors_monthly"].axis_format == ",.0f"
+    assert M0_METRICS["reviewer_hhi"].axis_format == ".3f"
+    assert M0_METRICS["stale_jira_rate"].axis_format == ".0%"
+    assert M0_METRICS["median_resolution_latency_jira"].axis_format == ".1f"
+
+    assert M0_METRICS["active_contributors_monthly"].axis_label_expr is None
+    assert M0_METRICS["stale_jira_rate"].axis_label_expr is None
+    assert M0_METRICS["median_resolution_latency_jira"].axis_label_expr == "datum.label + ' d'"
 
 
 # --- Chart sizing (fixup cycle 1: charts rendered at width=0) ---------------

@@ -1,0 +1,88 @@
+{
+  "completed_at": "2026-09-26T04:12:01.156506+00:00",
+  "data_branch_commit": null,
+  "governance": {
+    "check_runs": {
+      "calls_made": 22,
+      "checked": 22,
+      "pending": 0,
+      "skipped_outside_retention": 18309,
+      "skipped_resolved": 399,
+      "skipped_too_old": 144
+    },
+    "ci_evidence": {
+      "calls_made": 300,
+      "checked": 300,
+      "pending": 1997,
+      "skipped_up_to_date": 599
+    },
+    "commits_scored": 32376,
+    "compliance_rows": 129504,
+    "git_records_collected": 0,
+    "policy_version": 1,
+    "status": "partial"
+  },
+  "metrics_computed": [
+    "active_contributors_monthly@1.1",
+    "contributor_absence_factor@1.0",
+    "contributor_hhi@1.0",
+    "median_resolution_latency_jira@1.0",
+    "new_contributors_monthly@1.1",
+    "pmc_joins_quarterly@1.0",
+    "reviewer_hhi@1.0",
+    "stale_jira_rate@1.0",
+    "truck_factor@1.0",
+    "unique_reviewers_monthly@1.1"
+  ],
+  "metrics_missing": [],
+  "metrics_skipped_insufficient_data": [],
+  "pipeline_code_sha": "f1b101bf08279a184c86d70dd10e066b2b2768b9",
+  "run_id": "2026-09-26T040758Z-f1b101b",
+  "site_deploy_status": "ok",
+  "sources": {
+    "asf_roster": {
+      "records_collected": 101,
+      "status": "ok"
+    },
+    "git": {
+      "file_changes_collected": 0,
+      "placeholder_reviewer_commits": 0,
+      "records_collected": 0,
+      "status": "ok",
+      "watermark": "sha:17137ce34bd2fa89bc296e2d61d59eac9957b787"
+    },
+    "jira": {
+      "records_collected": 1,
+      "status": "ok",
+      "watermark": "2026-09-25T23:46:35+00:00"
+    },
+    "ponymail": {
+      "backfill": {
+        "dev": {
+          "months_remaining": 107
+        },
+        "user": {
+          "months_remaining": 105
+        }
+      },
+      "partial": true,
+      "records_collected": 18518,
+      "skipped_count": 12,
+      "status": "ok",
+      "thread_count": 4452,
+      "watermark": {
+        "dev": "2017-09",
+        "user": "2017-11"
+      }
+    },
+    "security": {
+      "advisories_collected": 16,
+      "records_collected": 30,
+      "scorecard_checks_collected": 14,
+      "status": "ok"
+    }
+  },
+  "started_at": "2026-09-26T04:07:58.231590+00:00",
+  "status": "ok",
+  "trigger": "workflow_dispatch"
+}

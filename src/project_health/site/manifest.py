@@ -40,6 +40,46 @@ class SourceStatus(BaseModel):
     reason: str | None = None
 
 
+class GovernanceEvidenceStats(BaseModel):
+    """One evidence collector's per-run backfill stats
+    (`pipeline._collect_governance_ci_evidence` / `_collect_governance_check_runs`),
+    as written into manifest `governance.ci_evidence` / `governance.check_runs`.
+    `pending` (issue #37, D14/D15) is how the Governance page shows the
+    backfill honestly instead of pretending every commit's evidence is
+    already in."""
+
+    model_config = ConfigDict(extra="allow")
+
+    checked: int | None = None
+    pending: int | None = None
+    calls_made: int | None = None
+
+
+class GovernanceStatus(BaseModel):
+    """`manifest["governance"]` (`pipeline._collect_governance`, issue #36) —
+    the Governance page's honest backfill-state banner (issue #37, D14/D15:
+    "each commit is judged against the policy in force on its commit date"
+    is only as trustworthy as the evidence actually collected so far).
+
+    `status` is `'ok'` only once every eligible JIRA issue / GitHub sha was
+    checked this run; `'partial'` means a real backlog remains (`ci_evidence.
+    pending` / `check_runs.pending` say how much); `'failed'` means the whole
+    governance step errored (compliance results may be stale or missing);
+    `None` means this manifest predates issue #36 or the source wasn't
+    configured at all.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    # status: 'ok' | 'partial' | 'failed' | 'skipped'
+    status: str | None = None
+    commits_scored: int | None = None
+    compliance_rows: int | None = None
+    policy_version: int | None = None
+    ci_evidence: GovernanceEvidenceStats | None = None
+    check_runs: GovernanceEvidenceStats | None = None
+
+
 class RunManifest(BaseModel):
     """The subset of `manifests/<run_id>.json` the site generator reads."""
 
@@ -49,6 +89,7 @@ class RunManifest(BaseModel):
     completed_at: datetime | None = None
     pipeline_code_sha: str
     sources: dict[str, SourceStatus] = {}
+    governance: GovernanceStatus | None = None
 
 
 def manifest_path(data_dir: str | Path, run_id: str) -> Path:

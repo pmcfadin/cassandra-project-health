@@ -111,6 +111,7 @@ def _write_manifest(
     completed_at: datetime | None,
     code_sha: str = CODE_SHA,
     sources: dict | None = None,
+    governance: dict | None = None,
 ) -> None:
     manifest = {
         "run_id": run_id,
@@ -129,6 +130,8 @@ def _write_manifest(
         "data_branch_commit": "d4e5f6",
         "site_deploy_status": "ok",
     }
+    if governance is not None:
+        manifest["governance"] = governance
     manifests_dir = data_dir / "manifests"
     manifests_dir.mkdir(parents=True, exist_ok=True)
     (manifests_dir / f"{run_id}.json").write_text(json.dumps(manifest))
@@ -142,6 +145,190 @@ def _build_site(tmp_path: Path, rows: list[dict] | None = None, **manifest_kwarg
     _write_manifest(data_dir, RUN_ID, **manifest_kwargs)
     generate(data_dir, RUN_ID, out_dir, now=BUILD_TIME)
     return out_dir
+
+
+# --- Governance per-commit compliance fixtures (issue #37, D14/D15) --------
+
+
+def _commit_compliance_row(**overrides) -> dict:
+    row = {
+        "sha": "1111111111111111111111111111111111aaaa",
+        "branch": "trunk",
+        "commit_date": datetime(2026, 8, 10, 12, 0, tzinfo=UTC),
+        "author": "Jane Author",
+        "committer": "Jane Author",
+        "is_merge": False,
+        "reviewers": [],
+        "jira_keys": ["CASSANDRA-90001"],
+        "policy_version": 1,
+        "check_id": "reviewer-present",
+        "result": "fail",
+        "evidence": (
+            "CASSANDRA-N key referenced; no reviewer found in commit trailer or JIRA "
+            "reviewer field(s); no exemption matched; no review wording present"
+        ),
+        "evidence_url": None,
+    }
+    row.update(overrides)
+    return row
+
+
+def _commit_fact_row(**overrides) -> dict:
+    row = {
+        "sha": "1111111111111111111111111111111111aaaa",
+        "branch": "trunk",
+        "commit_date": datetime(2026, 8, 10, 12, 0, tzinfo=UTC),
+        "changes_txt_touched": True,
+        "news_txt_touched": False,
+        "test_touched": True,
+    }
+    row.update(overrides)
+    return row
+
+
+def _governance_metric_row(
+    check_id: str, window_start: date, window_end: date, counts: dict
+) -> dict:
+    from project_health.governance.metrics import metric_id_for_check
+
+    scored = counts.get("pass", 0) + counts.get("fail", 0) + counts.get("unknown", 0)
+    total = scored + counts.get("exempt", 0) + counts.get("not_in_force", 0)
+    return {
+        "metric_id": metric_id_for_check(check_id),
+        "definition_version": "1.0",
+        "window_start": window_start,
+        "window_end": window_end,
+        "value": (counts.get("pass", 0) / scored) if scored else None,
+        "n": scored,
+        "flag": "ok" if scored else "insufficient_data",
+        "run_id": RUN_ID,
+        "computed_at": datetime(2026, 9, 25, 6, 30, tzinfo=UTC),
+        "details_json": json.dumps(
+            {
+                "check_id": check_id,
+                "pass": counts.get("pass", 0),
+                "fail": counts.get("fail", 0),
+                "unknown": counts.get("unknown", 0),
+                "exempt": counts.get("exempt", 0),
+                "not_in_force": counts.get("not_in_force", 0),
+                "total_including_exempt_and_not_in_force": total,
+            }
+        ),
+    }
+
+
+def _write_governance_snapshot(
+    data_dir: Path,
+    run_id: str,
+    *,
+    compliance_rows: list[dict] | None = None,
+    fact_rows: list[dict] | None = None,
+    metric_rows: list[dict] | None = None,
+) -> None:
+    snapshot_dir = data_dir / "snapshots" / run_id
+    snapshot_dir.mkdir(parents=True, exist_ok=True)
+    if compliance_rows is not None:
+        table = validate(
+            "commit_compliance",
+            pa.Table.from_pylist(compliance_rows, schema=get_schema("commit_compliance")),
+        )
+        pq.write_table(table, snapshot_dir / "governance_commit_compliance.parquet")
+    if fact_rows is not None:
+        table = validate(
+            "commit_fact", pa.Table.from_pylist(fact_rows, schema=get_schema("commit_fact"))
+        )
+        pq.write_table(table, snapshot_dir / "governance_commit_fact.parquet")
+    if metric_rows is not None:
+        table = _metric_value_table(metric_rows)
+        pq.write_table(table, snapshot_dir / "governance_metric_value.parquet")
+
+
+def _default_governance_compliance_rows() -> list[dict]:
+    """Two commits covering fail/pass/unknown/exempt/n-a (D15's every
+    result state, plus a check simply absent from one commit)."""
+    return [
+        _commit_compliance_row(
+            check_id="reviewer-present",
+            result="fail",
+        ),
+        _commit_compliance_row(
+            check_id="jira-ticket-referenced",
+            result="pass",
+            evidence="issue key(s) found: CASSANDRA-90001",
+        ),
+        _commit_compliance_row(
+            check_id="pre-commit-ci-evidence",
+            result="unknown",
+            evidence="no JIRA-comment CI evidence found on CASSANDRA-90001",
+        ),
+        _commit_compliance_row(
+            check_id="code-style-checkstyle",
+            result="pass",
+            evidence="check-run(s) ant-check-jdk11 all succeeded",
+            evidence_url="https://github.com/apache/cassandra/runs/1",
+        ),
+        _commit_compliance_row(
+            sha="2222222222222222222222222222222222bbbb",
+            commit_date=datetime(2026, 8, 12, 9, 0, tzinfo=UTC),
+            author="Ninja Author",
+            committer="Ninja Author",
+            reviewers=[],
+            jira_keys=[],
+            check_id="reviewer-present",
+            result="exempt",
+            evidence="matched exemption: ninja",
+        ),
+        _commit_compliance_row(
+            sha="2222222222222222222222222222222222bbbb",
+            commit_date=datetime(2026, 8, 12, 9, 0, tzinfo=UTC),
+            author="Ninja Author",
+            committer="Ninja Author",
+            reviewers=[],
+            jira_keys=[],
+            check_id="jira-ticket-referenced",
+            result="exempt",
+            evidence="matched exemption: ninja",
+        ),
+    ]
+
+
+def _default_governance_metric_rows() -> list[dict]:
+    counts = {"pass": 5, "fail": 1, "unknown": 2, "exempt": 1, "not_in_force": 0}
+    return [
+        _governance_metric_row(check_id, date(2026, 7, 1), date(2026, 7, 31), counts)
+        for check_id in (
+            "reviewer-present",
+            "jira-ticket-referenced",
+            "pre-commit-ci-evidence",
+            "code-style-checkstyle",
+        )
+    ]
+
+
+def _build_site_with_governance(
+    tmp_path: Path,
+    *,
+    compliance_rows: list[dict] | None = None,
+    fact_rows: list[dict] | None = None,
+    metric_rows: list[dict] | None = None,
+    **manifest_kwargs,
+) -> Path:
+    data_dir = tmp_path / "data"
+    out_dir = tmp_path / "out"
+    _write_snapshot(data_dir, RUN_ID, _default_rows())
+    _write_governance_snapshot(
+        data_dir,
+        RUN_ID,
+        compliance_rows=(
+            _default_governance_compliance_rows() if compliance_rows is None else compliance_rows
+        ),
+        fact_rows=[_commit_fact_row()] if fact_rows is None else fact_rows,
+        metric_rows=(_default_governance_metric_rows() if metric_rows is None else metric_rows),
+    )
+    manifest_kwargs.setdefault("completed_at", BUILD_TIME - timedelta(hours=1))
+    _write_manifest(data_dir, RUN_ID, **manifest_kwargs)
+    generate(data_dir, RUN_ID, out_dir, now=BUILD_TIME)
+    return out_dir, data_dir
 
 
 def _scorecard_row(**overrides) -> dict:
@@ -295,8 +482,16 @@ def test_home_summary_card_is_honest_when_a_page_has_no_metrics(tmp_path):
     out_dir = _build_site(tmp_path)
     html_text = _page_html(out_dir, "")
 
+    # Conversations has no registered metrics at all yet (D16) -- its
+    # summary card falls back to the page-level empty message.
     assert PAGES["conversations"].empty_message in html_text
-    assert PAGES["governance"].empty_message in html_text
+    # Governance's GOVERNANCE_METRICS (issue #36) ARE registered, so once
+    # issue #37 wires them into series building, a run with no governance
+    # snapshot shows real headline metrics honestly flagged
+    # "insufficient data" -- never the page-level empty message, which
+    # would incorrectly imply nothing is registered there at all.
+    assert PAGES["governance"].empty_message not in html_text
+    assert "insufficient data" in html_text
 
 
 def test_conversations_page_explains_whats_coming(tmp_path):
@@ -318,6 +513,199 @@ def test_governance_page_is_a_placeholder_linking_to_decisions(tmp_path):
     assert "DECISIONS.md" in html_text
     assert "D14" in html_text
     assert "D15" in html_text
+
+
+# --- Governance per-commit compliance (issue #37, D14/D15) ------------------
+
+
+def test_governance_page_shows_policy_version_and_approval_linked(tmp_path):
+    out_dir, _ = _build_site_with_governance(tmp_path)
+    html_text = _page_html(out_dir, "governance/")
+
+    assert "Policy v1" in html_text
+    assert "pmcfadin" in html_text
+    assert "2026-09-25" in html_text
+    policy_href = (
+        'href="https://github.com/pmcfadin/cassandra-project-health/'
+        'blob/main/governance-policy.yaml"'
+    )
+    assert policy_href in html_text
+    assert "Unknown is not a fail" in html_text
+
+
+def test_governance_page_lists_current_fails_with_evidence_and_correction_link(tmp_path):
+    out_dir, _ = _build_site_with_governance(tmp_path)
+    html_text = _page_html(out_dir, "governance/")
+
+    assert "Currently failing (1)" in html_text
+    assert "no reviewer found in commit trailer" in html_text
+    assert "1111111111" in html_text  # short sha of the failing commit
+    commit_url = "https://github.com/apache/cassandra/commit/1111111111111111111111111111111111aaaa"
+    assert commit_url in html_text
+    assert "Request a correction" in html_text
+    assert "issues/new?" in html_text
+    assert "governance-correction.yml" in html_text
+    assert "sha=1111111111111111111111111111111111aaaa" in html_text
+    assert "check_id=reviewer-present" in html_text
+
+
+def test_governance_page_never_labels_unknown_as_fail(tmp_path):
+    out_dir, _ = _build_site_with_governance(tmp_path)
+    html_text = _page_html(out_dir, "governance/")
+
+    # The one genuine fail (reviewer-present on commit 1) is the only row in
+    # the fails view -- the pre-commit-ci-evidence `unknown` result on that
+    # same commit must never appear there.
+    assert "Currently failing (1)" in html_text
+    fails_start = html_text.index('id="fails-heading"')
+    fails_end = html_text.index("</section>", fails_start)
+    fails_html = html_text[fails_start:fails_end]
+    assert "pre-commit-ci-evidence" not in fails_html
+    assert "no JIRA-comment CI evidence found" not in fails_html
+
+
+def test_governance_page_backfill_partial_status_shown_honestly(tmp_path):
+    out_dir, _ = _build_site_with_governance(
+        tmp_path,
+        governance={
+            "status": "partial",
+            "commits_scored": 2,
+            "compliance_rows": 6,
+            "policy_version": 1,
+            "ci_evidence": {"checked": 3, "pending": 7, "calls_made": 3},
+            "check_runs": {"checked": 1, "pending": 4, "calls_made": 1},
+        },
+    )
+    html_text = _page_html(out_dir, "governance/")
+
+    assert "partial" in html_text
+    assert "7 CI-evidence lookup(s)" in html_text
+    assert "4 checkstyle-check lookup(s)" in html_text
+    assert "picked up automatically on a later run" in html_text
+
+
+def test_governance_page_backfill_ok_status_shown(tmp_path):
+    out_dir, _ = _build_site_with_governance(
+        tmp_path,
+        governance={
+            "status": "ok",
+            "commits_scored": 2,
+            "compliance_rows": 6,
+            "policy_version": 1,
+            "ci_evidence": {"checked": 1, "pending": 0, "calls_made": 1},
+            "check_runs": {"checked": 1, "pending": 0, "calls_made": 1},
+        },
+    )
+    html_text = _page_html(out_dir, "governance/")
+
+    assert "Backfill complete for this run" in html_text
+
+
+def test_governance_page_writes_commit_json_and_csv_downloads(tmp_path):
+    out_dir, _ = _build_site_with_governance(tmp_path)
+
+    recent_path = out_dir / "data" / "governance-commits-recent.json"
+    full_json_path = out_dir / "data" / "governance-commits-full.json"
+    full_csv_path = out_dir / "data" / "governance-commits-full.csv"
+    assert recent_path.is_file()
+    assert full_json_path.is_file()
+    assert full_csv_path.is_file()
+
+    payload = json.loads(full_json_path.read_text())
+    assert payload["policy_version"] == 1
+    assert payload["row_count"] == 2
+    by_sha = {row["sha"]: row for row in payload["rows"]}
+    failing = by_sha["1111111111111111111111111111111111aaaa"]
+    assert failing["checks"]["reviewer-present"]["result"] == "fail"
+    assert failing["jira_urls"] == ["https://issues.apache.org/jira/browse/CASSANDRA-90001"]
+    assert failing["commit_url"] == (
+        "https://github.com/apache/cassandra/commit/1111111111111111111111111111111111aaaa"
+    )
+    assert failing["correction_url"].startswith(
+        "https://github.com/pmcfadin/cassandra-project-health/issues/new?"
+    )
+    # commit 2 never got a pre-commit-ci-evidence/code-style-checkstyle row
+    # in the fixture -- absence must stay absent (n/a), never turn into a
+    # fabricated "unknown".
+    ninja_commit = by_sha["2222222222222222222222222222222222bbbb"]
+    assert "pre-commit-ci-evidence" not in ninja_commit["checks"]
+
+    csv_text = full_csv_path.read_text()
+    assert "reviewer-present_result" in csv_text.splitlines()[0]
+    assert "1111111111111111111111111111111111aaaa" in csv_text
+
+
+def test_governance_page_filters_present_with_month_branch_check_result_options(tmp_path):
+    out_dir, _ = _build_site_with_governance(tmp_path)
+    html_text = _page_html(out_dir, "governance/")
+
+    assert 'data-gov-filter="month"' in html_text
+    assert 'data-gov-filter="branch"' in html_text
+    assert 'data-gov-filter="check"' in html_text
+    assert 'data-gov-filter="result"' in html_text
+    assert '<option value="2026-08">2026-08</option>' in html_text
+    assert '<option value="trunk">trunk</option>' in html_text
+    assert '<option value="reviewer-present">reviewer-present</option>' in html_text
+    assert '<option value="fail">fail</option>' in html_text
+    assert "governance.js" in html_text
+    assert "load full history" in html_text
+
+
+def test_governance_page_shows_compliance_trend_charts_and_ninja_trend(tmp_path):
+    out_dir, _ = _build_site_with_governance(tmp_path)
+    html_text = _page_html(out_dir, "governance/")
+
+    assert "Compliance trends" in html_text
+    assert "Ninja exemptions" in html_text
+    assert "descriptive only" in html_text
+    spec = _extract_vega_spec(html_text, "Compliance trend for reviewer-present")
+    states = {v["state"] for v in spec["data"]["values"]}
+    assert states == {"pass", "fail", "unknown", "exempt"}
+
+
+def test_governance_page_has_no_data_state_when_engine_never_ran(tmp_path):
+    """A run without the governance engine (older run, or source not
+    configured) still renders honestly -- no crash, no fabricated rows."""
+    out_dir = _build_site(tmp_path)
+    html_text = _page_html(out_dir, "governance/")
+
+    assert "not published yet" in html_text
+    assert "Currently failing" not in html_text
+
+
+def test_manifest_parses_governance_status_and_pending_counts(tmp_path):
+    from project_health.site.manifest import load_manifest
+
+    data_dir = tmp_path / "data"
+    _write_manifest(
+        data_dir,
+        RUN_ID,
+        completed_at=BUILD_TIME,
+        governance={
+            "status": "partial",
+            "commits_scored": 10,
+            "compliance_rows": 30,
+            "policy_version": 1,
+            "ci_evidence": {"checked": 2, "pending": 5, "calls_made": 2},
+            "check_runs": {"checked": 1, "pending": 3, "calls_made": 1},
+        },
+    )
+    manifest = load_manifest(data_dir, RUN_ID)
+
+    assert manifest.governance is not None
+    assert manifest.governance.status == "partial"
+    assert manifest.governance.ci_evidence.pending == 5
+    assert manifest.governance.check_runs.pending == 3
+
+
+def test_manifest_governance_is_none_when_absent(tmp_path):
+    from project_health.site.manifest import load_manifest
+
+    data_dir = tmp_path / "data"
+    _write_manifest(data_dir, RUN_ID, completed_at=BUILD_TIME)
+    manifest = load_manifest(data_dir, RUN_ID)
+
+    assert manifest.governance is None
 
 
 # --- Security section (OpenSSF Scorecard + advisories, issue #55) -----------

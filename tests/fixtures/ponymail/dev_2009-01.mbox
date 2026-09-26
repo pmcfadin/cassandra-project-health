@@ -1,0 +1,49 @@
+From MAILER-DAEMON Wed Jan 28 20:32:35 2009
+Return-Path: <cassandra-dev-return-1-apmail-incubator-cassandra-dev-archive=incubator.apache.org@incubator.apache.org>
+Delivered-To: apmail-incubator-cassandra-dev-archive@minotaur.apache.org
+Received: (qmail 52834 invoked from network); 28 Jan 2009 20:32:35 -0000
+Received: from hermes.apache.org (HELO mail.apache.org) (140.211.11.2)
+  by minotaur.apache.org with SMTP; 28 Jan 2009 20:32:35 -0000
+Received: (qmail 93067 invoked by uid 500); 28 Jan 2009 20:32:35 -0000
+Delivered-To: apmail-incubator-cassandra-dev-archive@incubator.apache.org
+Received: (qmail 93053 invoked by uid 500); 28 Jan 2009 20:32:35 -0000
+Mailing-List: contact cassandra-dev-help@incubator.apache.org; run by ezmlm
+Precedence: bulk
+List-Help: <mailto:cassandra-dev-help@incubator.apache.org>
+List-Unsubscribe: <mailto:cassandra-dev-unsubscribe@incubator.apache.org>
+List-Post: <mailto:cassandra-dev@incubator.apache.org>
+List-Id: <cassandra-dev.incubator.apache.org>
+Reply-To: cassandra-dev@incubator.apache.org
+Delivered-To: mailing list cassandra-dev@incubator.apache.org
+Delivered-To: moderator for cassandra-dev@incubator.apache.org
+Received: (qmail 10321 invoked by uid 99); 28 Jan 2009 18:34:41 -0000
+X-ASF-Spam-Status: No, hits=-0.0 required=10.0
+	tests=SPF_PASS
+X-Spam-Check-By: apache.org
+Received-SPF: pass (athena.apache.org: local policy)
+X-MimeOLE: Produced By Microsoft Exchange V6.5
+MIME-Version: 1.0
+Content-Type: text/plain;
+	charset="us-ascii"
+x-cr-puzzleid: {739B40D1-2B3C-4267-9954-3528267C49FE}
+x-cr-hashedpuzzle: g+s= ATtO B3A/ Ca9P DTqM EcKc G0VT Htes IOKx IVSi JdlD KGh5
+ KIwt LNzM Lzod
+ MHtY;1;YwBhAHMAcwBhAG4AZAByAGEALQBkAGUAdgBAAGkAbgBjAHUAYgBhAHQAbwByAC4AYQBwAGEAYwBoAGUALgBvAHIAZwA=;Sosha1_v1;7;{739B40D1-2B3C-4267-9954-3528267C49FE};ZABhAHYAaQBkAGQAQABkAG8AdABvAG0AaQAuAGMAbwBtAA==;Wed,
+ 28 Jan 2009 18:33:59
+ GMT;QwB1AHIAaQBvAHUAcwAgAHcAaABlAG4AIABTAFYATgAgAHcAaQBsAGwAIABtAGkAZwByAGEAdABlACAAdABvACAAQQBTAEYA
+Content-class: urn:content-classes:message
+Subject: Curious when SVN will migrate to ASF
+Date: Wed, 28 Jan 2009 13:33:59 -0500
+Message-ID: <9FA9ACEAB0F1CA46B3FB68B616AC9A7904C373E8@Exc-A01.dotomi.com>
+X-MS-Has-Attach: 
+X-MS-TNEF-Correlator: 
+Thread-Topic: Curious when SVN will migrate to ASF
+Thread-Index: AcmBdvw3z5UW6eJ2StWcjuVXFdL3Rw==
+From: "David Dabbs" <davidd@dotomi.com>
+To: <cassandra-dev@incubator.apache.org>
+X-TM-SMEX-DISCLAIMER: dotomi.com;
+	date="2009-01-28T18:34:11.343Z"
+X-Virus-Checked: Checked by ClamAV on apache.org
+
+[body stripped for fixture -- D1/D16 metadata-only]
+

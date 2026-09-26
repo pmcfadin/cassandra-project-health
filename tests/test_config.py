@@ -56,6 +56,16 @@ def test_unknown_and_future_sections_load_without_error(tmp_path):
     assert config.slack.enabled is False
 
 
+def test_mailing_lists_is_typed_with_domain_and_lists():
+    """issue #33: `mailing_lists` is a typed model, not a bare `FlexibleSection`."""
+    config = load_project("projects/cassandra.yaml")
+
+    assert config.mailing_lists.type == "ponymail"
+    assert config.mailing_lists.domain == "cassandra.apache.org"
+    assert config.mailing_lists.lists == ["dev", "user"]
+    assert config.mailing_lists.metadata_only is True
+
+
 def test_bot_patterns_and_baseline_window():
     config = load_project("projects/cassandra.yaml")
 

@@ -14,6 +14,8 @@ ALL_M0_TABLES = [
     "file_change_event",
     "review_event",
     "issue",
+    "message",
+    "message_thread",
     "source_snapshot",
     "run_manifest",
     "metric_definition_version",
@@ -197,6 +199,58 @@ def test_identity_link_source_type_comment_documents_git_name():
     field = schema.field("source_type")
     assert field.type == pa.string()
     assert field.nullable is False
+
+
+def test_message_has_raw_sender_identifier_columns_and_no_subject_column():
+    """D1/D16: `message` carries a raw `mailing_list_address` identifier
+    (schema/README.md's raw-identifier-vs-resolved-identity pattern) and a
+    `subject_hash`, but no column anywhere in the schema is named/shaped to
+    hold subject or body text.
+    """
+    schema = get_schema("message")
+    assert schema.field("sender_identity_id").nullable is True
+    assert schema.field("sender_raw_type").type == pa.string()
+    assert schema.field("sender_raw_type").nullable is False
+    assert schema.field("sender_raw_value").type == pa.string()
+    assert schema.field("sender_raw_value").nullable is False
+    assert schema.field("subject_hash").type == pa.string()
+    assert schema.field("subject_hash").nullable is False
+    assert "subject" not in schema.names
+    assert "body" not in schema.names
+    assert schema.field("references").type == pa.list_(pa.string())
+    assert schema.field("thread_id").nullable is False
+
+
+def test_message_thread_columns():
+    schema = get_schema("message_thread")
+    assert schema.field("thread_id").nullable is False
+    assert schema.field("root_message_id").nullable is False
+    assert schema.field("message_count").type == pa.int64()
+    assert schema.field("message_count").nullable is False
+
+
+def test_message_validates_with_null_references_and_in_reply_to():
+    now = datetime(2026, 9, 25, tzinfo=timezone.utc)
+    table = pa.table(
+        {
+            "message_id": pa.array(["<a@example.org>"], type=pa.string()),
+            "list": pa.array(["dev"], type=pa.string()),
+            "sender_identity_id": pa.array([None], type=pa.string()),
+            "sender_raw_type": pa.array(["mailing_list_address"], type=pa.string()),
+            "sender_raw_value": pa.array(["alice@example.org"], type=pa.string()),
+            "sender_display_name": pa.array(["Alice"], type=pa.string()),
+            "occurred_at": pa.array([now], type=pa.timestamp("us", tz="UTC")),
+            "subject_hash": pa.array(["deadbeef"], type=pa.string()),
+            "in_reply_to": pa.array([None], type=pa.string()),
+            "references": pa.array([None], type=pa.list_(pa.string())),
+            "thread_id": pa.array(["<a@example.org>"], type=pa.string()),
+            "source_snapshot_id": pa.array(["snap-1"], type=pa.string()),
+        }
+    )
+
+    result = validate("message", table)
+
+    assert result.column("references").to_pylist() == [None]
 
 
 def test_metric_value_output_contract_columns():

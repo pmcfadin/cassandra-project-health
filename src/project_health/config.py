@@ -54,6 +54,40 @@ class FlexibleSection(BaseModel):
     type: str | None = None
 
 
+class MailingListsConfig(BaseModel):
+    """`mailing_lists:` block — selects `collectors/ponymail.py`
+    (ARCHITECTURE.md §2.1 `MailingListAdapter`).
+
+    Typed (not a bare `FlexibleSection`) because `collectors.ponymail.
+    PonyMailCollector` reads `domain` and `lists` directly, the same way
+    `JiraCollector` reads `issue_tracker.base_url`/`.project_key` off
+    `FlexibleSection`'s duck-typed attributes today -- pinning the shape here
+    catches a missing/misspelled key at config-load time instead of a
+    collector-construction `AttributeError`.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    type: str
+    domain: str
+    lists: list[str]
+    # Phase 1 (D1/D16): metadata only, no message body is ever collected.
+    # Always true today; kept as a field (rather than hard-coded) so a
+    # future phase 2 flip is a config change this model already accepts.
+    metadata_only: bool = True
+    # Per-list, per-run cap on how many months `collectors/ponymail.py`
+    # fetches (issue #33 fixup: the full dev@ backfill took ~31 minutes at
+    # the ≤2 req/s pacing cap; with `user@` likely similar-or-larger and the
+    # nightly job's `timeout-minutes: 60` also covering git/JIRA/roster,
+    # an uncapped first-run backfill would blow the nightly's time budget).
+    # 36 months/list/run is ~5 minutes at the pacing cap. Used only when the
+    # CLI's `--max-ponymail-months` isn't given; a nightly run backfills
+    # oldest-first, a bounded number of months per run, until caught up --
+    # see `pipeline._collect_ponymail` and `collectors.ponymail.
+    # select_backfill_months`.
+    max_months_per_run: int = 36
+
+
 class BotPattern(BaseModel):
     """One entry in `bot_patterns:` — applied by identity resolution."""
 
@@ -146,7 +180,7 @@ class ProjectConfig(BaseModel):
     repos: list[Repo] = []
     issue_tracker: FlexibleSection | None = None
     pull_requests: FlexibleSection | None = None
-    mailing_lists: FlexibleSection | None = None
+    mailing_lists: MailingListsConfig | None = None
     roster: FlexibleSection | None = None
     releases: FlexibleSection | None = None
     affiliations_file: str | None = None

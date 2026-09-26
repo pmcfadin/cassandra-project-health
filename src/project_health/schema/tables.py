@@ -7,9 +7,9 @@ portable Parquet interop. All timestamps are UTC-aware
 plain dates (``pa.date32()``) per the issue's output contract.
 
 Every fact table (`contribution_event`, `file_change_event`, `review_event`,
-`issue`) carries a `source_snapshot_id` column (ARCHITECTURE.md §3), tracing
-a row back to the collector run that produced it. Identity tables and
-run/metric-registry tables do not.
+`issue`, `message`, `message_thread`) carries a `source_snapshot_id` column
+(ARCHITECTURE.md §3), tracing a row back to the collector run that produced
+it. Identity tables and run/metric-registry tables do not.
 
 Collectors (#4, #5) run before identity resolution (#6), so fact-table rows
 they write can't know a resolved `*_identity_id` yet. Every fact table
@@ -176,6 +176,51 @@ ROSTER_ENTRY = pa.schema(
     ]
 )
 
+MESSAGE = pa.schema(
+    [
+        pa.field("message_id", pa.string(), nullable=False),
+        # list: e.g. 'dev' | 'user' (projects/<id>.yaml `mailing_lists.lists`)
+        pa.field("list", pa.string(), nullable=False),
+        # filled in by identity resolution (#6); null as written by collectors
+        pa.field("sender_identity_id", pa.string(), nullable=True),
+        # raw identifier as collected: always 'mailing_list_address' for this
+        # source (ARCHITECTURE.md §3, schema/README.md "Raw identifiers vs.
+        # resolved identity"); sender_raw_value is the lowercased `From:`
+        # address.
+        pa.field("sender_raw_type", pa.string(), nullable=False),
+        pa.field("sender_raw_value", pa.string(), nullable=False),
+        pa.field("sender_display_name", pa.string(), nullable=True),
+        pa.field("occurred_at", TIMESTAMP_UTC, nullable=False),
+        # D1/D16: sha256 hex digest of the raw `Subject:` header text --
+        # never the subject text itself. No message body is ever read past
+        # header-extraction time; see collectors/ponymail.py module
+        # docstring and tests/test_ponymail_collector.py's
+        # `test_no_body_content_reaches_any_output_column`.
+        pa.field("subject_hash", pa.string(), nullable=False),
+        # Message-ID this message's `In-Reply-To:` header names, if any.
+        pa.field("in_reply_to", pa.string(), nullable=True),
+        # Every Message-ID listed in this message's `References:` header, in
+        # header order (oldest-first per RFC 5322 convention).
+        pa.field("references", pa.list_(pa.string()), nullable=True),
+        # Best-effort thread grouping key -- see collectors/ponymail.py
+        # module docstring for the exact rule.
+        pa.field("thread_id", pa.string(), nullable=False),
+        pa.field("source_snapshot_id", pa.string(), nullable=False),
+    ]
+)
+
+MESSAGE_THREAD = pa.schema(
+    [
+        pa.field("thread_id", pa.string(), nullable=False),
+        pa.field("list", pa.string(), nullable=False),
+        pa.field("root_message_id", pa.string(), nullable=False),
+        pa.field("started_at", TIMESTAMP_UTC, nullable=False),
+        pa.field("last_activity_at", TIMESTAMP_UTC, nullable=False),
+        pa.field("message_count", pa.int64(), nullable=False),
+        pa.field("source_snapshot_id", pa.string(), nullable=False),
+    ]
+)
+
 # --- Run / provenance registry tables (ARCHITECTURE.md §5) ------------------
 
 SOURCE_SNAPSHOT = pa.schema(
@@ -320,6 +365,8 @@ TABLE_SCHEMAS: dict[str, pa.Schema] = {
     "review_event": REVIEW_EVENT,
     "issue": ISSUE,
     "roster_entry": ROSTER_ENTRY,
+    "message": MESSAGE,
+    "message_thread": MESSAGE_THREAD,
     "source_snapshot": SOURCE_SNAPSHOT,
     "run_manifest": RUN_MANIFEST,
     "metric_definition_version": METRIC_DEFINITION_VERSION,

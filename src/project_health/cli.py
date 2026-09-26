@@ -5,7 +5,7 @@ Registered as a `console_scripts`-style entry point in `pyproject.toml`
 
     project-health run --project projects/cassandra.yaml \\
         --data-dir <path> --workdir <path> \\
-        [--sources git,jira] [--site-out <dir>]
+        [--sources git,jira,ponymail] [--site-out <dir>]
 """
 
 from __future__ import annotations
@@ -46,6 +46,12 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Cap the number of JIRA issues fetched this run (testing / smoke runs)",
     )
     run_parser.add_argument(
+        "--max-ponymail-months",
+        type=int,
+        default=None,
+        help="Cap the number of months fetched per mailing list this run (testing / smoke runs)",
+    )
+    run_parser.add_argument(
         "--trigger",
         default="manual",
         help="Recorded verbatim in the run manifest's `trigger` field (default: manual)",
@@ -69,6 +75,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
         sources=sources,
         site_out=args.site_out,
         max_jira_issues=args.max_jira_issues,
+        max_ponymail_months=args.max_ponymail_months,
         trigger=args.trigger,
         identity_overrides_path=args.identity_overrides,
     )

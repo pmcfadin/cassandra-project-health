@@ -52,9 +52,12 @@ import pyarrow.parquet as pq
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from project_health import storage
-from project_health.schema import validate
+from project_health.governance.metrics import metric_id_for_check
+from project_health.schema import get_schema, validate
 from project_health.site.manifest import RunManifest, load_manifest
+from project_health.site.governance_page import build_governance_page_context
 from project_health.site.metrics_meta import (
+    GOVERNANCE_METRICS,
     HOME_CARD_METRIC_LIMIT,
     M0_METRICS,
     PAGES,
@@ -167,7 +170,16 @@ def generate(
 
     manifest = load_manifest(data_dir, run_id)
     metrics_table = _read_metrics(data_dir, run_id)
-    series_by_id = _build_series(metrics_table)
+    series_by_id = _build_series(metrics_table, M0_METRICS)
+
+    # Governance compliance pass-rate metrics (issue #36, GOVERNANCE_METRICS)
+    # live in their own snapshot file, entirely outside `metrics.parquet`'s
+    # M0 pipeline (`governance/metrics.py`'s module docstring) -- optional,
+    # since a run without the governance source configured never writes it.
+    governance_metrics_table = _read_optional_metric_value_table(
+        data_dir, run_id, "governance_metric_value.parquet"
+    )
+    series_by_id.update(_build_series(governance_metrics_table, GOVERNANCE_METRICS))
 
     out_dir.mkdir(parents=True, exist_ok=True)
     data_out = out_dir / "data"
@@ -178,7 +190,7 @@ def generate(
         _write_csv(data_out / f"{metric_id}.csv", series, manifest)
 
     _copy_static(out_dir)
-    _render_pages(out_dir, series_by_id, manifest, build_time, data_dir)
+    _render_pages(out_dir, series_by_id, manifest, build_time, data_dir, run_id)
 
 
 def _read_metrics(data_dir: Path, run_id: str) -> pa.Table:
@@ -188,20 +200,31 @@ def _read_metrics(data_dir: Path, run_id: str) -> pa.Table:
     return validate("metric_value", pq.read_table(path))
 
 
-def _build_series(table: pa.Table) -> dict[str, MetricSeries]:
-    """Group `metric_value` rows by metric_id for every M0 metric.
+def _read_optional_metric_value_table(data_dir: Path, run_id: str, filename: str) -> pa.Table:
+    """Same `metric_value` shape/validation as `_read_metrics`, but for a
+    snapshot file that may legitimately not exist yet (governance's own
+    snapshot, written by a separate pipeline step than `metrics.parquet`) --
+    an empty, schema-valid table rather than `FileNotFoundError`."""
+    path = data_dir / "snapshots" / run_id / filename
+    if not path.is_file():
+        return get_schema("metric_value").empty_table()
+    return validate("metric_value", pq.read_table(path))
 
-    A metric with no rows in `table` still gets an (empty) `MetricSeries`
-    so `generate` always writes its `data/<id>.json`/`.csv` pair — the site
-    always shows all six M0 cards, with "insufficient data" where a metric
-    hasn't produced a value yet.
+
+def _build_series(table: pa.Table, metrics_map: dict[str, MetricMeta]) -> dict[str, MetricSeries]:
+    """Group `metric_value` rows by metric_id for every metric in `metrics_map`.
+
+    A metric with no rows in `table` still gets an (empty) `MetricSeries` so
+    `generate` always writes its `data/<id>.json`/`.csv` pair — the site
+    always shows every declared card, with "insufficient data" where a
+    metric hasn't produced a value yet.
     """
     rows_by_metric: dict[str, list[dict[str, Any]]] = {}
     for row in table.to_pylist():
         rows_by_metric.setdefault(row["metric_id"], []).append(row)
 
     series_by_id: dict[str, MetricSeries] = {}
-    for metric_id, meta in M0_METRICS.items():
+    for metric_id, meta in metrics_map.items():
         metric_rows = sorted(
             rows_by_metric.get(metric_id, []), key=lambda r: r["window_start"]
         )
@@ -697,6 +720,7 @@ def _render_pages(
     manifest: RunManifest,
     build_time: datetime,
     data_dir: Path,
+    run_id: str,
 ) -> None:
     """Render all four top-level pages (D13): `/`, `/community/`,
     `/conversations/`, `/governance/`, sharing `templates/base.html`'s nav
@@ -745,16 +769,50 @@ def _render_pages(
     )
     _write_subpage(out_dir, "conversations", conversations_html)
 
-    # Governance (`/governance/`) — placeholder until the compliance engine
-    # ships (D14, D15), plus the Security section (OpenSSF Scorecard + CVE/
-    # advisory history, issue #55, D21 item 3) rendered from its own
-    # partial template (`_security.html`) so it stays isolated from #36's
-    # compliance-engine work on this same page.
+    # Governance (`/governance/`) — per-commit compliance trends and detail
+    # (issue #37, D14/D15), the Security section (OpenSSF Scorecard + CVE/
+    # advisory history, issue #55, D21 item 3) rendered from its own partial
+    # template (`_security.html`) so it stays isolated from this page
+    # section's own churn, same reasoning `governance_page.py`'s own
+    # docstring gives for staying out of this module.
     security_context = _read_security_context(data_dir)
+    governance_context = build_governance_page_context(
+        data_dir, run_id, out_dir, manifest, base_prefix=SUBPAGE_BASE_PREFIX
+    )
+    # Each scored check gets one card: the same latest-value/tier/JSON-CSV
+    # card shell every M0 metric uses (`_card_context`, keyed by this
+    # check's `governance_*_pass_rate` metric_id), but with its chart swapped
+    # for the compliance-trend module's per-check pass/fail/unknown/exempt
+    # breakdown (`governance_context.compliance_trends`) instead of the
+    # generic single-line pass-rate chart -- the breakdown is strictly more
+    # informative (D15: "every result showing its evidence" extends to the
+    # aggregate view never hiding fail/unknown/exempt behind a bare rate).
+    governance_cards_by_metric = {
+        s.meta.metric_id: _card_context(s, SUBPAGE_BASE_PREFIX)
+        for s in series_by_page["governance"]
+    }
+    governance_trend_cards = []
+    for chart in governance_context.compliance_trends:
+        card = governance_cards_by_metric.get(metric_id_for_check(chart["check_id"]))
+        governance_trend_cards.append(
+            {
+                "check_id": chart["check_id"],
+                "name": card["name"] if card else chart["check_id"],
+                "tier": card["tier"] if card else None,
+                "latest_value_display": card["latest_value_display"] if card else None,
+                "latest_month_label": card["latest_month_label"] if card else None,
+                "json_href": card["json_href"] if card else None,
+                "csv_href": card["csv_href"] if card else None,
+                "vega_spec_json": chart["vega_spec_json"],
+                "has_data": chart["has_data"],
+            }
+        )
     governance_html = env.get_template("governance.html").render(
         current_page="governance",
         base_prefix=SUBPAGE_BASE_PREFIX,
         security=security_context,
+        governance=governance_context,
+        governance_trend_cards=governance_trend_cards,
         **common_ctx,
     )
     _write_subpage(out_dir, "governance", governance_html)

@@ -1,0 +1,71 @@
+name: Governance compliance correction
+description: >-
+  Dispute one /governance/ per-commit check result (D15). A correction is a
+  PR-reviewed override recorded in governance_overrides.yaml, never a silent
+  number change.
+title: "Governance correction: "
+labels:
+  - governance-correction
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this form to request a correction to one commit's governance
+        check result on the [`/governance/`](https://pmcfadin.github.io/cassandra-project-health/governance/)
+        page (per [DECISIONS.md D15](https://github.com/pmcfadin/cassandra-project-health/blob/main/docs/spec/DECISIONS.md#d15-governance-transparency-full-per-commit-detail-including-names),
+        "every row links to the corrections process, and a correction is a
+        PR-reviewed override with the reason recorded").
+
+        This form only *requests* a correction — nothing changes until a
+        maintainer reviews it and merges a pull request adding an entry to
+        [`governance_overrides.yaml`](https://github.com/pmcfadin/cassandra-project-health/blob/main/governance_overrides.yaml).
+        See that file's own comments for the entry shape
+        (`sha`, `check_id`, `result`, `reason`, `reviewer`).
+  - type: input
+    id: sha
+    attributes:
+      label: Commit SHA
+      description: The full (or unambiguous prefix of the) commit SHA the result is about.
+      placeholder: "e.g. 05186d786974f3caf0491d5373b648c97c718c4a"
+    validations:
+      required: true
+  - type: dropdown
+    id: check_id
+    attributes:
+      label: Check
+      description: Which governance-policy.yaml check is wrong (leave blank if you're not sure).
+      options:
+        - reviewer-present
+        - jira-ticket-referenced
+        - pre-commit-ci-evidence
+        - code-style-checkstyle
+        - not sure / other
+    validations:
+      required: false
+  - type: textarea
+    id: current_result
+    attributes:
+      label: Current result and evidence
+      description: >-
+        Paste the check's current result and evidence text as shown on the
+        page (or in the downloaded JSON/CSV).
+    validations:
+      required: false
+  - type: textarea
+    id: reason
+    attributes:
+      label: Why this is wrong, and what the correct result should be
+      description: >-
+        Be as specific as possible — e.g. a reviewer name the trailer/JIRA
+        parser missed, a link to the actual CI run, or a policy exemption
+        that should have matched. This becomes the override's `reason` field
+        if accepted.
+    validations:
+      required: true
+  - type: input
+    id: supporting_link
+    attributes:
+      label: Supporting link (optional)
+      description: A JIRA comment, GitHub check-run, or other public evidence link.
+    validations:
+      required: false

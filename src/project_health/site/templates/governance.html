@@ -3,11 +3,88 @@
 {% block content %}
 <p class="page-intro">Per-commit compliance against an owner-approved policy — deterministic checks on public commits, not classified judgments.</p>
 
+{% if governance.policy %}
+<section class="governance-policy" aria-labelledby="policy-heading">
+  <h2 id="policy-heading">Policy v{{ governance.policy.version }}</h2>
+  <p class="security-meta">
+    Approved by <strong>{{ governance.policy.approved_by }}</strong> on
+    <strong>{{ governance.policy.approved_on }}</strong> —
+    <a href="{{ governance.policy.policy_url }}">governance-policy.yaml</a>.
+    {{ governance.policy.overrides_count }} correction(s) on record in
+    <a href="{{ governance.policy.overrides_url }}">governance_overrides.yaml</a>.
+    See <a href="{{ decisions_url }}#{{ decisions_d14_anchor }}">DECISIONS.md — D14</a> and
+    <a href="{{ decisions_url }}#{{ decisions_d15_anchor }}">D15</a>.
+  </p>
+  <p class="governance-note">
+    <strong>Unknown is not a fail.</strong> A result of <code>unknown</code> means the evidence
+    wasn't available, or the evidence source's own false-negative rate was too high to read
+    absence as non-compliance — it is never counted against a commit. Only a check marked
+    "can fail: yes" below can ever produce a <code>fail</code>, and only via that check's own
+    documented condition (see the table below). A result of <code>not_in_force</code> means the
+    check's rule did not exist yet on that commit's date (D14) — also never a fail.
+  </p>
+  <details class="policy-rules">
+    <summary>What's checked (policy v{{ governance.policy.version }})</summary>
+    <table class="security-table">
+      <thead>
+        <tr>
+          <th scope="col">Check</th>
+          <th scope="col">In force from</th>
+          <th scope="col">Can fail?</th>
+          <th scope="col">Scored</th>
+          <th scope="col">What it checks</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for rule in governance.policy.rules %}
+        <tr>
+          <td>
+            {% if rule.source_url %}<a href="{{ rule.source_url }}">{{ rule.id }}</a>{% else %}{{ rule.id }}{% endif %}
+          </td>
+          <td>{{ rule.effective_from or "always" }}</td>
+          <td>{{ "yes" if rule.fail_allowed else "no" }}</td>
+          <td>{{ "scored" if rule.scored else "display only" }}</td>
+          <td>{{ rule.description }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </details>
+</section>
+{% endif %}
+
+{% if governance.backfill.has_status %}
+<section class="governance-backfill" aria-labelledby="backfill-heading">
+  <h2 id="backfill-heading">Backfill status</h2>
+  {% if governance.backfill.is_failed %}
+    <p class="banner banner--stale" role="status">
+      Governance scoring failed on the last run — the results below may be stale or incomplete
+      for this run.
+    </p>
+  {% elif governance.backfill.is_partial %}
+    <p class="security-meta">
+      Backfill in progress (<strong>partial</strong>): {{ governance.backfill.commits_scored }}
+      commit(s) scored this run, with {{ governance.backfill.ci_pending }} CI-evidence lookup(s)
+      and {{ governance.backfill.check_run_pending }} checkstyle-check lookup(s) still pending —
+      picked up automatically on a later run. A pending lookup shows as <code>unknown</code> below,
+      never as a gap in the commit list and never as a fail.
+    </p>
+  {% else %}
+    <p class="security-meta">
+      Backfill complete for this run (<strong>ok</strong>): {{ governance.backfill.commits_scored }}
+      commit(s) scored, {{ governance.backfill.compliance_rows }} check result(s).
+    </p>
+  {% endif %}
+</section>
+{% endif %}
+
+{% if not governance.has_data %}
 <section class="empty-state" aria-labelledby="governance-empty-heading">
   <h2 id="governance-empty-heading">Governance compliance is not published yet</h2>
   <p>
     This page will list individual commits alongside author, committer and reviewer names and each
-    check's pass/fail/unknown result (D15). It stays empty until the compliance engine ships.
+    check's pass/fail/unknown result (D15). It stays empty until the compliance engine has scored at
+    least one commit for this project.
   </p>
 </section>
 
@@ -37,9 +114,207 @@
     </p>
   </article>
 </section>
+{% else %}
+
+<section class="governance-fails" aria-labelledby="fails-heading">
+  <h2 id="fails-heading">Currently failing ({{ governance.fails_total }})</h2>
+  <p class="page-intro">
+    Every commit currently scored <code>fail</code> under policy v{{ governance.policy.version if governance.policy else "?" }} —
+    <code>pass</code>, <code>unknown</code>, <code>exempt</code> and <code>not_in_force</code> results
+    are never listed here. Think one of these is wrong? Each row links to a pre-filled correction
+    request; corrections are PR-reviewed into
+    {% if governance.policy %}<a href="{{ governance.policy.overrides_url }}">governance_overrides.yaml</a>{% else %}<code>governance_overrides.yaml</code>{% endif %}
+    (D15).
+  </p>
+  {% if governance.fails %}
+  <table class="security-table gov-fails-table">
+    <thead>
+      <tr>
+        <th scope="col">Commit</th>
+        <th scope="col">Date</th>
+        <th scope="col">Branch</th>
+        <th scope="col">Check</th>
+        <th scope="col">Author</th>
+        <th scope="col">Evidence</th>
+        <th scope="col"></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for f in governance.fails %}
+      <tr>
+        <td><a href="{{ f.commit_url }}"><code>{{ f.short_sha }}</code></a></td>
+        <td>{{ f.commit_date.strftime('%Y-%m-%d') }}</td>
+        <td>{{ f.branch }}</td>
+        <td><span class="badge badge--result badge--result-fail">{{ f.check_id }}</span></td>
+        <td>{{ f.author }}</td>
+        <td>
+          {{ f.evidence }}
+          {% if f.evidence_url %}(<a href="{{ f.evidence_url }}">evidence</a>){% endif %}
+        </td>
+        <td><a href="{{ f.correction_url }}">Request a correction</a></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% if governance.fails_truncated %}
+  <p class="card-more">
+    Showing the first {{ governance.fails | length }} of {{ governance.fails_total }} fails —
+    download the full CSV below for the rest.
+  </p>
+  {% endif %}
+  {% else %}
+  <p class="card-empty-state">
+    No commits currently fail policy v{{ governance.policy.version if governance.policy else "?" }}.
+  </p>
+  {% endif %}
+</section>
+
+<section class="governance-trends" aria-labelledby="trends-heading">
+  <h2 id="trends-heading">Compliance trends</h2>
+  <p class="page-intro">
+    Monthly share of non-merge commits in each result state, per check (governance/metrics.py;
+    <code>exempt</code>/<code>not_in_force</code> commits are excluded from the pass-rate math but
+    plotted here for context, not hidden).
+  </p>
+  <div class="card-grid">
+    {% for chart in governance_trend_cards %}
+    <article class="card">
+      <header class="card-header">
+        <h3>{{ chart.name }}</h3>
+        {% if chart.tier %}<span class="badge badge--tier badge--tier-{{ chart.tier }}">{{ chart.tier }}</span>{% endif %}
+      </header>
+      <p class="card-value">
+        {% if chart.latest_value_display is not none %}
+          <span class="value">{{ chart.latest_value_display }}</span>
+          <span class="value-period">pass rate, {{ chart.latest_month_label }}</span>
+        {% else %}
+          <span class="value value--insufficient">insufficient data</span>
+        {% endif %}
+      </p>
+      {% if chart.has_data %}
+      <div class="chart" data-vega-spec='{{ chart.vega_spec_json }}' role="img" aria-label="Compliance trend for {{ chart.check_id }}">
+        <noscript>Enable JavaScript to see the {{ chart.name }} trend chart, or use the data links below.</noscript>
+      </div>
+      {% else %}
+      <p class="card-empty-state">No monthly data yet.</p>
+      {% endif %}
+      {% if chart.json_href %}
+      <p class="card-links">
+        <a href="{{ chart.json_href }}">JSON</a> &middot; <a href="{{ chart.csv_href }}">CSV</a>
+      </p>
+      {% endif %}
+    </article>
+    {% endfor %}
+
+    <article class="card">
+      <header class="card-header">
+        <h3>Ninja exemptions</h3>
+        <span class="badge">descriptive only</span>
+      </header>
+      <p class="card-status">
+        Not a documented Cassandra rule and never scored pass/fail — a count of
+        <code>reviewer-present</code> commits exempted by the project's own "ninja" convention
+        (governance-policy.yaml <code>descriptive_signal</code>).
+      </p>
+      {% if governance.ninja_trend.has_data %}
+      <div class="chart" data-vega-spec='{{ governance.ninja_trend.vega_spec_json }}' role="img" aria-label="Ninja-exempt commits per month">
+        <noscript>Enable JavaScript to see the ninja-exemption trend chart.</noscript>
+      </div>
+      {% else %}
+      <p class="card-empty-state">No monthly data yet.</p>
+      {% endif %}
+    </article>
+  </div>
+</section>
+
+<section class="governance-commits" aria-labelledby="commits-heading" data-gov-commits
+  data-recent-href="{{ governance.commits_recent_json_href }}"
+  data-full-href="{{ governance.commits_full_json_href }}"
+  data-recent-months="{{ governance.recent_months }}">
+  <h2 id="commits-heading">Per-commit detail</h2>
+  <p class="page-intro">
+    Every scored commit, with its check results and the evidence behind each one (D15). Loads the
+    last {{ governance.recent_months }} months by default;
+    <button type="button" class="gov-load-all" data-gov-load-all>load full history</button>
+    to filter across everything. Downloads:
+    <a href="{{ governance.commits_full_json_href }}" data-gov-download-json>full JSON</a> &middot;
+    <a href="{{ governance.commits_full_csv_href }}">full CSV</a>.
+  </p>
+
+  <form class="gov-filters" data-gov-filters aria-label="Filter commits">
+    <label>Month
+      <select data-gov-filter="month">
+        <option value="">All loaded months</option>
+        {% for month in governance.filter_options.months %}
+        <option value="{{ month }}">{{ month }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>Branch
+      <select data-gov-filter="branch">
+        <option value="">All branches</option>
+        {% for branch in governance.filter_options.branches %}
+        <option value="{{ branch }}">{{ branch }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>Check
+      <select data-gov-filter="check">
+        <option value="">All checks</option>
+        {% for check in governance.filter_options.checks %}
+        <option value="{{ check }}">{{ check }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>Result
+      <select data-gov-filter="result">
+        <option value="">Any result</option>
+        {% for result in governance.filter_options.results %}
+        <option value="{{ result }}">{{ result }}</option>
+        {% endfor %}
+      </select>
+    </label>
+  </form>
+
+  <p class="gov-status" data-gov-status role="status">Loading commits…</p>
+
+  <div class="gov-table-wrap">
+    <table class="security-table gov-commits-table" data-gov-table
+      data-gov-checks="{{ governance.filter_options.checks | join(',') }}">
+      <thead>
+        <tr>
+          <th scope="col">Commit</th>
+          <th scope="col">Date</th>
+          <th scope="col">Branch</th>
+          <th scope="col">JIRA</th>
+          <th scope="col">Author</th>
+          <th scope="col">Committer</th>
+          <th scope="col">Reviewers</th>
+          {% for check in governance.filter_options.checks %}
+          <th scope="col">{{ check }}</th>
+          {% endfor %}
+          <th scope="col"></th>
+        </tr>
+      </thead>
+      <tbody data-gov-tbody></tbody>
+    </table>
+  </div>
+
+  <nav class="gov-pagination" data-gov-pagination aria-label="Commit table pages">
+    <button type="button" data-gov-prev>Previous</button>
+    <span data-gov-page-label></span>
+    <button type="button" data-gov-next>Next</button>
+  </nav>
+  <noscript>
+    <p>Enable JavaScript to browse the per-commit table, or download the
+    <a href="{{ governance.commits_full_csv_href }}">full CSV</a> directly.</p>
+  </noscript>
+</section>
+<script src="{{ base_prefix }}static/governance.js" defer></script>
+{% endif %}
 
 {# Security section (OpenSSF Scorecard + CVE/advisory history, issue #55,
-   D21 item 3) — kept in its own partial/include so #36's compliance-engine
-   work on this same page never needs to touch this section's markup. #}
+   D21 item 3) — kept in its own partial/include so this page's own
+   compliance-engine work never needs to touch this section's markup. #}
 {% include "_security.html" %}
 {% endblock %}

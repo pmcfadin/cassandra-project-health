@@ -45,6 +45,13 @@ _VERSIONS: dict[str, str] = {
     # issue #35
     "time_to_first_reply_devlist": "1.0",
     "unanswered_thread_rate_devlist": "1.0",
+    # issue #54
+    "pr_merge_lead_time": "1.0",
+    "pr_time_to_first_review": "1.0",
+    "pr_time_to_close": "1.0",
+    "pr_review_engagement": "1.0",
+    "time_to_first_response_jira": "1.0",
+    "stale_pr_rate": "1.0",
 }
 
 _INITIAL_M0_CHANGELOG_NOTE = "Initial M0 implementation (issue #7)."
@@ -62,6 +69,7 @@ _HEADCOUNT_FLOOR_CHANGELOG_NOTE = (
 _INITIAL_ISSUE_53_CHANGELOG_NOTE = "Initial implementation (issue #53)."
 _INITIAL_ISSUE_52_CHANGELOG_NOTE = "Initial implementation (issue #52, D6)."
 _INITIAL_ISSUE_35_CHANGELOG_NOTE = "Initial implementation (issue #35)."
+_INITIAL_ISSUE_54_CHANGELOG_NOTE = "Initial implementation (issue #54)."
 
 _CHANGELOG_NOTES: dict[str, str] = {
     "active_contributors_monthly": _HEADCOUNT_FLOOR_CHANGELOG_NOTE,
@@ -80,6 +88,12 @@ _CHANGELOG_NOTES: dict[str, str] = {
     "unknown_affiliation_rate": _INITIAL_ISSUE_52_CHANGELOG_NOTE,
     "time_to_first_reply_devlist": _INITIAL_ISSUE_35_CHANGELOG_NOTE,
     "unanswered_thread_rate_devlist": _INITIAL_ISSUE_35_CHANGELOG_NOTE,
+    "pr_merge_lead_time": _INITIAL_ISSUE_54_CHANGELOG_NOTE,
+    "pr_time_to_first_review": _INITIAL_ISSUE_54_CHANGELOG_NOTE,
+    "pr_time_to_close": _INITIAL_ISSUE_54_CHANGELOG_NOTE,
+    "pr_review_engagement": _INITIAL_ISSUE_54_CHANGELOG_NOTE,
+    "time_to_first_response_jira": _INITIAL_ISSUE_54_CHANGELOG_NOTE,
+    "stale_pr_rate": _INITIAL_ISSUE_54_CHANGELOG_NOTE,
 }
 
 # metric_id -> description, condensed from METRICS.md's own "## <id>" sections.
@@ -330,6 +344,107 @@ _DESCRIPTIONS: dict[str, str] = {
         "flag as time_to_first_reply_devlist (collectors/ponymail.py's capped backfill). Tier: "
         "established. Dimension: responsiveness. Role: supporting. Direction of good: lower. "
         "Window: monthly. METRICS.md §4."
+    ),
+    "pr_merge_lead_time": (
+        "Median and P90 days from pr.created_at to pr.merged_at, for PRs merged in each "
+        "completed calendar month, bucketed by merge month; dense (one row per completed "
+        "month from the first month any PR merged through the last completed month before "
+        "as_of). details_json carries p90_days and n. Population: pr.merged = true across "
+        "every configured pull_requests.repos (projects/cassandra.yaml lists 7). Tier: proxy "
+        "-- GitHub PRs cover only part of Cassandra's actual review activity, which is "
+        "JIRA-first (DECISIONS.md 'Cassandra-specific facts'); this metric is honest about "
+        "measuring GitHub's slice, not the project's whole merge-lead-time picture. "
+        "Dimension: responsiveness. Role: supporting (this dimension's key slots are already "
+        "held by time_to_first_response_jira/stale_jira_rate/time_to_first_reply_devlist per "
+        "METRICS.md §1's 'Key metrics per dimension' cap). Direction of good: lower. Window: "
+        "monthly. No sample-size floor applies below n=5 (METRICS.md §0.6 latency floor) -- "
+        "flag='insufficient_data' below that, row still emitted. DECISIONS.md D21 item 2, "
+        "METRICS.md §0.6."
+    ),
+    "pr_time_to_first_review": (
+        "Median and P90 days from pr.created_at to the earliest *non-self* "
+        "pr_review.submitted_at for that PR, among PRs with at least one qualifying review, "
+        "bucketed by the PR's creation month (the 'ready for review' moment); dense monthly. "
+        "Excludes reviews where the reviewer is the PR author (orchestrator review fixup: "
+        "GitHub records an author's own replies inside review threads as COMMENTED reviews "
+        "by that author), compared at the identity level -- resolved_identity (issue #52's "
+        "github_login identity_link) when a link exists, falling back to the raw login "
+        "otherwise; an unresolvable side is never treated as a self-match. details_json "
+        "carries p90_days and n. GitHub-PR-specific analog of METRICS.md §3's review_latency "
+        "(which is computed from the git-trailer + JIRA-reviewer-field proxy instead) -- "
+        "reported as its own metric rather than merged into review_latency, since the two "
+        "draw from different, only partially-overlapping evidence (DECISIONS.md "
+        "'Cassandra-specific facts': GitHub PRs cover only part of review activity). Tier: "
+        "proxy. Dimension: reviewer capacity. Role: supporting (review_latency already holds "
+        "this dimension's latency key slot). Direction of good: lower. Window: monthly. "
+        "METRICS.md §0.6 latency floor (n=5) applies. DECISIONS.md D21 item 2."
+    ),
+    "pr_time_to_close": (
+        "Median and P90 days from pr.created_at to pr.closed_at, for PRs closed (merged or "
+        "not) in each completed calendar month, bucketed by close month; dense monthly. "
+        "details_json carries p90_days, n, and n_merged (the subset of closed PRs that were "
+        "also merged, vs. closed without merging). Tier: proxy (GitHub-only slice, same "
+        "caveat as pr_merge_lead_time). Dimension: responsiveness. Role: supporting. "
+        "Direction of good: lower. Window: monthly. METRICS.md §0.6 latency floor (n=5) "
+        "applies. DECISIONS.md D21 item 2."
+    ),
+    "pr_review_engagement": (
+        "Review engagement across GitHub PRs that received at least one *non-self* review "
+        "in a completed calendar month (bucketed by pr_review.submitted_at): value = mean "
+        "unique non-self reviewers per PR; details_json carries mean_reviews_per_pr, "
+        "median_reviews_per_pr, n_prs (the population n), n_reviews and "
+        "n_unique_reviewers_total (per-source counts, D2.3 audit trail) -- all counting only "
+        "non-self reviews. Excludes the PR author's own review events from every count here "
+        "(orchestrator review fixup, same identity-level self-review exclusion as "
+        "pr_time_to_first_review); a PR whose only review activity is a self-review does not "
+        "enter the population at all. Two related but distinct numbers reported together, "
+        "matching METRICS.md §3's reviewer_top_k_share convention of never collapsing a "
+        "multi-number concept into one. Tier: proxy. Dimension: reviewer capacity. Role: "
+        "supporting (unique_reviewers_monthly already holds this dimension's headcount key "
+        "slot; this metric is GitHub-PR-specific and narrower). Direction of good: none for "
+        "the per-PR averages individually -- rising mean reviewers/PR is not obviously "
+        "good or bad on its own (could mean healthy collaborative review, or could mean a "
+        "few PRs are contentious) -- reported for context alongside reviewer_hhi/"
+        "unique_reviewers_monthly, per METRICS.md's 'no metric alone drives status' pattern "
+        "for composed/context metrics. Window: monthly. METRICS.md §0.6 rate/ratio floor "
+        "(n=5 PRs) applies. DECISIONS.md D21 item 2."
+    ),
+    "time_to_first_response_jira": (
+        "Median and P90 days from issue.created_at to the first issue_comment authored by "
+        "someone other than the issue's reporter and not matching a bot_patterns "
+        "jira_username pattern, for issues opened in each completed calendar month "
+        "(the 'opened in window' framing -- METRICS.md §4 asks for both opened- and "
+        "closed-in-window side by side; details_json's closed_in_window carries the same "
+        "statistic bucketed by the qualifying comment's own month instead, as the "
+        "closed-in-window cross-check). details_json also carries n_opened_in_window (every "
+        "issue opened that month, for context) vs. n (the subset with a computable first "
+        "response as of this run -- an issue with no comment yet, or whose only comments are "
+        "by the reporter/a bot, simply isn't counted yet; it is not treated as a response of "
+        "0 days). KNOWN LIMITATION: only comment-based responses are captured (a reviewer "
+        "moving an issue straight to a new status without commenting is not detected -- M0 "
+        "has no JIRA changelog collection); comment metadata itself is bounded to each "
+        "issue's earliest 20 comments (collectors/jira.py MAX_COMMENTS_PER_ISSUE_STORED), "
+        "which is a low-risk truncation for a first-response statistic. Tier: established. "
+        "Dimension: responsiveness. Role: key (one of this dimension's key metrics, METRICS.md "
+        "§1 -- JIRA, not GitHub PRs, is where most Cassandra review discussion happens). "
+        "Direction of good: lower. Window: monthly. METRICS.md §0.6 latency floor (n=5) "
+        "applies. METRICS.md §4."
+    ),
+    "stale_pr_rate": (
+        "Share of currently-open GitHub PRs (state='OPEN') with no update in the last 90 "
+        "days (configurable, details_json.threshold_days), as of the run's as_of date, "
+        "across every configured pull_requests.repos. Reuses pr.updated_at as the staleness "
+        "signal (GitHub's own updatedAt bumps on any review/comment/label/CI activity) -- "
+        "same simplification stale_jira_rate makes for issue.updated_at, same disclosed "
+        "limitation (a label or CI-triggered update, not necessarily human activity, can "
+        "reset the clock). One snapshot row per run (window_start == window_end == as_of), "
+        "not a monthly time series -- history accumulates from nightly snapshots going "
+        "forward, same as stale_jira_rate. details_json carries n_open, n_stale, "
+        "threshold_days, and a per-repo breakdown. Tier: established. Dimension: "
+        "responsiveness. Role: supporting (stale_jira_rate already holds this dimension's "
+        "staleness key slot, for the same JIRA-is-primary-venue reason as "
+        "time_to_first_response_jira). Direction of good: lower. METRICS.md §0.6 rate/ratio "
+        "floor (n=5 open PRs) applies. METRICS.md §4."
     ),
 }
 

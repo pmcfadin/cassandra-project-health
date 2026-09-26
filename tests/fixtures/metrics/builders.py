@@ -140,6 +140,88 @@ def issues(rows: list[dict]) -> pa.Table:
     return validate("issue", pa.Table.from_pylist(built, schema=schema))
 
 
+def prs(rows: list[dict]) -> pa.Table:
+    """Build a `pr` table (issue #54).
+
+    Required per row: `repo`, `number`, `created_at`. Optional: `state`
+    (default `"OPEN"`), `is_draft` (default `False`), `merged` (default
+    `False`), `merged_at`, `closed_at`, `updated_at` (default `created_at`),
+    `author_raw_value`, `additions`/`deletions`/`changed_files`, `title_hash`,
+    `source_snapshot_id`.
+    """
+    built = [
+        {
+            "repo": row["repo"],
+            "number": row["number"],
+            "state": row.get("state", "OPEN"),
+            "is_draft": row.get("is_draft", False),
+            "merged": row.get("merged", False),
+            "author_identity_id": None,
+            "author_raw_type": "github_login",
+            "author_raw_value": row.get("author_raw_value", "alice-dev"),
+            "title_hash": row.get("title_hash", f"hash-{i}"),
+            "created_at": row["created_at"],
+            "updated_at": row.get("updated_at", row["created_at"]),
+            "closed_at": row.get("closed_at"),
+            "merged_at": row.get("merged_at"),
+            "additions": row.get("additions"),
+            "deletions": row.get("deletions"),
+            "changed_files": row.get("changed_files"),
+            "source_snapshot_id": row.get("source_snapshot_id", "snap-1"),
+        }
+        for i, row in enumerate(rows)
+    ]
+    schema = get_schema("pr")
+    return validate("pr", pa.Table.from_pylist(built, schema=schema))
+
+
+def pr_reviews(rows: list[dict]) -> pa.Table:
+    """Build a `pr_review` table (issue #54).
+
+    Required per row: `repo`, `pr_number`, `reviewer_raw_value`,
+    `submitted_at`. Optional: `review_id`, `state` (default `"APPROVED"`),
+    `source_snapshot_id`.
+    """
+    built = [
+        {
+            "review_id": row.get("review_id", f"review-{i}"),
+            "repo": row["repo"],
+            "pr_number": row["pr_number"],
+            "reviewer_identity_id": None,
+            "reviewer_raw_type": "github_login",
+            "reviewer_raw_value": row["reviewer_raw_value"],
+            "state": row.get("state", "APPROVED"),
+            "submitted_at": row["submitted_at"],
+            "source_snapshot_id": row.get("source_snapshot_id", "snap-1"),
+        }
+        for i, row in enumerate(rows)
+    ]
+    schema = get_schema("pr_review")
+    return validate("pr_review", pa.Table.from_pylist(built, schema=schema))
+
+
+def issue_comments(rows: list[dict]) -> pa.Table:
+    """Build an `issue_comment` table (issue #54).
+
+    Required per row: `issue_key`, `created_at`. Optional: `comment_id`,
+    `author_raw_value`, `source_snapshot_id`.
+    """
+    built = [
+        {
+            "comment_id": row.get("comment_id", f"comment-{i}"),
+            "issue_key": row["issue_key"],
+            "author_identity_id": None,
+            "author_raw_type": "jira_username",
+            "author_raw_value": row.get("author_raw_value", "bob"),
+            "created_at": row["created_at"],
+            "source_snapshot_id": row.get("source_snapshot_id", "snap-1"),
+        }
+        for i, row in enumerate(rows)
+    ]
+    schema = get_schema("issue_comment")
+    return validate("issue_comment", pa.Table.from_pylist(built, schema=schema))
+
+
 def roster_entries(rows: list[dict]) -> pa.Table:
     """Build a `roster_entry` table.
 

@@ -20,13 +20,17 @@ import pytest
 from project_health.config import load_project
 from project_health.metrics.engine import compute_all
 from project_health.normalize.identity import identity_id_for
+from project_health.schema import get_schema, validate
 from tests.fixtures.metrics.builders import (
     affiliation_periods,
     contribution_events,
     file_change_events,
     identity_link_for,
+    issue_comments,
     issues,
     messages,
+    pr_reviews,
+    prs,
     review_events,
     roster_entries,
 )
@@ -55,6 +59,32 @@ def _rows_for(table: pa.Table, metric_id: str) -> list[dict]:
 
 def _details(row: dict) -> dict:
     return json.loads(row["details_json"]) if row["details_json"] else {}
+
+
+def _github_login_identity_link(pairs: list[tuple[str, str]]) -> pa.Table:
+    """Hand-built `identity_link` rows mapping `(identity_id, github_login)`
+    pairs (issue #54 fixup: self-review exclusion's identity-level compare).
+    Not routed through `identity_link_for`'s naive resolver -- that resolver
+    has no `github_login` source_type support at all (issue #52's own
+    `link_github_commit_authors` is what actually produces these rows in
+    production); tests exercising the resolved-identity path build the table
+    directly instead.
+    """
+    rows = [
+        {
+            "link_id": f"link-{i}",
+            "identity_id": identity_id,
+            "source_type": "github_login",
+            "source_value": login,
+            "confidence": "high",
+            "evidence": "test fixture",
+            "linked_by": "github_commit_author_v1",
+            "linked_at": _ts(2024, 1, 1),
+        }
+        for i, (identity_id, login) in enumerate(pairs)
+    ]
+    schema = get_schema("identity_link")
+    return validate("identity_link", pa.Table.from_pylist(rows, schema=schema))
 
 
 # --- active_contributors_monthly (headcount: reports any n, issue #27) -----
@@ -1551,6 +1581,654 @@ def test_pmc_joins_quarterly_includes_zero_join_quarters():
     assert q4["definition_version"] == "1.0"
     details_q4 = _details(q4)
     assert details_q4["pmc_new_joins"] == 0
+
+
+# --- issue #54: pr_merge_lead_time --------------------------------------
+
+
+def test_pr_merge_lead_time_golden():
+    pr_rows = []
+    lead_days = [2, 4, 6, 8, 10]
+    for i, days in enumerate(lead_days):
+        pr_rows.append(
+            {
+                "repo": "apache/cassandra",
+                "number": 100 + i,
+                "merged": True,
+                "created_at": _ts(2024, 1, 1, hh=0),
+                "merged_at": _ts(2024, 1, 1, hh=0) + _days(days),
+            }
+        )
+    # February: only 1 merged PR -> below the floor.
+    pr_rows.append(
+        {
+            "repo": "apache/cassandra",
+            "number": 200,
+            "merged": True,
+            "created_at": _ts(2024, 2, 1, hh=0),
+            "merged_at": _ts(2024, 2, 3, hh=0),
+        }
+    )
+    # March (as_of month) must be excluded; an unmerged PR must never count.
+    pr_rows.append(
+        {
+            "repo": "apache/cassandra",
+            "number": 300,
+            "merged": False,
+            "created_at": _ts(2024, 1, 1, hh=0),
+            "closed_at": _ts(2024, 1, 2, hh=0),
+        }
+    )
+
+    result = compute_all(
+        {"pr": prs(pr_rows)}, as_of=AS_OF, run_id=RUN_ID, computed_at=COMPUTED_AT, config=CONFIG
+    )
+
+    rows = _rows_for(result, "pr_merge_lead_time")
+    assert [r["window_start"] for r in rows] == [date(2024, 1, 1), date(2024, 2, 1)]
+
+    jan, feb = rows
+    assert jan["n"] == 5
+    assert jan["value"] == pytest.approx(6.0)
+    assert jan["flag"] == "ok"
+    assert _details(jan)["p90_days"] == pytest.approx(9.2)
+
+    assert feb["n"] == 1
+    assert feb["value"] is None
+    assert feb["flag"] == "insufficient_data"
+
+
+# --- issue #54: pr_time_to_first_review ----------------------------------
+
+
+def test_pr_time_to_first_review_golden():
+    pr_rows = [
+        {"repo": "apache/cassandra", "number": 100 + i, "created_at": _ts(2024, 1, 1, hh=0)}
+        for i in range(5)
+    ]
+    review_rows = [
+        {
+            "repo": "apache/cassandra",
+            "pr_number": 100 + i,
+            "reviewer_raw_value": "bob-reviewer",
+            "submitted_at": _ts(2024, 1, 1, hh=0) + _days(days),
+        }
+        for i, days in enumerate([1, 2, 3, 4, 5])
+    ]
+    # A PR with no review at all must never contribute a latency value.
+    pr_rows.append(
+        {"repo": "apache/cassandra", "number": 999, "created_at": _ts(2024, 1, 1, hh=0)}
+    )
+
+    result = compute_all(
+        {"pr": prs(pr_rows), "pr_review": pr_reviews(review_rows)},
+        as_of=AS_OF,
+        run_id=RUN_ID,
+        computed_at=COMPUTED_AT,
+        config=CONFIG,
+    )
+
+    rows = _rows_for(result, "pr_time_to_first_review")
+    # Dense months: February has no PR data at all, so it still emits an
+    # insufficient_data row (n=0) rather than being skipped.
+    assert [r["window_start"] for r in rows] == [date(2024, 1, 1), date(2024, 2, 1)]
+    jan, feb = rows
+    assert jan["n"] == 5
+    assert jan["value"] == pytest.approx(3.0)
+    assert jan["flag"] == "ok"  # n == floor (5) clears it, not below it
+    assert feb["n"] == 0
+    assert feb["value"] is None
+    assert feb["flag"] == "insufficient_data"
+
+
+def test_pr_time_to_first_review_uses_earliest_review_per_pr():
+    pr_rows = [{"repo": "apache/cassandra", "number": 100, "created_at": _ts(2024, 1, 1, hh=0)}]
+    review_rows = [
+        {
+            "repo": "apache/cassandra",
+            "pr_number": 100,
+            "reviewer_raw_value": "later-reviewer",
+            "submitted_at": _ts(2024, 1, 5, hh=0),
+        },
+        {
+            "repo": "apache/cassandra",
+            "pr_number": 100,
+            "reviewer_raw_value": "earlier-reviewer",
+            "submitted_at": _ts(2024, 1, 2, hh=0),
+        },
+    ]
+    result = compute_all(
+        {"pr": prs(pr_rows), "pr_review": pr_reviews(review_rows)},
+        as_of=AS_OF,
+        run_id=RUN_ID,
+        computed_at=COMPUTED_AT,
+        config=CONFIG,
+    )
+    rows = _rows_for(result, "pr_time_to_first_review")
+    assert rows[0]["n"] == 1
+    assert _details(rows[0])["n"] == 1
+    # below the floor -> insufficient_data, but the underlying latency (1 day
+    # from the *earliest* of the two reviews, not the 4-day later one) is
+    # still what a details_json list would show.
+
+
+def test_pr_time_to_first_review_excludes_self_review_same_raw_login():
+    """Orchestrator review fixup: GitHub records a PR author's own replies
+    inside review threads as `COMMENTED` reviews by that author -- these must
+    never count as "the first review." The PR author (raw login
+    "alice-dev", the `prs()` builder default) posts a self-review on day 1;
+    the genuine first review from someone else lands on day 3. The metric
+    must report 3 days, not 1."""
+    pr_rows = [{"repo": "apache/cassandra", "number": 100, "created_at": _ts(2024, 1, 1, hh=0)}]
+    review_rows = [
+        {
+            "repo": "apache/cassandra",
+            "pr_number": 100,
+            "reviewer_raw_value": "alice-dev",  # same raw login as the PR author
+            "submitted_at": _ts(2024, 1, 2, hh=0),
+        },
+        {
+            "repo": "apache/cassandra",
+            "pr_number": 100,
+            "reviewer_raw_value": "bob-reviewer",
+            "submitted_at": _ts(2024, 1, 4, hh=0),
+        },
+    ]
+    result = compute_all(
+        {"pr": prs(pr_rows), "pr_review": pr_reviews(review_rows)},
+        as_of=AS_OF,
+        run_id=RUN_ID,
+        computed_at=COMPUTED_AT,
+        config=CONFIG,
+    )
+    rows = _rows_for(result, "pr_time_to_first_review")
+    assert rows[0]["n"] == 1  # only bob's review counts
+    assert _details(rows[0])["n"] == 1
+
+
+def test_pr_time_to_first_review_excludes_self_review_via_resolved_identity():
+    """Same self-review exclusion, but the PR author posted under a
+    *different* raw login than the review -- only `resolved_identity`
+    (issue #52's github_login identity_link) reveals they're the same
+    person. The metric must still exclude it (identity-level compare, not
+    just raw-string compare)."""
+    pr_rows = [
+        {
+            "repo": "apache/cassandra",
+            "number": 100,
+            "author_raw_value": "alice-work-account",
+            "created_at": _ts(2024, 1, 1, hh=0),
+        }
+    ]
+    review_rows = [
+        {
+            "repo": "apache/cassandra",
+            "pr_number": 100,
+            "reviewer_raw_value": "alice-personal-account",  # same human, different login
+            "submitted_at": _ts(2024, 1, 2, hh=0),
+        },
+        {
+            "repo": "apache/cassandra",
+            "pr_number": 100,
+            "reviewer_raw_value": "bob-reviewer",
+            "submitted_at": _ts(2024, 1, 4, hh=0),
+        },
+    ]
+    identity_link = _github_login_identity_link(
+        [
+            ("identity-alice", "alice-work-account"),
+            ("identity-alice", "alice-personal-account"),
+        ]
+    )
+    result = compute_all(
+        {
+            "pr": prs(pr_rows),
+            "pr_review": pr_reviews(review_rows),
+            "identity_link": identity_link,
+        },
+        as_of=AS_OF,
+        run_id=RUN_ID,
+        computed_at=COMPUTED_AT,
+        config=CONFIG,
+    )
+    rows = _rows_for(result, "pr_time_to_first_review")
+    assert rows[0]["n"] == 1  # only bob's review counts, alice's self-review excluded
+
+
+def test_pr_time_to_first_review_unresolvable_author_never_treated_as_self():
+    """A PR with no author at all (`author_raw_value=None`, e.g. a deleted
+    account) must never suppress a genuine review -- an unresolvable side is
+    never treated as matching anything, including itself."""
+    pr_rows = [
+        {
+            "repo": "apache/cassandra",
+            "number": 100,
+            "author_raw_value": None,
+            "created_at": _ts(2024, 1, 1, hh=0),
+        }
+    ]
+    review_rows = [
+        {
+            "repo": "apache/cassandra",
+            "pr_number": 100,
+            "reviewer_raw_value": "bob-reviewer",
+            "submitted_at": _ts(2024, 1, 2, hh=0),
+        }
+    ]
+    result = compute_all(
+        {"pr": prs(pr_rows), "pr_review": pr_reviews(review_rows)},
+        as_of=AS_OF,
+        run_id=RUN_ID,
+        computed_at=COMPUTED_AT,
+        config=CONFIG,
+    )
+    rows = _rows_for(result, "pr_time_to_first_review")
+    assert rows[0]["n"] == 1  # bob's review counts; the null author never suppresses it
+    assert _details(rows[0])["n"] == 1
+
+
+# --- issue #54: pr_time_to_close ------------------------------------------
+
+
+def test_pr_time_to_close_golden():
+    pr_rows = []
+    for i, days in enumerate([1, 3, 5, 7, 9]):
+        pr_rows.append(
+            {
+                "repo": "apache/cassandra",
+                "number": 100 + i,
+                "merged": i % 2 == 0,  # 3 merged, 2 closed-without-merge
+                "created_at": _ts(2024, 1, 1, hh=0),
+                "closed_at": _ts(2024, 1, 1, hh=0) + _days(days),
+                "merged_at": _ts(2024, 1, 1, hh=0) + _days(days) if i % 2 == 0 else None,
+            }
+        )
+    result = compute_all(
+        {"pr": prs(pr_rows)}, as_of=AS_OF, run_id=RUN_ID, computed_at=COMPUTED_AT, config=CONFIG
+    )
+
+    rows = _rows_for(result, "pr_time_to_close")
+    # Dense months: February has no data -> still a row (n=0).
+    assert [r["window_start"] for r in rows] == [date(2024, 1, 1), date(2024, 2, 1)]
+    jan, feb = rows
+    assert feb["n"] == 0
+    assert feb["flag"] == "insufficient_data"
+    assert jan["n"] == 5
+    assert jan["value"] == pytest.approx(5.0)
+    assert jan["flag"] == "ok"
+    details = _details(jan)
+    assert details["n_merged"] == 3
+
+
+# --- issue #54: pr_review_engagement --------------------------------------
+
+
+def test_pr_review_engagement_golden():
+    pr_rows = []
+    review_rows = []
+    # 5 PRs reviewed in January: PR i gets (i+1) unique reviewers, each
+    # reviewing once, so reviews_per_pr == unique_reviewers_per_pr here.
+    for pr_i in range(5):
+        pr_rows.append(
+            {
+                "repo": "apache/cassandra",
+                "number": 100 + pr_i,
+                "author_raw_value": "pr-author",
+                "created_at": _ts(2024, 1, 1, hh=0),
+            }
+        )
+        for reviewer_i in range(pr_i + 1):
+            review_rows.append(
+                {
+                    "repo": "apache/cassandra",
+                    "pr_number": 100 + pr_i,
+                    "reviewer_raw_value": f"reviewer-{reviewer_i}",
+                    "submitted_at": _ts(2024, 1, 10, hh=0),
+                }
+            )
+    result = compute_all(
+        {"pr": prs(pr_rows), "pr_review": pr_reviews(review_rows)},
+        as_of=AS_OF,
+        run_id=RUN_ID,
+        computed_at=COMPUTED_AT,
+        config=CONFIG,
+    )
+
+    rows = _rows_for(result, "pr_review_engagement")
+    # Dense months: February has no review activity -> still a row (n=0).
+    assert [r["window_start"] for r in rows] == [date(2024, 1, 1), date(2024, 2, 1)]
+    jan, feb = rows
+    assert feb["n"] == 0
+    assert feb["flag"] == "insufficient_data"
+    assert jan["n"] == 5  # 5 PRs reviewed
+    assert jan["value"] == pytest.approx((1 + 2 + 3 + 4 + 5) / 5)
+    assert jan["flag"] == "ok"
+    details = _details(jan)
+    assert details["mean_reviews_per_pr"] == pytest.approx((1 + 2 + 3 + 4 + 5) / 5)
+    assert details["n_prs"] == 5
+    assert details["n_reviews"] == 1 + 2 + 3 + 4 + 5
+    assert details["n_unique_reviewers_total"] == 5  # reviewer-0..reviewer-4
+
+
+def test_pr_review_engagement_excludes_self_reviews():
+    """Orchestrator review fixup: a PR author's own `COMMENTED` review on
+    their own PR must never count toward unique-reviewers-per-PR, reviews-
+    per-PR, or the total unique-reviewer count -- only genuine third-party
+    reviews are review-engagement credit. 5 PRs with qualifying (non-self)
+    reviews clears the n=5 floor so `value`/flag='ok' are asserted directly,
+    not just `n`."""
+    pr_rows = [
+        {
+            "repo": "apache/cassandra",
+            "number": 100,
+            "author_raw_value": "alice-dev",
+            "created_at": _ts(2024, 1, 1, hh=0),
+        },
+        {
+            "repo": "apache/cassandra",
+            "number": 101,
+            "author_raw_value": "carol-dev",
+            "created_at": _ts(2024, 1, 1, hh=0),
+        },
+        *(
+            {
+                "repo": "apache/cassandra",
+                "number": 102 + i,
+                "author_raw_value": "dave-dev",
+                "created_at": _ts(2024, 1, 1, hh=0),
+            }
+            for i in range(4)
+        ),
+    ]
+    review_rows = [
+        # PR 100: alice (the author) self-reviews once, plus two genuine
+        # reviews from bob and carol.
+        {
+            "repo": "apache/cassandra",
+            "pr_number": 100,
+            "reviewer_raw_value": "alice-dev",
+            "submitted_at": _ts(2024, 1, 2, hh=0),
+        },
+        {
+            "repo": "apache/cassandra",
+            "pr_number": 100,
+            "reviewer_raw_value": "bob-reviewer",
+            "submitted_at": _ts(2024, 1, 3, hh=0),
+        },
+        {
+            "repo": "apache/cassandra",
+            "pr_number": 100,
+            "reviewer_raw_value": "carol-dev",
+            "submitted_at": _ts(2024, 1, 3, hh=0),
+        },
+        # PR 101: only a self-review by carol (the author) -- zero
+        # qualifying reviews, so this PR must not appear in the population.
+        {
+            "repo": "apache/cassandra",
+            "pr_number": 101,
+            "reviewer_raw_value": "carol-dev",
+            "submitted_at": _ts(2024, 1, 4, hh=0),
+        },
+        # PRs 102-105: one genuine (non-self) reviewer each -- erin reviews
+        # two of them, so n_unique_reviewers_total still counts her once.
+        {
+            "repo": "apache/cassandra",
+            "pr_number": 102,
+            "reviewer_raw_value": "erin-reviewer",
+            "submitted_at": _ts(2024, 1, 5, hh=0),
+        },
+        {
+            "repo": "apache/cassandra",
+            "pr_number": 103,
+            "reviewer_raw_value": "frank-reviewer",
+            "submitted_at": _ts(2024, 1, 5, hh=0),
+        },
+        {
+            "repo": "apache/cassandra",
+            "pr_number": 104,
+            "reviewer_raw_value": "grace-reviewer",
+            "submitted_at": _ts(2024, 1, 5, hh=0),
+        },
+        {
+            "repo": "apache/cassandra",
+            "pr_number": 105,
+            "reviewer_raw_value": "erin-reviewer",
+            "submitted_at": _ts(2024, 1, 5, hh=0),
+        },
+    ]
+    result = compute_all(
+        {"pr": prs(pr_rows), "pr_review": pr_reviews(review_rows)},
+        as_of=AS_OF,
+        run_id=RUN_ID,
+        computed_at=COMPUTED_AT,
+        config=CONFIG,
+    )
+
+    rows = _rows_for(result, "pr_review_engagement")
+    jan = rows[0]
+    # PR 101 (self-review only) never appears; the other 5 PRs have unique-
+    # reviewer counts [2, 1, 1, 1, 1] (PR 100 has bob+carol; the rest one
+    # genuine reviewer each) -- mean = 6/5 = 1.2, never inflated by alice's
+    # or carol's own self-reviews.
+    assert jan["n"] == 5
+    assert jan["flag"] == "ok"
+    assert jan["value"] == pytest.approx(1.2)
+    details = _details(jan)
+    assert details["n_prs"] == 5
+    assert details["n_reviews"] == 6
+    # bob, carol, erin, frank, grace -- never alice or (self-reviewing) carol
+    # counted against her own PR 101.
+    assert details["n_unique_reviewers_total"] == 5
+
+
+# --- issue #54: time_to_first_response_jira -------------------------------
+
+
+def test_time_to_first_response_jira_golden():
+    issue_rows = []
+    comment_rows = []
+    for i, days in enumerate([1, 2, 3, 4, 5]):
+        issue_key = f"CASSANDRA-{1000 + i}"
+        issue_rows.append(
+            {
+                "issue_key": issue_key,
+                "created_at": _ts(2024, 1, 1, hh=0),
+                "updated_at": _ts(2024, 1, 1, hh=0) + _days(days),
+                "reporter_raw": "reporter-a",
+            }
+        )
+        comment_rows.append(
+            {
+                "issue_key": issue_key,
+                "author_raw_value": "responder-b",
+                "created_at": _ts(2024, 1, 1, hh=0) + _days(days),
+            }
+        )
+    # An issue whose only comment is by the reporter -- must not count as a
+    # response.
+    issue_rows.append(
+        {
+            "issue_key": "CASSANDRA-2000",
+            "created_at": _ts(2024, 1, 1, hh=0),
+            "updated_at": _ts(2024, 1, 2, hh=0),
+            "reporter_raw": "reporter-a",
+        }
+    )
+    comment_rows.append(
+        {
+            "issue_key": "CASSANDRA-2000",
+            "author_raw_value": "reporter-a",
+            "created_at": _ts(2024, 1, 1, hh=12),
+        }
+    )
+    # An issue whose only comment is from a bot (svn-role) -- must not count.
+    issue_rows.append(
+        {
+            "issue_key": "CASSANDRA-2001",
+            "created_at": _ts(2024, 1, 1, hh=0),
+            "updated_at": _ts(2024, 1, 2, hh=0),
+            "reporter_raw": "reporter-a",
+        }
+    )
+    comment_rows.append(
+        {
+            "issue_key": "CASSANDRA-2001",
+            "author_raw_value": "svn-role",
+            "created_at": _ts(2024, 1, 1, hh=12),
+        }
+    )
+
+    result = compute_all(
+        {"issue": issues(issue_rows), "issue_comment": issue_comments(comment_rows)},
+        as_of=AS_OF,
+        run_id=RUN_ID,
+        computed_at=COMPUTED_AT,
+        config=CONFIG,
+    )
+
+    rows = _rows_for(result, "time_to_first_response_jira")
+    assert [r["window_start"] for r in rows] == [date(2024, 1, 1), date(2024, 2, 1)]
+    jan, feb = rows
+    assert feb["n"] == 0
+    assert feb["flag"] == "insufficient_data"
+    # Only the 5 issues with a genuine human, non-reporter response count.
+    assert jan["n"] == 5
+    assert jan["value"] == pytest.approx(3.0)
+    assert jan["flag"] == "ok"  # n == floor (5) clears it, not below it
+    details = _details(jan)
+    assert details["n_opened_in_window"] == 7  # all 7 issues opened in January
+    assert details["closed_in_window"]["n"] == 5
+
+
+def test_time_to_first_response_jira_assignee_who_is_the_reporter_is_excluded():
+    """Orchestrator review confirmation: when an issue's assignee is also its
+    reporter, that person's own comment must not count as a first response
+    -- already true because the exclusion compares by author_raw_value ==
+    reporter_raw, and this person's author_raw_value equals reporter_raw
+    regardless of them also being the assignee. A *different* assignee's
+    comment, by contrast, is a genuine first response and must count."""
+    issue_rows = [
+        {
+            "issue_key": "CASSANDRA-3000",
+            "created_at": _ts(2024, 1, 1, hh=0),
+            "updated_at": _ts(2024, 1, 2, hh=0),
+            "reporter_raw": "reporter-a",
+            "assignee_raw": "reporter-a",  # self-assigned
+        },
+        {
+            "issue_key": "CASSANDRA-3001",
+            "created_at": _ts(2024, 1, 1, hh=0),
+            "updated_at": _ts(2024, 1, 2, hh=0),
+            "reporter_raw": "reporter-a",
+            "assignee_raw": "assignee-c",  # distinct from the reporter
+        },
+    ]
+    comment_rows = [
+        # CASSANDRA-3000: the self-assigned reporter comments on their own
+        # issue -- must not count as a response.
+        {
+            "issue_key": "CASSANDRA-3000",
+            "author_raw_value": "reporter-a",
+            "created_at": _ts(2024, 1, 2, hh=0),
+        },
+        # CASSANDRA-3001: the (distinct) assignee comments -- this is a
+        # genuine first response and must count.
+        {
+            "issue_key": "CASSANDRA-3001",
+            "author_raw_value": "assignee-c",
+            "created_at": _ts(2024, 1, 3, hh=0),
+        },
+    ]
+
+    result = compute_all(
+        {"issue": issues(issue_rows), "issue_comment": issue_comments(comment_rows)},
+        as_of=AS_OF,
+        run_id=RUN_ID,
+        computed_at=COMPUTED_AT,
+        config=CONFIG,
+    )
+
+    rows = _rows_for(result, "time_to_first_response_jira")
+    jan = rows[0]
+    # Only CASSANDRA-3001's assignee response counts (below the n=5 floor,
+    # so flag/value are suppressed -- the underlying n is what this test
+    # is about).
+    assert jan["n"] == 1
+    assert jan["flag"] == "insufficient_data"
+
+
+# --- issue #54: stale_pr_rate ----------------------------------------------
+
+
+def test_stale_pr_rate_golden_single_snapshot_row():
+    pr_rows = [
+        # Stale: last updated well before the 90-day cutoff.
+        {
+            "repo": "apache/cassandra",
+            "number": 1,
+            "state": "OPEN",
+            "created_at": _ts(2019, 1, 1),
+            "updated_at": _ts(2022, 1, 1),
+        },
+        {
+            "repo": "apache/cassandra",
+            "number": 2,
+            "state": "OPEN",
+            "created_at": _ts(2019, 1, 1),
+            "updated_at": _ts(2022, 6, 1),
+        },
+        {
+            "repo": "apache/cassandra",
+            "number": 3,
+            "state": "OPEN",
+            "created_at": _ts(2019, 1, 1),
+            "updated_at": _ts(2020, 1, 1),
+        },
+        # Not stale: updated after the cutoff.
+        {
+            "repo": "apache/cassandra",
+            "number": 4,
+            "state": "OPEN",
+            "created_at": _ts(2023, 1, 1),
+            "updated_at": _ts(2024, 3, 1),
+        },
+        {
+            "repo": "apache/cassandra",
+            "number": 5,
+            "state": "OPEN",
+            "created_at": _ts(2023, 1, 1),
+            "updated_at": _ts(2024, 2, 1),
+        },
+        # Merged/closed -- must not count in either open-PR bucket.
+        {
+            "repo": "apache/cassandra",
+            "number": 6,
+            "state": "MERGED",
+            "merged": True,
+            "created_at": _ts(2019, 1, 1),
+            "updated_at": _ts(2019, 2, 1),
+            "closed_at": _ts(2019, 2, 1),
+            "merged_at": _ts(2019, 2, 1),
+        },
+    ]
+
+    result = compute_all(
+        {"pr": prs(pr_rows)}, as_of=AS_OF, run_id=RUN_ID, computed_at=COMPUTED_AT, config=CONFIG
+    )
+
+    rows = _rows_for(result, "stale_pr_rate")
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["window_start"] == AS_OF
+    assert row["window_end"] == AS_OF
+    assert row["n"] == 5
+    assert row["value"] == pytest.approx(0.6)
+    assert row["flag"] == "ok"
+    details = _details(row)
+    assert details["n_open"] == 5
+    assert details["n_stale"] == 3
+    assert details["threshold_days"] == 90
+    assert {r["repo"] for r in details["by_repo"]} == {"apache/cassandra"}
 
 
 # --- No per-person values (D2 rule 4 spirit) ----------------------------

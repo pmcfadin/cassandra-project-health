@@ -156,6 +156,35 @@ ISSUE = pa.schema(
     ]
 )
 
+# `ISSUE_COMMENT` (issue #54; ARCHITECTURE.md §3's already-planned table name
+# for tracker-agnostic issue comment metadata): comment *metadata* for an
+# issue -- author and timestamp only, never the comment body -- collected as
+# a side effect of `collectors/jira.py`'s existing `/rest/api/2/search` fetch
+# (the `comment` field is requested alongside the standard issue fields
+# already fetched, so this costs zero extra HTTP calls / API budget beyond
+# what the M0 JIRA collector already spends). This is the "genuinely missing
+# field" issue #54 needed to compute `time_to_first_response_jira`
+# (METRICS.md §4): a first human, non-bot comment's author/timestamp per
+# issue. Bot exclusion is applied at metrics-compute time (`metrics/
+# engine.py`'s `_bot_identifiers`), not at collection time, matching every
+# other raw fact table's convention. Named generically (not `jira_comment`)
+# per ARCHITECTURE.md's own tracker-agnostic table list -- distinct from the
+# unrelated `"jira_comment"` *string* `classify/preprocess.py`'s Phase 2a
+# pipeline uses as a `source` tag for message preprocessing/classification.
+ISSUE_COMMENT = pa.schema(
+    [
+        pa.field("comment_id", pa.string(), nullable=False),
+        pa.field("issue_key", pa.string(), nullable=False),
+        # filled in by identity resolution (#6); null as written by collectors
+        pa.field("author_identity_id", pa.string(), nullable=True),
+        pa.field("author_raw_type", pa.string(), nullable=False),
+        # null when JIRA returns a comment with no author (deleted account)
+        pa.field("author_raw_value", pa.string(), nullable=True),
+        pa.field("created_at", TIMESTAMP_UTC, nullable=False),
+        pa.field("source_snapshot_id", pa.string(), nullable=False),
+    ]
+)
+
 ROSTER_ENTRY = pa.schema(
     [
         pa.field("entry_id", pa.string(), nullable=False),
@@ -768,6 +797,7 @@ TABLE_SCHEMAS: dict[str, pa.Schema] = {
     "file_change_event": FILE_CHANGE_EVENT,
     "review_event": REVIEW_EVENT,
     "issue": ISSUE,
+    "issue_comment": ISSUE_COMMENT,
     "roster_entry": ROSTER_ENTRY,
     "message": MESSAGE,
     "message_thread": MESSAGE_THREAD,

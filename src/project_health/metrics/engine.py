@@ -94,6 +94,13 @@ DEFINITION_VERSIONS: dict[str, str] = {
     # issue #35
     "time_to_first_reply_devlist": "1.0",
     "unanswered_thread_rate_devlist": "1.0",
+    # issue #54 (metrics/dev_metrics.py) -- see that module's own docstring
+    "pr_merge_lead_time": "1.0",
+    "pr_time_to_first_review": "1.0",
+    "pr_time_to_close": "1.0",
+    "pr_review_engagement": "1.0",
+    "time_to_first_response_jira": "1.0",
+    "stale_pr_rate": "1.0",
 }
 
 # Headcount metrics are plain counts, not rate/ratio/concentration/latency
@@ -196,6 +203,10 @@ def _connect(tables: dict[str, pa.Table]) -> duckdb.DuckDBPyConnection:
         # issue #35: dev@/user@ message metadata (schema/tables.py `MESSAGE`) --
         # sender, timestamp, thread structure only, never a body/subject (D1/D16).
         "message",
+        # issue #54 (metrics/dev_metrics.py)
+        "pr",
+        "pr_review",
+        "issue_comment",
     ):
         con.register(name, _table_or_empty(tables, name))
     con.execute(
@@ -246,6 +257,9 @@ def _bot_identifiers(con: duckdb.DuckDBPyConnection, config: ProjectConfig) -> p
         SELECT DISTINCT 'jira_username', reporter_raw FROM issue WHERE reporter_raw IS NOT NULL
         UNION
         SELECT DISTINCT 'jira_username', assignee_raw FROM issue WHERE assignee_raw IS NOT NULL
+        UNION
+        SELECT DISTINCT 'jira_username', author_raw_value FROM issue_comment
+            WHERE author_raw_value IS NOT NULL
         """
     ).fetchall()
 
@@ -1968,6 +1982,14 @@ def compute_all(
     Per D3, every run recomputes from the *entire* accumulated input passed
     in `tables` -- this function never computes incrementally.
     """
+    # Deferred import (issue #54): metrics/dev_metrics.py imports several
+    # private helpers back out of this module (`_make_row`, `_dense_months`,
+    # `_percentile`, the floor constants) rather than duplicating them, which
+    # would make a module-level import here circular. By call time this
+    # module is already fully initialized, so the deferred import resolves
+    # cleanly.
+    from project_health.metrics.dev_metrics import compute_dev_metrics
+
     con = _connect(tables)
     try:
         con.register("bot_identifier", _bot_identifiers(con, config))
@@ -2009,6 +2031,10 @@ def compute_all(
                 con, as_of, run_id, computed_at, automated_patterns, dev_watermark_month
             )
         )
+        # issue #54 (metrics/dev_metrics.py): GitHub-PR development metrics +
+        # time_to_first_response_jira, sharing this same threshold_days with
+        # stale_jira_rate (METRICS.md §4's shared "default 90 days" default).
+        rows.extend(compute_dev_metrics(con, as_of, run_id, computed_at, threshold_days))
     finally:
         con.close()
 

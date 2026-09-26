@@ -333,7 +333,7 @@ class TestRateLimitBudgeting:
         outcome = result.repos["synthtest/repo-a"]
         assert outcome.status == "rate_limited"
         assert outcome.pr_count == 2
-        assert result.status == "failed"  # source-level: not every repo finished 'ok'
+        assert result.status == "partial"  # source-level: a clean, resumable partial backfill
 
     def test_subsequent_repos_marked_skipped_with_watermark_untouched(self, tmp_path):
         config = _build_config(tmp_path, ["synthtest/repo-a", "synthtest/repo-b"])
@@ -370,6 +370,28 @@ class TestRateLimitBudgeting:
 
         assert result.repos["synthtest/repo-a"].status == "rate_limited"
         assert result.prs.num_rows == 0
+        assert result.status == "partial"
+
+
+class TestMixedRepoStatusRollup:
+    def test_one_ok_one_failed_repo_rolls_up_to_failed(self, tmp_path):
+        """A hard failure anywhere always wins over 'ok'/'partial' (issue #54:
+        `overall_status` is now three-valued -- 'ok' | 'partial' | 'failed')."""
+        config = _build_config(tmp_path, ["synthtest/repo-a", "synthtest/repo-b"])
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            body = json.loads(request.content)
+            if body["variables"]["name"] == "repo-a":
+                return httpx.Response(200, json=EMPTY_PAGE)
+            return httpx.Response(503, text="Service Unavailable")
+
+        transport = httpx.MockTransport(handler)
+        collector = _offline_collector(config, transport, max_retries=1)
+
+        result = collector.collect()
+
+        assert result.repos["synthtest/repo-a"].status == "ok"
+        assert result.repos["synthtest/repo-b"].status == "failed"
         assert result.status == "failed"
 
 

@@ -1,9 +1,10 @@
 """ASF JIRA collector (ARCHITECTURE.md §2.2 `IssueTrackerAdapter`, M0 subset).
 
-M0 scope is issues only — no comments/changelog yet (those extend this module
-without changing its shape, per ARCHITECTURE.md §2.2's Protocol split).
+M0 scope is issues (plus comment *metadata*, issue #54) — no changelog yet
+(that would extend this module without changing its shape, per
+ARCHITECTURE.md §2.2's Protocol split).
 
-Emits two normalized tables (ARCHITECTURE.md §3, `schema/tables.py`):
+Emits three normalized tables (ARCHITECTURE.md §3, `schema/tables.py`):
 
 - ``issue`` — one row per fetched issue, with ``reporter_raw``/``assignee_raw``
   carrying the raw JIRA username (``fields.reporter.name`` /
@@ -15,9 +16,19 @@ Emits two normalized tables (ARCHITECTURE.md §3, `schema/tables.py`):
   ``source='jira_field'``, ``reviewer_raw_type='jira_username'``,
   ``reviewer_raw_value`` = the user's JIRA ``name``, and
   ``reviewer_identity_id`` left ``null``.
+- ``issue_comment`` (issue #54) — comment *metadata only* (author, created
+  timestamp), never the comment body, for `time_to_first_response_jira`
+  (METRICS.md §4) to find each issue's first human, non-bot response. This
+  rides along on the same `/rest/api/2/search` request every run already
+  makes (the `comment` field is just another field in the same `fields=`
+  list), so it costs **zero extra HTTP calls** — the genuinely-missing piece
+  was the field, not a new endpoint. `MAX_COMMENTS_PER_ISSUE_STORED` bounds
+  row growth per issue (earliest comments kept, since "first response" only
+  ever needs the earliest ones) rather than storing an unbounded comment
+  history this project has no other use for yet.
 
-Both tables are returned already validated against their declared schema
-(``project_health.schema.validate``).
+All three tables are returned already validated against their declared
+schema (``project_health.schema.validate``).
 
 ## Watermark strategy — why it isn't a naive `max(updated)`
 
@@ -89,7 +100,18 @@ _STANDARD_FIELDS = (
     "assignee",
     "priority",
     "issuetype",
+    # issue #54: comment *metadata* rides along on this same search request
+    # (see module docstring) -- `fields.comment.comments[]` gives
+    # `author`/`created` for `issue_comment` without a second endpoint.
+    "comment",
 )
+
+# issue #54: a per-issue cap on how many of an issue's earliest comments are
+# stored as `issue_comment` rows. `time_to_first_response_jira` only ever
+# needs an issue's earliest comments (to find the first non-author, non-bot
+# one), so truncating the *tail* of a heavily-commented issue's comment list
+# loses nothing this project uses today, while keeping row growth bounded.
+MAX_COMMENTS_PER_ISSUE_STORED = 20
 
 
 class CollectionError(Exception):
@@ -102,6 +124,9 @@ class JiraCollectionResult:
 
     issues: pa.Table
     review_events: pa.Table
+    # issue #54: comment metadata rows (author, created -- never the body),
+    # capped per issue at `MAX_COMMENTS_PER_ISSUE_STORED`.
+    comments: pa.Table
     # Full-precision ISO 8601 string of max(updated) seen this run, or the
     # input watermark unchanged if no issues were fetched. `None` only when
     # there was no prior watermark and nothing was fetched. Callers persist
@@ -111,6 +136,7 @@ class JiraCollectionResult:
     next_watermark: str | None
     issue_count: int
     review_event_count: int
+    comment_count: int
 
 
 # --- Timestamp / JQL helpers -------------------------------------------------
@@ -268,6 +294,39 @@ def _normalize_review_events(
                 "repo": None,
                 "occurred_at": occurred_at,
                 "evidence": evidence,
+                "source_snapshot_id": source_snapshot_id,
+            }
+        )
+    return rows
+
+
+def _normalize_comments(raw: dict, source_snapshot_id: str) -> list[dict]:
+    """Build `issue_comment` rows (schema/tables.py `ISSUE_COMMENT`) for one
+    issue's `fields.comment.comments[]` (issue #54) -- metadata only (`id`,
+    `author.name`, `created`), the comment `body` is never read past this
+    function's local `comment.get(...)` calls, and never stored anywhere.
+
+    Kept to the earliest `MAX_COMMENTS_PER_ISSUE_STORED` comments (JIRA's own
+    default order for this field is creation order, oldest first) -- see
+    `MAX_COMMENTS_PER_ISSUE_STORED`'s docstring.
+    """
+    issue_key = raw["key"]
+    comment_field = raw["fields"].get("comment") or {}
+    comments = comment_field.get("comments") or []
+    rows = []
+    for comment in comments[:MAX_COMMENTS_PER_ISSUE_STORED]:
+        author = comment.get("author") or {}
+        created = comment.get("created")
+        if not created:
+            continue
+        rows.append(
+            {
+                "comment_id": str(comment.get("id")),
+                "issue_key": issue_key,
+                "author_identity_id": None,
+                "author_raw_type": "jira_username",
+                "author_raw_value": author.get("name"),
+                "created_at": _parse_jira_timestamp(created),
                 "source_snapshot_id": source_snapshot_id,
             }
         )
@@ -455,6 +514,7 @@ class JiraCollector:
         snapshot_id = snapshot_id or str(uuid.uuid4())
         issue_rows: list[dict] = []
         review_rows: list[dict] = []
+        comment_rows: list[dict] = []
         max_updated: datetime | None = None
 
         for raw_issue in self.fetch_issues(watermark=watermark, max_issues=max_issues):
@@ -469,10 +529,14 @@ class JiraCollector:
                     raw_issue, self._reviewers_field, self._reviewer_field, snapshot_id
                 )
             )
+            comment_rows.extend(_normalize_comments(raw_issue, snapshot_id))
 
         issues_table = validate("issue", _rows_to_table(issue_rows, get_schema("issue")))
         review_table = validate(
             "review_event", _rows_to_table(review_rows, get_schema("review_event"))
+        )
+        comments_table = validate(
+            "issue_comment", _rows_to_table(comment_rows, get_schema("issue_comment"))
         )
 
         next_watermark = max_updated.isoformat() if max_updated is not None else watermark
@@ -480,7 +544,9 @@ class JiraCollector:
         return JiraCollectionResult(
             issues=issues_table,
             review_events=review_table,
+            comments=comments_table,
             next_watermark=next_watermark,
             issue_count=len(issue_rows),
             review_event_count=len(review_rows),
+            comment_count=len(comment_rows),
         )

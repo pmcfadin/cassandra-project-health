@@ -84,7 +84,7 @@ from project_health import storage
 from project_health.leaderboard import build_leaderboards
 from project_health.collectors.asf_roster import AsfRosterCollector
 from project_health.collectors.git import GitCollector, clone_or_fetch, github_clone_url
-from project_health.collectors.github import resolve_github_token
+from project_health.collectors.github import GitHubCollector, resolve_github_token
 from project_health.collectors.github_commit_authors import GitHubCommitAuthorCollector
 from project_health.collectors.github_profile import GitHubProfileCollector
 from project_health.collectors.jira import JiraCollector
@@ -141,6 +141,9 @@ ALL_SOURCES: tuple[str, ...] = (
     "security",
     "github_commit_authors",
     "github_profile",
+    # issue #54: wires collectors/github.py (merged as part of issue #51,
+    # PR #58) into the pipeline for the first time -- see _collect_github.
+    "github",
 )
 
 # --- Governance evidence-collection tuning (issue #36 fixup cycle 1) --------
@@ -371,6 +374,58 @@ def _dedupe_message_rows(table: pa.Table) -> pa.Table:
     return pa.Table.from_pylist(kept, schema=table.schema)
 
 
+def _dedupe_pr_rows(table: pa.Table) -> pa.Table:
+    """Keep the latest `updated_at` row per `(repo, number)` (issue #54).
+
+    `collectors/github.py`'s opaque-cursor watermark deliberately re-fetches
+    a PR whose `updatedAt` has moved since the prior run (module docstring
+    "Watermark strategy") -- same "raw is append-only, dedupe at read time"
+    contract `_dedupe_issue_rows` uses for JIRA issues.
+    """
+    if table.num_rows == 0:
+        return table
+    best: dict[tuple[str, int], dict[str, Any]] = {}
+    for row in table.to_pylist():
+        key = (row["repo"], row["number"])
+        current = best.get(key)
+        if current is None or row["updated_at"] > current["updated_at"]:
+            best[key] = row
+    kept = sorted(best.values(), key=lambda r: (r["repo"], r["number"]))
+    return pa.Table.from_pylist(kept, schema=table.schema)
+
+
+def _dedupe_pr_review_rows(table: pa.Table) -> pa.Table:
+    """Keep one row per `review_id` (issue #54).
+
+    A re-fetched PR (its `updatedAt` moved) re-emits its *entire* reviews
+    connection, including reviews already collected -- `review_id` is
+    GitHub's own immutable GraphQL node id, an exact natural key, so any one
+    occurrence is as good as another (unlike `_dedupe_pr_rows`, there's no
+    "later snapshot is more current" distinction to make).
+    """
+    if table.num_rows == 0:
+        return table
+    best: dict[str, dict[str, Any]] = {}
+    for row in table.to_pylist():
+        best.setdefault(row["review_id"], row)
+    kept = sorted(best.values(), key=lambda r: r["review_id"])
+    return pa.Table.from_pylist(kept, schema=table.schema)
+
+
+def _dedupe_issue_comment_rows(table: pa.Table) -> pa.Table:
+    """Keep one row per `comment_id` (issue #54) -- same natural-key dedupe
+    as `_dedupe_pr_review_rows`, for the same "re-fetched issue re-emits its
+    comment metadata" reason (`collectors/jira.py`'s own watermark overlap,
+    module docstring "Watermark strategy")."""
+    if table.num_rows == 0:
+        return table
+    best: dict[str, dict[str, Any]] = {}
+    for row in table.to_pylist():
+        best.setdefault(row["comment_id"], row)
+    kept = sorted(best.values(), key=lambda r: r["comment_id"])
+    return pa.Table.from_pylist(kept, schema=table.schema)
+
+
 # --- Per-source collection -----------------------------------------------
 
 
@@ -498,6 +553,12 @@ def _collect_jira(
         storage.write_partition(
             data_dir, "jira", "review_event", partition_date, run_id, result.review_events
         )
+        # issue #54: comment metadata rides along on the same JIRA search
+        # request (collectors/jira.py module docstring) -- zero extra API
+        # calls beyond what this source already spends.
+        storage.write_partition(
+            data_dir, "jira", "issue_comment", partition_date, run_id, result.comments
+        )
         if result.next_watermark:
             storage.write_watermark(data_dir, "jira", result.next_watermark)
         record_last_good_snapshot(data_dir, "jira", run_id)
@@ -506,12 +567,14 @@ def _collect_jira(
             source="jira",
             records_collected=result.issue_count,
             review_event_count=result.review_event_count,
+            comment_count=result.comment_count,
             next_watermark=result.next_watermark,
         )
         return {
             "status": "ok",
             "watermark": result.next_watermark,
             "records_collected": result.issue_count,
+            "comment_count": result.comment_count,
         }
     except Exception as exc:  # noqa: BLE001 - a source outage must never abort the run (§7.3)
         _log("source_collect_failed", source="jira", error=str(exc))
@@ -520,6 +583,87 @@ def _collect_jira(
             "watermark": watermark,
             "records_collected": 0,
             "last_good_snapshot": read_last_good_snapshot(data_dir, "jira"),
+            "reason": str(exc),
+        }
+    finally:
+        collector.close()
+
+
+def _collect_github(
+    config: ProjectConfig,
+    data_dir: Path,
+    run_id: str,
+    started_at: datetime,
+    max_prs_per_repo: int | None,
+    collector_factory: Callable[[ProjectConfig], GitHubCollector] | None,
+) -> dict[str, Any]:
+    """Collect GitHub PR/review/comment metadata (issue #51's collector,
+    wired into the pipeline for the first time by issue #54).
+
+    Per-repo watermarks (an opaque GraphQL cursor per repo,
+    `collectors/github.py` module docstring) are stored as one JSON object
+    under the `github` source key in `state/watermarks.json` -- the same
+    read-modify-write contract `_collect_ponymail`'s per-list watermark blob
+    uses. The per-run API budget is `GitHubCollector`'s own
+    `rate_limit_floor` (module default 500 GraphQL points remaining):
+    `collect()` stops each repo cleanly once that floor is hit and marks
+    every subsequent configured repo `'skipped'`, so a large first backfill
+    across `pull_requests.repos` (7 repos for Cassandra) legitimately spans
+    several nightly runs -- reflected here as `status: 'partial'`, not
+    `'failed'` (`collectors/github.py`'s three-valued `GitHubCollectionResult
+    .status`).
+    """
+    raw_watermark = storage.read_watermark(data_dir, "github")
+    watermarks: dict[str, str | None] = json.loads(raw_watermark) if raw_watermark else {}
+    snapshot_id = f"{run_id}:github"
+
+    _log("source_collect_started", source="github", watermarks=watermarks)
+    collector = (collector_factory or GitHubCollector)(config)
+    try:
+        result = collector.collect(
+            watermarks=watermarks, snapshot_id=snapshot_id, max_prs_per_repo=max_prs_per_repo
+        )
+        partition_date = started_at.date()
+        storage.write_partition(data_dir, "github", "pr", partition_date, run_id, result.prs)
+        storage.write_partition(
+            data_dir, "github", "pr_review", partition_date, run_id, result.reviews
+        )
+        storage.write_partition(
+            data_dir, "github", "pr_comment", partition_date, run_id, result.comments
+        )
+        next_watermarks = {repo: outcome.next_watermark for repo, outcome in result.repos.items()}
+        storage.write_watermark(data_dir, "github", json.dumps(next_watermarks, sort_keys=True))
+        # 'failed' means at least one repo hit a hard CollectionError -- still
+        # record last_good_snapshot when it's merely 'partial' (a clean,
+        # resumable rate-limit stop, not an outage): the data collected this
+        # run is valid and already written.
+        if result.status != "failed":
+            record_last_good_snapshot(data_dir, "github", run_id)
+        repo_statuses = {repo: outcome.status for repo, outcome in result.repos.items()}
+        _log(
+            "source_collect_succeeded",
+            source="github",
+            status=result.status,
+            pr_count=result.prs.num_rows,
+            review_count=result.reviews.num_rows,
+            comment_count=result.comments.num_rows,
+            repos=repo_statuses,
+        )
+        return {
+            "status": result.status,
+            "watermark": next_watermarks,
+            "records_collected": result.prs.num_rows,
+            "review_count": result.reviews.num_rows,
+            "comment_count": result.comments.num_rows,
+            "repos": repo_statuses,
+        }
+    except Exception as exc:  # noqa: BLE001 - a source outage must never abort the run (§7.3)
+        _log("source_collect_failed", source="github", error=str(exc))
+        return {
+            "status": "failed",
+            "watermark": watermarks,
+            "records_collected": 0,
+            "last_good_snapshot": read_last_good_snapshot(data_dir, "github"),
             "reason": str(exc),
         }
     finally:
@@ -1610,11 +1754,17 @@ def run_pipeline(
     max_ponymail_months: int | None = None,
     max_github_profiles: int | None = None,
     max_github_commit_author_pages: int | None = None,
+    # issue #54: caps PR nodes fetched per repo this run (testing / smoke
+    # runs), the same role max_jira_issues/max_ponymail_months play for their
+    # own sources. Production callers leave this None -- GitHubCollector's
+    # own rate_limit_floor is the real per-run budget (module docstring).
+    max_prs_per_repo: int | None = None,
     now: datetime | None = None,
     code_sha: str | None = None,
     identity_overrides_path: str | Path | None = None,
     trigger: str = "manual",
     jira_collector_factory: Callable[[ProjectConfig], JiraCollector] | None = None,
+    github_collector_factory: Callable[[ProjectConfig], GitHubCollector] | None = None,
     asf_roster_collector_factory: Callable[[ProjectConfig], AsfRosterCollector] | None = None,
     ponymail_collector_factory: Callable[[ProjectConfig], PonyMailCollector] | None = None,
     # --- Governance compliance engine (issue #36) ---------------------------
@@ -1690,6 +1840,10 @@ def run_pipeline(
         source_results["jira"] = _collect_jira(
             config, data_dir, run_id, started_at, max_jira_issues, jira_collector_factory
         )
+    if "github" in active_sources:
+        source_results["github"] = _collect_github(
+            config, data_dir, run_id, started_at, max_prs_per_repo, github_collector_factory
+        )
     if "asf_roster" in active_sources:
         source_results["asf_roster"] = _collect_asf_roster(
             config, data_dir, run_id, started_at, asf_roster_collector_factory
@@ -1737,6 +1891,9 @@ def run_pipeline(
     )
     review_event = pa.concat_tables([git_review_event, jira_review_event])
     issue = _dedupe_issue_rows(storage.read_table(data_dir, "jira", "issue"))
+    issue_comment = _dedupe_issue_comment_rows(
+        storage.read_table(data_dir, "jira", "issue_comment")
+    )
     roster_raw = storage.read_table(data_dir, "asf_roster", "roster_entry")
     roster_entry = _dedupe_roster_entries(roster_raw)
     # issue #35: dev@/user@ message metadata (D3 -- always recomputed from
@@ -1747,6 +1904,12 @@ def run_pipeline(
     ponymail_watermarks: dict[str, str | None] = (
         json.loads(ponymail_raw_watermark) if ponymail_raw_watermark else {}
     )
+    # issue #54: GitHub PR/review data for metrics/dev_metrics.py's six
+    # metrics. `pr_comment` is collected (governance/site provenance) but not
+    # read here -- none of the issue #54 metrics need PR comment bodies or
+    # metadata, only pr/pr_review.
+    pr = _dedupe_pr_rows(storage.read_table(data_dir, "github", "pr"))
+    pr_review = _dedupe_pr_review_rows(storage.read_table(data_dir, "github", "pr_review"))
 
     overrides = []
     if identity_overrides_path is not None and Path(identity_overrides_path).is_file():
@@ -1814,6 +1977,9 @@ def run_pipeline(
                 "roster_entry": roster_entry,
                 "affiliation_period": affiliation_period,
                 "message": message,
+                "pr": pr,
+                "pr_review": pr_review,
+                "issue_comment": issue_comment,
             },
             as_of=started_at.date(),
             run_id=run_id,

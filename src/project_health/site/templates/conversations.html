@@ -3,6 +3,10 @@
 {% block content %}
 <p class="page-intro">Mailing-list metrics, computed from metadata only — sender, timestamp and thread structure — never message content.</p>
 
+{% if dimensions %}
+{% include "_chart_window_toggle.html" %}
+{% endif %}
+
 {% for group in dimensions %}
   <section class="dimension" aria-labelledby="conv-dim-{{ loop.index }}">
     <h2 id="conv-dim-{{ loop.index }}">{{ group.dimension | title }}</h2>

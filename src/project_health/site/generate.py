@@ -41,10 +41,9 @@ from __future__ import annotations
 import csv
 import io
 import json
-import math
 import shutil
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -55,6 +54,7 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 from project_health import storage
 from project_health.governance.metrics import metric_id_for_check
 from project_health.schema import get_schema, validate
+from project_health.site import chart_spec
 from project_health.site.manifest import RunManifest, load_manifest
 from project_health.site.governance_page import build_governance_page_context
 from project_health.site.leaderboard_page import build_leaderboard_page_context
@@ -322,62 +322,11 @@ def _write_csv(path: Path, series: MetricSeries, manifest: RunManifest) -> None:
 
 
 # --- Vega-Lite chart spec ----------------------------------------------------
-
-# All six M0 metrics are monthly windows (METRICS.md §1); this is how many
-# days before the earliest data month's start / after the latest data
-# month's end the x-domain is padded (issue #16) — enough that a
-# single-point series (e.g. `stale_jira_rate` in M0) doesn't sit on the
-# plot's edge, and that the last point of a long series doesn't render
-# flush against the right edge where its mark would otherwise clip.
-_X_DOMAIN_PAD_DAYS = 15
-
-# Target roughly this many x-axis ticks regardless of how many months of
-# history a series has (issue #16: "sensible tick count").
-_TARGET_TICK_COUNT = 6
-
-
-def _month_tick_step(points: list[MetricPoint]) -> int:
-    """Month interval between x-axis ticks, so a long history doesn't
-    crowd the axis with one label per month."""
-    months = {(p.window_end.year, p.window_end.month) for p in points}
-    month_count = len(months) or 1
-    return max(1, math.ceil(month_count / _TARGET_TICK_COUNT))
-
-
-def _month_floor(d: date) -> date:
-    """The first day of `d`'s month."""
-    return date(d.year, d.month, 1)
-
-
-def _month_ceil_exclusive(d: date) -> date:
-    """The first day of the month *after* `d`'s month."""
-    if d.month == 12:
-        return date(d.year + 1, 1, 1)
-    return date(d.year, d.month + 1, 1)
-
-
-def _padded_month_domain(points: list[MetricPoint]) -> list[str] | None:
-    """A `[start, end]` ISO-date domain padded past the data's actual
-    month range, or `None` when there are no points to plot.
-
-    Anchored to calendar-month boundaries (not the raw point dates)
-    because the x-axis ticks (`_month_tick_step`, `timeUnit: yearmonth`)
-    land on month starts: padding by a fixed number of days around a
-    single point's raw date, instead of around its *month*, can push the
-    domain's start past that month's own boundary — leaving the only
-    visible tick on the *next* month, not the one the point is actually
-    in. A single point has a zero-width data range; without this padding,
-    Vega-Lite's default "nice" rounding falls back to hour-level ticks for
-    a zero-span temporal domain — this is the "05 PM" bug (issue #16) —
-    and the point renders exactly on the plot's edge.
-    """
-    if not points:
-        return None
-    dates = [p.window_end for p in points]
-    pad = timedelta(days=_X_DOMAIN_PAD_DAYS)
-    start = _month_floor(min(dates)) - pad
-    end = _month_ceil_exclusive(max(dates)) + pad
-    return [start.isoformat(), end.isoformat()]
+#
+# Domain padding, tick spacing, the recent/full-history window, and the
+# low-n de-emphasis threshold are shared with governance_page.py's
+# multi-series compliance-trend charts -- see `site/chart_spec.py` (issue
+# #28).
 
 
 def _vega_lite_spec(series: MetricSeries) -> dict[str, Any]:
@@ -388,15 +337,34 @@ def _vega_lite_spec(series: MetricSeries) -> dict[str, Any]:
     a `null` value as a gap in the line rather than interpolating through
     it or drawing it at zero — this is what "gaps show as gaps, never as
     zero" means in the actual chart, not just in the download files.
+
+    The spec is a two-layer chart (a full-opacity connecting line, plus a
+    point layer whose opacity is conditioned on each datum's own `low_n`
+    field) rather than a single `line, point: true` mark, so a point
+    flagged `low_n` (issue #28: below `chart_spec.LOW_N_DISPLAY_FLOOR`, or
+    `insufficient_data`) renders de-emphasised without fading the trend
+    line itself. `n` and `flag` ride along in `data.values` purely for the
+    tooltip (issue #28) — neither is ever used to compute `value`.
     """
+    dates = [point.window_end for point in series.points]
     values = [
-        {"window_end": point.window_end.isoformat(), "value": point.value}
+        {
+            "window_end": point.window_end.isoformat(),
+            "value": point.value,
+            "n": point.n,
+            "flag": point.flag,
+            "low_n": chart_spec.is_low_n(point.n, point.flag, value_kind=series.meta.value_kind),
+        }
         for point in series.points
     ]
 
+    window = chart_spec.chart_window(dates)
     x_axis: dict[str, Any] = {
         "format": "%b %Y",
-        "tickCount": {"interval": "month", "step": _month_tick_step(series.points)},
+        "tickCount": {
+            "interval": "month",
+            "step": window["tickStep"]["recent"] if window else 1,
+        },
     }
     x_encoding: dict[str, Any] = {
         "field": "window_end",
@@ -405,18 +373,50 @@ def _vega_lite_spec(series: MetricSeries) -> dict[str, Any]:
         "title": None,
         "axis": x_axis,
     }
-    domain = _padded_month_domain(series.points)
-    if domain is not None:
+    if window is not None:
         # `nice: False` because the domain is already explicitly padded —
         # letting Vega-Lite "nice"-round it further is what produces the
-        # zero-span/hour-tick bug above for a single point.
-        x_encoding["scale"] = {"domain": domain, "nice": False}
+        # zero-span/hour-tick bug (issue #16) for a single point. Defaults
+        # to the *recent* window (issue #28); `static/app.js`'s "Full
+        # history" toggle swaps in `usermeta.chartWindow`'s `full` domain/
+        # tickStep client-side.
+        x_encoding["scale"] = {"domain": window["domain"]["recent"], "nice": False}
 
     y_axis: dict[str, Any] = {"format": series.meta.axis_format}
     if series.meta.axis_label_expr is not None:
         y_axis["labelExpr"] = series.meta.axis_label_expr
+    y_encoding: dict[str, Any] = {
+        "field": "value",
+        "type": "quantitative",
+        "title": None,
+        "axis": y_axis,
+    }
+    # Restricting the x-domain alone doesn't stop a low-n outlier month from
+    # still flattening the y-axis once it scrolls out of the default view
+    # (issue #28) -- Vega-Lite's y-scale auto-fits to every value in
+    # `data.values`, not just the ones inside the visible x-domain. Padding
+    # `[0, max]` from only the recent window's own values fixes that; `None`
+    # (an all-insufficient_data recent window) falls back to the original
+    # whole-series auto-scale.
+    recent_y_domain = chart_spec.recent_value_domain(
+        [(p.window_end, p.value) for p in series.points]
+    )
+    if recent_y_domain is not None:
+        y_encoding["scale"] = {"domain": recent_y_domain}
 
-    return {
+    tooltip = [
+        {"field": "window_end", "type": "temporal", "title": "Month", "format": "%b %Y"},
+        {
+            "field": "value",
+            "type": "quantitative",
+            "title": series.meta.tooltip_title,
+            "format": series.meta.vega_format,
+        },
+        {"field": "n", "type": "quantitative", "title": "n"},
+        {"field": "flag", "type": "nominal", "title": "Flag"},
+    ]
+
+    spec: dict[str, Any] = {
         "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
         "width": "container",
         "height": 150,
@@ -431,25 +431,33 @@ def _vega_lite_spec(series: MetricSeries) -> dict[str, Any]:
         "autosize": {"type": "fit-x", "contains": "padding"},
         "background": None,
         "data": {"values": values},
-        # `clip: True` keeps the line/point mark inside the plot area at
-        # any container width (issue #16) even if a future data point ever
-        # falls outside the padded domain above.
-        "mark": {"type": "line", "point": True, "clip": True},
-        "encoding": {
-            "x": x_encoding,
-            "y": {"field": "value", "type": "quantitative", "title": None, "axis": y_axis},
-            "tooltip": [
-                {"field": "window_end", "type": "temporal", "title": "Month", "format": "%b %Y"},
-                {
-                    "field": "value",
-                    "type": "quantitative",
-                    "title": series.meta.tooltip_title,
-                    "format": series.meta.vega_format,
-                },
-            ],
-        },
+        # Shared by every layer below (Vega-Lite merges a layered spec's
+        # top-level `encoding` into each layer, letting a layer override or
+        # add its own channels) — x/y/tooltip are identical across both
+        # layers; only the point layer's `opacity` differs.
+        "encoding": {"x": x_encoding, "y": y_encoding, "tooltip": tooltip},
+        "layer": [
+            # `clip: True` keeps the mark inside the plot area at any
+            # container width (issue #16) even if a point ever falls
+            # outside the padded domain above.
+            {"mark": {"type": "line", "clip": True}},
+            {
+                "mark": {"type": "point", "clip": True, "filled": True},
+                "encoding": {"opacity": chart_spec.LOW_N_OPACITY_ENCODING},
+            },
+        ],
         "config": {"view": {"stroke": None}},
     }
+    if window is not None:
+        # `yDomain.full: None` tells `static/app.js` to remove its y-scale
+        # override entirely on "Full history" -- falling back to
+        # Vega-Lite's own auto-scale over the whole series, the same
+        # (unflattened-view-optional) behavior the chart had before issue
+        # #28.
+        spec["usermeta"] = {
+            "chartWindow": {**window, "yDomain": {"recent": recent_y_domain, "full": None}}
+        }
+    return spec
 
 
 # --- Freshness / staleness (ARCHITECTURE.md §7.1 mitigation 2, §7.3) --------
@@ -726,6 +734,10 @@ def _common_page_context(manifest: RunManifest, build_time: datetime) -> dict[st
         "vega_version": VEGA_VERSION,
         "vega_lite_version": VEGA_LITE_VERSION,
         "vega_embed_version": VEGA_EMBED_VERSION,
+        # Issue #28: `_chart_window_toggle.html`'s wording ("last N years")
+        # derives from the same constant the chart specs themselves use, so
+        # the copy can never drift from the actual default domain.
+        "chart_window_months": chart_spec.DEFAULT_WINDOW_MONTHS,
     }
 
 

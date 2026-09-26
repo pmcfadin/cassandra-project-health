@@ -1386,7 +1386,246 @@ def test_multi_point_series_domain_extends_past_last_point(tmp_path):
 
     # The mark is clipped to the plot area too, as a second line of
     # defense against any point that ever does fall outside the domain.
-    assert spec["mark"]["clip"] is True
+    # (Issue #28: the chart is now a two-layer spec -- a full-opacity line
+    # layer plus a point layer whose opacity de-emphasises low-n/
+    # insufficient_data points -- so `clip` lives on each layer's own mark.)
+    assert len(spec["layer"]) == 2
+    for layer in spec["layer"]:
+        assert layer["mark"]["clip"] is True
+
+
+# --- Chart window default + low-n de-emphasis (issue #28) ------------------
+
+
+def _monthly_rows(
+    metric_id: str,
+    count: int,
+    *,
+    start: date = date(2010, 1, 1),
+    n: int = 20,
+    flag: str = "ok",
+    value: float | None = 5.0,
+) -> list[dict]:
+    """`count` consecutive monthly `metric_value` rows for `metric_id`,
+    starting at `start`'s month -- used to build a series long enough to
+    exercise the default 36-month chart window against its full history."""
+    from project_health.metrics.windows import add_months, month_end
+
+    rows = []
+    for i in range(count):
+        window_start = add_months(start, i)
+        rows.append(
+            _metric_value_row(metric_id, window_start, month_end(window_start), value, n, flag)
+        )
+    return rows
+
+
+def test_long_series_defaults_to_recent_window_with_full_history_in_usermeta(tmp_path):
+    """Issue #28: 17 years of monthly points renders densely by default --
+    a chart now opens on just its last 36 months, with the complete
+    (padded) domain still embedded in the spec's own `usermeta` for
+    `static/app.js`'s "Full history" toggle to swap in client-side, with no
+    second network request."""
+    metric_id = "median_resolution_latency_jira"
+    rows = _monthly_rows(metric_id, 48, start=date(2022, 1, 1), n=20, flag="ok", value=14.0)
+    for other_id in M0_METRICS:
+        if other_id == metric_id:
+            continue
+        rows.append(
+            _metric_value_row(other_id, date(2025, 12, 1), date(2025, 12, 31), 1.0, 20, "ok")
+        )
+
+    out_dir = _build_site(tmp_path, rows=rows)
+    html_text = _community_html(out_dir)
+    spec = _extract_vega_spec(html_text, "History chart for Median JIRA Resolution Latency")
+
+    window = spec["usermeta"]["chartWindow"]
+    recent_domain = window["domain"]["recent"]
+    full_domain = window["domain"]["full"]
+
+    # The chart's actual rendered domain is the recent one, by default.
+    assert spec["encoding"]["x"]["scale"]["domain"] == recent_domain
+    # ... but it's materially narrower than the full 48-month history, which
+    # is still there (untruncated) for the toggle.
+    assert recent_domain[0] > full_domain[0]
+    assert recent_domain[1] == full_domain[1]  # both end at the same latest month
+
+
+def test_short_series_recent_window_equals_full_history(tmp_path):
+    """A series shorter than the default 36-month window is never
+    artificially truncated -- the toggle exists but has nothing to add."""
+    out_dir = _build_site(tmp_path)  # _default_rows(): 3 months of history
+    html_text = _community_html(out_dir)
+    spec = _extract_vega_spec(html_text, "History chart for Reviewer Concentration (HHI)")
+
+    window = spec["usermeta"]["chartWindow"]
+    assert window["domain"]["recent"] == window["domain"]["full"]
+    assert spec["encoding"]["x"]["scale"]["domain"] == window["domain"]["full"]
+
+
+def test_chart_tooltip_includes_n_and_flag(tmp_path):
+    """Issue #28: every chart's tooltip shows the underlying sample size
+    and flag, not just the formatted value, so a reader can tell a
+    low-sample-size or insufficient-data point apart from a well-supported
+    one without leaving the page."""
+    out_dir = _build_site(tmp_path)
+    html_text = _community_html(out_dir)
+    spec = _extract_vega_spec(html_text, "History chart for Reviewer Concentration (HHI)")
+
+    tooltip_by_field = {t["field"]: t for t in spec["encoding"]["tooltip"]}
+    assert tooltip_by_field["n"]["title"] == "n"
+    assert tooltip_by_field["n"]["type"] == "quantitative"
+    assert tooltip_by_field["flag"]["title"] == "Flag"
+    assert tooltip_by_field["flag"]["type"] == "nominal"
+
+
+def test_low_n_and_insufficient_data_points_are_flagged_for_de_emphasis(tmp_path):
+    """Issue #28: an 'ok' point below the display floor, and an
+    insufficient_data point, both get `low_n: true` in the chart's plotted
+    values -- a presentation-only hint (never a change to n/value/flag
+    themselves) that the point layer's opacity is conditioned on."""
+    metric_id = "median_resolution_latency_jira"
+    rows = [
+        _metric_value_row(metric_id, date(2026, 6, 1), date(2026, 6, 30), 12.0, 20, "ok"),
+        _metric_value_row(metric_id, date(2026, 7, 1), date(2026, 7, 31), 1200.0, 6, "ok"),
+        _metric_value_row(
+            metric_id, date(2026, 8, 1), date(2026, 8, 20), None, 1, "insufficient_data"
+        ),
+    ]
+    for other_id in M0_METRICS:
+        if other_id == metric_id:
+            continue
+        rows.append(_metric_value_row(other_id, date(2026, 8, 1), date(2026, 8, 20), 1.0, 20, "ok"))
+
+    out_dir = _build_site(tmp_path, rows=rows)
+    html_text = _community_html(out_dir)
+    spec = _extract_vega_spec(html_text, "History chart for Median JIRA Resolution Latency")
+
+    values_by_n = {v["n"]: v for v in spec["data"]["values"]}
+    assert values_by_n[20]["low_n"] is False
+    # A low-n (but still `ok`) point: never changes value/flag.
+    assert values_by_n[6]["low_n"] is True
+    assert values_by_n[6]["value"] == 1200.0
+    assert values_by_n[6]["flag"] == "ok"
+    # An insufficient_data point: always de-emphasised, value stays null.
+    assert values_by_n[1]["low_n"] is True
+    assert values_by_n[1]["value"] is None
+    assert values_by_n[1]["flag"] == "insufficient_data"
+
+    point_layer = spec["layer"][1]
+    assert point_layer["mark"]["type"] == "point"
+    assert point_layer["encoding"]["opacity"]["condition"]["test"] == "datum.low_n"
+    # The line layer itself never fades -- only the point layer is
+    # conditioned on `low_n`, so the trend stays fully legible.
+    line_layer = spec["layer"][0]
+    assert "opacity" not in line_layer.get("encoding", {})
+
+
+def test_low_n_de_emphasis_never_applies_to_a_plain_count_metric(tmp_path):
+    """METRICS.md §0.6 (owner decision, issue #27): a plain headcount is
+    the complete, meaningful number at any `n` -- "a month with 3 new
+    contributors is real signal", never an unstable estimate the way a
+    rate/HHI/median with the same small `n` would be. A count metric's
+    points must never be flagged `low_n` just because the count itself is
+    small (verified against the real site: `new_contributors_monthly`
+    regularly reports single-digit months)."""
+    metric_id = "new_contributors_monthly"
+    rows = [
+        _metric_value_row(metric_id, date(2026, 6, 1), date(2026, 6, 30), 3.0, 3, "ok"),
+        _metric_value_row(metric_id, date(2026, 7, 1), date(2026, 7, 31), 0.0, 0, "ok"),
+    ]
+    for other_id in M0_METRICS:
+        if other_id == metric_id:
+            continue
+        rows.append(
+            _metric_value_row(other_id, date(2026, 7, 1), date(2026, 7, 31), 1.0, 20, "ok")
+        )
+
+    out_dir = _build_site(tmp_path, rows=rows)
+    html_text = _community_html(out_dir)
+    spec = _extract_vega_spec(html_text, "History chart for New Contributors")
+
+    for point in spec["data"]["values"]:
+        assert point["low_n"] is False
+
+
+def test_old_outlier_month_does_not_flatten_the_default_view_y_axis(tmp_path):
+    """The actual bug issue #28 reports: an old, low-n outlier month (a
+    median latency spike to ~1,200 days from a couple of closed issues)
+    must not set the default view's y-scale once it's scrolled out of the
+    visible (recent) x-window -- restricting the x-domain alone doesn't do
+    this on its own; the y-domain must be recomputed from only the
+    in-window points too (`chart_spec.recent_value_domain`)."""
+    metric_id = "median_resolution_latency_jira"
+    rows = _monthly_rows(metric_id, 40, start=date(2022, 1, 1), n=20, flag="ok", value=14.0)
+    # An old outlier, well outside the last 36 months, that would otherwise
+    # dominate a shared y-scale.
+    rows[0] = _metric_value_row(metric_id, date(2022, 1, 1), date(2022, 1, 31), 1200.0, 6, "ok")
+    for other_id in M0_METRICS:
+        if other_id == metric_id:
+            continue
+        rows.append(_metric_value_row(other_id, date(2025, 4, 1), date(2025, 4, 30), 1.0, 20, "ok"))
+
+    out_dir = _build_site(tmp_path, rows=rows)
+    html_text = _community_html(out_dir)
+    spec = _extract_vega_spec(html_text, "History chart for Median JIRA Resolution Latency")
+
+    y_domain = spec["encoding"]["y"]["scale"]["domain"]
+    assert y_domain[0] == 0
+    assert y_domain[1] < 1200.0  # the old outlier never sets the default view's scale
+
+    # The full-history y-domain override is explicitly `None` -- toggling
+    # to "Full history" (`static/app.js`) removes the override entirely,
+    # falling back to Vega-Lite's own auto-scale over the whole series, so
+    # the outlier is honestly visible there.
+    y_window = spec["usermeta"]["chartWindow"]["yDomain"]
+    assert y_window["recent"] == y_domain
+    assert y_window["full"] is None
+
+
+def test_community_page_has_chart_window_toggle_and_low_n_legend_note(tmp_path):
+    out_dir = _build_site(tmp_path)
+    html_text = _community_html(out_dir)
+
+    assert "data-chart-window-toggle" in html_text
+    assert "Full history" in html_text
+    assert "low-n" in html_text
+    assert "insufficient data" in html_text.lower()
+
+
+def test_conversations_page_has_chart_window_toggle(tmp_path):
+    out_dir = _build_site(tmp_path)
+    html_text = _page_html(out_dir, "conversations/")
+    assert "data-chart-window-toggle" in html_text
+
+
+def test_governance_trend_charts_are_windowed_and_show_n_and_flag(tmp_path):
+    """Issue #28 explicitly calls out governance's multi-series compliance
+    trend charts: the same recent-window default, n/flag tooltip and low-n
+    de-emphasis apply there too, without breaking the per-check
+    pass/fail/unknown/exempt color-coded lines (issue #36/#69)."""
+    out_dir, _ = _build_site_with_governance(tmp_path)
+    html_text = _page_html(out_dir, "governance/")
+
+    assert "data-chart-window-toggle" in html_text
+    spec = _extract_vega_spec(html_text, "Compliance trend for reviewer-present")
+
+    assert "usermeta" in spec
+    assert len(spec["layer"]) == 2
+
+    tooltip_by_field = {t["field"]: t for t in spec["encoding"]["tooltip"]}
+    assert tooltip_by_field["n"]["title"] == "n"
+    assert tooltip_by_field["flag"]["title"] == "Flag"
+
+    values = spec["data"]["values"]
+    states = {v["state"] for v in values}
+    assert states == {"pass", "fail", "unknown", "exempt"}
+    # The fixture's scored n (pass=5, fail=1, unknown=2 -> n=8) is below the
+    # display floor, so every state's record for that month is low_n.
+    assert all(v["n"] == 8 and v["low_n"] is True for v in values)
+
+    # Multi-series color-by-result-state still works (issue #36/#69).
+    assert spec["encoding"]["color"]["field"] == "state"
 
 
 def test_y_axis_format_matches_metric_value_kind(tmp_path):

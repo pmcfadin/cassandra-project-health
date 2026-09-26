@@ -1,0 +1,22 @@
+{# Page-level chart-window toggle + legend note (issue #28), shared by
+   community.html, conversations.html and governance.html so the wording
+   and markup stay identical across every page that renders a Vega-Lite
+   time-series chart. `static/app.js` wires up `data-chart-window-toggle`;
+   every chart itself has no JS dependency for its *initial* render (the
+   noscript fallback text on each `.chart` div still applies), but the
+   toggle button only does anything once JS has attached a click handler,
+   so it's hidden with JavaScript disabled rather than sitting there inert. #}
+<noscript><style>.chart-window-toggle { display: none; }</style></noscript>
+<div class="chart-window-bar" role="group" aria-label="Chart time window">
+  <span class="chart-window-hint">
+    Charts default to the last {{ (chart_window_months // 12) }} years.
+  </span>
+  <button type="button" class="chart-window-toggle" data-chart-window-toggle aria-pressed="false">
+    Full history
+  </button>
+</div>
+<p class="chart-legend-note">
+  <strong>Faint points</strong> mark a month flagged <code>low-n</code> or <code>insufficient data</code> —
+  its statistic (a rate, an HHI, a median) comes from too few underlying events to be
+  reliable on its own. Hover a point for its exact <code>n</code> and flag; the value itself is unchanged.
+</p>

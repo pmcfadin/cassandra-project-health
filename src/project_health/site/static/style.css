@@ -274,6 +274,39 @@ main {
   margin: 0.5rem 0;
 }
 
+/* --- Chart time-window toggle + low-n legend note (issue #28) ---------- */
+
+.chart-window-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  margin: 0 0 0.5rem;
+}
+.chart-window-hint {
+  color: var(--fg-muted);
+  font-size: 0.85rem;
+}
+.chart-window-toggle {
+  border: 1px solid var(--accent);
+  background: transparent;
+  color: var(--accent);
+  border-radius: 6px;
+  padding: 0.2rem 0.6rem;
+  font: inherit;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+.chart-window-toggle[aria-pressed="true"] {
+  background: var(--accent);
+  color: var(--bg);
+}
+.chart-legend-note {
+  color: var(--fg-muted);
+  font-size: 0.8rem;
+  margin: 0 0 1.5rem;
+}
+
 .card-links {
   margin: 0.5rem 0 0;
   font-size: 0.85rem;

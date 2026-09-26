@@ -3,6 +3,8 @@
 {% block content %}
 <p class="page-intro">Code and contributor health metrics: sustainability, review capacity, and responsiveness — computed from Git, ASF JIRA and GitHub PR history.</p>
 
+{% include "_chart_window_toggle.html" %}
+
 {% for group in dimensions %}
   <section class="dimension" aria-labelledby="dim-{{ loop.index }}">
     <h2 id="dim-{{ loop.index }}">{{ group.dimension | title }}</h2>

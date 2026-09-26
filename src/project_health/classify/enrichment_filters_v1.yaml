@@ -1,0 +1,81 @@
+# Rare-label keyword/heuristic pre-filter — Phase 2a Jev pilot (issue #44;
+# COMMUNITY-HEALTH.md §6.1's "lightweight keyword/heuristic pre-filter... not
+# the production classifier itself"; OPEN-QUESTIONS.md #11).
+#
+# Purpose: surface CANDIDATE messages likely to carry one of the five rare
+# labels below, so the pilot's enrichment stratum contains enough positive
+# examples to be useful at all. A term match is a hint for human review, not
+# a label -- Jev and the human rater still make the actual call per
+# COMMUNITY-HEALTH.md §1.2's definitions. This stratum is never used to
+# estimate how common a label is in the wild (COMMUNITY-HEALTH.md §6.1); it
+# exists only to enrich the labeling set with rare-label candidates.
+#
+# STATUS: unreviewed. OPEN-QUESTIONS.md #11's default is "have a second
+# person (not the filter's author) review the filter's candidate set against
+# a small random sample before the enrichment stratum is finalized" — that
+# review has not happened yet. This file, and every corpus v0 enrichment
+# item it produced, is flagged for that review before the pilot's results
+# are treated as final. A biased or narrow filter here would bias which rare
+# instances raters ever see, not just how many.
+#
+# Each pattern is a case-insensitive regex (re.IGNORECASE), matched against
+# `message.text` (preprocessed, per classify/preprocess.py). Patterns are
+# deliberately broad/high-recall — the filter only needs to beat random
+# sampling at surfacing rare positives, and a human still reviews every
+# candidate before it counts as a label. False positives here cost a rater a
+# few seconds; false negatives are the actual risk (an enrichment stratum
+# that never surfaces some rare label's real presentation), so recall is
+# valued over precision in this file, unlike the classifier's own
+# label-group precision/recall gates in COMMUNITY-HEALTH.md §6.4, which are
+# the opposite priority for a different reason (publication safety).
+labels:
+  personal_attack:
+    - "you (clearly|obviously) (have|has) no idea"
+    - "you (don't|do not) (know|understand) (what|how)"
+    - "maybe (read|learn|try) (the|some)? ?(code|docs|documentation)? ?before"
+    - "\\bidiot(ic)?\\b"
+    - "\\bincompetent\\b"
+    - "\\bstupid\\b"
+    - "\\bmoron(ic)?\\b"
+    - "you (are|'re) (the problem|wrong about everything)"
+    - "\\bclueless\\b"
+    - "grow up"
+
+  gatekeeping:
+    - "you (need to|have to|should) (have )?(committed|contributed)"
+    - "not (really |exactly )?a call for someone who"
+    - "you (haven't|have not) (earned|worked on|touched)"
+    - "who (are|even are) you to"
+    - "before you get an opinion"
+    - "this isn't (for|really for) (newcomers|new contributors|outsiders)"
+    - "you don't get a vote"
+    - "not your (place|call) to"
+
+  dismissiveness:
+    - "^no\\.?\\s*$"
+    - "^not doing this\\.?\\s*$"
+    - "this has been discussed,? move on"
+    - "^(nope|nah)\\.?\\s*$"
+    - "not (going to|gonna) (happen|discuss)"
+    - "we('re| are) not doing (this|that)"
+    - "end of (discussion|story)"
+    - "\\bwhatever\\b.{0,20}\\byour way\\b"
+
+  status_authority_invocation:
+    - "\\bi designed\\b.{0,40}\\b(subsystem|system|component|module)\\b"
+    - "\\bi wrote\\b.{0,40}\\b(this code|this class|this subsystem)\\b"
+    - "as (the|a) (committer|pmc member|maintainer|author of this)"
+    - "it stays as[- ]is"
+    - "\\bi (built|created) (this|it) (originally)?\\b"
+    - "trust me,? i('ve| have) been (doing|working on) this (for years|since)"
+    - "\\bi('m| am) the (one who|original) (author|maintainer)\\b"
+
+  sarcasm:
+    - "oh (great|wonderful|fantastic|perfect)[,.!]"
+    - "that('s| is) (definitely|totally|surely) going to"
+    - "^sure[,.]? (why not)"
+    - "\\bshocking\\b.{0,20}\\bnobody\\b"
+    - "what could (possibly )?go wrong"
+    - "\\bgee\\b.{0,10}\\bthanks\\b"
+    - "yet another (rewrite|refactor) of the same"
+    - "\\b/s\\b"

@@ -332,6 +332,20 @@ class PonyMailTextFetcher(_PacedClient):
         self._month_cache[key] = by_message_id
         return by_message_id
 
+    def fetch_month_raw(self, list_name: str, domain: str, year_month: str) -> dict[str, dict]:
+        """Public accessor for one month's raw Pony Mail digest records
+        (`message-id -> raw record dict`), added for issue #44's pilot
+        sampler. Callers that only need preprocessed text should keep using
+        `fetch_and_preprocess_mail` below; this exists because the pilot
+        sampler additionally needs Pony Mail's own opaque `mid` field (not
+        exposed by `RawMailMessage`) to build each item's public archive
+        permalink, `https://lists.apache.org/thread/<mid>`. Hits this
+        fetcher's per-month cache, so calling it after `fetch_messages`/
+        `resolve_parent` has already fetched the same month costs no extra
+        network request.
+        """
+        return self._fetch_month(list_name, domain, year_month)
+
     def fetch_messages(self, refs: Iterable[MailMessageRef]) -> dict[str, RawMailMessage]:
         """Fetch raw bodies for exactly the given refs (deduplicated by
         message id). Only the `(list, domain, year_month)` groups actually

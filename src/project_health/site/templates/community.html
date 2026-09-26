@@ -37,4 +37,65 @@
     </div>
   </section>
 {% endfor %}
+
+<section class="leaderboard" aria-labelledby="leaderboard-heading">
+  <h2 id="leaderboard-heading">Contributor leaderboard</h2>
+  <p class="page-intro">
+    Top contributors by one activity type at a time — commits, reviews, and JIRA issues resolved —
+    over the trailing 12 completed months{% if leaderboard.window_label %} ({{ leaderboard.window_label }}){% endif %}.
+    These are ranked counts of deterministic, public activity, never a blended "contribution score"
+    and never based on any classified label (<a href="{{ decisions_url }}#{{ decisions_d19_anchor }}">DECISIONS.md — D19</a>).
+  </p>
+
+  <p class="governance-note">
+    <strong>Identity-resolution limits.</strong> {{ leaderboard.identity_limitations_note }}
+    <a href="{{ leaderboard.corrections_url }}">Request an identity correction</a>.
+  </p>
+
+  {% if leaderboard.has_data %}
+  <div class="card-grid">
+    {% for list in leaderboard.lists %}
+    <article class="card">
+      <header class="card-header">
+        <h3>{{ list.label }}</h3>
+      </header>
+      {% if list.has_data %}
+      <table class="security-table leaderboard-table">
+        <thead>
+          <tr>
+            <th scope="col">#</th>
+            <th scope="col">Contributor</th>
+            <th scope="col">Organization</th>
+            <th scope="col">Count</th>
+            <th scope="col"></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in list.rows %}
+          <tr>
+            <td>{{ row.rank }}</td>
+            <td>{{ row.display_name }}</td>
+            <td>{{ row.organization }}</td>
+            <td>{{ row.count }}</td>
+            <td><a href="{{ row.correction_url }}">Report an issue</a></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+      <p class="card-empty-state">insufficient data</p>
+      {% endif %}
+    </article>
+    {% endfor %}
+  </div>
+  <p class="card-links">
+    <a href="{{ leaderboard.json_href }}">JSON</a> &middot; <a href="{{ leaderboard.csv_href }}">CSV</a>
+  </p>
+  {% else %}
+  <p class="card-empty-state">
+    The leaderboard is not published yet — it appears once the pipeline has collected git and JIRA
+    history for this project.
+  </p>
+  {% endif %}
+</section>
 {% endblock %}

@@ -1,0 +1,71 @@
+name: Identity correction
+description: >-
+  Request that two raw identifiers (a git email, a commit-trailer name, a
+  JIRA username) be merged as the same person, or that an incorrect merge be
+  undone. A correction is a PR-reviewed entry in identity_overrides.yaml,
+  never a silent change (D19, D2 rule 5).
+title: "Identity correction: "
+labels:
+  - identity-correction
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this form to request a correction to how this project's identity
+        resolution ([`normalize/identity.py`](https://github.com/pmcfadin/cassandra-project-health/blob/main/src/project_health/normalize/identity.py))
+        grouped (or failed to group) raw identifiers into one person, as
+        shown on the [contributor leaderboard](https://pmcfadin.github.io/cassandra-project-health/community/)
+        or anywhere else contributor counts appear
+        ([DECISIONS.md D19](https://github.com/pmcfadin/cassandra-project-health/blob/main/docs/spec/DECISIONS.md#d19-contributor-leaderboard-amends-d2-rule-7),
+        [D2 rule 5](https://github.com/pmcfadin/cassandra-project-health/blob/main/docs/spec/DECISIONS.md#d2-principles-rules-not-aspirations)).
+
+        This form only *requests* a correction — nothing changes until a
+        maintainer reviews it and merges a pull request adding an entry to
+        [`identity_overrides.yaml`](https://github.com/pmcfadin/cassandra-project-health/blob/main/identity_overrides.yaml).
+        See that file's own comments for the entry shape (`source_type`,
+        `source_value`, `into_source_type`, `into_source_value`, `reviewer`,
+        `evidence`). Two identities are only ever merged on high-confidence,
+        evidenced grounds — never a guess from similar-looking names.
+  - type: input
+    id: identity_id
+    attributes:
+      label: Identity ID (optional)
+      description: >-
+        The `identity_id` shown in a leaderboard's downloaded JSON/CSV, if
+        you have it.
+      placeholder: "e.g. 3f9c1a2b-..."
+    validations:
+      required: false
+  - type: input
+    id: raw_identifier_a
+    attributes:
+      label: First raw identifier
+      description: A git email, commit-trailer name, or JIRA username.
+      placeholder: "e.g. jane@example.org, or the trailer name \"Jane Doe\""
+    validations:
+      required: true
+  - type: input
+    id: raw_identifier_b
+    attributes:
+      label: Second raw identifier
+      description: The other raw identifier that should (or should not) resolve to the same person.
+      placeholder: "e.g. jdoe (JIRA username)"
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence these are (or are not) the same person
+      description: >-
+        Be specific — e.g. a JIRA/dev@ comment where the person confirmed
+        both identifiers, or a reason an existing merge is wrong. This
+        becomes the override's `evidence` field if accepted.
+    validations:
+      required: true
+  - type: input
+    id: supporting_link
+    attributes:
+      label: Supporting link (optional)
+      description: A JIRA comment, mailing-list message, or other public evidence link.
+    validations:
+      required: false

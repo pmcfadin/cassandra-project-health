@@ -24,7 +24,18 @@ issue_tracker:
 
 pull_requests:
   type: github                     # selects core/adapters/github.py; GitHub PRs cover only
-  repos: [apache/cassandra]        # part of review activity per DECISIONS.md — JIRA is primary for Cassandra
+  # part of review activity per DECISIONS.md — JIRA is primary for Cassandra.
+  # Related repos confirmed to exist (DATA-SOURCES.md §3, verified 2026-09-25); all have
+  # GitHub Issues/Discussions disabled like the main repo, so PRs are their only GitHub-native
+  # review surface too.
+  repos:
+    - apache/cassandra
+    - apache/cassandra-dtest
+    - apache/cassandra-java-driver
+    - apache/cassandra-website
+    - apache/cassandra-sidecar
+    - apache/cassandra-analytics
+    - apache/cassandra-accord
 
 mailing_lists:
   type: ponymail                   # selects core/adapters/ponymail.py

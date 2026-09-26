@@ -72,6 +72,7 @@ DEFINITION_VERSIONS: dict[str, str] = {
     "reviewer_hhi": "1.0",
     "median_resolution_latency_jira": "1.0",
     "stale_jira_rate": "1.0",
+    "pmc_joins_quarterly": "1.0",
 }
 
 # Headcount metrics are plain counts, not rate/ratio/concentration/latency
@@ -82,6 +83,7 @@ HEADCOUNT_METRICS = frozenset(
         "active_contributors_monthly",
         "new_contributors_monthly",
         "unique_reviewers_monthly",
+        "pmc_joins_quarterly",
     }
 )
 
@@ -123,7 +125,7 @@ def _connect(tables: dict[str, pa.Table]) -> duckdb.DuckDBPyConnection:
     # month/day bucketing is a pure function of the (UTC) input timestamps,
     # not of which machine runs the pipeline.
     con.execute("SET TimeZone='UTC'")
-    for name in ("contribution_event", "review_event", "issue", "identity_link"):
+    for name in ("contribution_event", "review_event", "issue", "identity_link", "roster_entry"):
         con.register(name, _table_or_empty(tables, name))
     con.execute(
         """
@@ -604,6 +606,77 @@ def _stale_jira_rate(
     ]
 
 
+def _pmc_joins_quarterly(
+    con: duckdb.DuckDBPyConnection, as_of: date, run_id: str, computed_at: datetime
+) -> list[dict]:
+    """New PMC members per quarter, from join dates only.
+
+    Queries the roster_entry table (from the ASF Whimsy collector) to compute
+    quarterly counts of new PMC member joins (those with effective_from dates in
+    that quarter), then emits those counts as metric values.
+
+    Per METRICS.md §5: ground-truth data with no identity-ambiguity risk,
+    since roster entries are already resolved identities from Whimsy.
+    Note: Whimsy currently shows only living members, so departures are invisible.
+    As historical roster snapshots accumulate, real net change (joins minus departures)
+    will become computable. No sample-size floor applies.
+    """
+    from project_health.metrics.windows import (
+        dense_quarters,
+        quarter_end,
+        quarter_start,
+    )
+
+    # Fetch quarterly PMC member counts
+    rows = con.execute(
+        """
+        SELECT
+            DATE_TRUNC('quarter', CAST(effective_from AS DATE))::DATE AS quarter_start,
+            COUNT(DISTINCT asf_id) AS n
+        FROM roster_entry
+        WHERE role = 'pmc' AND effective_from IS NOT NULL
+        GROUP BY 1
+        ORDER BY 1
+        """,
+    ).fetchall()
+
+    # Build a map of quarter -> count
+    counts_per_quarter: dict[date, int] = {}
+    first_quarter = None
+    for quarter_start_val, count in rows:
+        if quarter_start_val is not None:
+            quarter_date = quarter_start(quarter_start_val)
+            counts_per_quarter[quarter_date] = count
+            if first_quarter is None or quarter_date < first_quarter:
+                first_quarter = quarter_date
+
+    if not counts_per_quarter:
+        return []
+
+    # Generate dense quarters and emit quarterly join counts
+    out = []
+    for quarter in dense_quarters(first_quarter, as_of):
+        join_count = counts_per_quarter.get(quarter, 0)
+
+        out.append(
+            _make_row(
+                metric_id="pmc_joins_quarterly",
+                window_start=quarter,
+                window_end=quarter_end(quarter),
+                raw_value=float(join_count),
+                n=join_count,
+                floor=FLOOR_RATE_RATIO,  # Ignored for headcount metrics (issue #27)
+                run_id=run_id,
+                computed_at=computed_at,
+                details={
+                    "pmc_new_joins": join_count,
+                },
+            )
+        )
+
+    return out
+
+
 # --- Config helpers -----------------------------------------------------------
 
 
@@ -650,6 +723,7 @@ def compute_all(
         threshold_days = _stale_threshold_days(config)
 
         rows: list[dict] = []
+        rows.extend(_pmc_joins_quarterly(con, as_of, run_id, computed_at))
         rows.extend(_active_contributors_monthly(con, as_of, run_id, computed_at))
         rows.extend(_new_contributors_monthly(con, as_of, run_id, computed_at))
         rows.extend(_unique_reviewers_monthly(con, as_of, run_id, computed_at))

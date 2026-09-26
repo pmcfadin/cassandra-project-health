@@ -1,0 +1,1171 @@
+{
+  "lastTimestamp": "20260923200031Z",
+  "project_count": 250,
+  "roster_counts": {
+    "accumulo": {
+      "members": 44,
+      "owners": 40
+    },
+    "activemq": {
+      "members": 65,
+      "owners": 29
+    },
+    "age": {
+      "members": 20,
+      "owners": 13
+    },
+    "airavata": {
+      "members": 46,
+      "owners": 28
+    },
+    "airflow": {
+      "members": 79,
+      "owners": 43
+    },
+    "allura": {
+      "members": 19,
+      "owners": 19
+    },
+    "ambari": {
+      "members": 23,
+      "owners": 19
+    },
+    "amoro": {
+      "members": 27,
+      "owners": 22
+    },
+    "answer": {
+      "members": 18,
+      "owners": 14
+    },
+    "ant": {
+      "members": 29,
+      "owners": 22
+    },
+    "apisix": {
+      "members": 65,
+      "owners": 31
+    },
+    "apr": {
+      "members": 68,
+      "owners": 43
+    },
+    "aries": {
+      "members": 56,
+      "owners": 38
+    },
+    "arrow": {
+      "members": 120,
+      "owners": 62
+    },
+    "artemis": {
+      "members": 64,
+      "owners": 30
+    },
+    "asterixdb": {
+      "members": 47,
+      "owners": 31
+    },
+    "asyncband": {
+      "members": 8,
+      "owners": 8
+    },
+    "atlas": {
+      "members": 51,
+      "owners": 34
+    },
+    "attic": {
+      "members": 19,
+      "owners": 17
+    },
+    "auron": {
+      "members": 22,
+      "owners": 22
+    },
+    "avro": {
+      "members": 39,
+      "owners": 25
+    },
+    "axis": {
+      "members": 65,
+      "owners": 64
+    },
+    "beam": {
+      "members": 102,
+      "owners": 27
+    },
+    "bifromq": {
+      "members": 11,
+      "owners": 11
+    },
+    "bigtop": {
+      "members": 46,
+      "owners": 30
+    },
+    "bookkeeper": {
+      "members": 32,
+      "owners": 20
+    },
+    "brooklyn": {
+      "members": 20,
+      "owners": 19
+    },
+    "brpc": {
+      "members": 22,
+      "owners": 14
+    },
+    "buildstream": {
+      "members": 6,
+      "owners": 6
+    },
+    "burr": {
+      "members": 10,
+      "owners": 10
+    },
+    "bval": {
+      "members": 17,
+      "owners": 15
+    },
+    "calcite": {
+      "members": 82,
+      "owners": 32
+    },
+    "caldera": {
+      "members": 9,
+      "owners": 9
+    },
+    "camel": {
+      "members": 97,
+      "owners": 49
+    },
+    "carbondata": {
+      "members": 28,
+      "owners": 19
+    },
+    "casbin": {
+      "members": 13,
+      "owners": 13
+    },
+    "cassandra": {
+      "members": 101,
+      "owners": 49
+    },
+    "causeway": {
+      "members": 16,
+      "owners": 16
+    },
+    "cayenne": {
+      "members": 24,
+      "owners": 9
+    },
+    "celeborn": {
+      "members": 28,
+      "owners": 16
+    },
+    "celix": {
+      "members": 17,
+      "owners": 10
+    },
+    "cloudberry": {
+      "members": 34,
+      "owners": 25
+    },
+    "cloudstack": {
+      "members": 147,
+      "owners": 63
+    },
+    "comdev": {
+      "members": 55,
+      "owners": 45
+    },
+    "commons": {
+      "members": 150,
+      "owners": 44
+    },
+    "conferences": {
+      "members": 3,
+      "owners": 3
+    },
+    "cordova": {
+      "members": 100,
+      "owners": 97
+    },
+    "couchdb": {
+      "members": 74,
+      "owners": 18
+    },
+    "creadur": {
+      "members": 11,
+      "owners": 10
+    },
+    "ctakes": {
+      "members": 40,
+      "owners": 30
+    },
+    "curator": {
+      "members": 16,
+      "owners": 16
+    },
+    "cxf": {
+      "members": 44,
+      "owners": 26
+    },
+    "daffodil": {
+      "members": 23,
+      "owners": 22
+    },
+    "datafu": {
+      "members": 20,
+      "owners": 12
+    },
+    "datafusion": {
+      "members": 63,
+      "owners": 24
+    },
+    "datasketches": {
+      "members": 26,
+      "owners": 19
+    },
+    "db": {
+      "members": 48,
+      "owners": 46
+    },
+    "deltaspike": {
+      "members": 36,
+      "owners": 18
+    },
+    "devlake": {
+      "members": 40,
+      "owners": 18
+    },
+    "directory": {
+      "members": 57,
+      "owners": 17
+    },
+    "diversity": {
+      "members": 13,
+      "owners": 11
+    },
+    "dolphinscheduler": {
+      "members": 59,
+      "owners": 27
+    },
+    "doris": {
+      "members": 108,
+      "owners": 26
+    },
+    "drill": {
+      "members": 64,
+      "owners": 28
+    },
+    "druid": {
+      "members": 76,
+      "owners": 42
+    },
+    "dubbo": {
+      "members": 119,
+      "owners": 32
+    },
+    "echarts": {
+      "members": 31,
+      "owners": 15
+    },
+    "empire-db": {
+      "members": 11,
+      "owners": 10
+    },
+    "eventmesh": {
+      "members": 54,
+      "owners": 16
+    },
+    "felix": {
+      "members": 68,
+      "owners": 25
+    },
+    "fesod": {
+      "members": 12,
+      "owners": 10
+    },
+    "fineract": {
+      "members": 57,
+      "owners": 25
+    },
+    "flagon": {
+      "members": 20,
+      "owners": 12
+    },
+    "flex": {
+      "members": 67,
+      "owners": 45
+    },
+    "flink": {
+      "members": 131,
+      "owners": 59
+    },
+    "flume": {
+      "members": 33,
+      "owners": 25
+    },
+    "fluo": {
+      "members": 1,
+      "owners": 1
+    },
+    "fluss": {
+      "members": 22,
+      "owners": 14
+    },
+    "fory": {
+      "members": 19,
+      "owners": 10
+    },
+    "freemarker": {
+      "members": 12,
+      "owners": 9
+    },
+    "geaflow": {
+      "members": 13,
+      "owners": 11
+    },
+    "geode": {
+      "members": 126,
+      "owners": 35
+    },
+    "geronimo": {
+      "members": 71,
+      "owners": 40
+    },
+    "gluten": {
+      "members": 45,
+      "owners": 28
+    },
+    "gobblin": {
+      "members": 23,
+      "owners": 12
+    },
+    "grails": {
+      "members": 19,
+      "owners": 13
+    },
+    "graphar": {
+      "members": 14,
+      "owners": 9
+    },
+    "gravitino": {
+      "members": 30,
+      "owners": 15
+    },
+    "groovy": {
+      "members": 25,
+      "owners": 14
+    },
+    "guacamole": {
+      "members": 17,
+      "owners": 11
+    },
+    "gump": {
+      "members": 16,
+      "owners": 10
+    },
+    "hadoop": {
+      "members": 251,
+      "owners": 126
+    },
+    "hamilton": {
+      "members": 10,
+      "owners": 10
+    },
+    "hbase": {
+      "members": 114,
+      "owners": 65
+    },
+    "helix": {
+      "members": 28,
+      "owners": 18
+    },
+    "hertzbeat": {
+      "members": 31,
+      "owners": 21
+    },
+    "hive": {
+      "members": 114,
+      "owners": 60
+    },
+    "hop": {
+      "members": 25,
+      "owners": 10
+    },
+    "httpcomponents": {
+      "members": 20,
+      "owners": 9
+    },
+    "httpd": {
+      "members": 129,
+      "owners": 58
+    },
+    "hudi": {
+      "members": 44,
+      "owners": 20
+    },
+    "hugegraph": {
+      "members": 22,
+      "owners": 12
+    },
+    "iceberg": {
+      "members": 40,
+      "owners": 26
+    },
+    "iggy": {
+      "members": 20,
+      "owners": 9
+    },
+    "ignite": {
+      "members": 81,
+      "owners": 43
+    },
+    "impala": {
+      "members": 72,
+      "owners": 42
+    },
+    "incubator": {
+      "members": 4268,
+      "owners": 300
+    },
+    "inlong": {
+      "members": 54,
+      "owners": 32
+    },
+    "iotdb": {
+      "members": 83,
+      "owners": 33
+    },
+    "jackrabbit": {
+      "members": 60,
+      "owners": 60
+    },
+    "james": {
+      "members": 44,
+      "owners": 19
+    },
+    "jena": {
+      "members": 21,
+      "owners": 15
+    },
+    "jmeter": {
+      "members": 13,
+      "owners": 8
+    },
+    "johnzon": {
+      "members": 10,
+      "owners": 8
+    },
+    "jspwiki": {
+      "members": 16,
+      "owners": 10
+    },
+    "juneau": {
+      "members": 13,
+      "owners": 12
+    },
+    "kafka": {
+      "members": 72,
+      "owners": 44
+    },
+    "karaf": {
+      "members": 34,
+      "owners": 16
+    },
+    "kie": {
+      "members": 65,
+      "owners": 10
+    },
+    "knox": {
+      "members": 26,
+      "owners": 22
+    },
+    "kudu": {
+      "members": 35,
+      "owners": 35
+    },
+    "kvrocks": {
+      "members": 30,
+      "owners": 14
+    },
+    "kylin": {
+      "members": 52,
+      "owners": 24
+    },
+    "kyuubi": {
+      "members": 30,
+      "owners": 16
+    },
+    "libcloud": {
+      "members": 26,
+      "owners": 18
+    },
+    "linkis": {
+      "members": 40,
+      "owners": 26
+    },
+    "livy": {
+      "members": 25,
+      "owners": 21
+    },
+    "logging": {
+      "members": 49,
+      "owners": 19
+    },
+    "logodev": {
+      "members": 16,
+      "owners": 13
+    },
+    "lucene": {
+      "members": 112,
+      "owners": 70
+    },
+    "lucenenet": {
+      "members": 18,
+      "owners": 15
+    },
+    "madlib": {
+      "members": 17,
+      "owners": 5
+    },
+    "magpie": {
+      "members": 25,
+      "owners": 21
+    },
+    "mahout": {
+      "members": 36,
+      "owners": 13
+    },
+    "maka": {
+      "members": 23,
+      "owners": 14
+    },
+    "manifoldcf": {
+      "members": 25,
+      "owners": 15
+    },
+    "maven": {
+      "members": 76,
+      "owners": 31
+    },
+    "mina": {
+      "members": 29,
+      "owners": 15
+    },
+    "myfaces": {
+      "members": 81,
+      "owners": 47
+    },
+    "mynewt": {
+      "members": 37,
+      "owners": 19
+    },
+    "netbeans": {
+      "members": 83,
+      "owners": 66
+    },
+    "nifi": {
+      "members": 56,
+      "owners": 41
+    },
+    "nutch": {
+      "members": 23,
+      "owners": 23
+    },
+    "nuttx": {
+      "members": 41,
+      "owners": 24
+    },
+    "ofbiz": {
+      "members": 66,
+      "owners": 41
+    },
+    "opendal": {
+      "members": 40,
+      "owners": 23
+    },
+    "openjpa": {
+      "members": 37,
+      "owners": 18
+    },
+    "openmeetings": {
+      "members": 30,
+      "owners": 28
+    },
+    "opennlp": {
+      "members": 27,
+      "owners": 18
+    },
+    "openoffice": {
+      "members": 141,
+      "owners": 27
+    },
+    "openserverless": {
+      "members": 14,
+      "owners": 12
+    },
+    "openwebbeans": {
+      "members": 21,
+      "owners": 12
+    },
+    "openwhisk": {
+      "members": 54,
+      "owners": 22
+    },
+    "orc": {
+      "members": 50,
+      "owners": 16
+    },
+    "ossie": {
+      "members": 13,
+      "owners": 7
+    },
+    "otava": {
+      "members": 8,
+      "owners": 8
+    },
+    "ozhera": {
+      "members": 14,
+      "owners": 12
+    },
+    "ozone": {
+      "members": 92,
+      "owners": 44
+    },
+    "paimon": {
+      "members": 33,
+      "owners": 15
+    },
+    "parquet": {
+      "members": 42,
+      "owners": 32
+    },
+    "pdfbox": {
+      "members": 21,
+      "owners": 21
+    },
+    "pegasus": {
+      "members": 19,
+      "owners": 15
+    },
+    "pekko": {
+      "members": 29,
+      "owners": 21
+    },
+    "perl": {
+      "members": 21,
+      "owners": 11
+    },
+    "phoenix": {
+      "members": 60,
+      "owners": 39
+    },
+    "pig": {
+      "members": 31,
+      "owners": 17
+    },
+    "pinot": {
+      "members": 48,
+      "owners": 15
+    },
+    "plc4x": {
+      "members": 22,
+      "owners": 14
+    },
+    "poi": {
+      "members": 42,
+      "owners": 35
+    },
+    "polaris": {
+      "members": 32,
+      "owners": 19
+    },
+    "ponymail": {
+      "members": 11,
+      "owners": 6
+    },
+    "pouchdb": {
+      "members": 10,
+      "owners": 10
+    },
+    "privacy": {
+      "members": 5,
+      "owners": 4
+    },
+    "pulsar": {
+      "members": 86,
+      "owners": 47
+    },
+    "qpid": {
+      "members": 53,
+      "owners": 41
+    },
+    "rai": {
+      "members": 20,
+      "owners": 20
+    },
+    "ranger": {
+      "members": 41,
+      "owners": 19
+    },
+    "ratis": {
+      "members": 32,
+      "owners": 20
+    },
+    "reqsign": {
+      "members": 9,
+      "owners": 9
+    },
+    "resilientdb": {
+      "members": 40,
+      "owners": 25
+    },
+    "rocketmq": {
+      "members": 76,
+      "owners": 21
+    },
+    "roller": {
+      "members": 11,
+      "owners": 7
+    },
+    "royale": {
+      "members": 20,
+      "owners": 17
+    },
+    "rya": {
+      "members": 12,
+      "owners": 11
+    },
+    "samza": {
+      "members": 31,
+      "owners": 17
+    },
+    "santuario": {
+      "members": 18,
+      "owners": 7
+    },
+    "sdap": {
+      "members": 23,
+      "owners": 16
+    },
+    "seata": {
+      "members": 49,
+      "owners": 26
+    },
+    "seatunnel": {
+      "members": 42,
+      "owners": 24
+    },
+    "security": {
+      "members": 11,
+      "owners": 11
+    },
+    "sedona": {
+      "members": 26,
+      "owners": 20
+    },
+    "serf": {
+      "members": 17,
+      "owners": 15
+    },
+    "servicecomb": {
+      "members": 38,
+      "owners": 22
+    },
+    "shardingsphere": {
+      "members": 63,
+      "owners": 22
+    },
+    "shenyu": {
+      "members": 61,
+      "owners": 26
+    },
+    "shiro": {
+      "members": 16,
+      "owners": 12
+    },
+    "singa": {
+      "members": 23,
+      "owners": 16
+    },
+    "sis": {
+      "members": 22,
+      "owners": 17
+    },
+    "skywalking": {
+      "members": 64,
+      "owners": 36
+    },
+    "sling": {
+      "members": 53,
+      "owners": 30
+    },
+    "solr": {
+      "members": 103,
+      "owners": 62
+    },
+    "sourcelume": {
+      "members": 8,
+      "owners": 8
+    },
+    "spamassassin": {
+      "members": 32,
+      "owners": 13
+    },
+    "spark": {
+      "members": 104,
+      "owners": 65
+    },
+    "steve": {
+      "members": 11,
+      "owners": 7
+    },
+    "storm": {
+      "members": 49,
+      "owners": 48
+    },
+    "stormcrawler": {
+      "members": 12,
+      "owners": 6
+    },
+    "streampark": {
+      "members": 22,
+      "owners": 12
+    },
+    "streampipes": {
+      "members": 35,
+      "owners": 16
+    },
+    "struts": {
+      "members": 59,
+      "owners": 23
+    },
+    "subversion": {
+      "members": 92,
+      "owners": 50
+    },
+    "superset": {
+      "members": 79,
+      "owners": 40
+    },
+    "synapse": {
+      "members": 37,
+      "owners": 28
+    },
+    "syncope": {
+      "members": 27,
+      "owners": 13
+    },
+    "systemds": {
+      "members": 39,
+      "owners": 31
+    },
+    "tac": {
+      "members": 9,
+      "owners": 9
+    },
+    "tapestry": {
+      "members": 30,
+      "owners": 13
+    },
+    "tcl": {
+      "members": 12,
+      "owners": 7
+    },
+    "teaclave": {
+      "members": 29,
+      "owners": 19
+    },
+    "texera": {
+      "members": 16,
+      "owners": 14
+    },
+    "tez": {
+      "members": 36,
+      "owners": 33
+    },
+    "thrift": {
+      "members": 44,
+      "owners": 22
+    },
+    "tika": {
+      "members": 31,
+      "owners": 31
+    },
+    "tinkerpop": {
+      "members": 31,
+      "owners": 16
+    },
+    "tomcat": {
+      "members": 50,
+      "owners": 29
+    },
+    "tomee": {
+      "members": 36,
+      "owners": 13
+    },
+    "tooling": {
+      "members": 11,
+      "owners": 11
+    },
+    "toree": {
+      "members": 12,
+      "owners": 12
+    },
+    "trafficserver": {
+      "members": 72,
+      "owners": 58
+    },
+    "training": {
+      "members": 18,
+      "owners": 5
+    },
+    "tsfile": {
+      "members": 22,
+      "owners": 19
+    },
+    "turbine": {
+      "members": 12,
+      "owners": 9
+    },
+    "tvm": {
+      "members": 84,
+      "owners": 31
+    },
+    "uima": {
+      "members": 26,
+      "owners": 18
+    },
+    "uniffle": {
+      "members": 24,
+      "owners": 14
+    },
+    "unomi": {
+      "members": 17,
+      "owners": 8
+    },
+    "vcl": {
+      "members": 10,
+      "owners": 8
+    },
+    "velocity": {
+      "members": 16,
+      "owners": 10
+    },
+    "wayang": {
+      "members": 18,
+      "owners": 9
+    },
+    "whimsy": {
+      "members": 13,
+      "owners": 12
+    },
+    "wicket": {
+      "members": 35,
+      "owners": 34
+    },
+    "ws": {
+      "members": 223,
+      "owners": 42
+    },
+    "xalan": {
+      "members": 57,
+      "owners": 5
+    },
+    "xerces": {
+      "members": 19,
+      "owners": 15
+    },
+    "xmlgraphics": {
+      "members": 22,
+      "owners": 12
+    },
+    "xtable": {
+      "members": 12,
+      "owners": 12
+    },
+    "yetus": {
+      "members": 12,
+      "owners": 9
+    },
+    "yunikorn": {
+      "members": 39,
+      "owners": 29
+    },
+    "zeppelin": {
+      "members": 28,
+      "owners": 14
+    },
+    "zookeeper": {
+      "members": 35,
+      "owners": 19
+    }
+  },
+  "projects": {
+    "cassandra": {
+      "createTimestamp": "20170721131410Z",
+      "modifyTimestamp": "20260513173040Z",
+      "modifiedBy": "uid=edimitrova,ou=people,dc=apache,dc=org @ 20260513173040Z",
+      "member_count": 101,
+      "owner_count": 49,
+      "members": [
+        "user001",
+        "user002",
+        "user003",
+        "user004",
+        "user005",
+        "user006",
+        "user007",
+        "user008",
+        "user009",
+        "user010",
+        "user011",
+        "user012",
+        "user013",
+        "user014",
+        "user015",
+        "user016",
+        "user017",
+        "user018",
+        "user019",
+        "user020",
+        "user021",
+        "user022",
+        "user023",
+        "user024",
+        "user025",
+        "user026",
+        "user027",
+        "user028",
+        "user029",
+        "user030",
+        "user031",
+        "user032",
+        "user033",
+        "user034",
+        "user035",
+        "user036",
+        "user037",
+        "user038",
+        "user039",
+        "user040",
+        "user041",
+        "user042",
+        "user043",
+        "user044",
+        "user045",
+        "user046",
+        "user047",
+        "user048",
+        "user049",
+        "user050",
+        "user051",
+        "user052",
+        "user053",
+        "user054",
+        "user055",
+        "user056",
+        "user057",
+        "user058",
+        "user059",
+        "user060",
+        "user061",
+        "user062",
+        "user063",
+        "user064",
+        "user065",
+        "user066",
+        "user067",
+        "user068",
+        "user069",
+        "user070",
+        "user071",
+        "user072",
+        "user073",
+        "user074",
+        "user075",
+        "user076",
+        "user077",
+        "user078",
+        "user079",
+        "user080",
+        "user081",
+        "user082",
+        "user083",
+        "user084",
+        "user085",
+        "user086",
+        "user087",
+        "user088",
+        "user089",
+        "user090",
+        "user091",
+        "user092",
+        "user093",
+        "user094",
+        "user095",
+        "user096",
+        "user097",
+        "user098",
+        "user099",
+        "user100",
+        "user101"
+      ],
+      "owners": [
+        "user001",
+        "user002",
+        "user003",
+        "user004",
+        "user005",
+        "user006",
+        "user007",
+        "user008",
+        "user009",
+        "user010",
+        "user011",
+        "user012",
+        "user013",
+        "user014",
+        "user015",
+        "user016",
+        "user017",
+        "user018",
+        "user019",
+        "user020",
+        "user021",
+        "user022",
+        "user023",
+        "user024",
+        "user025",
+        "user026",
+        "user027",
+        "user028",
+        "user029",
+        "user030",
+        "user031",
+        "user032",
+        "user033",
+        "user034",
+        "user035",
+        "user036",
+        "user037",
+        "user038",
+        "user039",
+        "user040",
+        "user041",
+        "user042",
+        "user043",
+        "user044",
+        "user045",
+        "user046",
+        "user047",
+        "user048",
+        "user049"
+      ],
+      "pmc": true,
+      "podling": "graduated"
+    }
+  }
+}

@@ -1,0 +1,205 @@
+{
+  "committees": {
+    "cassandra": {
+      "established": "02/2010",
+      "roster": {
+        "user001": {
+          "name": "Synthetic User 001",
+          "date": "2010-02-17"
+        },
+        "user002": {
+          "name": "Synthetic User 002",
+          "date": "2010-02-17"
+        },
+        "user003": {
+          "name": "Synthetic User 003",
+          "date": "2010-02-17"
+        },
+        "user004": {
+          "name": "Synthetic User 004",
+          "date": "2010-03-15"
+        },
+        "user005": {
+          "name": "Synthetic User 005",
+          "date": "2010-05-20"
+        },
+        "user006": {
+          "name": "Synthetic User 006",
+          "date": "2011-01-10"
+        },
+        "user007": {
+          "name": "Synthetic User 007",
+          "date": "2011-06-22"
+        },
+        "user008": {
+          "name": "Synthetic User 008",
+          "date": "2012-02-28"
+        },
+        "user009": {
+          "name": "Synthetic User 009",
+          "date": "2012-08-15"
+        },
+        "user010": {
+          "name": "Synthetic User 010",
+          "date": "2013-01-30"
+        },
+        "user011": {
+          "name": "Synthetic User 011",
+          "date": "2013-07-10"
+        },
+        "user012": {
+          "name": "Synthetic User 012",
+          "date": "2014-02-14"
+        },
+        "user013": {
+          "name": "Synthetic User 013",
+          "date": "2014-08-07"
+        },
+        "user014": {
+          "name": "Synthetic User 014",
+          "date": "2015-01-12"
+        },
+        "user015": {
+          "name": "Synthetic User 015",
+          "date": "2015-06-30"
+        },
+        "user016": {
+          "name": "Synthetic User 016",
+          "date": "2015-11-20"
+        },
+        "user017": {
+          "name": "Synthetic User 017",
+          "date": "2016-04-05"
+        },
+        "user018": {
+          "name": "Synthetic User 018",
+          "date": "2016-06-16"
+        },
+        "user019": {
+          "name": "Synthetic User 019",
+          "date": "2016-12-01"
+        },
+        "user020": {
+          "name": "Synthetic User 020",
+          "date": "2017-02-28"
+        },
+        "user021": {
+          "name": "Synthetic User 021",
+          "date": "2017-09-15"
+        },
+        "user022": {
+          "name": "Synthetic User 022",
+          "date": "2018-01-22"
+        },
+        "user023": {
+          "name": "Synthetic User 023",
+          "date": "2018-06-10"
+        },
+        "user024": {
+          "name": "Synthetic User 024",
+          "date": "2019-03-18"
+        },
+        "user025": {
+          "name": "Synthetic User 025",
+          "date": "2019-11-05"
+        },
+        "user026": {
+          "name": "Synthetic User 026",
+          "date": "2020-02-20"
+        },
+        "user027": {
+          "name": "Synthetic User 027",
+          "date": "2020-07-30"
+        },
+        "user028": {
+          "name": "Synthetic User 028",
+          "date": "2021-01-15"
+        },
+        "user029": {
+          "name": "Synthetic User 029",
+          "date": "2021-05-12"
+        },
+        "user030": {
+          "name": "Synthetic User 030",
+          "date": "2021-10-25"
+        },
+        "user031": {
+          "name": "Synthetic User 031",
+          "date": "2022-01-08"
+        },
+        "user032": {
+          "name": "Synthetic User 032",
+          "date": "2022-04-14"
+        },
+        "user033": {
+          "name": "Synthetic User 033",
+          "date": "2022-08-22"
+        },
+        "user034": {
+          "name": "Synthetic User 034",
+          "date": "2023-02-10"
+        },
+        "user035": {
+          "name": "Synthetic User 035",
+          "date": "2023-06-20"
+        },
+        "user036": {
+          "name": "Synthetic User 036",
+          "date": "2023-10-30"
+        },
+        "user037": {
+          "name": "Synthetic User 037",
+          "date": "2024-01-15"
+        },
+        "user038": {
+          "name": "Synthetic User 038",
+          "date": "2024-04-22"
+        },
+        "user039": {
+          "name": "Synthetic User 039",
+          "date": "2024-07-18"
+        },
+        "user040": {
+          "name": "Synthetic User 040",
+          "date": "2024-11-10"
+        },
+        "user041": {
+          "name": "Synthetic User 041",
+          "date": "2025-02-05"
+        },
+        "user042": {
+          "name": "Synthetic User 042",
+          "date": "2025-05-14"
+        },
+        "user043": {
+          "name": "Synthetic User 043",
+          "date": "2025-08-15"
+        },
+        "user044": {
+          "name": "Synthetic User 044",
+          "date": "2025-11-01"
+        },
+        "user045": {
+          "name": "Synthetic User 045",
+          "date": "2026-01-20"
+        },
+        "user046": {
+          "name": "Synthetic User 046",
+          "date": "2026-02-09"
+        },
+        "user047": {
+          "name": "Synthetic User 047",
+          "date": "2026-03-30"
+        },
+        "user048": {
+          "name": "Synthetic User 048",
+          "date": "2026-05-08"
+        },
+        "user049": {
+          "name": "Synthetic User 049",
+          "date": "2026-05-13"
+        }
+      }
+    }
+  }
+}

@@ -23,11 +23,13 @@ import pyarrow.parquet as pq
 import pytest
 
 from project_health import storage
+from project_health.collectors.asf_roster import AsfRosterCollector
 from project_health.collectors.jira import JiraCollector
 from project_health.config import load_project
 from project_health.pipeline import (
     _dedupe_issue_rows,
     _dedupe_jira_review_events,
+    _dedupe_roster_entries,
     run_pipeline,
 )
 from project_health.schema import get_schema, validate
@@ -35,15 +37,23 @@ from project_health.site.manifest import load_manifest
 from tests.fixtures.git.build_repo import build_repo
 
 JIRA_FIXTURES_DIR = Path(__file__).parent / "fixtures" / "jira"
+ROSTER_FIXTURES_DIR = Path(__file__).parent / "fixtures" / "asf_roster"
 
 
 def _load_jira_fixture(name: str) -> dict:
     return json.loads((JIRA_FIXTURES_DIR / name).read_text())
 
 
+def _load_roster_fixture(name: str) -> dict:
+    return json.loads((ROSTER_FIXTURES_DIR / name).read_text())
+
+
 PAGE_1 = _load_jira_fixture("search_with_reviewers.json")
 PAGE_2 = _load_jira_fixture("search_with_reviewers_page2.json")
 EMPTY_PAGE = {"expand": "schema,names", "startAt": 0, "maxResults": 5, "total": 0, "issues": []}
+
+COMMITTEE_INFO = _load_roster_fixture("committee_info_cassandra.json")
+PUBLIC_LDAP_PROJECTS = _load_roster_fixture("public_ldap_projects_cassandra.json")
 
 NOW = datetime(2026, 9, 25, 6, 0, tzinfo=timezone.utc)
 
@@ -74,6 +84,35 @@ def _jira_factory(transport: httpx.MockTransport, max_retries: int = 2):
             page_size=5,
             max_retries=max_retries,
             min_request_interval=0,
+            sleep_fn=lambda s: None,
+        )
+
+    return factory
+
+
+def _roster_transport() -> httpx.MockTransport:
+    """Mock transport for ASF roster endpoints."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        url_str = str(request.url)
+        if "committee-info" in url_str or "committees" in request.url.path:
+            return httpx.Response(200, json=COMMITTEE_INFO)
+        elif "public_ldap_projects" in url_str or "projects" in request.url.path:
+            return httpx.Response(200, json=PUBLIC_LDAP_PROJECTS)
+        else:
+            return httpx.Response(200, json=PUBLIC_LDAP_PROJECTS)
+
+    return httpx.MockTransport(handler)
+
+
+def _roster_factory(transport: httpx.MockTransport | None = None):
+    """Create a factory for offline ASF roster collection."""
+    transport = transport or _roster_transport()
+
+    def factory(config):
+        return AsfRosterCollector(
+            config,
+            transport=transport,
+            max_retries=1,
             sleep_fn=lambda s: None,
         )
 
@@ -119,16 +158,23 @@ class TestEndToEnd:
             now=NOW,
             code_sha="abc1234",
             jira_collector_factory=_jira_factory(transport),
+            asf_roster_collector_factory=_roster_factory(),
         )
 
+        # exit_code is 0 (ok) because all metrics are now computable with roster data
         assert result.exit_code == 0
+        assert result.manifest["status"] == "ok"
+        assert result.manifest["metrics_missing"] == []
         assert result.manifest["sources"]["git"]["status"] == "ok"
         assert result.manifest["sources"]["jira"]["status"] == "ok"
+        assert result.manifest["sources"]["asf_roster"]["status"] == "ok"
         # 15 non-merge commits in the #3 fixture repo, 1 of them a bot
         # (github-actions[bot], excluded by projects/cassandra.yaml's
         # bot_patterns) -> 14 real contributions.
         assert result.manifest["sources"]["git"]["records_collected"] == 14
         assert result.manifest["sources"]["jira"]["records_collected"] == 10
+        # Roster: 49 PMC + 52 committers = 101 total
+        assert result.manifest["sources"]["asf_roster"]["records_collected"] == 101
         # Data-quality signal (issue #18): the #3 fixture repo has no
         # placeholder-reviewer ("TBD"/"none"/"n/a") trailers, so this is 0
         # here -- the field's presence/wiring is what's under test.
@@ -139,6 +185,8 @@ class TestEndToEnd:
         assert list((data_dir / "raw" / "git" / "review_event").glob("date=*/part-*.parquet"))
         assert list((data_dir / "raw" / "jira" / "issue").glob("date=*/part-*.parquet"))
         assert list((data_dir / "raw" / "jira" / "review_event").glob("date=*/part-*.parquet"))
+        roster_raw_dir = data_dir / "raw" / "asf_roster" / "roster_entry"
+        assert list(roster_raw_dir.glob("date=*/part-*.parquet"))
 
         # snapshot
         snapshot_path = data_dir / "snapshots" / result.run_id / "metrics.parquet"
@@ -153,6 +201,7 @@ class TestEndToEnd:
         assert loaded.pipeline_code_sha == "abc1234"
         assert loaded.sources["git"].status == "ok"
         assert loaded.sources["jira"].status == "ok"
+        assert loaded.sources["asf_roster"].status == "ok"
 
         # site
         assert (site_out / "index.html").is_file()
@@ -202,6 +251,7 @@ class TestEndToEnd:
             now=NOW,
             code_sha="abc1234",
             jira_collector_factory=_jira_factory(transport),
+            asf_roster_collector_factory=_roster_factory(),
         )
 
         assert result.manifest["sources"]["git"]["placeholder_reviewer_commits"] == 1
@@ -217,6 +267,7 @@ class TestEndToEnd:
             now=NOW,
             code_sha="abc1234567",
             jira_collector_factory=_jira_factory(transport),
+            asf_roster_collector_factory=_roster_factory(),
         )
 
         assert result.run_id == "2026-09-25T060000Z-abc1234"
@@ -248,8 +299,11 @@ class TestReproducibility:
             now=NOW,
             code_sha="abc1234",
             jira_collector_factory=_jira_factory(transport_1),
+            asf_roster_collector_factory=_roster_factory(),
         )
+        # Exit code is 0 (ok) because all metrics are computable with roster data
         assert first.exit_code == 0
+        assert first.manifest["metrics_missing"] == []
 
         contribution_before = storage.read_table(data_dir, "git", "contribution_event").num_rows
         issue_before = storage.read_table(data_dir, "jira", "issue").num_rows
@@ -267,16 +321,22 @@ class TestReproducibility:
             now=NOW.replace(hour=7),
             code_sha="abc1234",
             jira_collector_factory=_jira_factory(transport_2),
+            asf_roster_collector_factory=_roster_factory(),
         )
+        # Exit code is 0 (ok) because all metrics are computable with roster data
         assert second.exit_code == 0
+        assert second.manifest["metrics_missing"] == []
         assert second.run_id != first.run_id
         assert second.manifest["sources"]["git"]["records_collected"] == 0
         assert second.manifest["sources"]["jira"]["records_collected"] == 0
+        assert second.manifest["sources"]["asf_roster"]["records_collected"] == 101
 
         contribution_after = storage.read_table(data_dir, "git", "contribution_event").num_rows
         issue_after = storage.read_table(data_dir, "jira", "issue").num_rows
         assert contribution_after == contribution_before
         assert issue_after == issue_before
+        # Note: roster_entry accumulates in raw storage but is deduped during
+        # metrics computation, so we check that metrics are consistent instead
 
         first_metrics = pq.read_table(
             data_dir / "snapshots" / first.run_id / "metrics.parquet"
@@ -323,6 +383,7 @@ class TestPartialFailure:
             now=NOW,
             code_sha="abc1234",
             jira_collector_factory=_jira_factory(good_transport),
+            asf_roster_collector_factory=_roster_factory(),
         )
         assert first.manifest["sources"]["jira"]["status"] == "ok"
 
@@ -334,15 +395,21 @@ class TestPartialFailure:
             now=NOW.replace(hour=7),
             code_sha="abc1234",
             jira_collector_factory=_jira_factory(broken_transport, max_retries=2),
+            asf_roster_collector_factory=_roster_factory(),
         )
 
-        # A source outage never fails the whole run -- metrics still compute
-        # from git's fresh data plus jira's last-known-good raw data.
+        # A JIRA source outage still produces valid metrics via prior JIRA data
+        # plus current roster data -> exit code 0 (ok).
+        # Metrics still compute from git's fresh data plus jira's last-known-good
+        # raw data and roster's fresh data.
         assert second.exit_code == 0
+        assert second.manifest["status"] == "ok"
+        assert second.manifest["metrics_missing"] == []
         assert second.manifest["sources"]["jira"]["status"] == "failed"
         assert second.manifest["sources"]["jira"]["last_good_snapshot"] == first.run_id
         assert "reason" in second.manifest["sources"]["jira"]
         assert second.manifest["sources"]["git"]["status"] == "ok"
+        assert second.manifest["sources"]["asf_roster"]["status"] == "ok"
         assert (data_dir / "snapshots" / second.run_id / "metrics.parquet").is_file()
 
         loaded = load_manifest(data_dir, second.run_id)
@@ -374,6 +441,7 @@ class TestMetricsFailure:
             now=NOW,
             code_sha="abc1234",
             jira_collector_factory=_jira_factory(transport),
+            asf_roster_collector_factory=_roster_factory(),
         )
 
         assert result.exit_code == 1
@@ -427,11 +495,15 @@ class TestDegradedMetrics:
             now=NOW,
             code_sha="abc1234",
             jira_collector_factory=_jira_factory(transport),
+            asf_roster_collector_factory=_roster_factory(),
         )
 
         assert result.exit_code != 0
         assert result.manifest["status"] == "degraded"
-        assert result.manifest["metrics_missing"] == ["stale_jira_rate"]
+        # Only stale_jira_rate is missing (test dropped it); pmc_joins_quarterly is now computable
+        assert sorted(result.manifest["metrics_missing"]) == [
+            "stale_jira_rate",
+        ]
         assert "stale_jira_rate" not in {
             m.split("@")[0] for m in result.manifest["metrics_computed"]
         }
@@ -544,6 +616,45 @@ class TestDedupe:
         assert by_reviewer["alice"]["evidence"] == "re-fetched (issue's updated_at moved)"
         assert by_reviewer["bob"]["evidence"] == "different reviewer, same issue"
 
+    def test_dedupe_roster_entries_keeps_latest_per_asf_id(self):
+        schema = get_schema("roster_entry")
+        base = {
+            "entry_id": "entry-1",
+            "identity_id": None,
+            "display_name": "Test User",
+            "role": "pmc",
+            "project": "cassandra",
+            "effective_from": None,
+            "effective_from_raw": None,
+        }
+        rows = [
+            {
+                **base,
+                "asf_id": "testuser",
+                "source_snapshot_id": "run-1:asf_roster",
+            },
+            {
+                **base,
+                "asf_id": "testuser",
+                "source_snapshot_id": "run-2:asf_roster",
+                "display_name": "Test User (updated)",
+            },
+            {
+                **base,
+                "asf_id": "other",
+                "source_snapshot_id": "run-1:asf_roster",
+            },
+        ]
+        table = validate("roster_entry", pa.Table.from_pylist(rows, schema=schema))
+
+        deduped = _dedupe_roster_entries(table)
+
+        assert deduped.num_rows == 2
+        by_id = {r["asf_id"]: r for r in deduped.to_pylist()}
+        assert by_id["testuser"]["display_name"] == "Test User (updated)"
+        assert by_id["other"]["source_snapshot_id"] == "run-1:asf_roster"
+
     def test_dedupe_functions_are_noop_on_empty_tables(self):
         assert _dedupe_issue_rows(get_schema("issue").empty_table()).num_rows == 0
         assert _dedupe_jira_review_events(get_schema("review_event").empty_table()).num_rows == 0
+        assert _dedupe_roster_entries(get_schema("roster_entry").empty_table()).num_rows == 0

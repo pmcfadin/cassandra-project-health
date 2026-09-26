@@ -24,6 +24,7 @@ from tests.fixtures.metrics.builders import (
     identity_link_for,
     issues,
     review_events,
+    roster_entries,
 )
 
 UTC = timezone.utc
@@ -858,6 +859,76 @@ def test_compute_all_is_reproducible_excluding_run_id_and_computed_at():
     second_comparable = second.drop_columns(drop).to_pylist()
     assert first_comparable == second_comparable
     assert first.num_rows == second.num_rows > 0
+
+
+# --- pmc_joins_quarterly (headcount: reports any n, issue #27) -----
+
+
+def test_pmc_joins_quarterly_includes_zero_join_quarters():
+    """Test that zero-join quarters are reported with value=0.0, flag=ok.
+
+    Headcount metrics like pmc_joins_quarterly must report any n including 0,
+    with flag='ok', per issue #27. This golden test verifies quarterly join
+    counts including quarters with zero new PMC joins.
+    """
+    roster_rows = [
+        # Q3 2023: 2 PMC joins
+        {
+            "asf_id": "alice",
+            "role": "pmc",
+            "project": "cassandra",
+            "effective_from": date(2023, 7, 15),
+        },
+        {
+            "asf_id": "bob",
+            "role": "pmc",
+            "project": "cassandra",
+            "effective_from": date(2023, 8, 1),
+        },
+        # Q4 2023: no joins (zero-join quarter, must still appear in output)
+        # Non-PMC members should not be counted
+        {
+            "asf_id": "dave",
+            "role": "committer",
+            "project": "cassandra",
+            "effective_from": None,
+        },
+    ]
+    roster_table = roster_entries(roster_rows)
+
+    result = compute_all(
+        {"roster_entry": roster_table},
+        as_of=AS_OF,
+        run_id=RUN_ID,
+        computed_at=COMPUTED_AT,
+        config=CONFIG,
+    )
+
+    rows = _rows_for(result, "pmc_joins_quarterly")
+    # Should have rows for Q3 2023 and Q4 2023 (both completed before as_of=2024-03-15)
+    quarters = [r["window_start"] for r in rows]
+    assert len(rows) == 2, f"Expected 2 quarters, got {len(rows)}: {quarters}"
+
+    q3, q4 = rows
+    # Q3 2023: 2 joins
+    assert q3["window_start"] == date(2023, 7, 1)
+    assert q3["window_end"] == date(2023, 9, 30)
+    assert q3["n"] == 2
+    assert q3["value"] == 2.0
+    assert q3["flag"] == "ok"
+    assert q3["definition_version"] == "1.0"
+    details_q3 = _details(q3)
+    assert details_q3["pmc_new_joins"] == 2
+
+    # Q4 2023: 0 joins (zero-join quarter must have value=0.0, flag=ok)
+    assert q4["window_start"] == date(2023, 10, 1)
+    assert q4["window_end"] == date(2023, 12, 31)
+    assert q4["n"] == 0
+    assert q4["value"] == 0.0
+    assert q4["flag"] == "ok"  # Critical: zero-count headcount metric must be flag=ok
+    assert q4["definition_version"] == "1.0"
+    details_q4 = _details(q4)
+    assert details_q4["pmc_new_joins"] == 0
 
 
 # --- No per-person values (D2 rule 4 spirit) ----------------------------

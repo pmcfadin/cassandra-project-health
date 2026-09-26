@@ -80,6 +80,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from project_health import storage
+from project_health.collectors.asf_roster import AsfRosterCollector
 from project_health.collectors.git import GitCollector, clone_or_fetch, github_clone_url
 from project_health.collectors.jira import JiraCollector
 from project_health.config import ProjectConfig
@@ -97,7 +98,7 @@ from project_health.provenance import (
 from project_health.site.generate import generate as generate_site
 from project_health.site.manifest import manifest_path
 
-ALL_SOURCES: tuple[str, ...] = ("git", "jira")
+ALL_SOURCES: tuple[str, ...] = ("git", "jira", "asf_roster")
 
 
 def _log(event: str, **fields: Any) -> None:
@@ -196,6 +197,26 @@ def _dedupe_jira_review_events(table: pa.Table) -> pa.Table:
     kept = sorted(
         best.values(), key=lambda r: (r["issue_key"] or "", r["reviewer_raw_value"], r["event_id"])
     )
+    return pa.Table.from_pylist(kept, schema=table.schema)
+
+
+def _dedupe_roster_entries(table: pa.Table) -> pa.Table:
+    """Keep only the latest entry per `asf_id` (since roster is stateless).
+
+    Roster data is collected fresh on every run from Whimsy's current state.
+    Since it has no watermark, it accumulates across runs. This function
+    dedupes to keep only the most recent snapshot of each member.
+    """
+    if table.num_rows == 0:
+        return table
+    best: dict[str, dict[str, Any]] = {}
+    for row in table.to_pylist():
+        asf_id = row["asf_id"]
+        current = best.get(asf_id)
+        # Keep the row from the most recent source_snapshot_id (lexicographically last)
+        if current is None or row["source_snapshot_id"] > current["source_snapshot_id"]:
+            best[asf_id] = row
+    kept = sorted(best.values(), key=lambda r: r["asf_id"])
     return pa.Table.from_pylist(kept, schema=table.schema)
 
 
@@ -322,6 +343,43 @@ def _collect_jira(
         collector.close()
 
 
+def _collect_asf_roster(
+    config: ProjectConfig,
+    data_dir: Path,
+    run_id: str,
+    started_at: datetime,
+    collector_factory: Callable[[ProjectConfig], AsfRosterCollector] | None,
+) -> dict[str, Any]:
+    """Collect ASF roster data (PMC + committers) for metrics."""
+    _log("source_collect_started", source="asf_roster")
+    collector = (collector_factory or AsfRosterCollector)(config)
+    try:
+        result = collector.collect()
+        # Store roster_entry to persistent storage so it's available for compute_all
+        partition_date = started_at.date()
+        storage.write_partition(
+            data_dir, "asf_roster", "roster_entry", partition_date, run_id, result.roster_entries
+        )
+        _log(
+            "source_collect_succeeded",
+            source="asf_roster",
+            records_collected=result.entry_count,
+        )
+        return {
+            "status": "ok",
+            "records_collected": result.entry_count,
+        }
+    except Exception as exc:  # noqa: BLE001 - a source outage must never abort the run (§7.3)
+        _log("source_collect_failed", source="asf_roster", error=str(exc))
+        return {
+            "status": "failed",
+            "records_collected": 0,
+            "reason": str(exc),
+        }
+    finally:
+        collector.close()
+
+
 def _write_metrics_snapshot(data_dir: Path, run_id: str, metrics_table: pa.Table) -> Path:
     snapshot_dir = Path(data_dir) / "snapshots" / run_id
     snapshot_dir.mkdir(parents=True, exist_ok=True)
@@ -346,6 +404,7 @@ def run_pipeline(
     identity_overrides_path: str | Path | None = None,
     trigger: str = "manual",
     jira_collector_factory: Callable[[ProjectConfig], JiraCollector] | None = None,
+    asf_roster_collector_factory: Callable[[ProjectConfig], AsfRosterCollector] | None = None,
 ) -> RunResult:
     """Run one collect -> identity -> metrics -> manifest (-> site) pass.
 
@@ -358,6 +417,10 @@ def run_pipeline(
     `JiraCollector` wired to an offline `httpx.MockTransport` (and a
     sleep-free retry loop) without `run_pipeline` needing to know about
     every one of `JiraCollector`'s tuning knobs.
+
+    `asf_roster_collector_factory`, given, replaces the default
+    `AsfRosterCollector(config)` construction — this is how tests inject an
+    `AsfRosterCollector` wired to an offline `httpx.MockTransport`.
     """
     data_dir = Path(data_dir)
     workdir = Path(workdir)
@@ -387,6 +450,10 @@ def run_pipeline(
         source_results["jira"] = _collect_jira(
             config, data_dir, run_id, started_at, max_jira_issues, jira_collector_factory
         )
+    if "asf_roster" in active_sources:
+        source_results["asf_roster"] = _collect_asf_roster(
+            config, data_dir, run_id, started_at, asf_roster_collector_factory
+        )
 
     # D3: identity resolution and metrics always recompute from the ENTIRE
     # accumulated raw cache, regardless of which sources were active (or
@@ -400,6 +467,8 @@ def run_pipeline(
     )
     review_event = pa.concat_tables([git_review_event, jira_review_event])
     issue = _dedupe_issue_rows(storage.read_table(data_dir, "jira", "issue"))
+    roster_raw = storage.read_table(data_dir, "asf_roster", "roster_entry")
+    roster_entry = _dedupe_roster_entries(roster_raw)
 
     overrides = []
     if identity_overrides_path is not None and Path(identity_overrides_path).is_file():
@@ -421,6 +490,7 @@ def run_pipeline(
                 "review_event": review_event,
                 "issue": issue,
                 "identity_link": resolution.identity_link,
+                "roster_entry": roster_entry,
             },
             as_of=started_at.date(),
             run_id=run_id,

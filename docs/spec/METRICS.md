@@ -140,7 +140,7 @@ each `none`/debatable assignment is in that metric's own section below, not just
 | `contributor_tenure_survival` | Contributor Tenure (Kaplan–Meier) | contributor sustainability | experimental | 1 | trailing-24m, updated monthly | higher | supporting |
 | `contributor_churn_rate` | Contributor Churn Rate | contributor sustainability | proxy | 1 | trailing-12m | lower | supporting |
 | `sustained_contributor_count` | Sustained Contributors | contributor sustainability | established | 1 | trailing-12m | higher | **key** |
-| `committer_pmc_growth` | Committer/PMC Growth | contributor sustainability | established | 1 | quarterly | higher | supporting |
+| `pmc_joins_quarterly` | PMC Joins per Quarter | contributor sustainability | established | 1 | quarterly | higher | supporting |
 | `truck_factor` | Truck / Bus Factor (Avelino DOA) | contributor sustainability | experimental | 1 | trailing-12m, updated monthly | higher | **key** |
 | `contributor_absence_factor` | Contributor Absence Factor (CHAOSS, commit-count) | contributor sustainability | established | 1 | trailing-12m | higher | supporting |
 | `contributor_hhi` | Contributor Concentration (HHI) | contributor sustainability | established | 1 | trailing-12m | lower | **key** |
@@ -368,24 +368,30 @@ each `none`/debatable assignment is in that metric's own section below, not just
 - **CHAOSS equivalent:** adjacent to [Contributors](https://chaoss.community/kb/metric-contributors/) with a
   custom activity-count filter; CHAOSS does not standardize a "5 contributions" threshold.
 
-### `committer_pmc_growth`
-- **Name:** Committer / PMC Growth
+### `pmc_joins_quarterly`
+- **Name:** PMC Joins per Quarter
 - **Dimension:** contributor sustainability
 - **Tier:** established
 - **Phase:** 1
-- **Definition:** Net change in ASF committer count and PMC member count for the Cassandra project committee,
-  quarter over quarter, sourced directly from the ASF roster (ground truth, not inferred).
+- **Definition:** New PMC members per quarter, sourced directly from the ASF roster (ground truth, not inferred).
+  Counts PMC entries with `effective_from` dates falling in each quarter; since Whimsy's `committee-info.json` 
+  currently shows only current members, departures and historical departures are invisible to this metric. As 
+  historical roster snapshots accumulate, real net change (joins minus departures) will become computable.
 - **Direction of good:** higher. **Role:** supporting (contributor sustainability) — ground-truth but too
   low-frequency/small-n (§0.6) to safely veto a dimension's status on its own.
-- **Formula:** `ΔCommitters(q) = |committers(q)| − |committers(q−1)|`; same for PMC.
-- **Population & exclusions:** none beyond roster scope; this is the one metric in this catalog with no bot/identity
-  ambiguity because ASF roster entries are already resolved identities.
+- **Formula:** `NewPMC(q) = |{member ∈ roster(q) : member.effective_from ∈ q}|` (count of PMC members whose 
+  join date falls in quarter `q`).
+- **Population & exclusions:** PMC members only (those with join dates in `committee-info.json`); this is the 
+  one metric in this catalog with no bot/identity ambiguity because ASF roster entries are already resolved identities.
 - **Window:** quarterly (roster changes are infrequent; monthly would be mostly zeros).
-- **Required data / source:** ASF Whimsy public roster API — `committee-info.json` (current) and
-  `committee-retired.json` (https://whimsy.apache.org/public/).
-- **Strengths:** Ground truth, no identity-resolution risk, directly reflects governance decisions.
-- **Weaknesses / gaming risk:** Low frequency, small numbers — a single retirement can swing the metric; needs the
-  §0.6 small-n handling and should never be the sole signal for a dimension status.
+- **Required data / source:** ASF Whimsy public roster API — `committee-info.json` (PMC with join dates) and 
+  `public_ldap_projects.json` (full project roster). Both at https://whimsy.apache.org/public/.
+- **Strengths:** Ground truth, no identity-resolution risk, directly reflects governance decisions on PMC 
+  elevation timing.
+- **Weaknesses / gaming risk:** Low frequency, small numbers — a single new join can swing the metric; needs the
+  §0.6 small-n handling and should never be the sole signal for a dimension status. Departures invisible while
+  Whimsy shows only current members — this metric tracks joins, not net growth (which will be available once 
+  historical snapshots accumulate).
 - **CHAOSS equivalent:** none standardized; ASF-specific ground-truth measurement.
 
 ### `truck_factor`

@@ -15,6 +15,7 @@ EXPECTED_METRIC_IDS = {
     "reviewer_hhi",
     "median_resolution_latency_jira",
     "stale_jira_rate",
+    "pmc_joins_quarterly",
 }
 
 HEADCOUNT_METRIC_IDS = {
@@ -30,13 +31,14 @@ def test_registry_lists_exactly_the_six_m0_metrics():
 
 def test_build_registry_stamps_headcount_metrics_1_1_and_others_1_0():
     """Issue #27: the three headcount metrics bumped to "1.1" (no more
-    sample-size floor); the other three metrics stay at "1.0"."""
+    sample-size floor); the other four metrics stay at "1.0" (including
+    pmc_joins_quarterly from issue #50)."""
     table = build_registry(NOW)
 
-    assert table.num_rows == 6
+    assert table.num_rows == 7
     assert set(table.column("metric_id").to_pylist()) == EXPECTED_METRIC_IDS
     assert all(table.column("description").to_pylist())  # every row has a non-empty description
-    assert table.column("changed_at").to_pylist() == [NOW] * 6
+    assert table.column("changed_at").to_pylist() == [NOW] * 7
 
     rows_by_id = {row["metric_id"]: row for row in table.to_pylist()}
 

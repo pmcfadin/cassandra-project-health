@@ -109,6 +109,30 @@ def issues(rows: list[dict]) -> pa.Table:
     return validate("issue", pa.Table.from_pylist(built, schema=schema))
 
 
+def roster_entries(rows: list[dict]) -> pa.Table:
+    """Build a `roster_entry` table.
+
+    Required per row: `asf_id`, `role`, `project`. Optional: `display_name`,
+    `effective_from`, `effective_from_raw`, `source_snapshot_id`.
+    """
+    built = [
+        {
+            "entry_id": row.get("entry_id", f"entry-{i}"),
+            "identity_id": None,  # Filled by identity resolution, not collectors
+            "asf_id": row["asf_id"],
+            "display_name": row.get("display_name"),
+            "role": row["role"],
+            "project": row["project"],
+            "effective_from": row.get("effective_from"),
+            "effective_from_raw": row.get("effective_from_raw"),
+            "source_snapshot_id": row.get("source_snapshot_id", "snap-1"),
+        }
+        for i, row in enumerate(rows)
+    ]
+    schema = get_schema("roster_entry")
+    return validate("roster_entry", pa.Table.from_pylist(built, schema=schema))
+
+
 def identity_link_for(
     *,
     contribution_events: pa.Table | None = None,

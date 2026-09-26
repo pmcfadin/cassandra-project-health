@@ -34,6 +34,7 @@ _VERSIONS: dict[str, str] = {
     "reviewer_hhi": "1.0",
     "median_resolution_latency_jira": "1.0",
     "stale_jira_rate": "1.0",
+    "pmc_joins_quarterly": "1.0",
 }
 
 _INITIAL_M0_CHANGELOG_NOTE = "Initial M0 implementation (issue #7)."
@@ -55,10 +56,21 @@ _CHANGELOG_NOTES: dict[str, str] = {
     "reviewer_hhi": _INITIAL_M0_CHANGELOG_NOTE,
     "median_resolution_latency_jira": _INITIAL_M0_CHANGELOG_NOTE,
     "stale_jira_rate": _INITIAL_M0_CHANGELOG_NOTE,
+    "pmc_joins_quarterly": _INITIAL_M0_CHANGELOG_NOTE,
 }
 
 # metric_id -> description, condensed from METRICS.md's own "## <id>" sections.
 _DESCRIPTIONS: dict[str, str] = {
+    "pmc_joins_quarterly": (
+        "New PMC members per quarter (from join dates only). Sourced directly from the Whimsy "
+        "public roster (ground truth, no identity ambiguity). Note: Whimsy currently shows only "
+        "current members, so departures and historical departures are not visible in this metric. "
+        "As historical roster snapshots accumulate, real net change (joins minus departures) will "
+        "become computable. Tier: established. Dimension: contributor sustainability. Role: "
+        "supporting. Direction of good: higher. Window: quarterly, completed quarters only. No "
+        "sample-size floor applies (roster entries are already resolved identity data per "
+        "METRICS.md §0.6). METRICS.md §5."
+    ),
     "active_contributors_monthly": (
         "Count of distinct non-bot, identity-resolved individuals who performed at least one "
         "code_commit (non-merge git commit, attributed by author email) in the calendar month. "

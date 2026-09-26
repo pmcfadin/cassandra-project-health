@@ -185,8 +185,13 @@
       </header>
       <p class="card-value">
         {% if chart.latest_value_display is not none %}
-          <span class="value">{{ chart.latest_value_display }}</span>
-          <span class="value-period">pass rate, {{ chart.latest_month_label }}</span>
+          <span class="value gov-headline">
+            <span class="gov-headline-share gov-result--pass">{{ chart.latest_pass_share_display }} pass</span><span class="gov-headline-sep" aria-hidden="true"> &middot; </span><span class="gov-headline-share gov-result--unknown">{{ chart.latest_unknown_share_display }} unknown</span><span class="gov-headline-sep" aria-hidden="true"> &middot; </span><span class="gov-headline-share gov-result--fail">{{ chart.latest_fail_share_display }} fail</span>
+          </span>
+          <span class="value-period">{{ chart.latest_month_label }}</span>
+          {% if chart.backfill_pending %}
+          <span class="badge badge--backfill-pending">backfill pending</span>
+          {% endif %}
         {% else %}
           <span class="value value--insufficient">insufficient data</span>
         {% endif %}

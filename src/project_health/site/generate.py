@@ -653,6 +653,15 @@ def _card_context(series: MetricSeries, base_prefix: str) -> dict[str, Any]:
     }
 
 
+def _format_share(share: float) -> str:
+    """A pass/fail/unknown share as a percentage, one decimal place --
+    matching `MetricMeta.format_value`'s own `value_kind == "percent"`
+    formatting (`metrics_meta.py`) so a governance headline's three shares
+    read consistently with every other percent metric on the site (issue
+    #69)."""
+    return f"{share * 100:.1f}%"
+
+
 def _headline_metric_context(series: MetricSeries) -> dict[str, Any]:
     """A metric's home-page summary-card row: name, latest value, month —
     no chart, no tier badge (D13: "headline metrics (latest value, month)
@@ -794,6 +803,12 @@ def _render_pages(
     governance_trend_cards = []
     for chart in governance_context.compliance_trends:
         card = governance_cards_by_metric.get(metric_id_for_check(chart["check_id"]))
+        # The pass/fail/unknown shares beside the headline pass rate (issue
+        # #69) -- same scored (pass+fail+unknown) denominator the pass rate
+        # itself is computed over (`governance_page._latest_scored_shares`),
+        # never a re-derived total, so a card never shows numbers that don't
+        # add up to the metric it's displaying.
+        shares = chart["latest_shares"]
         governance_trend_cards.append(
             {
                 "check_id": chart["check_id"],
@@ -801,6 +816,12 @@ def _render_pages(
                 "tier": card["tier"] if card else None,
                 "latest_value_display": card["latest_value_display"] if card else None,
                 "latest_month_label": card["latest_month_label"] if card else None,
+                "latest_pass_share_display": _format_share(shares["pass"]) if shares else None,
+                "latest_unknown_share_display": (
+                    _format_share(shares["unknown"]) if shares else None
+                ),
+                "latest_fail_share_display": _format_share(shares["fail"]) if shares else None,
+                "backfill_pending": chart["backfill_pending"],
                 "json_href": card["json_href"] if card else None,
                 "csv_href": card["csv_href"] if card else None,
                 "vega_spec_json": chart["vega_spec_json"],

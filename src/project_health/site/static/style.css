@@ -240,6 +240,27 @@ main {
   color: var(--fg-muted);
 }
 
+/* A governance headline card's pass/unknown/fail shares (issue #69) --
+   longer than a bare percentage, so it gets its own smaller size and wraps
+   at narrow widths instead of overflowing the card. */
+.gov-headline {
+  display: block;
+  font-size: 1.05rem;
+  line-height: 1.5;
+}
+.gov-headline-share {
+  white-space: nowrap;
+}
+.gov-headline-sep {
+  color: var(--fg-muted);
+  font-weight: 400;
+}
+.badge--backfill-pending {
+  border-color: var(--warn);
+  color: var(--warn);
+  margin-left: 0.4rem;
+}
+
 .card-status {
   font-size: 0.8rem;
   color: var(--fg-muted);

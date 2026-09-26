@@ -406,6 +406,14 @@ def _community_html(out_dir: Path) -> str:
     return _page_html(out_dir, "community/")
 
 
+def _visible_text(html_text: str) -> str:
+    """Rendered page text with tags stripped and entities decoded -- for
+    asserting on a headline's visible wording (issue #69) without also
+    matching against the `<span>` markup used to color-code its
+    pass/unknown/fail parts."""
+    return html_module.unescape(re.sub(r"<[^>]+>", "", html_text))
+
+
 def _extract_vega_spec(html_text: str, aria_label: str) -> dict:
     """Pull one card's embedded Vega-Lite spec out of the rendered HTML.
 
@@ -661,6 +669,91 @@ def test_governance_page_shows_compliance_trend_charts_and_ninja_trend(tmp_path)
     spec = _extract_vega_spec(html_text, "Compliance trend for reviewer-present")
     states = {v["state"] for v in spec["data"]["values"]}
     assert states == {"pass", "fail", "unknown", "exempt"}
+
+
+def test_governance_page_headline_shows_pass_unknown_fail_shares(tmp_path):
+    """Issue #69: every governance headline card shows the pass/unknown/fail
+    shares together (not just the bare pass rate), computed over the exact
+    same scored (pass+fail+unknown) denominator as the pass rate itself --
+    the fixture's counts (pass=5, fail=1, unknown=2, scored=8) give
+    62.5%/25.0%/12.5%."""
+    out_dir, _ = _build_site_with_governance(tmp_path)
+    text = _visible_text(_page_html(out_dir, "governance/"))
+
+    combined = "62.5% pass · 25.0% unknown · 12.5% fail"
+    assert text.count(combined) == 4  # one per scored check card
+    assert "62.5%" in text  # the bare pass-rate value is unchanged
+
+
+def test_governance_page_headline_tags_backfill_pending_when_partial_and_unknown_high(tmp_path):
+    """A 'backfill pending' tag appears when the manifest's governance
+    status is `partial` *and* the check's unknown share is >= 25% (issue
+    #69) -- the fixture's unknown share is exactly 25%, the threshold."""
+    out_dir, _ = _build_site_with_governance(
+        tmp_path,
+        governance={
+            "status": "partial",
+            "commits_scored": 2,
+            "compliance_rows": 6,
+            "policy_version": 1,
+            "ci_evidence": {"checked": 3, "pending": 7, "calls_made": 3},
+            "check_runs": {"checked": 1, "pending": 4, "calls_made": 1},
+        },
+    )
+    html_text = _page_html(out_dir, "governance/")
+
+    assert html_text.count("backfill pending") == 4  # one per scored check card
+
+
+def test_governance_page_headline_omits_backfill_pending_tag_when_status_ok(tmp_path):
+    """The same high (25%) unknown share never earns the tag when this
+    run's backfill status is `ok`, not `partial` (issue #69)."""
+    out_dir, _ = _build_site_with_governance(
+        tmp_path,
+        governance={
+            "status": "ok",
+            "commits_scored": 2,
+            "compliance_rows": 6,
+            "policy_version": 1,
+            "ci_evidence": {"checked": 1, "pending": 0, "calls_made": 1},
+            "check_runs": {"checked": 1, "pending": 0, "calls_made": 1},
+        },
+    )
+    html_text = _page_html(out_dir, "governance/")
+
+    assert "backfill pending" not in html_text
+
+
+def test_governance_page_headline_omits_backfill_pending_tag_below_unknown_threshold(tmp_path):
+    """A `partial` backfill status alone doesn't earn the tag -- the
+    check's own unknown share must be at least 25% (issue #69); here it's
+    10% (1 of 10 scored)."""
+    counts = {"pass": 9, "fail": 0, "unknown": 1, "exempt": 0, "not_in_force": 0}
+    metric_rows = [
+        _governance_metric_row(check_id, date(2026, 7, 1), date(2026, 7, 31), counts)
+        for check_id in (
+            "reviewer-present",
+            "jira-ticket-referenced",
+            "pre-commit-ci-evidence",
+            "code-style-checkstyle",
+        )
+    ]
+    out_dir, _ = _build_site_with_governance(
+        tmp_path,
+        metric_rows=metric_rows,
+        governance={
+            "status": "partial",
+            "commits_scored": 2,
+            "compliance_rows": 6,
+            "policy_version": 1,
+            "ci_evidence": {"checked": 3, "pending": 7, "calls_made": 3},
+            "check_runs": {"checked": 1, "pending": 4, "calls_made": 1},
+        },
+    )
+    text = _visible_text(_page_html(out_dir, "governance/"))
+
+    assert "backfill pending" not in text
+    assert text.count("90.0% pass · 10.0% unknown · 0.0% fail") == 4
 
 
 def test_governance_page_has_no_data_state_when_engine_never_ran(tmp_path):

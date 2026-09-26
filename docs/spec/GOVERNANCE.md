@@ -4,10 +4,45 @@ Research deliverable for issue #32 (part of Epic #31), implementing D14/D15 of `
 Consistent with `docs/spec/DATA-SOURCES.md` (source access, rate limits, evidence reliability) and
 `docs/spec/ARCHITECTURE.md` §3.1 (reviewer data model).
 
-**STATUS: DRAFT. Owner approval required (D14) before any compliance result is published on
-`/governance/`.** This document and `governance-policy.draft.yaml` are an agent's draft of what Cassandra's
-own documented rules are and how they can be checked from public data — not yet a ratified scoring policy for
-this project.
+## Approved v1
+
+**Approved by the project owner (`pmcfadin`) on 2026-09-25.** `governance-policy.yaml` (repo root) is v1 of
+the scoring policy and is authoritative for compliance results published on `/governance/`, subject to the
+exclusions in §4 and the `deferred_to_v2` list below. The adjustments the owner made to this draft before
+approving it:
+
+1. **`reviewer-present` gets `fail_allowed: true`.** FAIL is narrowly defined: the commit references a
+   `CASSANDRA-N` key **and** no reviewer is found in either the commit trailer or the JIRA Reviewer/Reviewers
+   fields **and** no exemption matches. Two exemptions are defined with precise, testable patterns (never a
+   fail, regardless of reviewer evidence): **`ninja`** (`(?i)\bninja(fix)?\b` anywhere in the message — the
+   project's own self-declared "small change, skip full review" convention) and **`release-housekeeping`**
+   (version increments, debian-changelog prep, submodule repins — three sub-patterns, see §8). Everything
+   else with no reviewer stays `unknown`. A descriptive ninja-count trend (not scored) is added alongside the
+   rule. The orchestrator's live measurement on `trunk` since 2023-01-01 (2,151 non-merge commits: 1,773
+   trailer-reviewed, 85 JIRA-field-only, 293 with neither — of which 72 are ninja, ~205 are
+   release-housekeeping, and 16 are genuine `CASSANDRA`-keyed commits with no reviewer evidence at all) is the
+   basis for this change; see §8 for the exact figures and an independent order-of-magnitude spot-check.
+2. **`jira-ticket-referenced`** stays fail-free: `pass` / `exempt` (same two patterns) / `unknown`.
+3. **`pre-commit-ci-evidence`** ships enabled in v1 as **pass/unknown only**. Issue #36 must live-test the
+   `ci-cassandra.apache.org` Jenkins JSON API before this rule can gain `fail_allowed: true` or a new evidence
+   source in a v2.
+4. **`code-style-checkstyle`** is approved as drafted (scoped to `cassandra-4.1`+; a red check-run is a
+   legitimate `fail`).
+5. **`changes-txt-entry`, `news-txt-entry`, `test-touched`** are all set to `scored: false` — they are
+   displayed as facts on each commit row, never evaluated as pass/fail/unknown rules.
+6. A new global result state, **`not_in_force`**, is added (§0 below), distinct from `unknown`: it marks a
+   commit dated before a rule's `effective_from`, rather than a missing-evidence gap.
+7. **Deferred to v2** (§9): `reviewer-is-committer` and the full "two +1 committer votes" count, both blocked
+   on not having committer join dates from a public source.
+
+Global result states (used by every rule below) are defined at the top of §2.
+
+---
+
+**Verification method.** Every rule below cites a primary source with a URL and, where the source states one,
+an effective/ratification date. Every check method's hit rate was measured live against real Cassandra data on
+**2026-09-25** — sample sizes, exact query/command, and raw counts are given inline so the numbers are
+reproducible, not asserted. Where evidence is unreliable, the rule is marked for `unknown`-only scoring or for
 
 **Verification method.** Every rule below cites a primary source with a URL and, where the source states one,
 an effective/ratification date. Every check method's hit rate was measured live against real Cassandra data on
@@ -52,6 +87,16 @@ Each rule states: exact wording, source, effective-from (only if the source stat
 what counts as evidence, and the measured hit rate. `applies_to` restricts branches/change-types per the
 source's own stated scope.
 
+**Global result states** (`governance-policy.yaml` top-level `result_states`, approved v1):
+
+| State | Meaning |
+|---|---|
+| `pass` | Evidence positively confirms the rule was met. |
+| `fail` | Evidence positively contradicts the rule. Only reachable on a rule with `fail_allowed: true`, via that rule's specific stated condition — never merely "no evidence found." |
+| `unknown` | The rule is in force and no exemption applies, but no evidence was found, or the evidence source's false-negative rate is too high to read absence as non-compliance. |
+| `exempt` | The commit matches a documented, testable exemption pattern (e.g. `ninja`, `release-housekeeping`). The rule doesn't apply, regardless of evidence. |
+| `not_in_force` | The commit's date is before the rule's `effective_from`. Distinct from `unknown` — this is a fact about the policy's timeline (D14), not a missing-evidence gap. A rule with no dated source is always in force and never produces this state. |
+
 ### R1 — Code changes require at least one reviewer, evidenced by name
 
 > "Code modifications must have been reviewed by at least one other contributor."
@@ -74,16 +119,33 @@ source's own stated scope.
   - JIRA reviewer field (either field populated), live sample of the **30 most-recently-resolved
     `CASSANDRA` issues** (`jql=project=CASSANDRA AND resolution=Fixed ORDER BY resolved DESC`, fetched
     2026-09-25): **28/30 = 93%**.
-- **Result semantics**: `pass` if a named reviewer is found by either method; `unknown` if neither method
-  finds one (never `fail` — a real review can happen with no durable public trace, e.g. informal Slack/hallway
-  review, or a reviewer named only in a since-superseded JIRA comment).
-- **What is explicitly NOT scored**: the "two +1 committer votes" *count* and the "must be a committer"
-  *status* requirement. Neither the commit trailer nor the JIRA field states whether a named reviewer held
-  committer status **at the time of review**, and no confirmed, public, dated committer-only (non-PMC) roster
-  exists (`DATA-SOURCES.md` §6 — Whimsy's `committee-info.json` is PMC-only; `reporter.apache.org` is
-  401/ASF-committer-gated). Scoring "was this a committer" would require guessing from current PMC/committer
-  status projected backward, which is exactly the kind of unverifiable inference D15 forbids for named
-  results. **Recommendation: score "named reviewer present," never "committer vote count."**
+- **Result semantics (approved v1 — `fail_allowed: true`)**: `pass` if a named reviewer is found by either
+  method. **`fail`** only when *all three* hold: (a) the commit references a `CASSANDRA-N` issue key, (b) no
+  reviewer is found by either method, and (c) no exemption below matches. `unknown` if no issue key is
+  referenced and no reviewer is found (can't tell if this was even a reviewable code change). `exempt` if a
+  pattern below matches, regardless of reviewer evidence. `not_in_force` before 2020-06-25.
+- **Exemptions (owner-approved, precise and testable — see §8 for the measurement behind them)**:
+  - **`ninja`**: `(?i)\bninja(fix)?\b` anywhere in the commit message. Matches the project's own
+    self-declared convention for small, uncontroversial changes committed without the full review process
+    (observed forms in real history: `ninja fix:`, `ninjafix –`, `ninja:`, `ninja - fix`, `ninja trunk patch
+    for CASSANDRA-N`).
+  - **`release-housekeeping`**: any of three sub-patterns matching mechanical release-process commits, none
+    of which carry a reviewer trailer by convention:
+    - `version-increment`: `^(increment|bump)\b.*\bversion\b` on the first line (e.g. `increment to version
+      5.0.10`, `Bump version, prepare CHANGES`).
+    - `debian-changelog`: `^prepare\s+debian\s+changelog\b` on the first line (e.g. `Prepare debian changelog
+      for 3.11.19`).
+    - `submodule-repin`: a `repin`/`bump` verb within 40 characters of `submodule` (e.g. `repin accord
+      submodule`).
+  - A **ninja-count trend** (count of `ninja`-exempt commits per month/quarter) is shown next to this rule as
+    a descriptive signal — not scored, informational only.
+- **What is explicitly NOT scored (deferred to v2, §9)**: the "two +1 committer votes" *count* and the "must
+  be a committer" *status* requirement. Neither the commit trailer nor the JIRA field states whether a named
+  reviewer held committer status **at the time of review**, and no confirmed, public, dated committer-only
+  (non-PMC) roster exists (`DATA-SOURCES.md` §6 — Whimsy's `committee-info.json` is PMC-only;
+  `reporter.apache.org` is 401/ASF-committer-gated). Scoring "was this a committer" would require guessing
+  from current PMC/committer status projected backward, which is exactly the kind of unverifiable inference
+  D15 forbids for named results. **v1 scores "named reviewer present," never "committer vote count."**
 
 ### R2 — Pre-commit CI must be run and its artifacts attached before commit
 
@@ -115,10 +177,11 @@ source's own stated scope.
   on the ticket; the reviewer or committer then runs CI on the patch's behalf," meaning it can happen without
   ever being posted back by the original author, or the artifact link can rot/expire since Jenkins build
   history is not permanent).
-- **What is explicitly NOT scored**: pass/fail on CI *results* (did it succeed) — only whether evidence of a
-  CI run exists. `ci-cassandra.apache.org`'s Jenkins JSON API for post-commit-by-SHA was in scope for this
-  research per the issue but was not evaluated live this session (time-boxed); flagged as a follow-up before
-  this check is implemented, not assumed working.
+- **Result semantics (approved v1 — pass/unknown only, no fail)**: `pass` on found JIRA-side CI evidence;
+  `unknown` otherwise. `ci-cassandra.apache.org`'s Jenkins JSON API for post-commit-by-SHA was in scope for
+  this research per the issue but was not evaluated live this session (time-boxed); **issue #36 is tasked
+  with live-testing it, and only if that proves reliable enough may this rule gain `fail_allowed: true` or a
+  new evidence source in a v2** (`governance-policy.yaml` → `pre-commit-ci-evidence.v2_upgrade_condition`).
 
 ### R3 — Every commit's message must reference a JIRA issue key (except trivial fixes)
 
@@ -134,8 +197,10 @@ source's own stated scope.
 - **Measured hit rate**: not separately re-measured here — this is implied by the reviewer-trailer regex
   already characterized in `DATA-SOURCES.md` §1 (issue keys co-occur with the trailer at the same rate as
   the trailer itself, since the format is one clause). Treat as the same 79–87%/2018+ figure.
-- **Result semantics**: `pass` if an issue key is found; `unknown` if not, because there is no reliable way
-  to distinguish "should have had a ticket and didn't" from "correctly exempt as a trivial fix" without
+- **Result semantics (approved v1 — no fail state)**: `pass` if an issue key is found; `exempt` if the same
+  `ninja` or `release-housekeeping` patterns from R1 match (release-housekeeping commits like "Prepare debian
+  changelog for X" legitimately have no issue key at all); `unknown` otherwise — there is no reliable way to
+  distinguish "should have had a ticket and didn't" from an exempt or otherwise legitimate omission without
   reading the diff's semantic content (which this project does not classify in Phase 1).
 
 ### R4 — CHANGES.txt entry for user-impacting changes; NEWS.txt for upgrade-relevant changes
@@ -160,10 +225,11 @@ source's own stated scope.
     tagged with 'client-impacting' and 'doc-impacting', where appropriate?"). Cross-referencing that label
     against CHANGES.txt/NEWS.txt presence would sharpen this check but needs its own hit-rate measurement
     before being relied on.
-- **Result semantics**: `pass` if the relevant file is touched; **`unknown`, never `fail`, if it is not** —
-  the rule is conditional on "user-impacting"/"if needed," a judgment this project cannot make
-  algorithmically from file paths alone. A commit that correctly omits both files is indistinguishable, from
-  git alone, from one that should have included them and didn't.
+- **Result semantics (approved v1 — `scored: false`)**: the owner set both checks to display-only. Whether
+  the file was touched is shown as a fact on each commit row; **it is never evaluated as pass/fail/unknown**.
+  The rule is conditional on "user-impacting"/"if needed," a judgment this project cannot make
+  algorithmically from file paths alone, so no verdict is produced at all rather than defaulting to
+  `unknown` on every row.
 
 ### R5 — Code style: checkstyle enforcement (4.1+), Sun Java conventions otherwise
 
@@ -187,9 +253,10 @@ source's own stated scope.
   "Patch based Contribution" workflow in `how_to_commit.html` uses `git am`/`git apply` directly against a
   committer's local clone, never touching GitHub's push-triggered Actions at all) rather than checkstyle
   failures — **a real, structural false-negative source**, not noise.
-- **Result semantics**: `pass` if a check-run exists and is green; `unknown` if no check-run exists at all
-  (never `fail` for "no check-run found" — per the false-negative source above). A check-run that exists and
-  is red is a legitimate `fail`, since that is direct, unambiguous evidence.
+- **Result semantics (approved v1, as drafted — `fail_allowed: true`)**: `pass` if a check-run exists and is
+  green; `unknown` if no check-run exists at all (never `fail` for "no check-run found" — per the
+  false-negative source above). A check-run that exists and is red is a legitimate `fail`, since that is
+  direct, unambiguous evidence.
 
 ---
 
@@ -233,18 +300,18 @@ full reviewer evidence — a real risk for D15's per-commit-with-names display.
 
 ---
 
-## 4. Rules NOT scored yet, and why
+## 4. Rules not scored in v1, and why
 
 | Rule | Why not scored |
 |---|---|
-| **Committer status of a named reviewer / the "two +1" vote count** (R1) | No confirmed, public, dated non-PMC committer roster exists (`DATA-SOURCES.md` §6). Scoring this would require inferring committer status at a past point in time from present-day PMC/committer lists — an unverifiable backward projection, forbidden by D15's evidence standard for named results. |
+| **Committer status of a named reviewer / the "two +1" vote count** (R1) | **Deferred to v2** (§9), not permanently excluded. No confirmed, public, dated non-PMC committer roster exists (`DATA-SOURCES.md` §6). Scoring this would require inferring committer status at a past point in time from present-day PMC/committer lists — an unverifiable backward projection, forbidden by D15's evidence standard for named results. |
 | **Explicit veto / "-1 blocking" / "active reasonable discussion" rules** (ratified governance page) | Detecting a `-1` and whether it was "resolved by follow-up commits" or "not engaged with reasonably" requires reading and classifying comment *content* — gated behind Phase 2a's classifier-validation requirement (D1), not available in Phase 1's metadata-only, deterministic scope. |
-| **CI *result* (pass/fail of the run itself)**, only presence of CI evidence (R2) | The `ci-cassandra.apache.org` Jenkins JSON API for post-commit-by-SHA results was named in the issue as in-scope but was not live-tested this session; do not assume its shape or reliability until it has been. |
-| **"Tests required" as a universal rule** | Not a documented Cassandra rule — `patches.html` states explicitly that "the extent to which tests are required depends on how likely your changes will effect the stability of Cassandra in production," a discretionary, risk-proportional standard, not a fixed minimum. See §5 for the optional, non-authoritative signal proposed instead. |
-| **CHANGES.txt / NEWS.txt absence as a fail** (R4) | Both rules are explicitly conditional ("user-impacting," "if needed"). Absence is not evidence of non-compliance without knowing whether the change was user-impacting, which this project does not classify in Phase 1. |
+| **CI *result* (pass/fail of the run itself)**, only presence of CI evidence (R2) | The `ci-cassandra.apache.org` Jenkins JSON API for post-commit-by-SHA results was named in the issue as in-scope but was not live-tested this session; issue #36 covers the live test, which may unlock a v2 upgrade (see `pre-commit-ci-evidence.v2_upgrade_condition`). |
+| **"Tests required" as a universal rule** | Not a documented Cassandra rule — `patches.html` states explicitly that "the extent to which tests are required depends on how likely your changes will effect the stability of Cassandra in production," a discretionary, risk-proportional standard, not a fixed minimum. See §5 for the display-only, non-authoritative signal instead (`scored: false`). |
+| **CHANGES.txt / NEWS.txt** (R4) | **Approved v1: `scored: false`.** Both rules are explicitly conditional ("user-impacting," "if needed"). Rather than default every row to `unknown`, the owner chose to display file-touched as a plain fact and not evaluate it as a rule at all. |
 | **Merge-forward completeness** (§3) | Requires product knowledge (does the bug affect this branch?) no structural source can supply. Shown descriptively only, never scored. |
 | **Checkstyle/CI-on-every-push for `cassandra-4.0` and earlier branches** (R5) | The rule's own source ties checkstyle-in-build to 4.1+; applying it to older branches would misattribute a rule that didn't exist there yet. |
-| **Any rule for commits before 2020-06-25** where the *only* source is the ratified governance page | The page states its own ratification date. Per D14 ("Each commit is judged against the policy in force on its commit date"), R1's two-committer-vote language and R2's CI-before-commit language should not be back-applied before 2020-06-25 even though the underlying conventions (reviewer trailers, CI running) are older and continuously observed in practice — the *formal, binding* rule is dated 2020-06-25; the informal convention is undated and should not be presented as if it had the same evidentiary weight. |
+| **Any rule for commits before its `effective_from`** | **Approved v1: formalized as the `not_in_force` result state** (§2), distinct from `unknown`. Per D14 ("Each commit is judged against the policy in force on its commit date"), `reviewer-present`'s and `pre-commit-ci-evidence`'s ratified-page language (2020-06-25) is never back-applied — commits before that date show `not_in_force`, not a pass/fail/unknown verdict on a rule that didn't exist yet. |
 
 ## 5. Optional signal — not a documented Cassandra rule
 
@@ -269,23 +336,64 @@ shown as a fact.
 | Merge commits (on `cassandra-5.0`) carrying a real reviewer trailer despite `--no-merges` conventions | last 5,000 merge commits on `cassandra-5.0` | 6/5,000 ≈ 0.12% — small but structurally real, see §3 |
 | Reviewer commit-trailer, non-merge commits, 2018+ | full history (`DATA-SOURCES.md` §1) | 79–87% |
 | Reviewer commit-trailer, non-merge commits, 2009–2013 | full history (`DATA-SOURCES.md` §1) | 43–57% |
+| `reviewer-present` no-reviewer-evidence breakdown (`trunk`, non-merge, since 2023-01-01; orchestrator's measurement, basis for v1's `fail_allowed`) | 2,151 commits | 1,773 trailer / 85 JIRA-field-only / 293 neither → of the 293: 72 `ninja`-exempt, ~205 `release-housekeeping`-exempt, **16 genuine fails** |
 
 ---
 
-## 7. Open questions for the project owner (must be answered before approval)
+## 7. Open questions for the project owner — resolved 2026-09-25 (see "Approved v1" above)
 
-1. **Committer-status verification**: is it acceptable to ship R1 without ever checking committer status
-   (i.e., score "named reviewer present," never "was this reviewer a committer" or "was this two votes")?
-   This is the biggest gap between the ratified rule's literal text and what public data can verify.
-2. **`ci-cassandra.apache.org` Jenkins API**: should this be evaluated live before Phase 1 ships, given it was
-   named in the issue but not tested this session, or is JIRA-comment CI evidence (40% hit rate) an
-   acceptable interim signal with the gap disclosed on the page?
-3. **Historical scope**: should `unknown`-only pre-2020-06-25 commits show the ratified-rule columns at all
-   (as `unknown`, since the rule didn't formally exist yet), or should those columns be hidden entirely for
-   commits before the rule's effective date, to avoid an implication that the rule applied retroactively?
-4. **The "client-impacting"/"doc-impacting" JIRA label cross-check** (§2 R4) was identified but not
-   hit-rate-tested this session — worth a follow-up measurement before it's added as a second CHANGES.txt/
-   NEWS.txt signal?
-5. **Descriptive cross-branch view** (§3): does the owner want "found on branches: X, Y, Z" shown on every
-   commit row from day one, or only once the collector's multi-branch ingestion (already planned per
-   `DATA-SOURCES.md` §1's "trunk plus active release branches" watermark strategy) is built?
+1. ~~Committer-status verification~~ — **resolved**: deferred to v2 (§9), not scored in v1.
+2. ~~`ci-cassandra.apache.org` Jenkins API~~ — **resolved**: not tested before v1 ships; `pre-commit-ci-evidence`
+   stays pass/unknown-only, and issue #36 is tasked with the live test before any v2 upgrade.
+3. ~~Historical scope~~ — **resolved**: a new `not_in_force` result state (§2) marks pre-effective-date
+   commits explicitly, distinct from `unknown` — columns are shown, not hidden, but with an unambiguous label.
+4. **Still open**: the "client-impacting"/"doc-impacting" JIRA label cross-check (§2 R4) was identified but
+   not hit-rate-tested this session — remains a candidate for a future sharpening of the (now display-only)
+   CHANGES.txt/NEWS.txt facts, not addressed in this approval round.
+5. **Still open**: descriptive cross-branch view (§3) timing — shown from day one, or only once multi-branch
+   ingestion is built — not addressed in this approval round; defaults to "once ingestion exists" absent
+   further owner direction.
+
+---
+
+## 8. `reviewer-present` v1 fail logic — measurement and exemption patterns
+
+The owner's approval turned on a live measurement of `trunk`, non-merge commits since 2023-01-01
+(2,151 commits): **1,773** carry a commit-trailer reviewer, **85** more have no trailer but a populated JIRA
+reviewer field, and **293** have neither. Of those 293, **72** self-declare as `ninja` commits, **~205** are
+mechanical release-housekeeping, and **16** are ordinary `CASSANDRA`-keyed commits with no reviewer evidence
+at all — those 16 are the only cases `reviewer-present` fails in v1.
+
+**Independent spot-check** (this session, text-matching only, no JIRA-field cross-reference, so not expected
+to reproduce the exact 16): applying the same `ninja` regex and the three `release-housekeeping` sub-patterns
+to the same population (`git log origin/trunk --no-merges --since=2023-01-01`, 2,151 commits parsed) found
+**114** ninja-token matches and **116** release-housekeeping-pattern matches (46 version-increment, 69
+debian-changelog, 1 submodule-repin), leaving **47** residual no-trailer commits that reference an issue key.
+That residual is larger than 16 because it has no JIRA-reviewer-field cross-reference — several of those 47
+almost certainly resolve to the 85 JIRA-field-only bucket once that check runs, which is exactly what the
+real `reviewer-present` implementation does before declaring a fail. The two counts are consistent in order
+of magnitude and give no reason to doubt the exemption patterns' precision.
+
+**Exemption pattern reference** (also in `governance-policy.yaml`):
+
+| Exemption | Pattern | Scope | Example match |
+|---|---|---|---|
+| `ninja` | `(?i)\bninja(fix)?\b` | full message | `ninjafix – links in CONTRIBUTING.md` |
+| `release-housekeeping` / `version-increment` | `(?im)^(increment\|bump)\b.*\bversion\b` | first line | `increment to version 5.0.10` |
+| `release-housekeeping` / `debian-changelog` | `(?im)^prepare\s+debian\s+changelog\b` | first line | `Prepare debian changelog for 3.11.19` |
+| `release-housekeeping` / `submodule-repin` | `(?i)\b(repin\|bump)\b.{0,40}\bsubmodule\b\|\bsubmodule\b.{0,40}\b(repin\|bump)\b` | full message | `repin accord submodule` |
+
+A descriptive **ninja-count trend** (ninja-exempt commits per month/quarter) is displayed next to
+`reviewer-present` — informational only, never scored.
+
+---
+
+## 9. Deferred to v2
+
+| Rule | Why deferred |
+|---|---|
+| `reviewer-is-committer` | Verifying the named reviewer held committer status **at the time of review** needs a public, dated, non-PMC committer roster with join dates. `DATA-SOURCES.md` §6 found Whimsy's `committee-info.json` is PMC-only and `reporter.apache.org` is 401/ASF-committer-gated — no such roster is confirmed to exist publicly yet. |
+| `two-committer-plus-one-votes` | The ratified rule ("two +1 committer votes, can be author + reviewer") needs the same committer-join-date data as above, plus counting distinct binding +1s rather than a single named-reviewer string, and knowing the author's own committer status. |
+
+Both remain scored as their v1 proxy only (`reviewer-present`: "a reviewer is named, by either evidence
+source") until a future research task locates a usable committer roster.

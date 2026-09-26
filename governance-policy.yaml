@@ -1,0 +1,329 @@
+# Governance policy v1 — Apache Cassandra per-commit minimums.
+#
+# APPROVED v1. Owner approval recorded 2026-09-25 (see approved_by/approved_on below and
+# docs/spec/GOVERNANCE.md "Approved v1" section). This file is authoritative for compliance results
+# published on /governance/, subject to the exclusions and deferrals listed explicitly below.
+#
+# Full rationale, exact source quotes, and measured evidence hit rates for every rule and every
+# unknown/exempt/not_in_force decision below are in docs/spec/GOVERNANCE.md — read that document before
+# editing this file.
+#
+# Semantics (D14, D15):
+#   - Each commit is judged against the policy version in force on its commit date (`effective_from`).
+#     A policy change here is a dated version bump; it never silently rescores history.
+#   - Every check result must carry the evidence it is based on (D15) so a reader can verify it.
+#   - Result states (see `result_states` below): pass, fail, unknown, exempt, not_in_force. `fail` is only
+#     ever produced by a rule with `fail_allowed: true`, and only via the specific condition that rule states.
+
+version: 1
+policy_name: cassandra-governance-v1
+approved_by: pmcfadin
+approved_on: "2026-09-25"
+last_updated: "2026-09-25"
+
+# Global result states. Every check on every commit resolves to exactly one of these.
+result_states:
+  pass: "Evidence positively confirms the rule was met."
+  fail: >
+    Evidence positively contradicts the rule. Only reachable on a rule with fail_allowed: true, and only
+    through that rule's stated fail condition — never merely "no evidence found."
+  unknown: >
+    The rule is in force for this commit's date and no exemption applies, but no evidence was found either
+    way, or the evidence source has a large enough false-negative rate that absence cannot be read as
+    non-compliance (D15).
+  exempt: >
+    The commit matches a documented, testable exemption pattern for this rule (e.g. ninja,
+    release-housekeeping). The rule does not apply to it, regardless of what evidence is or isn't present.
+  not_in_force: >
+    The commit's date is before the rule's effective_from. Distinct from unknown: this is not a
+    missing-evidence gap, it is the factual statement that the rule did not exist yet on that date, per D14
+    ("each commit is judged against the policy in force on its commit date"). A rule with no dated source
+    (effective_from: null) is always in force and never produces this state.
+
+rules:
+  - id: reviewer-present
+    description: >
+      A code change has at least one named reviewer, evidenced by a commit-trailer "reviewed by" clause or
+      a populated JIRA reviewer custom field. FAILS only when the commit references a CASSANDRA-N issue key
+      (i.e. looks like a normal reviewable code change) and no reviewer is found by either evidence source
+      and no exemption matches. Does NOT check reviewer count (two committer +1s) or committer status —
+      see `deferred_to_v2` below.
+    source_url: "https://cwiki.apache.org/confluence/display/CASSANDRA/Cassandra+Project+Governance"
+    source_quote: >
+      "Code modifications must have been reviewed by at least one other contributor."
+    effective_from: "2020-06-25"   # ratification date on the cwiki page
+    applies_to:
+      branches: [trunk, "cassandra-*"]
+      change_types: [code]
+    exemptions:
+      - id: ninja
+        description: >
+          Commit self-declares as a ninja/ninjafix — a small, uncontroversial change committed without the
+          full review process, by long-standing project convention (observed throughout trunk history).
+        pattern: '(?i)\bninja(fix)?\b'
+        pattern_scope: full_commit_message
+        result: exempt
+      - id: release-housekeeping
+        description: >
+          Mechanical release-process commits — version increments, debian changelog preparation, submodule
+          repins. These never carry a reviewer trailer by convention and are not "code changes" in the
+          reviewable sense the governance rule addresses.
+        result: exempt
+        sub_patterns:
+          - id: version-increment
+            pattern: '(?im)^(increment|bump)\b.*\bversion\b'
+            pattern_scope: first_line
+            example: "increment to version 5.0.10"
+          - id: debian-changelog
+            pattern: '(?im)^prepare\s+debian\s+changelog\b'
+            pattern_scope: first_line
+            example: "Prepare debian changelog for 3.11.19"
+          - id: submodule-repin
+            pattern: '(?i)\b(repin|bump)\b.{0,40}\bsubmodule\b|\bsubmodule\b.{0,40}\b(repin|bump)\b'
+            pattern_scope: full_commit_message
+            example: "repin accord submodule"
+    check_method:
+      - evidence_source: git_commit_trailer
+        detail: "src/project_health/collectors/reviewer_trailer.py; reviewers tuple non-empty"
+        measured_hit_rate: "79-87% non-merge commits 2018+; 43-57% 2009-2013 (docs/spec/DATA-SOURCES.md §1)"
+      - evidence_source: jira_reviewer_field
+        detail: "customfield_12313420 (Reviewers) or customfield_10022 (Reviewer) populated"
+        measured_hit_rate: "28/30 = 93% (30 most-recently-resolved CASSANDRA issues, sampled 2026-09-25)"
+    measured_on_trunk_since_2023:
+      # Orchestrator's measurement (2026-09-25) that the owner approved fail_allowed:true against:
+      # trunk, non-merge commits, since 2023-01-01.
+      total_commits: 2151
+      trailer_reviewer: 1773
+      jira_field_only_reviewer: 85
+      no_reviewer_evidence: 293
+      no_reviewer_breakdown:
+        ninja_exempt: 72
+        release_housekeeping_exempt: 205   # "most of the rest" per orchestrator; residual after ninja and the 16 fails below
+        jira_keyed_no_reviewer_fail: 16
+      independent_spot_check: >
+        Not independently re-derived commit-by-commit (no JIRA-field cross-reference performed in this
+        pass). A rough text-only spot-check of the same population found 114 ninja-token matches and 116
+        release-housekeeping-pattern matches, leaving ~47 residual no-trailer/has-issue-key commits before
+        any JIRA-reviewer-field cross-reference narrows that toward the orchestrator's 16 — consistent in
+        order of magnitude. See docs/spec/GOVERNANCE.md §8.
+    descriptive_signal:
+      - id: ninja-count-trend
+        description: >
+          Count of ninja-exempt commits per month/quarter, displayed next to this rule (not scored) as a
+          trend indicator of how often the ninja exemption is used.
+        scored: false
+    result_semantics:
+      pass: "named reviewer found by either evidence source"
+      fail: "CASSANDRA-N key referenced AND no reviewer found by either evidence source AND no exemption matched"
+      unknown: "no CASSANDRA-N key referenced and no reviewer found — cannot tell if this was a reviewable code change at all"
+      exempt: "ninja or release-housekeeping pattern matched — never fail regardless of reviewer evidence"
+      not_in_force: "commit date is before 2020-06-25"
+      fail_allowed: true
+    not_scored:
+      - "reviewer count (2 committer +1s, or 1 for test-only changes) — see deferred_to_v2"
+      - "committer status of the named reviewer at time of review — see deferred_to_v2"
+    per_commit_scope: >
+      Runs on every commit, including forward-merge commits with two parents (see GOVERNANCE.md §3) — never
+      suppressed by a merge-commit filter.
+
+  - id: jira-ticket-referenced
+    description: >
+      The commit message references a CASSANDRA-NNNNN issue key, per the documented commit-message format.
+      No fail state: an absent issue key is either a documented exemption or unknown, never a fail.
+    source_url: "https://cassandra.apache.org/_/development/how_to_commit.html"
+    source_quote: >
+      "patch by <Authors,>; reviewed by <Reviewers,> for CASSANDRA-#####"
+    effective_from: null   # convention predates any single dated ratification found; do not invent a date
+    applies_to:
+      branches: [trunk, "cassandra-*"]
+      change_types: [code]
+    exemptions:
+      - id: ninja
+        pattern: '(?i)\bninja(fix)?\b'
+        pattern_scope: full_commit_message
+        result: exempt
+      - id: release-housekeeping
+        result: exempt
+        sub_patterns:
+          - id: version-increment
+            pattern: '(?im)^(increment|bump)\b.*\bversion\b'
+            pattern_scope: first_line
+          - id: debian-changelog
+            pattern: '(?im)^prepare\s+debian\s+changelog\b'
+            pattern_scope: first_line
+          - id: submodule-repin
+            pattern: '(?i)\b(repin|bump)\b.{0,40}\bsubmodule\b|\bsubmodule\b.{0,40}\b(repin|bump)\b'
+            pattern_scope: full_commit_message
+    check_method:
+      - evidence_source: git_commit_trailer
+        detail: "issue_keys tuple non-empty (reviewer_trailer.py _ISSUE_KEY_RE)"
+        measured_hit_rate: "not independently re-measured; co-occurs with reviewer-trailer rate (see reviewer-present)"
+    result_semantics:
+      pass: "issue key found in commit message"
+      exempt: "ninja or release-housekeeping pattern matched"
+      unknown: "no issue key found and no exemption matched"
+      fail_allowed: false
+
+  - id: pre-commit-ci-evidence
+    description: >
+      Evidence that pre-commit CI was run and its results attached to the JIRA ticket before commit, for
+      all affected branches. Enabled in v1 as pass/unknown only — no fail state.
+    source_url: "https://cwiki.apache.org/confluence/display/CASSANDRA/Cassandra+Project+Governance"
+    source_quote: >
+      "Code must not be committed before CI results have been provided for all affected branches."
+    effective_from: "2020-06-25"
+    applies_to:
+      branches: [trunk, "cassandra-*"]
+      change_types: [code]
+    check_method:
+      - evidence_source: jira_comment_ci_mention
+        detail: >
+          JIRA issue comments containing any of: ci_summary, results_details, circleci, ci-cassandra.apache.org,
+          pre-ci.cassandra.apache.org, jenkins, butler, .build/run-ci
+        measured_hit_rate: "12/30 = 40% (same 30-issue sample as reviewer-present, sampled 2026-09-25)"
+      - evidence_source: github_check_runs
+        detail: >
+          GET /repos/apache/cassandra/commits/{sha}/check-runs — NOTE: this only surfaces the GitHub Actions
+          licence/checkstyle workflow (see code-style-checkstyle rule below), NOT the pre-commit Jenkins
+          pipeline this rule actually requires. Retained here as a documented limitation, not a substitute.
+        measured_hit_rate: "20/29 = 69% (last 29 non-merge trunk commits, 2026-09-25) — wrong CI surface, see note"
+      - evidence_source: ci_cassandra_jenkins_api
+        detail: "ci-cassandra.apache.org post-commit Jenkins JSON API, per-SHA."
+        measured_hit_rate: null
+        status: "UNVERIFIED — not live-tested. Issue #36 is tasked with testing it live."
+    v2_upgrade_condition: >
+      Issue #36 must live-test the ci-cassandra.apache.org Jenkins JSON API. This rule may gain
+      fail_allowed: true and/or a new evidence_source in v2, but only if that test proves the API reliable
+      enough to meet D15's false-negative bar. Until then this rule stays pass/unknown only.
+    result_semantics:
+      pass: "JIRA-comment CI evidence found"
+      unknown: "no JIRA-comment CI evidence found — 40% hit rate means treating absence as fail would be wrong roughly 6 times in 10"
+      fail_allowed: false
+
+  - id: changes-txt-entry
+    description: >
+      User-impacting changes get a CHANGES.txt entry. v1: displayed as a fact on the commit row, not
+      evaluated as a rule (scored: false) — the condition ("user-impacting") cannot be determined
+      algorithmically, so no pass/fail/unknown verdict is produced.
+    source_url: "https://cassandra.apache.org/_/development/patches.html"
+    source_quote: >
+      "Include a CHANGES.txt entry (put it at the top of the list) ... only user-impacting items should be
+      listed in CHANGES.txt."
+    effective_from: null
+    applies_to:
+      branches: [trunk, "cassandra-*"]
+      change_types: [code]
+    check_method:
+      - evidence_source: git_show_name_only
+        detail: "exact path match on CHANGES.txt in the commit's changed-files list"
+        measured_hit_rate: "21/29 = 72% (last 29 non-merge trunk commits, 2026-09-25)"
+    scored: false
+    result_semantics:
+      display_only: true
+
+  - id: news-txt-entry
+    description: >
+      Upgrade-relevant changes get a NEWS.txt entry. v1: displayed as a fact on the commit row, not
+      evaluated as a rule (scored: false).
+    source_url: "https://cassandra.apache.org/_/development/how_to_review.html"
+    source_quote: >
+      "Have NEWS.txt, the cql3 docs, and the native protocol spec been updated if needed?"
+    effective_from: null
+    applies_to:
+      branches: [trunk, "cassandra-*"]
+      change_types: [code]
+    check_method:
+      - evidence_source: git_show_name_only
+        detail: "exact path match on NEWS.txt in the commit's changed-files list"
+        measured_hit_rate: "2/29 = 7% (last 29 non-merge trunk commits, 2026-09-25) — expected low, most changes are not upgrade-relevant"
+    scored: false
+    result_semantics:
+      display_only: true
+
+  - id: code-style-checkstyle
+    description: "Checkstyle passes as part of the build, enforced via GitHub Actions on every push. Approved as drafted for v1."
+    source_url: "https://cassandra.apache.org/_/development/code_style.html"
+    source_quote: >
+      "Checkstyle is part of the build from Cassandra 4.1 included." "The checkstyle target is executed by
+      default when e.g. build or jar targets are executed."
+    effective_from: null  # version-anchored, not date-anchored — see applies_to
+    applies_to:
+      branches: ["cassandra-4.1", "cassandra-5.0", "cassandra-6.0", trunk]   # NOT cassandra-4.0 or earlier
+      change_types: [code]
+    check_method:
+      - evidence_source: github_check_runs
+        detail: "GET /repos/apache/cassandra/commits/{sha}/check-runs; corresponds to .github/workflows/code-check.yaml (ant-check-jdk11, ant-check-jdk17)"
+        measured_hit_rate: "20/29 = 69% (last 29 non-merge trunk commits, 2026-09-25)"
+    result_semantics:
+      pass: "check-run exists and is green"
+      fail: "check-run exists and is red — this is direct, unambiguous evidence, fail is allowed"
+      unknown: "no check-run recorded at all (31% of sample) — patch-file-based (git am/apply) contributions never trigger GitHub Actions"
+      fail_allowed: true
+
+  - id: test-touched
+    description: >
+      OPTIONAL, INFORMATIONAL ONLY. NOT A DOCUMENTED CASSANDRA RULE. Cassandra's own docs state test extent
+      is proportional to risk, not fixed (patches.html: "The extent to which tests are required depends on
+      how likely your changes will effect the stability of Cassandra in production"). v1: displayed as a
+      fact on the commit row (scored: false), never a rule.
+    source_url: null
+    source_quote: null
+    effective_from: null
+    applies_to:
+      branches: [trunk, "cassandra-*"]
+      change_types: [code]
+    check_method:
+      - evidence_source: git_show_name_only
+        detail: "path match on test/ within the commit's changed-files list"
+        measured_hit_rate: "23/29 = 79% (last 29 non-merge trunk commits, 2026-09-25)"
+    scored: false
+    result_semantics:
+      display_only: true
+
+# Rules explicitly out of scope for v1 and v2 both, with reasons. Distinct from `deferred_to_v2` below,
+# which lists rules the owner wants revisited once a specific data gap closes.
+# See docs/spec/GOVERNANCE.md §3 and §4 for full discussion.
+not_scored:
+  - rule: "explicit veto / -1-blocking / 'active reasonable discussion' rules"
+    reason: "Requires classifying comment content/sentiment; gated behind Phase 2a classifier validation (D1), not available in Phase 1's deterministic scope."
+  - rule: "CI run result (pass/fail of the Jenkins run itself)"
+    reason: "ci-cassandra.apache.org Jenkins JSON API not yet live-tested (issue #36); only presence of CI evidence is scored, not its outcome. See pre-commit-ci-evidence.v2_upgrade_condition."
+  - rule: "merge-forward completeness (was a fix propagated to every branch it should reach)"
+    reason: "Whether a bug affects a given branch is a product judgment no structural source can answer. Shown descriptively (which branches a JIRA key's commits were found on), never scored pass/fail."
+  - rule: "universal 'tests required' minimum"
+    reason: "Not a documented Cassandra rule — extent of testing is explicitly proportional to risk, not fixed. See test-touched for the display-only, non-authoritative signal instead."
+
+# Rules the owner wants revisited in v2, once the specific listed data gap closes. Not scored in v1.
+deferred_to_v2:
+  - id: reviewer-is-committer
+    description: "Verify the named reviewer held committer status at the time of review."
+    reason: >
+      Needs a public, dated committer (not just PMC) roster with join dates, which is not confirmed
+      available (docs/spec/DATA-SOURCES.md §6 — Whimsy's committee-info.json is PMC-only;
+      reporter.apache.org is 401/ASF-committer-gated). Revisit if a future research task locates one.
+  - id: two-committer-plus-one-votes
+    description: >
+      Verify two +1 committer votes (or one, if the author is themself a committer) per the ratified
+      governance rule, rather than the v1 proxy of "a reviewer is named."
+    reason: "Same committer-join-date gap as reviewer-is-committer; also requires knowing the author's committer status and counting distinct binding +1s rather than a single named-reviewer string."
+
+branches_in_scope:
+  # Per docs/spec/GOVERNANCE.md §1 caution: patches.html's branch-policy table (4.0 "Code freeze", etc.) is
+  # stale — downloads.apache.org still mirrors 4.0.21 (docs/spec/DATA-SOURCES.md §5). Use currently-mirrored
+  # release lines instead, verified live 2026-09-25.
+  active_release_branches: ["cassandra-3.0", "cassandra-3.11", "cassandra-4.0", "cassandra-4.1", "cassandra-5.0"]
+  development_branches: ["cassandra-6.0", "trunk"]
+  source: "https://downloads.apache.org/cassandra/ (directory listing), verified 2026-09-25"
+
+merge_forward_policy:
+  # See docs/spec/GOVERNANCE.md §3 for the full worked finding.
+  per_commit_checks_run_on_merge_commits: true
+  reason: >
+    Live sampling of the last 5,000 merge commits on origin/cassandra-5.0 found 6 that carry a full
+    "patch by X; reviewed by Y for CASSANDRA-NNNNN" trailer and a real code diff (the documented
+    `git merge -s ours` + `git commit --amend` forward-merge workflow squashes the cherry-picked patch,
+    trailer included, into a two-parent commit). A blanket --no-merges filter applied per-commit (rather
+    than only for aggregate rate denominators, where it remains correct) would wrongly show "unknown" for a
+    named commit that has real reviewer evidence.
+  aggregate_rate_denominators_exclude_merges: true
+  cross_branch_view: "descriptive only ('found on branches: X, Y, Z' via git log --all --grep=<issue-key>); never folded into a pass/fail verdict"

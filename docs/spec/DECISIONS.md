@@ -102,3 +102,25 @@ Owner decisions (2026-09-25):
 - **Tool.** A labeling page hosted as a claude.ai artifact with a shared database and viewer identity. It is private by default, shared only with raters, and exportable.
 - **Where labels live.** The messages are public, but the labels are unvalidated judgments about named people, so the pilot corpus and its labels stay private (the artifact's database plus a private repo, `pmcfadin/cassandra-project-health-benchmark`). The public repo holds the sampling code, the versioned Jev question set and aggregate results. Publishing the corpus can be revisited once it is multi-rater and validated.
 - **Text handling.** Message bodies are fetched only for the moment of classification or labeling and are never written to the public repo or the `data` branch (D1). Pilot texts live only in the private corpus.
+
+## D19. Contributor leaderboard (amends D2 rule 7)
+Owner decision (2026-09-25), prompted by LFX Insights: the Community page may show a ranked top-N contributor leaderboard. D2 rule 7's "no ranking people" is narrowed to mean no rankings built from *classified* judgments (e.g. toxicity or sentiment). Rankings of deterministic, public activity counts are allowed, with these safeguards:
+- Rank by one activity type at a time (commits, reviews, JIRA issues resolved), each clearly labeled. There is no blended "contribution score".
+- Use a stated window (e.g. trailing 12 months). Counts use the same identity resolution as the metrics, and known identity-resolution limits (handles vs. full names, D2 rule 5) are shown next to the list.
+- Include a link to the corrections process, and let people correct identity merges via `identity_overrides.yaml`.
+- Never rank or list people by any Phase 2 classified label.
+
+## D20. Versioned composite health score (amends D4)
+Owner decision (2026-09-25): alongside the per-dimension statuses, the home page shows a 0–100 composite score, comparable in spirit to LFX Insights' Health Score. Unlike LFX, it is fully reproducible:
+- Weights, normalization functions and dimension inputs live in a versioned file (e.g. `scoring.yaml`). Every change is a version bump with a `CHANGELOG.md` entry, and the history is recomputed under the new version (D2 rule 6).
+- The composite never appears alone. It is always shown with its dimension breakdown, and any dimension with a key metric in `declining` status is flagged next to the composite. A weighted average can hide a deteriorating dimension, and this prevents that (SCORING.md's "worst key metric" rule still sets dimension status).
+- Classified (Phase 2) metrics don't enter the composite until they have passed their validation gates.
+- SCORING.md is updated to specify the composite, and its "what must never be combined" list is revised accordingly.
+
+## D21. M1 scope, informed by LFX Insights
+M1 covers:
+1. **Organizations and dependency.** Affiliations (D6), elephant factor, org share and trend, org leaderboard (aggregate org shares only, per D6), active orgs, bus/truck factor and contributor dependency ("N people make up 50% of contributions").
+2. **Development.** A GitHub PR collector plus merge lead time, time to first review, time to close, review engagement, and the JIRA responsiveness metrics that LFX can't compute for Cassandra, whose GitHub issues are disabled.
+3. **Security on the Governance page.** OpenSSF Scorecard checks and a security-controls view next to commit compliance, plus CVE and advisory history from ASF security announcements.
+4. The contributor leaderboard (D19) and the composite score (D20).
+A Popularity page (downloads, stars, forks) is deferred.

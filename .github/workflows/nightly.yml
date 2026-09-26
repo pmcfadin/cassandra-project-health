@@ -125,6 +125,12 @@ jobs:
           # token. Not consumed by any M0 collector yet (git + JIRA need no
           # GitHub auth) -- wired through now for the GitHub PR source (§2.1).
           PROJECT_HEALTH_GITHUB_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+          # Collectors resolve GH_PAT, then GITHUB_TOKEN/GH_TOKEN (collectors/github.py,
+          # collectors/github_checks.py). Actions does not export these automatically;
+          # without them GitHub API calls run unauthenticated (60 req/hr).
+          GH_PAT: ${{ secrets.GH_PAT }}
+          GITHUB_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
         run: |
           project-health run \
             --project projects/cassandra.yaml \

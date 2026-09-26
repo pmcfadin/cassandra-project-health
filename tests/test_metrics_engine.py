@@ -19,7 +19,9 @@ import pytest
 
 from project_health.config import load_project
 from project_health.metrics.engine import compute_all
+from project_health.normalize.identity import identity_id_for
 from tests.fixtures.metrics.builders import (
+    affiliation_periods,
     contribution_events,
     file_change_events,
     identity_link_for,
@@ -715,6 +717,395 @@ def test_contributor_absence_factor_and_hhi_below_floor_is_insufficient_data():
     assert hhi_row["n"] == 2
     assert hhi_row["value"] is None
     assert hhi_row["flag"] == "insufficient_data"
+
+
+# --- elephant_factor / organizational_hhi / single_org_share /
+#     unknown_affiliation_rate (issue #52, D6) --------------------------------
+
+
+def _org_identity(email: str) -> str:
+    return identity_id_for("git_email", email.lower())
+
+
+def test_organizational_metrics_golden_five_known_orgs_plus_unknown():
+    # January 2024: 5 known-org contributors (10/8/6/4/2 commits, one per
+    # org -- meets the §0.6 concentration floor of 5 known orgs exactly)
+    # plus one unaffiliated contributor with 5 commits, resolving to the
+    # `unknown` bucket (no affiliation_period row at all for them).
+    org_counts = {
+        "a@orga.example": 10,
+        "b@orgb.example": 8,
+        "c@orgc.example": 6,
+        "d@orgd.example": 4,
+        "e@orge.example": 2,
+    }
+    ce_rows = _contribution_rows_for_identities(org_counts, _ts(2024, 1, 15))
+    ce_rows += _contribution_rows_for_identities({"nobody@nowhere.example": 5}, _ts(2024, 1, 16))
+
+    contribution_event = contribution_events(ce_rows)
+    identity_link = identity_link_for(contribution_events=contribution_event, now=NOW)
+
+    org_names = {"a@orga.example": "OrgA", "b@orgb.example": "OrgB", "c@orgc.example": "OrgC",
+                 "d@orgd.example": "OrgD", "e@orge.example": "OrgE"}
+    affiliation_period = affiliation_periods(
+        [
+            {"identity_id": _org_identity(email), "organization": org}
+            for email, org in org_names.items()
+        ]
+    )
+
+    result = compute_all(
+        {
+            "contribution_event": contribution_event,
+            "identity_link": identity_link,
+            "affiliation_period": affiliation_period,
+        },
+        as_of=AS_OF,
+        run_id=RUN_ID,
+        computed_at=COMPUTED_AT,
+        config=CONFIG,
+    )
+
+    # total commits = 30 (known) + 5 (unknown) = 35; sorted desc by commits:
+    # OrgA 10, OrgB 8, OrgC 6, unknown 5, OrgD 4, OrgE 2. Target = 17.5:
+    # OrgA (10, cum 10) + OrgB (8, cum 18 >= 17.5) -> smallest_n = 2, unknown
+    # not needed to reach the threshold.
+    elephant = _rows_for(result, "elephant_factor")[0]
+    assert elephant["n"] == 5
+    assert elephant["flag"] == "ok"
+    assert elephant["value"] == 2.0
+    elephant_details = _details(elephant)
+    assert elephant_details["total_commits"] == 35
+    assert elephant_details["unknown_needed_to_reach_threshold"] is False
+    assert elephant_details["raw_value_before_floor"] == 2
+
+    hhi = _rows_for(result, "organizational_hhi")[0]
+    assert hhi["n"] == 5
+    assert hhi["flag"] == "ok"
+    expected_hhi = sum((c / 35) ** 2 for c in (10, 8, 6, 5, 4, 2))
+    assert hhi["value"] == pytest.approx(expected_hhi)
+    assert _details(hhi)["effective_organizational_population"] == pytest.approx(1.0 / expected_hhi)
+    assert _details(hhi)["unknown_included_in_hhi"] is True
+
+    single = _rows_for(result, "single_org_share")[0]
+    assert single["n"] == 5
+    assert single["flag"] == "ok"
+    assert single["value"] == pytest.approx(10 / 35)
+    single_details = _details(single)
+    assert single_details["largest_known_organization"] == "OrgA"
+    assert single_details["unknown_commits"] == 5
+    assert single_details["unknown_share"] == pytest.approx(5 / 35)
+
+    unknown_rate = _rows_for(result, "unknown_affiliation_rate")[0]
+    assert unknown_rate["n"] == 35
+    assert unknown_rate["flag"] == "ok"
+    assert unknown_rate["value"] == pytest.approx(5 / 35)
+    unknown_details = _details(unknown_rate)
+    assert unknown_details["unknown_commits"] == 5
+    assert unknown_details["total_commits"] == 35
+    assert unknown_details["unknown_contributors"] == 1
+    assert unknown_details["total_contributors"] == 6
+    assert unknown_details["contributor_rate"] == pytest.approx(1 / 6)
+
+
+def test_organizational_metrics_below_floor_is_insufficient_data_but_shows_raw_value():
+    # Only 2 known organizations -- below the concentration floor (5).
+    # unknown_affiliation_rate is unaffected (its own floor is total commits,
+    # not known-org count) and still reports `ok`.
+    ce_rows = _contribution_rows_for_identities(
+        {"solo@orga.example": 6, "duo@orgb.example": 4}, _ts(2024, 1, 10)
+    )
+    contribution_event = contribution_events(ce_rows)
+    identity_link = identity_link_for(contribution_events=contribution_event, now=NOW)
+    affiliation_period = affiliation_periods(
+        [
+            {"identity_id": _org_identity("solo@orga.example"), "organization": "OrgA"},
+            {"identity_id": _org_identity("duo@orgb.example"), "organization": "OrgB"},
+        ]
+    )
+
+    result = compute_all(
+        {
+            "contribution_event": contribution_event,
+            "identity_link": identity_link,
+            "affiliation_period": affiliation_period,
+        },
+        as_of=AS_OF,
+        run_id=RUN_ID,
+        computed_at=COMPUTED_AT,
+        config=CONFIG,
+    )
+
+    elephant = _rows_for(result, "elephant_factor")[0]
+    assert elephant["n"] == 2
+    assert elephant["value"] is None
+    assert elephant["flag"] == "insufficient_data"
+    # Even suppressed, the raw computed number is disclosed (METRICS.md: "a
+    # raw number can be shown" even when status renders insufficient_data).
+    assert _details(elephant)["raw_value_before_floor"] == 1
+
+    hhi = _rows_for(result, "organizational_hhi")[0]
+    assert hhi["n"] == 2
+    assert hhi["value"] is None
+    assert hhi["flag"] == "insufficient_data"
+
+    single = _rows_for(result, "single_org_share")[0]
+    assert single["n"] == 2
+    assert single["value"] is None
+    assert single["flag"] == "insufficient_data"
+
+    # unknown_affiliation_rate's floor is total commits (10 >= 5), unaffected
+    # by the known-org count being below the concentration floor.
+    unknown_rate = _rows_for(result, "unknown_affiliation_rate")[0]
+    assert unknown_rate["n"] == 10
+    assert unknown_rate["flag"] == "ok"
+    assert unknown_rate["value"] == pytest.approx(0.0)
+
+
+def test_unknown_affiliation_rate_dominant_unknown_is_still_ok_but_low_concentration_n():
+    # Mostly-unaffiliated population: 1 known org (6 commits), 20 commits
+    # from 4 unaffiliated contributors. Concentration metrics render
+    # insufficient_data (n_known=1 < floor 5); unknown_affiliation_rate
+    # reports the real, high rate honestly (D6: "report honestly, even if
+    # high").
+    ce_rows = _contribution_rows_for_identities({"solo@orga.example": 6}, _ts(2024, 1, 10))
+    for i in range(4):
+        ce_rows += _contribution_rows_for_identities(
+            {f"nobody{i}@nowhere.example": 5}, _ts(2024, 1, 11)
+        )
+    contribution_event = contribution_events(ce_rows)
+    identity_link = identity_link_for(contribution_events=contribution_event, now=NOW)
+    affiliation_period = affiliation_periods(
+        [{"identity_id": _org_identity("solo@orga.example"), "organization": "OrgA"}]
+    )
+
+    result = compute_all(
+        {
+            "contribution_event": contribution_event,
+            "identity_link": identity_link,
+            "affiliation_period": affiliation_period,
+        },
+        as_of=AS_OF,
+        run_id=RUN_ID,
+        computed_at=COMPUTED_AT,
+        config=CONFIG,
+    )
+
+    elephant = _rows_for(result, "elephant_factor")[0]
+    assert elephant["n"] == 1
+    assert elephant["flag"] == "insufficient_data"
+
+    unknown_rate = _rows_for(result, "unknown_affiliation_rate")[0]
+    assert unknown_rate["n"] == 26
+    assert unknown_rate["flag"] == "ok"
+    assert unknown_rate["value"] == pytest.approx(20 / 26)
+    assert _details(unknown_rate)["unknown_contributors"] == 4
+    assert _details(unknown_rate)["total_contributors"] == 5
+
+
+def test_organizational_metrics_curated_affiliation_dated_range_wins_and_expires():
+    """A curated `affiliations.yaml` entry (source='curated') wins over a
+    same-identity `email_domain` heuristic row while its dated range covers
+    the commit, and falls through to the heuristic once the range ends
+    (D6: "affiliations.yaml is the curated override and wins over
+    heuristics", "keep dated ranges")."""
+    email = "alice@orga.example"
+    # January 2024 commits before and after a curated range of just the
+    # first half of the month.
+    ce_rows = [
+        {"author_raw_type": "git_email", "author_raw_value": email, "occurred_at": _ts(2024, 1, 5)},
+        {
+            "author_raw_type": "git_email",
+            "author_raw_value": email,
+            "occurred_at": _ts(2024, 1, 25),
+        },
+    ]
+    # Pad with 4 more known orgs so the concentration floor (5) is met and
+    # `value`/`flag` aren't suppressed, keeping this test's own assertions
+    # about the curated/heuristic split legible.
+    for i, org in enumerate(["OrgB", "OrgC", "OrgD", "OrgE"]):
+        pad_email = f"pad{i}@{org.lower()}.example"
+        ce_rows.append(
+            {
+                "author_raw_type": "git_email",
+                "author_raw_value": pad_email,
+                "occurred_at": _ts(2024, 1, 10),
+            }
+        )
+
+    contribution_event = contribution_events(ce_rows)
+    identity_link = identity_link_for(contribution_events=contribution_event, now=NOW)
+
+    affiliation_period = affiliation_periods(
+        [
+            # curated: "Curated Corp" from 2024-01-01 through 2024-01-15
+            # (exclusive end) only.
+            {
+                "identity_id": _org_identity(email),
+                "organization": "Curated Corp",
+                "effective_from": date(2024, 1, 1),
+                "effective_to": date(2024, 1, 15),
+                "source": "curated",
+            },
+            # email_domain heuristic: covers all time, would apply outside
+            # the curated window.
+            {
+                "identity_id": _org_identity(email),
+                "organization": "OrgA",
+                "source": "email_domain",
+            },
+            {"identity_id": _org_identity("pad0@orgb.example"), "organization": "OrgB"},
+            {"identity_id": _org_identity("pad1@orgc.example"), "organization": "OrgC"},
+            {"identity_id": _org_identity("pad2@orgd.example"), "organization": "OrgD"},
+            {"identity_id": _org_identity("pad3@orge.example"), "organization": "OrgE"},
+        ]
+    )
+
+    result = compute_all(
+        {
+            "contribution_event": contribution_event,
+            "identity_link": identity_link,
+            "affiliation_period": affiliation_period,
+        },
+        as_of=AS_OF,
+        run_id=RUN_ID,
+        computed_at=COMPUTED_AT,
+        config=CONFIG,
+    )
+
+    elephant = _rows_for(result, "elephant_factor")[0]
+    assert elephant["flag"] == "ok"
+    organizations = {o["organization"] for o in _details(elephant)["organizations"]}
+    # 6 total commits across 6 identities (1 per org) -- "Curated Corp" (the
+    # Jan-5 commit) and "OrgA" (the Jan-25 commit) both appear as distinct
+    # buckets, proving the curated range applied only to the Jan-5 commit.
+    assert {"Curated Corp", "OrgA", "OrgB", "OrgC", "OrgD", "OrgE"} <= organizations
+    for org_row in _details(elephant)["organizations"]:
+        if org_row["organization"] in ("Curated Corp", "OrgA"):
+            assert org_row["commits"] == 1
+
+
+def test_organizational_metrics_unknown_share_at_or_above_half_forces_insufficient_data():
+    """Issue #52 fixup cycle 1 (orchestrator feedback): 5 known orgs meets
+    the §0.6 known-organization-count floor on its own, but a window that's
+    still >= 50% unknown commits is not a trustworthy concentration
+    reading -- elephant_factor/organizational_hhi/single_org_share must all
+    render insufficient_data regardless, while unknown_affiliation_rate
+    keeps reporting its real value honestly (D6)."""
+    org_counts = {
+        "a@orga.example": 1,
+        "b@orgb.example": 1,
+        "c@orgc.example": 1,
+        "d@orgd.example": 1,
+        "e@orge.example": 1,
+    }
+    ce_rows = _contribution_rows_for_identities(org_counts, _ts(2024, 1, 15))
+    # unknown share = 5 / 10 = exactly 50% -- >= threshold.
+    ce_rows += _contribution_rows_for_identities({"nobody@nowhere.example": 5}, _ts(2024, 1, 16))
+
+    contribution_event = contribution_events(ce_rows)
+    identity_link = identity_link_for(contribution_events=contribution_event, now=NOW)
+    org_names = {"a@orga.example": "OrgA", "b@orgb.example": "OrgB", "c@orgc.example": "OrgC",
+                 "d@orgd.example": "OrgD", "e@orge.example": "OrgE"}
+    affiliation_period = affiliation_periods(
+        [
+            {"identity_id": _org_identity(email), "organization": org}
+            for email, org in org_names.items()
+        ]
+    )
+
+    result = compute_all(
+        {
+            "contribution_event": contribution_event,
+            "identity_link": identity_link,
+            "affiliation_period": affiliation_period,
+        },
+        as_of=AS_OF,
+        run_id=RUN_ID,
+        computed_at=COMPUTED_AT,
+        config=CONFIG,
+    )
+
+    elephant = _rows_for(result, "elephant_factor")[0]
+    assert elephant["n"] == 5  # the known-org-count floor is met on its own
+    assert elephant["value"] is None
+    assert elephant["flag"] == "insufficient_data"
+    # The raw computed value is still disclosed in details_json even though
+    # value/flag are suppressed.
+    assert _details(elephant)["raw_value_before_floor"] is not None
+
+    hhi = _rows_for(result, "organizational_hhi")[0]
+    assert hhi["n"] == 5
+    assert hhi["value"] is None
+    assert hhi["flag"] == "insufficient_data"
+
+    single = _rows_for(result, "single_org_share")[0]
+    assert single["n"] == 5
+    assert single["value"] is None
+    assert single["flag"] == "insufficient_data"
+
+    # unknown_affiliation_rate is exempt from this suppression -- it always
+    # reports its real value, however high (D6: "report honestly").
+    unknown_rate = _rows_for(result, "unknown_affiliation_rate")[0]
+    assert unknown_rate["flag"] == "ok"
+    assert unknown_rate["value"] == pytest.approx(0.5)
+
+
+def test_github_company_affiliation_is_bounded_to_a_trailing_lookback_not_backfilled():
+    """Issue #52 fixup cycle 2 (orchestrator feedback): a GitHub profile's
+    `company` field is a CURRENT-employer signal, observed at `fetched_at`
+    -- it must not be applied to a person's entire history. A login fetched
+    on 2026-09-25 with company "Apple" (default 24-month lookback ->
+    effective_from 2024-09-01) covers a 2025 commit but NOT a 2020 commit,
+    which stays unknown (no other affiliation source covers it)."""
+    email = "alice@nowhere.example"
+    ce_rows = [
+        {
+            "author_raw_type": "git_email",
+            "author_raw_value": email,
+            "occurred_at": _ts(2020, 1, 15),
+        },
+        {
+            "author_raw_type": "git_email",
+            "author_raw_value": email,
+            "occurred_at": _ts(2025, 6, 15),
+        },
+    ]
+    contribution_event = contribution_events(ce_rows)
+    identity_link = identity_link_for(contribution_events=contribution_event, now=NOW)
+    affiliation_period = affiliation_periods(
+        [
+            {
+                "identity_id": _org_identity(email),
+                "organization": "Apple",
+                "effective_from": date(2024, 9, 1),  # 24 months before a 2026-09-25 fetch
+                "effective_to": None,
+                "source": "github_company",
+            }
+        ]
+    )
+
+    result = compute_all(
+        {
+            "contribution_event": contribution_event,
+            "identity_link": identity_link,
+            "affiliation_period": affiliation_period,
+        },
+        as_of=date(2025, 7, 1),  # last completed month: June 2025
+        run_id=RUN_ID,
+        computed_at=COMPUTED_AT,
+        config=CONFIG,
+    )
+
+    elephant_rows = {r["window_end"]: r for r in _rows_for(result, "elephant_factor")}
+
+    jan_2020 = elephant_rows[date(2020, 1, 31)]
+    jan_2020_orgs = {o["organization"]: o["commits"] for o in _details(jan_2020)["organizations"]}
+    assert jan_2020_orgs == {"unknown": 1}
+
+    jun_2025 = elephant_rows[date(2025, 6, 30)]
+    jun_2025_orgs = {o["organization"]: o["commits"] for o in _details(jun_2025)["organizations"]}
+    assert jun_2025_orgs == {"Apple": 1}
 
 
 # --- truck_factor (issue #53) -------------------------------------------------

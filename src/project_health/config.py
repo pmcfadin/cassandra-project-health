@@ -210,6 +210,22 @@ class ProjectConfig(BaseModel):
     # shape is owned by `collectors/security.py`, not core.
     security: FlexibleSection | None = None
     affiliations_file: str | None = None
+    # D6, issue #52: a reviewed email-domain -> organization map (see
+    # normalize/affiliation.py). Optional -- a project with no reviewed
+    # domain map yet just resolves every commit to "unknown" for the
+    # organizational-diversity metrics rather than failing to load.
+    org_domains_file: str | None = None
+    # D6, issue #52 fixup cycle 1: a reviewed GitHub-profile `company`-field
+    # alias map (see normalize/affiliation.py). Optional -- without one, the
+    # github_company affiliation source never produces a row (every company
+    # string is "unmatched", per D6's "never fuzzy-matched").
+    org_aliases_file: str | None = None
+    # D6, issue #52 fixup cycle 2: how many months before a GitHub profile's
+    # `company` field was fetched that field's organization is trusted to
+    # cover (see normalize/affiliation.py's
+    # DEFAULT_GITHUB_COMPANY_LOOKBACK_MONTHS). Optional -- `None` uses that
+    # default (24).
+    github_company_lookback_months: int | None = None
     bot_patterns: list[BotPattern] = []
     # Phase 2a (issue #43, D18): automated dev@/JIRA senders to exclude before
     # fetching/classifying a message. See `AutomatedSenderPattern` docstring.

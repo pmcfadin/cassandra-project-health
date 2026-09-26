@@ -164,6 +164,29 @@ def roster_entries(rows: list[dict]) -> pa.Table:
     return validate("roster_entry", pa.Table.from_pylist(built, schema=schema))
 
 
+def affiliation_periods(rows: list[dict]) -> pa.Table:
+    """Build an `affiliation_period` table (issue #52, D6).
+
+    Required per row: `identity_id`, `organization`. Optional:
+    `effective_from`, `effective_to` (default `None`, meaning "covers all
+    time"), `source` (default `"curated"`), `evidence`, `entry_id`.
+    """
+    built = [
+        {
+            "entry_id": row.get("entry_id", f"affiliation-{i}"),
+            "identity_id": row["identity_id"],
+            "organization": row["organization"],
+            "effective_from": row.get("effective_from"),
+            "effective_to": row.get("effective_to"),
+            "source": row.get("source", "curated"),
+            "evidence": row.get("evidence"),
+        }
+        for i, row in enumerate(rows)
+    ]
+    schema = get_schema("affiliation_period")
+    return validate("affiliation_period", pa.Table.from_pylist(built, schema=schema))
+
+
 def identity_link_for(
     *,
     contribution_events: pa.Table | None = None,

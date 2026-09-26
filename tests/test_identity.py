@@ -20,6 +20,7 @@ from project_health.normalize.identity import (
     build_resolver,
     extract_raw_identifiers,
     identity_id_for,
+    link_github_commit_authors,
     load_overrides,
     normalize_value,
     resolve_identities,
@@ -377,3 +378,68 @@ def test_load_overrides_rejects_non_list_top_level(tmp_path):
 
     with pytest.raises(IdentityResolutionError):
         load_overrides(path)
+
+
+# --- link_github_commit_authors (D6, issue #52 fixup cycle 1) ---------------
+
+
+def test_link_github_commit_authors_adds_high_confidence_link_to_the_email_identity():
+    raws = [RawIdentifier(GIT_EMAIL, "alice@gmail.com")]
+    base = resolve_identities(raws, now=NOW)
+    associations = [("alice@gmail.com", "alice-gh", "sha-abc123")]
+
+    linked = link_github_commit_authors(base.identity_link, associations, now=NOW)
+
+    identity_id = identity_id_for(GIT_EMAIL, "alice@gmail.com")
+    new_rows = [
+        r
+        for r in linked.to_pylist()
+        if r["source_type"] == "github_login" and r["source_value"] == "alice-gh"
+    ]
+    assert len(new_rows) == 1
+    row = new_rows[0]
+    assert row["identity_id"] == identity_id
+    assert row["confidence"] == "high"
+    assert row["linked_by"] == "github_commit_author_v1"
+    assert row["evidence"] == "GitHub commit author association, sha sha-abc123"
+    # The original naive-resolution rows are untouched (append-only).
+    assert linked.num_rows == base.identity_link.num_rows + 1
+
+
+def test_link_github_commit_authors_is_case_insensitive_on_email_and_keeps_min_sha():
+    raws = [RawIdentifier(GIT_EMAIL, "alice@gmail.com")]
+    base = resolve_identities(raws, now=NOW)
+    associations = [
+        ("Alice@Gmail.com", "alice-gh", "sha-zzz"),
+        ("alice@gmail.com", "alice-gh", "sha-aaa"),
+    ]
+
+    linked = link_github_commit_authors(base.identity_link, associations, now=NOW)
+    new_rows = [r for r in linked.to_pylist() if r["source_type"] == "github_login"]
+    assert len(new_rows) == 1
+    assert new_rows[0]["evidence"] == "GitHub commit author association, sha sha-aaa"
+
+
+def test_link_github_commit_authors_no_associations_returns_input_unchanged():
+    raws = [RawIdentifier(GIT_EMAIL, "alice@gmail.com")]
+    base = resolve_identities(raws, now=NOW)
+    linked = link_github_commit_authors(base.identity_link, [], now=NOW)
+    assert linked is base.identity_link
+
+
+def test_link_github_commit_authors_ignores_incomplete_triples():
+    raws = [RawIdentifier(GIT_EMAIL, "alice@gmail.com")]
+    base = resolve_identities(raws, now=NOW)
+    associations = [("alice@gmail.com", "", "sha-1"), ("", "some-login", "sha-2")]
+    linked = link_github_commit_authors(base.identity_link, associations, now=NOW)
+    assert linked is base.identity_link
+
+
+def test_link_github_commit_authors_is_deterministic_across_reruns():
+    raws = [RawIdentifier(GIT_EMAIL, "alice@gmail.com")]
+    base = resolve_identities(raws, now=NOW)
+    associations = [("alice@gmail.com", "alice-gh", "sha-abc123")]
+
+    first = link_github_commit_authors(base.identity_link, associations, now=NOW)
+    second = link_github_commit_authors(base.identity_link, associations, now=NOW)
+    assert first.equals(second)

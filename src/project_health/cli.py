@@ -52,6 +52,21 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Cap the number of months fetched per mailing list this run (testing / smoke runs)",
     )
     run_parser.add_argument(
+        "--max-github-profiles",
+        type=int,
+        default=None,
+        help=(
+            "Cap the number of new GitHub profiles fetched this run (API-budget control; "
+            "default: pipeline.DEFAULT_MAX_GITHUB_PROFILES_PER_RUN)"
+        ),
+    )
+    run_parser.add_argument(
+        "--max-github-commit-author-pages",
+        type=int,
+        default=None,
+        help="Cap the number of GraphQL commit-history pages fetched this run (API-budget control)",
+    )
+    run_parser.add_argument(
         "--trigger",
         default="manual",
         help="Recorded verbatim in the run manifest's `trigger` field (default: manual)",
@@ -89,6 +104,8 @@ def _cmd_run(args: argparse.Namespace) -> int:
         site_out=args.site_out,
         max_jira_issues=args.max_jira_issues,
         max_ponymail_months=args.max_ponymail_months,
+        max_github_profiles=args.max_github_profiles,
+        max_github_commit_author_pages=args.max_github_commit_author_pages,
         trigger=args.trigger,
         identity_overrides_path=args.identity_overrides,
         governance_since=args.governance_since,

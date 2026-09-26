@@ -1,6 +1,8 @@
 """DuckDB computation engine for the M0 metrics (issue #7) plus the
 contributor-sustainability trio added in issue #53 (`truck_factor`,
-`contributor_absence_factor`, `contributor_hhi`).
+`contributor_absence_factor`, `contributor_hhi`) and the organizational-
+diversity quartet added in issue #52 (`elephant_factor`, `organizational_hhi`,
+`single_org_share`, `unknown_affiliation_rate` -- METRICS.md §5, D6).
 
 `compute_all` is the single entry point: given the normalized fact/identity
 tables a run has accumulated (`schema/README.md`), compute every registered
@@ -60,6 +62,10 @@ import pyarrow as pa
 
 from project_health.config import ProjectConfig
 from project_health.metrics.windows import add_months, month_end, month_start, trailing_12m_window
+from project_health.normalize.affiliation import (
+    DEFAULT_GITHUB_COMPANY_LOOKBACK_MONTHS,
+    UNKNOWN_ORG,
+)
 from project_health.schema import CODE_COMMIT, get_schema, validate
 
 # Per-metric definition_version (ARCHITECTURE.md §4.4 / D2 rule 6: "nothing
@@ -80,6 +86,11 @@ DEFINITION_VERSIONS: dict[str, str] = {
     "truck_factor": "1.0",
     "contributor_absence_factor": "1.0",
     "contributor_hhi": "1.0",
+    # issue #52 (D6 organizational-diversity metrics, METRICS.md §5)
+    "elephant_factor": "1.0",
+    "organizational_hhi": "1.0",
+    "single_org_share": "1.0",
+    "unknown_affiliation_rate": "1.0",
 }
 
 # Headcount metrics are plain counts, not rate/ratio/concentration/latency
@@ -100,6 +111,19 @@ HEADCOUNT_METRICS = frozenset(
 FLOOR_RATE_RATIO = 5
 FLOOR_CONCENTRATION = 5
 FLOOR_LATENCY = 5
+
+# Issue #52 fixup cycle 1 (orchestrator feedback): a window's organizational
+# concentration metrics (elephant_factor, organizational_hhi,
+# single_org_share) render insufficient_data once `unknown`'s share of the
+# window's commits reaches this threshold, regardless of how many *known*
+# organizations were observed -- METRICS.md §0.6's intent is that a
+# concentration statistic needs a trustworthy population underneath it, and
+# 5+ known organizations passing their own floor while the window is still
+# majority-unaffiliated commits would make the number look more confident
+# than the underlying data supports. `unknown_affiliation_rate` itself is
+# exempt (its entire purpose is reporting that share honestly, however
+# high).
+UNKNOWN_SHARE_INSUFFICIENT_THRESHOLD = 0.5
 
 DEFAULT_STALE_THRESHOLD_DAYS = 90
 
@@ -161,6 +185,7 @@ def _connect(tables: dict[str, pa.Table]) -> duckdb.DuckDBPyConnection:
         "issue",
         "identity_link",
         "roster_entry",
+        "affiliation_period",
     ):
         con.register(name, _table_or_empty(tables, name))
     con.execute(
@@ -292,9 +317,21 @@ def _make_row(
     run_id: str,
     computed_at: datetime,
     details: dict,
+    force_insufficient: bool = False,
 ) -> dict:
     """Apply the METRICS.md §0.6 floor (headcount metrics exempt, issue #27)
-    and build one `metric_value` row dict."""
+    and build one `metric_value` row dict.
+
+    `force_insufficient` (issue #52 fixup cycle 1): lets a caller suppress
+    `value`/`flag` for a reason beyond the plain `n < floor` check -- used
+    by the organizational-diversity concentration metrics
+    (`elephant_factor`/`organizational_hhi`/`single_org_share`) when the
+    window's `unknown` share is >= 50%, per METRICS.md §0.6's intent that a
+    concentration statistic needs a trustworthy population underneath it:
+    a "known-org count" floor alone can pass (5+ known orgs observed) while
+    the window is still mostly unaffiliated commits, which would make the
+    concentration number look more confident than the data supports.
+    """
     if metric_id in HEADCOUNT_METRICS:
         # Headcounts report their value for any n, including 0 -- never
         # gated by a sample floor (issue #27). `raw_value` is always a
@@ -302,7 +339,7 @@ def _make_row(
         # anyway rather than assume that invariant holds forever.
         value = float(raw_value) if raw_value is not None else None
         flag = "ok" if raw_value is not None else "insufficient_data"
-    elif n < floor or raw_value is None:
+    elif force_insufficient or n < floor or raw_value is None:
         value = None
         flag = "insufficient_data"
     else:
@@ -849,6 +886,442 @@ def _contributor_hhi(
     return out
 
 
+def _organization_commit_counts(
+    con: duckdb.DuckDBPyConnection, window_start: date, window_end: date
+) -> list[tuple[str, int, int]]:
+    """`[(organization, commits, contributors), ...]`, desc by commits, for
+    every non-bot, resolved `code_commit` in `[window_start, window_end]`
+    (issue #52, METRICS.md §5).
+
+    Each commit resolves to an organization via `affiliation_period` (D6,
+    `normalize/affiliation.py`): the highest-priority row covering that
+    commit's `occurred_at` date wins (`curated` > `email_domain` >
+    `github_company`, "the curated override wins over heuristics"). An
+    identity with no covering `affiliation_period` row at all -- or a
+    commit whose only covering row is `source = 'curated'` with a dated
+    range that doesn't include this commit's date -- resolves to
+    `UNKNOWN_ORG` (METRICS.md §0.5: unresolved affiliation is its own
+    bucket, shown in the denominator, never redistributed or guessed).
+
+    `ROW_NUMBER() ... PARTITION BY c.event_id` (not `identity_id,
+    occurred_at`) is deliberate: two different commits by the same identity
+    can share the same `occurred_at` second, and partitioning on the pair
+    would silently drop one of them from its own ranking.
+    """
+    return con.execute(
+        """
+        WITH commits AS (
+            SELECT ce.event_id AS event_id, ri.identity_id AS identity_id,
+                   ce.occurred_at AS occurred_at
+            FROM contribution_event ce
+            JOIN resolved_identity ri
+                ON ri.source_type = ce.author_raw_type AND ri.source_value = ce.author_raw_value
+            LEFT JOIN bot_identifier bi
+                ON bi.raw_type = ce.author_raw_type AND bi.raw_value = ce.author_raw_value
+            WHERE ce.event_type = ?
+              AND bi.raw_value IS NULL
+              AND ce.occurred_at::DATE >= ? AND ce.occurred_at::DATE <= ?
+        ),
+        ranked AS (
+            SELECT
+                c.event_id, c.identity_id, ap.organization AS organization,
+                ROW_NUMBER() OVER (
+                    PARTITION BY c.event_id
+                    ORDER BY
+                        CASE ap.source
+                            WHEN 'curated' THEN 0
+                            WHEN 'email_domain' THEN 1
+                            WHEN 'github_company' THEN 2
+                            ELSE 3
+                        END,
+                        ap.organization
+                ) AS rn
+            FROM commits c
+            LEFT JOIN affiliation_period ap
+                ON ap.identity_id = c.identity_id
+               AND (ap.effective_from IS NULL OR c.occurred_at::DATE >= ap.effective_from)
+               AND (ap.effective_to IS NULL OR c.occurred_at::DATE < ap.effective_to)
+        )
+        SELECT
+            COALESCE(organization, ?) AS organization,
+            COUNT(*) AS commits,
+            COUNT(DISTINCT identity_id) AS contributors
+        FROM ranked
+        WHERE rn = 1
+        GROUP BY 1
+        ORDER BY commits DESC, organization ASC
+        """,
+        [CODE_COMMIT, window_start, window_end, UNKNOWN_ORG],
+    ).fetchall()
+
+
+def _organization_contributor_unknown_count(
+    con: duckdb.DuckDBPyConnection, window_start: date, window_end: date
+) -> tuple[int, int]:
+    """`(total_contributors, unknown_contributors)` for
+    `unknown_affiliation_rate`'s "equivalent contributor-count version"
+    (METRICS.md `unknown_affiliation_rate`), computed as exact distinct
+    identity counts (not a sum of `_organization_commit_counts`' per-org
+    contributor counts, which can double-count an identity whose curated
+    affiliation changes organization mid-window). A contributor counts as
+    `unknown` here only if **none** of their commits in the window resolved
+    to a known organization.
+    """
+    row = con.execute(
+        """
+        WITH commits AS (
+            SELECT ce.event_id AS event_id, ri.identity_id AS identity_id,
+                   ce.occurred_at AS occurred_at
+            FROM contribution_event ce
+            JOIN resolved_identity ri
+                ON ri.source_type = ce.author_raw_type AND ri.source_value = ce.author_raw_value
+            LEFT JOIN bot_identifier bi
+                ON bi.raw_type = ce.author_raw_type AND bi.raw_value = ce.author_raw_value
+            WHERE ce.event_type = ?
+              AND bi.raw_value IS NULL
+              AND ce.occurred_at::DATE >= ? AND ce.occurred_at::DATE <= ?
+        ),
+        ranked AS (
+            SELECT
+                c.event_id, c.identity_id, ap.organization AS organization,
+                ROW_NUMBER() OVER (
+                    PARTITION BY c.event_id
+                    ORDER BY
+                        CASE ap.source
+                            WHEN 'curated' THEN 0
+                            WHEN 'email_domain' THEN 1
+                            WHEN 'github_company' THEN 2
+                            ELSE 3
+                        END,
+                        ap.organization
+                ) AS rn
+            FROM commits c
+            LEFT JOIN affiliation_period ap
+                ON ap.identity_id = c.identity_id
+               AND (ap.effective_from IS NULL OR c.occurred_at::DATE >= ap.effective_from)
+               AND (ap.effective_to IS NULL OR c.occurred_at::DATE < ap.effective_to)
+        ),
+        per_identity AS (
+            SELECT identity_id, BOOL_OR(organization IS NOT NULL) AS has_known
+            FROM ranked
+            WHERE rn = 1
+            GROUP BY identity_id
+        )
+        SELECT COUNT(*) AS total, COUNT(*) FILTER (WHERE NOT has_known) AS unknown
+        FROM per_identity
+        """,
+        [CODE_COMMIT, window_start, window_end],
+    ).fetchone()
+    return (row[0] or 0, row[1] or 0)
+
+
+def _unknown_dominates(org_counts: list[tuple[str, int, int]], total_commits: int) -> bool:
+    """True iff `unknown`'s share of `total_commits` is >=
+    `UNKNOWN_SHARE_INSUFFICIENT_THRESHOLD` (issue #52 fixup cycle 1).
+    `total_commits == 0` is never "dominated" (nothing to be dominated) --
+    the ordinary `n < floor` check already renders that case
+    insufficient_data on its own.
+    """
+    if total_commits <= 0:
+        return False
+    unknown_commits = next((c for o, c, _ in org_counts if o == UNKNOWN_ORG), 0)
+    return (unknown_commits / total_commits) >= UNKNOWN_SHARE_INSUFFICIENT_THRESHOLD
+
+
+def _elephant_factor(
+    con: duckdb.DuckDBPyConnection,
+    as_of: date,
+    run_id: str,
+    computed_at: datetime,
+    github_company_lookback_months: int,
+) -> list[dict]:
+    """`elephant_factor` (METRICS.md §5): the minimum number of
+    organizations whose combined trailing-12m commits reach 50% of the
+    window's total -- same algorithm as `contributor_absence_factor`,
+    applied to `affiliation_period`-resolved organization instead of
+    individual identity.
+
+    `unknown` (D6: unresolved affiliation, never guessed) is itself counted
+    as one "organization" bucket for the cumulative-sum threshold
+    (METRICS.md: "unknown ... treated as its own organization bucket ... so
+    it cannot silently vanish from the denominator"), and
+    `unknown_needed_to_reach_threshold` records whether it was one of the
+    entities the cumulative sum needed. The §0.6 concentration floor (5)
+    and this row's reported `n`, however, count only *known* organizations
+    (METRICS.md: "floor 5 distinct known organizations ... if unknown
+    dominates the population, the metric renders insufficient_data for
+    status purposes even if a raw number can be shown") -- `details_json`
+    always carries the raw computed value (`raw_value_before_floor`) even
+    when `n_known` is below the floor and `value`/`flag` are suppressed.
+    Also suppressed (issue #52 fixup cycle 1) whenever `unknown`'s own
+    share of the window's commits is >=
+    `UNKNOWN_SHARE_INSUFFICIENT_THRESHOLD`, even if `n_known` alone would
+    have passed the floor -- 5+ known organizations observed in a window
+    that's still majority-unaffiliated commits is not a trustworthy
+    concentration reading.
+    """
+    month_rows = con.execute(
+        "SELECT DISTINCT date_trunc('month', occurred_at)::DATE AS m "
+        "FROM contribution_event WHERE event_type = ?",
+        [CODE_COMMIT],
+    ).fetchall()
+    if not month_rows:
+        return []
+    first_month = min(m for (m,) in month_rows)
+
+    out = []
+    for month in _dense_months(first_month, as_of):
+        window_end = month_end(month)
+        window_start, _ = trailing_12m_window(window_end)
+        org_counts = _organization_commit_counts(con, window_start, window_end)
+
+        n_known = sum(1 for org, _commits, _c in org_counts if org != UNKNOWN_ORG)
+        total_commits = sum(commits for _org, commits, _c in org_counts)
+
+        smallest_n = None
+        unknown_needed = False
+        ranked_orgs: list[dict] = []
+        if total_commits > 0:
+            target = 0.5 * total_commits
+            cumulative = 0
+            for org, commits, contributors in org_counts:  # already sorted desc by commits
+                cumulative += commits
+                ranked_orgs.append(
+                    {
+                        "organization": org,
+                        "commits": commits,
+                        "contributors": contributors,
+                        "cumulative_share": round(cumulative / total_commits, 4),
+                    }
+                )
+                if smallest_n is None and cumulative >= target:
+                    smallest_n = len(ranked_orgs)
+                    unknown_needed = any(o["organization"] == UNKNOWN_ORG for o in ranked_orgs)
+
+        out.append(
+            _make_row(
+                metric_id="elephant_factor",
+                window_start=window_start,
+                window_end=window_end,
+                raw_value=float(smallest_n) if smallest_n is not None else None,
+                n=n_known,
+                floor=FLOOR_CONCENTRATION,
+                run_id=run_id,
+                computed_at=computed_at,
+                force_insufficient=_unknown_dominates(org_counts, total_commits),
+                details={
+                    "total_commits": total_commits,
+                    "organizations": ranked_orgs,
+                    "unknown_needed_to_reach_threshold": unknown_needed,
+                    "raw_value_before_floor": smallest_n,
+                    "github_company_lookback_months": github_company_lookback_months,
+                },
+            )
+        )
+    return out
+
+
+def _organizational_hhi(
+    con: duckdb.DuckDBPyConnection,
+    as_of: date,
+    run_id: str,
+    computed_at: datetime,
+    github_company_lookback_months: int,
+) -> list[dict]:
+    """`organizational_hhi` / `effective_organizational_population`
+    (METRICS.md §5): sum-of-squared organizational commit shares, dense
+    trailing-12m windows, same population/window/org-resolution as
+    `elephant_factor`. `unknown` counts as its own bucket in the HHI sum
+    itself (consistent with `elephant_factor`'s treatment -- D6, never
+    redistributed), but the §0.6 floor and reported `n` count only known
+    organizations. `effective_organizational_population` (1/HHI) is carried
+    in `details_json` only, matching `reviewer_hhi`/`contributor_hhi`'s own
+    convention for their reciprocals -- not a separate metric_value row.
+    Also suppressed to insufficient_data (issue #52 fixup cycle 1) whenever
+    `unknown`'s share of the window's commits is >=
+    `UNKNOWN_SHARE_INSUFFICIENT_THRESHOLD` -- see `_elephant_factor`.
+    """
+    month_rows = con.execute(
+        "SELECT DISTINCT date_trunc('month', occurred_at)::DATE AS m "
+        "FROM contribution_event WHERE event_type = ?",
+        [CODE_COMMIT],
+    ).fetchall()
+    if not month_rows:
+        return []
+    first_month = min(m for (m,) in month_rows)
+
+    out = []
+    for month in _dense_months(first_month, as_of):
+        window_end = month_end(month)
+        window_start, _ = trailing_12m_window(window_end)
+        org_counts = _organization_commit_counts(con, window_start, window_end)
+
+        n_known = sum(1 for org, _commits, _c in org_counts if org != UNKNOWN_ORG)
+        credits = [commits for _org, commits, _c in org_counts]
+        total_commits = sum(credits)
+        hhi, _n_all = _hhi_from_credits(credits)
+        effective_population = (1.0 / hhi) if hhi is not None else None
+
+        out.append(
+            _make_row(
+                metric_id="organizational_hhi",
+                window_start=window_start,
+                window_end=window_end,
+                raw_value=hhi,
+                n=n_known,
+                floor=FLOOR_CONCENTRATION,
+                run_id=run_id,
+                computed_at=computed_at,
+                force_insufficient=_unknown_dominates(org_counts, total_commits),
+                details={
+                    "effective_organizational_population": effective_population,
+                    "unknown_included_in_hhi": any(
+                        org == UNKNOWN_ORG for org, _commits, _c in org_counts
+                    ),
+                    "github_company_lookback_months": github_company_lookback_months,
+                },
+            )
+        )
+    return out
+
+
+def _single_org_share(
+    con: duckdb.DuckDBPyConnection,
+    as_of: date,
+    run_id: str,
+    computed_at: datetime,
+    github_company_lookback_months: int,
+) -> list[dict]:
+    """`single_org_share` (METRICS.md §5): share of trailing-12m commits
+    from the single largest *known* organization -- the published CHAOSS
+    "Organizational Diversity" ratio. `unknown` is never eligible to be
+    "the largest org" and is shown separately in `details_json` rather than
+    folded into this figure (METRICS.md: "unknown bucket shown separately,
+    never merged into the 'largest known' figure"); the share's denominator
+    is still every commit in the window, `unknown` included, so a
+    high-unknown-rate window correctly produces a small `single_org_share`
+    rather than an artificially inflated one. Also suppressed to
+    insufficient_data (issue #52 fixup cycle 1) whenever `unknown`'s own
+    share of the window's commits is >=
+    `UNKNOWN_SHARE_INSUFFICIENT_THRESHOLD` -- see `_elephant_factor`.
+    """
+    month_rows = con.execute(
+        "SELECT DISTINCT date_trunc('month', occurred_at)::DATE AS m "
+        "FROM contribution_event WHERE event_type = ?",
+        [CODE_COMMIT],
+    ).fetchall()
+    if not month_rows:
+        return []
+    first_month = min(m for (m,) in month_rows)
+
+    out = []
+    for month in _dense_months(first_month, as_of):
+        window_end = month_end(month)
+        window_start, _ = trailing_12m_window(window_end)
+        org_counts = _organization_commit_counts(con, window_start, window_end)
+
+        total_commits = sum(commits for _org, commits, _c in org_counts)
+        known = [(org, commits) for org, commits, _c in org_counts if org != UNKNOWN_ORG]
+        n_known = len(known)
+
+        raw_value = None
+        top_org = None
+        if known and total_commits > 0:
+            # org_counts (and therefore `known`) is already sorted desc by
+            # commits -- its first entry is the largest known organization.
+            top_org, top_commits = known[0]
+            raw_value = top_commits / total_commits
+
+        unknown_commits = next((c for o, c, _ in org_counts if o == UNKNOWN_ORG), 0)
+        unknown_share = (unknown_commits / total_commits) if total_commits > 0 else None
+
+        out.append(
+            _make_row(
+                metric_id="single_org_share",
+                window_start=window_start,
+                window_end=window_end,
+                raw_value=raw_value,
+                n=n_known,
+                floor=FLOOR_CONCENTRATION,
+                run_id=run_id,
+                computed_at=computed_at,
+                force_insufficient=_unknown_dominates(org_counts, total_commits),
+                details={
+                    "largest_known_organization": top_org,
+                    "total_commits": total_commits,
+                    "unknown_commits": unknown_commits,
+                    "unknown_share": unknown_share,
+                    "github_company_lookback_months": github_company_lookback_months,
+                },
+            )
+        )
+    return out
+
+
+def _unknown_affiliation_rate(
+    con: duckdb.DuckDBPyConnection, as_of: date, run_id: str, computed_at: datetime
+) -> list[dict]:
+    """`unknown_affiliation_rate` (METRICS.md §5): share of trailing-12m
+    commits whose author's organization is `unknown` per `affiliation_period`
+    (D6's curated file + reviewed email-domain map + GitHub profile company
+    field), with the equivalent distinct-contributor-share version in
+    `details_json`. Deliberately has no direction of good (METRICS.md: this
+    completeness metric doesn't get a health verdict of its own -- it's a
+    confidence modifier on `elephant_factor`/`organizational_hhi`/
+    `single_org_share`) and is `established` **as a measurement of the
+    unknown bucket itself**, per its own METRICS.md section. Unlike the
+    other three organizational metrics, its `n`/floor is total commits in
+    the window (METRICS.md §0.6's default rate/ratio floor), not a count of
+    known organizations -- this metric's whole point is measuring how much
+    of the population resolved at all.
+    """
+    month_rows = con.execute(
+        "SELECT DISTINCT date_trunc('month', occurred_at)::DATE AS m "
+        "FROM contribution_event WHERE event_type = ?",
+        [CODE_COMMIT],
+    ).fetchall()
+    if not month_rows:
+        return []
+    first_month = min(m for (m,) in month_rows)
+
+    out = []
+    for month in _dense_months(first_month, as_of):
+        window_end = month_end(month)
+        window_start, _ = trailing_12m_window(window_end)
+        org_counts = _organization_commit_counts(con, window_start, window_end)
+        total_contributors, unknown_contributors = _organization_contributor_unknown_count(
+            con, window_start, window_end
+        )
+
+        total_commits = sum(commits for _org, commits, _c in org_counts)
+        unknown_commits = next((c for o, c, _ in org_counts if o == UNKNOWN_ORG), 0)
+        commit_rate = (unknown_commits / total_commits) if total_commits > 0 else None
+        contributor_rate = (
+            (unknown_contributors / total_contributors) if total_contributors > 0 else None
+        )
+
+        out.append(
+            _make_row(
+                metric_id="unknown_affiliation_rate",
+                window_start=window_start,
+                window_end=window_end,
+                raw_value=commit_rate,
+                n=total_commits,
+                floor=FLOOR_RATE_RATIO,
+                run_id=run_id,
+                computed_at=computed_at,
+                details={
+                    "unknown_commits": unknown_commits,
+                    "total_commits": total_commits,
+                    "unknown_contributors": unknown_contributors,
+                    "total_contributors": total_contributors,
+                    "contributor_rate": contributor_rate,
+                },
+            )
+        )
+    return out
+
+
 def _file_change_rows_through(
     con: duckdb.DuckDBPyConnection, cutoff: date
 ) -> list[tuple[str, str, str, float]]:
@@ -1097,6 +1570,17 @@ def _reliable_from(config: ProjectConfig) -> date | None:
     return date.fromisoformat(raw) if raw else None
 
 
+def _github_company_lookback_months(config: ProjectConfig) -> int:
+    """The `github_company_lookback_months` value `normalize.affiliation.
+    build_affiliation_periods` actually applied this run (issue #52 fixup
+    cycle 2) -- carried into the organizational-diversity concentration
+    metrics' `details_json` so a reader can see which lookback bound
+    produced the numbers, without re-deriving it from `projects/<id>.yaml`.
+    """
+    value = config.github_company_lookback_months
+    return value if value is not None else DEFAULT_GITHUB_COMPANY_LOOKBACK_MONTHS
+
+
 # --- Entry point ---------------------------------------------------------
 
 
@@ -1125,6 +1609,7 @@ def compute_all(
 
         reliable_from = _reliable_from(config)
         threshold_days = _stale_threshold_days(config)
+        github_company_lookback_months = _github_company_lookback_months(config)
 
         rows: list[dict] = []
         rows.extend(_pmc_joins_quarterly(con, as_of, run_id, computed_at))
@@ -1137,6 +1622,16 @@ def compute_all(
         rows.extend(_truck_factor(con, as_of, run_id, computed_at))
         rows.extend(_contributor_absence_factor(con, as_of, run_id, computed_at))
         rows.extend(_contributor_hhi(con, as_of, run_id, computed_at))
+        rows.extend(
+            _elephant_factor(con, as_of, run_id, computed_at, github_company_lookback_months)
+        )
+        rows.extend(
+            _organizational_hhi(con, as_of, run_id, computed_at, github_company_lookback_months)
+        )
+        rows.extend(
+            _single_org_share(con, as_of, run_id, computed_at, github_company_lookback_months)
+        )
+        rows.extend(_unknown_affiliation_rate(con, as_of, run_id, computed_at))
     finally:
         con.close()
 

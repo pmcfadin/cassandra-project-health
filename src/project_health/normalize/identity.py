@@ -385,6 +385,82 @@ def _identity_link_schema() -> pa.Schema:
     return get_schema("identity_link")
 
 
+# --- Automated high-confidence links: GitHub commit-author association -----
+# (D6, issue #52 fixup cycle 1)
+
+
+def link_github_commit_authors(
+    identity_link: pa.Table,
+    associations: Iterable[tuple[str, str, str]],
+    *,
+    now: datetime,
+) -> pa.Table:
+    """Append automated, high-confidence `identity_link` rows asserting that
+    a `git_email` identity is also a given GitHub `login`, from
+    `(email, login, sha)` triples (`collectors/github_commit_authors.py`'s
+    `github_commit_author` raw table: GitHub's own GraphQL commit-history
+    `author.user.login` field).
+
+    This is a platform-asserted **fact** (GitHub itself says this commit's
+    author email belongs to this account), not a heuristic guess -- exactly
+    the case ARCHITECTURE.md §3 carves out: "Links at confidence = exact or
+    high may be created automatically by the pipeline." It is deliberately
+    distinct from `identity_overrides.yaml`'s manual merges: `linked_by` is
+    a heuristic name+version (`'github_commit_author_v1'`), not
+    `'manual:<reviewer>'`, since no human reviewed this specific link (the
+    review already happened once, when GitHub built the account-email
+    association its API now reports).
+
+    One row is added per distinct `(email, login)` pair, keyed to the
+    `identity_id` that email's own naive resolution already produced (so
+    `github_login`-typed lookups against that identity_id -- e.g.
+    `normalize/affiliation.py`'s per-identity grouping -- see this login
+    without the git_email and github_login identities being two separate
+    people). Where the same pair was observed on more than one commit, the
+    lexicographically smallest `sha` is kept as the evidence trail (a
+    deterministic, order-independent choice, not "whichever commit iteration
+    order happened to see first").
+
+    Idempotent and deterministic (`link_id` is a pure function of the pair):
+    calling this again over the same accumulated `associations` -- e.g. next
+    run, after more commits/pages have been collected -- reproduces the same
+    rows for pairs already seen, plus any new ones, matching this project's
+    "recompute fresh every run" convention for derived identity data
+    (`resolve_identities` itself is never called incrementally either, D3).
+    """
+    best_sha: dict[tuple[str, str], str] = {}
+    for email, login, sha in associations:
+        if not email or not login or not sha:
+            continue
+        key = (email.strip().lower(), login.strip())
+        if key not in best_sha or sha < best_sha[key]:
+            best_sha[key] = sha
+
+    if not best_sha:
+        return identity_link
+
+    rows = []
+    for (email, login), sha in sorted(best_sha.items()):
+        identity_id = identity_id_for(GIT_EMAIL, email)
+        rows.append(
+            {
+                "link_id": str(
+                    uuid.uuid5(IDENTITY_NAMESPACE, f"github_commit_author:{email}:{login}")
+                ),
+                "identity_id": identity_id,
+                "source_type": "github_login",
+                "source_value": login,
+                "confidence": "high",
+                "evidence": f"GitHub commit author association, sha {sha}",
+                "linked_by": "github_commit_author_v1",
+                "linked_at": now,
+            }
+        )
+    extra = pa.Table.from_pylist(rows, schema=identity_link.schema)
+    combined = pa.concat_tables([identity_link, extra])
+    return validate("identity_link", combined)
+
+
 # --- Metrics-facing resolver -------------------------------------------------
 
 

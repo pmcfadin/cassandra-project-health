@@ -3,8 +3,9 @@
 `run_pipeline(...)` orchestrates one collection + metrics + (optional) site
 run, end to end:
 
-1. For each active source (`git`, `jira`): collect from that source's stored
-   watermark, write the validated raw partitions
+1. For each active source (`git`, `jira`, `asf_roster`, `github_profile`):
+   collect from that source's stored watermark, write the validated raw
+   partitions
    (`project_health.storage.write_partition`), and only *then* advance the
    watermark (ARCHITECTURE.md §4.3 — "the watermark is updated only after
    that source's raw partitions are written successfully"). A source that
@@ -82,13 +83,24 @@ import pyarrow.parquet as pq
 from project_health import storage
 from project_health.collectors.asf_roster import AsfRosterCollector
 from project_health.collectors.git import GitCollector, clone_or_fetch, github_clone_url
+from project_health.collectors.github import resolve_github_token
+from project_health.collectors.github_commit_authors import GitHubCommitAuthorCollector
+from project_health.collectors.github_profile import GitHubProfileCollector
 from project_health.collectors.jira import JiraCollector
 from project_health.collectors.ponymail import PonyMailCollector
 from project_health.collectors.security import SecurityCollector
 from project_health.config import ProjectConfig
 from project_health.metrics import METRIC_IDS, compute_all
+from project_health.normalize.affiliation import (
+    DEFAULT_GITHUB_COMPANY_LOOKBACK_MONTHS,
+    build_affiliation_periods,
+    load_affiliations_file,
+    load_org_aliases,
+    load_org_domains,
+)
 from project_health.normalize.identity import (
     extract_raw_identifiers,
+    link_github_commit_authors,
     load_overrides,
     resolve_identities,
 )
@@ -126,6 +138,8 @@ ALL_SOURCES: tuple[str, ...] = (
     "ponymail",
     "governance",
     "security",
+    "github_commit_authors",
+    "github_profile",
 )
 
 # --- Governance evidence-collection tuning (issue #36 fixup cycle 1) --------
@@ -177,6 +191,15 @@ _GOVERNANCE_FAILING_CONCLUSIONS = frozenset(
 # recorded when a fetch found nothing at all (as opposed to "not yet
 # fetched") — never a real GitHub check-run name.
 _GOVERNANCE_NO_RUN_FOUND_SENTINEL = "__none_found__"
+
+# github_profile issue #52 fixup cycle 1 (orchestrator feedback): "roughly
+# 700 logins over history, budgeted per run" -- a sane per-run default so a
+# single run doesn't try to fetch all of them in one shot even when the
+# caller doesn't pass an explicit --max-github-profiles. Overridable via
+# `max_github_profiles=` / `--max-github-profiles`; the already-cached-login
+# skip (`_collect_github_profile`) means unfetched logins carry over and
+# converge across a handful of nightly runs.
+DEFAULT_MAX_GITHUB_PROFILES_PER_RUN = 300
 
 
 def _log(event: str, **fields: Any) -> None:
@@ -1360,6 +1383,172 @@ def _collect_security(
         collector.close()
 
 
+def _collect_github_commit_authors(
+    config: ProjectConfig,
+    data_dir: Path,
+    run_id: str,
+    started_at: datetime,
+    max_pages: int | None,
+    collector_factory: Callable[[ProjectConfig], GitHubCommitAuthorCollector] | None,
+) -> dict[str, Any]:
+    """Walk `config.repos[0]`'s commit history for GitHub-asserted
+    author-email -> login associations (D6, issue #52 fixup cycle 1) --
+    see `collectors/github_commit_authors.py`. Own per-table watermark
+    (`table="github_commit_author"`, issue #53's "backfill gap" pattern),
+    since this table is added long after `git`'s own watermark exists.
+    """
+    watermark = storage.read_watermark(
+        data_dir, "github_commit_authors", table="github_commit_author"
+    )
+    snapshot_id = f"{run_id}:github_commit_authors"
+
+    _log("source_collect_started", source="github_commit_authors", watermark=watermark)
+    collector = (collector_factory or GitHubCommitAuthorCollector)(config)
+    try:
+        result = collector.collect(
+            watermark=watermark, snapshot_id=snapshot_id, max_pages=max_pages
+        )
+        partition_date = started_at.date()
+        storage.write_partition(
+            data_dir,
+            "github_commit_authors",
+            "github_commit_author",
+            partition_date,
+            run_id,
+            result.associations,
+        )
+        if result.outcome.next_watermark:
+            storage.write_watermark(
+                data_dir,
+                "github_commit_authors",
+                result.outcome.next_watermark,
+                table="github_commit_author",
+            )
+        _log(
+            "source_collect_succeeded",
+            source="github_commit_authors",
+            status=result.outcome.status,
+            commits_seen=result.outcome.commits_seen,
+            associations_found=result.outcome.associations_found,
+            pages_fetched=result.outcome.pages_fetched,
+            next_watermark=result.outcome.next_watermark,
+        )
+        return {
+            "status": result.outcome.status,
+            "watermark": result.outcome.next_watermark,
+            "records_collected": result.outcome.associations_found,
+            "commits_seen": result.outcome.commits_seen,
+            "reason": result.outcome.error,
+        }
+    except Exception as exc:  # noqa: BLE001 - a source outage must never abort the run (§7.3)
+        _log("source_collect_failed", source="github_commit_authors", error=str(exc))
+        return {
+            "status": "failed",
+            "watermark": watermark,
+            "records_collected": 0,
+            "last_good_snapshot": read_last_good_snapshot(data_dir, "github_commit_authors"),
+            "reason": str(exc),
+        }
+    finally:
+        collector.close()
+
+
+def _github_logins_seen(data_dir: Path) -> set[str]:
+    """Every distinct `github_login` this run's accumulated raw data has
+    observed (issue #52 fixup cycle 1): the `github_commit_author` table
+    (GitHub's own commit-author association, `collectors/
+    github_commit_authors.py`) is the real source of these today. Also
+    scans `contribution_event`/`review_event` for a `github_login`-typed
+    raw identifier directly, forward-compatible with a future collector
+    (e.g. issue #54's PR-collector wiring) that populates one there without
+    this function needing to change.
+    """
+    logins: set[str] = set()
+    for row in storage.read_table(
+        data_dir, "github_commit_authors", "github_commit_author"
+    ).to_pylist():
+        logins.add(row["login"])
+    contribution_event = storage.read_table(data_dir, "git", "contribution_event")
+    for row in contribution_event.to_pylist():
+        if row["author_raw_type"] == "github_login":
+            logins.add(row["author_raw_value"])
+    for source in ("git", "jira"):
+        review_event = storage.read_table(data_dir, source, "review_event")
+        for row in review_event.to_pylist():
+            if row["reviewer_raw_type"] == "github_login":
+                logins.add(row["reviewer_raw_value"])
+            if row["author_raw_type"] == "github_login":
+                logins.add(row["author_raw_value"])
+    return logins
+
+
+def _collect_github_profile(
+    data_dir: Path,
+    run_id: str,
+    started_at: datetime,
+    max_profiles: int | None,
+    collector_factory: Callable[[], GitHubProfileCollector] | None,
+) -> dict[str, Any]:
+    """Fetch the public `company` field (D6) for `github_login`s seen via
+    `collectors/github_commit_authors.py`, skipping any login already
+    cached in the accumulated `github_profile` raw table -- "fetched once
+    per login" (issue #52). Budgeted via `max_profiles` (default
+    `DEFAULT_MAX_GITHUB_PROFILES_PER_RUN`, this project's API-budget rule).
+
+    Status is `'partial'` when the budget or a GitHub rate limit stopped
+    collection before every discovered login was fetched this run --
+    expected and self-healing (the un-fetched logins are picked up by a
+    later run's "already cached" skip), not a source failure. `'ok'` only
+    when every discovered-but-uncached login was actually fetched.
+    """
+    _log("source_collect_started", source="github_profile")
+    already_cached = {
+        row["login"]
+        for row in storage.read_table(data_dir, "github_profile", "github_profile").to_pylist()
+    }
+    new_logins = sorted(_github_logins_seen(data_dir) - already_cached)
+    snapshot_id = f"{run_id}:github_profile"
+    budget = max_profiles if max_profiles is not None else DEFAULT_MAX_GITHUB_PROFILES_PER_RUN
+
+    collector = (
+        collector_factory or (lambda: GitHubProfileCollector(token=resolve_github_token()))
+    )()
+    try:
+        result = collector.collect(new_logins, snapshot_id=snapshot_id, max_profiles=budget)
+        partition_date = started_at.date()
+        storage.write_partition(
+            data_dir, "github_profile", "github_profile", partition_date, run_id, result.profiles
+        )
+        status = (
+            "rate_limited"
+            if result.rate_limited
+            else ("partial" if result.profiles_collected < len(new_logins) else "ok")
+        )
+        _log(
+            "source_collect_succeeded",
+            source="github_profile",
+            status=status,
+            records_collected=result.profiles_collected,
+            rate_limited=result.rate_limited,
+            new_logins_seen=len(new_logins),
+            budget=budget,
+        )
+        return {
+            "status": status,
+            "records_collected": result.profiles_collected,
+            "new_logins_seen": len(new_logins),
+        }
+    except Exception as exc:  # noqa: BLE001 - a source outage must never abort the run (§7.3)
+        _log("source_collect_failed", source="github_profile", error=str(exc))
+        return {
+            "status": "failed",
+            "records_collected": 0,
+            "reason": str(exc),
+        }
+    finally:
+        collector.close()
+
+
 def _write_metrics_snapshot(data_dir: Path, run_id: str, metrics_table: pa.Table) -> Path:
     snapshot_dir = Path(data_dir) / "snapshots" / run_id
     snapshot_dir.mkdir(parents=True, exist_ok=True)
@@ -1380,6 +1569,8 @@ def run_pipeline(
     site_out: str | Path | None = None,
     max_jira_issues: int | None = None,
     max_ponymail_months: int | None = None,
+    max_github_profiles: int | None = None,
+    max_github_commit_author_pages: int | None = None,
     now: datetime | None = None,
     code_sha: str | None = None,
     identity_overrides_path: str | Path | None = None,
@@ -1397,6 +1588,10 @@ def run_pipeline(
     governance_jira_comments_factory: Callable[[str], object] | None = None,
     governance_github_checks_factory: Callable[[str, str], object] | None = None,
     security_collector_factory: Callable[[ProjectConfig], SecurityCollector] | None = None,
+    github_commit_author_collector_factory: (
+        Callable[[ProjectConfig], GitHubCommitAuthorCollector] | None
+    ) = None,
+    github_profile_collector_factory: Callable[[], GitHubProfileCollector] | None = None,
 ) -> RunResult:
     """Run one collect -> identity -> metrics -> manifest (-> site) pass.
 
@@ -1418,6 +1613,15 @@ def run_pipeline(
     `security_collector_factory`, given, replaces the default
     `SecurityCollector(config)` construction (issue #55) — same offline-test
     injection pattern as the two factories above.
+
+    `github_commit_author_collector_factory`, given, replaces the default
+    `GitHubCommitAuthorCollector(config)` construction (issue #52 fixup
+    cycle 1) — this is how tests inject one wired to an offline
+    `httpx.MockTransport`.
+
+    `github_profile_collector_factory`, given, replaces the default
+    `GitHubProfileCollector(token=...)` construction (issue #52) — this is
+    how tests inject one wired to an offline `httpx.MockTransport`.
     """
     data_dir = Path(data_dir)
     workdir = Path(workdir)
@@ -1464,6 +1668,22 @@ def run_pipeline(
         source_results["security"] = _collect_security(
             config, data_dir, run_id, started_at, security_collector_factory
         )
+    if "github_commit_authors" in active_sources:
+        source_results["github_commit_authors"] = _collect_github_commit_authors(
+            config,
+            data_dir,
+            run_id,
+            started_at,
+            max_github_commit_author_pages,
+            github_commit_author_collector_factory,
+        )
+    if "github_profile" in active_sources:
+        # Runs after github_commit_authors above so a login first observed
+        # by *this* run's own commit-author walk is eligible for the same
+        # run's profile fetch, not just a login seen on some prior run.
+        source_results["github_profile"] = _collect_github_profile(
+            data_dir, run_id, started_at, max_github_profiles, github_profile_collector_factory
+        )
 
     # D3: identity resolution and metrics always recompute from the ENTIRE
     # accumulated raw cache, regardless of which sources were active (or
@@ -1492,6 +1712,48 @@ def run_pipeline(
     )
     resolution = resolve_identities(raw_identifiers, overrides, now=started_at)
 
+    # D6 (issue #52 fixup cycle 1): fold in GitHub's own commit-author
+    # association as automated, high-confidence identity_link rows before
+    # anything downstream reads identity_link -- this is what lets a
+    # gmail.com/apache.org/personal-domain commit email resolve to an
+    # organization via that person's GitHub profile `company` field, not
+    # just via `org_domains.yaml`'s much narrower domain coverage.
+    github_commit_author_raw = storage.read_table(
+        data_dir, "github_commit_authors", "github_commit_author"
+    )
+    commit_author_associations = [
+        (row["email"], row["login"], row["sha"])
+        for row in github_commit_author_raw.to_pylist()
+    ]
+    identity_link = link_github_commit_authors(
+        resolution.identity_link, commit_author_associations, now=started_at
+    )
+
+    # `affiliation_period` is derived, deterministic data -- like
+    # `identity_link` above, it's recomputed fresh every run from the
+    # curated file + reviewed domain map + reviewed alias map + the
+    # accumulated `github_profile` cache, never persisted to the data
+    # branch itself (D3).
+    curated_affiliations = (
+        load_affiliations_file(config.affiliations_file) if config.affiliations_file else {}
+    )
+    org_domains = load_org_domains(config.org_domains_file) if config.org_domains_file else {}
+    org_aliases = load_org_aliases(config.org_aliases_file) if config.org_aliases_file else {}
+    github_profile_raw = storage.read_table(data_dir, "github_profile", "github_profile")
+    github_company_lookback_months = (
+        config.github_company_lookback_months
+        if config.github_company_lookback_months is not None
+        else DEFAULT_GITHUB_COMPANY_LOOKBACK_MONTHS
+    )
+    affiliation_period = build_affiliation_periods(
+        identity_link=identity_link,
+        curated=curated_affiliations,
+        org_domains=org_domains,
+        org_aliases=org_aliases,
+        github_profile=github_profile_raw,
+        github_company_lookback_months=github_company_lookback_months,
+    )
+
     metrics_table: pa.Table | None = None
     metrics_error: str | None = None
     try:
@@ -1501,8 +1763,9 @@ def run_pipeline(
                 "file_change_event": file_change_event,
                 "review_event": review_event,
                 "issue": issue,
-                "identity_link": resolution.identity_link,
+                "identity_link": identity_link,
                 "roster_entry": roster_entry,
+                "affiliation_period": affiliation_period,
             },
             as_of=started_at.date(),
             run_id=run_id,

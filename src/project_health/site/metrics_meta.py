@@ -213,6 +213,43 @@ M0_METRICS: dict[str, MetricMeta] = {
         value_kind="ratio",
         page="community",
     ),
+    # issue #52 (D6 organizational-diversity metrics, METRICS.md §5)
+    "elephant_factor": MetricMeta(
+        metric_id="elephant_factor",
+        name="Elephant Factor",
+        dimension="organizational diversity",
+        tier="experimental",
+        direction_of_good="higher",
+        value_kind="count",
+        page="community",
+    ),
+    "organizational_hhi": MetricMeta(
+        metric_id="organizational_hhi",
+        name="Organizational Concentration (HHI)",
+        dimension="organizational diversity",
+        tier="established",
+        direction_of_good="lower",
+        value_kind="ratio",
+        page="community",
+    ),
+    "single_org_share": MetricMeta(
+        metric_id="single_org_share",
+        name="Single-Organization Share",
+        dimension="organizational diversity",
+        tier="established",
+        direction_of_good="lower",
+        value_kind="percent",
+        page="community",
+    ),
+    "unknown_affiliation_rate": MetricMeta(
+        metric_id="unknown_affiliation_rate",
+        name="Unknown-Affiliation Rate",
+        dimension="organizational diversity",
+        tier="established",
+        direction_of_good="none",
+        value_kind="percent",
+        page="community",
+    ),
 }
 
 # Governance compliance engine (issue #36, D14/D15): one monthly pass-rate

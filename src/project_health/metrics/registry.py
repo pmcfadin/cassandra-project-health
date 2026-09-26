@@ -38,6 +38,10 @@ _VERSIONS: dict[str, str] = {
     "truck_factor": "1.0",
     "contributor_absence_factor": "1.0",
     "contributor_hhi": "1.0",
+    "elephant_factor": "1.0",
+    "organizational_hhi": "1.0",
+    "single_org_share": "1.0",
+    "unknown_affiliation_rate": "1.0",
 }
 
 _INITIAL_M0_CHANGELOG_NOTE = "Initial M0 implementation (issue #7)."
@@ -53,6 +57,7 @@ _HEADCOUNT_FLOOR_CHANGELOG_NOTE = (
 
 # metric_id -> changelog_note for its current version.
 _INITIAL_ISSUE_53_CHANGELOG_NOTE = "Initial implementation (issue #53)."
+_INITIAL_ISSUE_52_CHANGELOG_NOTE = "Initial implementation (issue #52, D6)."
 
 _CHANGELOG_NOTES: dict[str, str] = {
     "active_contributors_monthly": _HEADCOUNT_FLOOR_CHANGELOG_NOTE,
@@ -65,6 +70,10 @@ _CHANGELOG_NOTES: dict[str, str] = {
     "truck_factor": _INITIAL_ISSUE_53_CHANGELOG_NOTE,
     "contributor_absence_factor": _INITIAL_ISSUE_53_CHANGELOG_NOTE,
     "contributor_hhi": _INITIAL_ISSUE_53_CHANGELOG_NOTE,
+    "elephant_factor": _INITIAL_ISSUE_52_CHANGELOG_NOTE,
+    "organizational_hhi": _INITIAL_ISSUE_52_CHANGELOG_NOTE,
+    "single_org_share": _INITIAL_ISSUE_52_CHANGELOG_NOTE,
+    "unknown_affiliation_rate": _INITIAL_ISSUE_52_CHANGELOG_NOTE,
 }
 
 # metric_id -> description, condensed from METRICS.md's own "## <id>" sections.
@@ -207,6 +216,84 @@ _DESCRIPTIONS: dict[str, str] = {
         "established for its own reciprocal. Tier: established. Dimension: contributor "
         "sustainability. Role: key. Direction of good: lower. Window: trailing-12m, one row "
         "per completed month. METRICS.md §2."
+    ),
+    "elephant_factor": (
+        "Minimum number of organizations whose combined trailing-12-calendar-month commits "
+        "reach 50% of the window's total -- same algorithm as contributor_absence_factor, "
+        "applied to organizational affiliation (D6) instead of individual identity. "
+        "Organization is resolved per commit via affiliation_period: a curated "
+        "affiliations.yaml entry (dated range) wins over a reviewed email-domain map "
+        "(org_domains.yaml, some domains dated for an acquisition) wins over a GitHub "
+        "profile's public company field (only via a reviewed org_aliases.yaml alias -- "
+        "unmatched free text never counts, D6), in that order; the GitHub-company source is "
+        "reached via collectors/github_commit_authors.py's platform-asserted commit-author "
+        "association, which is what makes it useful for the gmail.com/apache.org/personal-"
+        "domain majority the domain map alone can't resolve. A company field is a "
+        "current-employer signal only (issue #52 fixup cycle 2): it's bounded to the trailing "
+        "details_json.github_company_lookback_months months before that profile was fetched, "
+        "never back-filled onto older commits, which fall through to email_domain/curated or "
+        "stay unknown. Anything left over is 'unknown', "
+        "which is treated as its own organization bucket for the cumulative-sum threshold so "
+        "it cannot silently vanish from the denominator -- "
+        "details_json.unknown_needed_to_reach_threshold records whether the threshold actually "
+        "needed the unknown bucket to be reached. The §0.6 concentration floor (5, known "
+        "organizations) AND a >= 50% unknown-share suppression (issue #52 fixup cycle 1: a "
+        "window that clears the known-org-count floor while still majority-unaffiliated is not "
+        "a trustworthy concentration reading) both gate value/flag; "
+        "details_json.raw_value_before_floor carries the computed value even when suppressed. "
+        "Marked experimental (not established) specifically because Cassandra's affiliation "
+        "data quality -- not the algorithm -- is unproven at M0. "
+        "Tier: experimental. Dimension: organizational diversity. Role: key. Direction of "
+        "good: higher. Window: trailing-12m, one row per completed month. METRICS.md §5."
+    ),
+    "organizational_hhi": (
+        "Herfindahl-Hirschman Index (sum of squared organizational commit shares), dense "
+        "trailing-12-calendar-month windows, same population/window/org-resolution as "
+        "elephant_factor. unknown counts as its own bucket in the HHI sum itself (D6, never "
+        "redistributed), but the §0.6 known-organization-count floor and a >= 50% "
+        "unknown-share suppression (issue #52 fixup cycle 1, see elephant_factor) both gate "
+        "value/flag. The GitHub-company source's current-employer-only lookback bound (fixup "
+        "cycle 2, see elephant_factor) applies here too. details_json carries "
+        "github_company_lookback_months and effective_organizational_population (1/HHI), not "
+        "emitted as its own metric_value row -- the same convention reviewer_hhi/"
+        "contributor_hhi established for their own reciprocals. Tier: established. Dimension: "
+        "organizational diversity. Role: key. Direction of good: lower. Window: trailing-12m, "
+        "one row per completed month. METRICS.md §5."
+    ),
+    "single_org_share": (
+        "Share of trailing-12-calendar-month commits from the single largest known "
+        "organization -- the published CHAOSS 'Organizational Diversity' ratio, over the same "
+        "org resolution and window as elephant_factor/organizational_hhi. unknown is never "
+        "eligible to be 'the largest org' and is reported separately in details_json "
+        "(unknown_commits/unknown_share) rather than folded into this figure, but the "
+        "denominator is still every commit in the window (unknown included), so a "
+        "high-unknown-rate window correctly produces a small value here rather than an "
+        "inflated one; the §0.6 known-organization-count floor and a >= 50% unknown-share "
+        "suppression (issue #52 fixup cycle 1, see elephant_factor) both gate value/flag; the "
+        "GitHub-company source's current-employer-only lookback bound (fixup cycle 2, see "
+        "elephant_factor) applies here too, recorded in "
+        "details_json.github_company_lookback_months. "
+        "Tier: established. Dimension: organizational diversity. Role: "
+        "supporting -- largely implied by organizational_hhi (already key) and can miss "
+        "multi-organization concentration HHI catches. Direction of good: lower. Window: "
+        "trailing-12m, one row per completed month. METRICS.md §5."
+    ),
+    "unknown_affiliation_rate": (
+        "Share of trailing-12-calendar-month commits whose author's organization is unknown "
+        "per affiliation_period (D6's curated file + reviewed email-domain map + GitHub "
+        "profile company field via a reviewed alias map), with the equivalent "
+        "distinct-contributor-share version in "
+        "details_json (a contributor counts as unknown only if none of their commits in the "
+        "window resolved to a known organization). Deliberately has no direction of good -- "
+        "this completeness metric doesn't get a health verdict of its own, it's a confidence "
+        "modifier shown alongside elephant_factor/organizational_hhi/single_org_share. Tier: "
+        "established (of its own denominator) -- it measures the size of the unknown bucket "
+        "itself, which is exactly measurable, even though the metrics it caveats are "
+        "experimental/established with caveats. Unlike the other three organizational "
+        "metrics, its n/floor is total commits in the window (METRICS.md §0.6's default "
+        "rate/ratio floor), not a count of known organizations. Dimension: organizational "
+        "diversity. Role: supporting. Direction of good: none. Window: trailing-12m, one row "
+        "per completed month. METRICS.md §5."
     ),
 }
 

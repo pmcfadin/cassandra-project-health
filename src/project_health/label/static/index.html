@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>project-health label</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header>
+  <h1>Message labeling</h1>
+  <div id="meta-line">
+    Rater: <strong id="rater-name">-</strong>
+    &middot;
+    <span id="progress-text">0 / 0</span>
+  </div>
+  <div id="progress-track"><div id="progress-bar"></div></div>
+</header>
+
+<main>
+  <section id="complete-message" hidden>
+    <h2>All items labeled</h2>
+    <p>Every item in this corpus has a label record from this rater. Nothing left to do.</p>
+  </section>
+
+  <section id="labeling-area">
+    <div id="item-panel">
+      <p id="item-source-line">Source: <span id="item-source"></span>
+        &middot; <a id="item-archive-link" href="#" target="_blank" rel="noopener">archive</a>
+      </p>
+      <div id="item-parent-wrap">
+        <h3>Parent</h3>
+        <pre id="item-parent-text"></pre>
+      </div>
+      <h3>Message</h3>
+      <pre id="item-text"></pre>
+    </div>
+
+    <form id="label-form">
+      <div id="label-rows"></div>
+
+      <fieldset id="tone-fieldset">
+        <legend>Tone (classify/questions_v1.yaml's tone_intensity scale)</legend>
+        <div id="tone-options"></div>
+      </fieldset>
+
+      <fieldset>
+        <legend>Note (optional)</legend>
+        <textarea id="note" rows="3"></textarea>
+      </fieldset>
+
+      <button type="submit" id="submit-btn">Save &amp; next (Enter)</button>
+      <p id="save-error" role="alert"></p>
+    </form>
+  </section>
+
+  <section id="definitions">
+    <h2>Label definitions (COMMUNITY-HEALTH.md &sect;1.2, verbatim)</h2>
+    <dl id="definitions-list"></dl>
+  </section>
+
+  <section id="help">
+    <h2>Keyboard shortcuts</h2>
+    <ul>
+      <li><kbd>&uarr;</kbd> / <kbd>&darr;</kbd> &mdash; move the highlighted label row</li>
+      <li><kbd>y</kbd> / <kbd>n</kbd> / <kbd>u</kbd> &mdash; mark the highlighted row yes / no / unsure</li>
+      <li><kbd>0</kbd> <kbd>1</kbd> <kbd>2</kbd> &mdash; set tone</li>
+      <li><kbd>Enter</kbd> &mdash; save and go to the next item</li>
+    </ul>
+  </section>
+</main>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

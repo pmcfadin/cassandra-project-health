@@ -110,11 +110,33 @@ SOURCE_LABELS: dict[str, str] = {
 # The contributor leaderboard section (D19, issue #56) has no `metric_id` of
 # its own -- it's a ranked-table section, not a `metric_value` series -- so
 # its source dependency is declared here rather than as a `MetricMeta.sources`
-# entry. Mirrors `leaderboard.ACTIVITY_TYPES`'s three activity types
-# (commits -> git, jira_issues_resolved -> jira, reviews -> git commit
-# trailers + JIRA reviewer fields + GitHub PR reviews, METRICS.md
-# `unique_reviewers_monthly`'s "Required data / source").
-LEADERBOARD_SOURCES: tuple[str, ...] = ("git", "jira", "github")
+# entry.
+#
+# Derived from `leaderboard.py`'s actual queries (fixup: orchestrator review
+# of issue #86 -- the original mapping guessed 'github' for PRs, but
+# `leaderboard.py` never reads `pr`/`pr_review` at all, verified: no match
+# for `pr_review`/`pull_request` in that module):
+# - `commits` -- `contribution_event` (git) by author.
+# - `reviews` -- `review_event` filtered `WHERE re.source = 'commit_trailer'`
+#   ONLY (`leaderboard.py::_reviews_list`, "the same primary source
+#   `metrics.engine._reviewer_hhi` uses" per that function's own docstring)
+#   -- git, not jira, not github.
+# - `jira_issues_resolved` -- the `issue` table (jira) by assignee.
+# - Every list's `organization` column comes from the same
+#   `affiliation_period` table the org metrics use (built once in
+#   `pipeline.py` via `build_affiliation_periods` and passed to both
+#   `metrics.engine.compute_all` and `leaderboard.build_leaderboards`) --
+#   so `github_commit_authors`/`github_profile` belong here for the same
+#   reason they belong on `elephant_factor`/etc. above.
+LEADERBOARD_SOURCES: tuple[str, ...] = ("git", "jira", "github_commit_authors", "github_profile")
+
+# The Governance page's Security section (issue #55, D21 item 3:
+# OpenSSF Scorecard + CVE/advisory history) reads its own raw tables
+# directly (`site/generate.py::_read_security_context`,
+# `storage.read_table(data_dir, "security", ...)`) rather than a
+# `metric_value` series, so it gets the same kind of standalone constant as
+# `LEADERBOARD_SOURCES` rather than a `MetricMeta.sources` entry.
+SECURITY_SOURCES: tuple[str, ...] = ("security",)
 
 
 @dataclass(frozen=True)
@@ -223,6 +245,32 @@ M0_METRICS: dict[str, MetricMeta] = {
         page="community",
         sources=("git",),
     ),
+    # (fixup: orchestrator review of issue #86) `pmc_joins_quarterly` is
+    # registered in `metrics.registry.METRIC_IDS` and computed every run
+    # (`metrics/engine.py::_pmc_joins_quarterly`, reading `roster_entry`
+    # only -- no git/jira join at all) but had no `MetricMeta` entry here at
+    # all until this fixup, so it never got a card on the site. Dimension/
+    # tier/direction_of_good/value_kind/page per METRICS.md's own section.
+    "pmc_joins_quarterly": MetricMeta(
+        metric_id="pmc_joins_quarterly",
+        name="PMC Joins per Quarter",
+        dimension="contributor sustainability",
+        tier="established",
+        direction_of_good="higher",
+        value_kind="count",
+        page="community",
+        sources=("asf_roster",),
+    ),
+    # `unique_reviewers_monthly`'s `value`/`n` (`union_count`,
+    # `metrics/engine.py::_unique_reviewers_monthly`) is a DISTINCT count of
+    # reviewers credited via EITHER `review_event.source = 'commit_trailer'`
+    # (git) OR `'jira_field'` (jira) -- `review_event` itself is only ever
+    # populated from those two sources (`collectors/git.py`'s trailer parse,
+    # `collectors/jira.py`'s reviewer-field extraction); GitHub PR reviews
+    # never feed this table, so 'github' does NOT belong here (fixup:
+    # orchestrator review of issue #86 caught this -- the original mapping
+    # here was derived from the metric's docs prose/name, not the actual
+    # engine SQL and collectors, and wrongly included 'github').
     "unique_reviewers_monthly": MetricMeta(
         metric_id="unique_reviewers_monthly",
         name="Unique Reviewers",
@@ -231,8 +279,20 @@ M0_METRICS: dict[str, MetricMeta] = {
         direction_of_good="higher",
         value_kind="count",
         page="community",
-        sources=("git", "jira", "github"),
+        sources=("git", "jira"),
     ),
+    # `reviewer_hhi`'s `value`/`n` (`hhi_commit_trailer`/`n_commit_trailer`,
+    # `metrics/engine.py::_reviewer_hhi`) is computed from `commit_trailer`
+    # (git) review credits ONLY -- deliberately, per that function's own
+    # docstring (fixup cycle 1, review comment on issue #7): crediting both
+    # `commit_trailer` and `jira_field` double-counts a single review
+    # across two different "people" under M0's naive identity resolution,
+    # deflating HHI. `jira_field_hhi`/`union_hhi` are computed too, but only
+    # ever land in `details_json` as a cross-check -- never in the `value`
+    # this card's number/chart render from (`site/generate.py::_card_context`
+    # reads `point.value`, not `details_json`). So this card's own staleness
+    # genuinely never depends on 'jira' (or 'github', which review_event
+    # never gets rows from at all -- see `unique_reviewers_monthly` above).
     "reviewer_hhi": MetricMeta(
         metric_id="reviewer_hhi",
         name="Reviewer Concentration (HHI)",
@@ -241,7 +301,7 @@ M0_METRICS: dict[str, MetricMeta] = {
         direction_of_good="lower",
         value_kind="ratio",
         page="community",
-        sources=("git", "jira", "github"),
+        sources=("git",),
     ),
     "median_resolution_latency_jira": MetricMeta(
         metric_id="median_resolution_latency_jira",
@@ -294,7 +354,25 @@ M0_METRICS: dict[str, MetricMeta] = {
         page="community",
         sources=("git",),
     ),
-    # issue #52 (D6 organizational-diversity metrics, METRICS.md §5)
+    # issue #52 (D6 organizational-diversity metrics, METRICS.md §5).
+    #
+    # Every one of these four joins `contribution_event` (git) against
+    # `affiliation_period` (`metrics/engine.py`'s `_organization_commit_
+    # counts`-style queries, e.g. `_elephant_factor`/`_organizational_hhi`/
+    # `_single_org_share`/`_unknown_affiliation_rate`). `affiliation_period`
+    # itself (`normalize/affiliation.py::build_affiliation_periods`) is
+    # built from three priority sources: `curated`/`email_domain` are
+    # static, PR-reviewed YAML files (affiliations.yaml, org_domains.yaml --
+    # not a *collected* source with its own manifest status), and
+    # `github_company` -- which reads the accumulated `github_profile` raw
+    # table (`collectors/github_profile.py`), keyed by logins the
+    # accumulated `github_commit_authors` association table
+    # (`collectors/github_commit_authors.py`) links to a commit's raw email.
+    # No `roster_entry` (`asf_roster`) join anywhere in this affiliation
+    # path (verified: `grep roster normalize/affiliation.py` -- no hits).
+    # (fixup: orchestrator review of issue #86 -- the original mapping here
+    # was ('git',) only, missing the github_profile/github_commit_authors
+    # dependency entirely.)
     "elephant_factor": MetricMeta(
         metric_id="elephant_factor",
         name="Elephant Factor",
@@ -303,7 +381,7 @@ M0_METRICS: dict[str, MetricMeta] = {
         direction_of_good="higher",
         value_kind="count",
         page="community",
-        sources=("git",),
+        sources=("git", "github_commit_authors", "github_profile"),
     ),
     "organizational_hhi": MetricMeta(
         metric_id="organizational_hhi",
@@ -313,7 +391,7 @@ M0_METRICS: dict[str, MetricMeta] = {
         direction_of_good="lower",
         value_kind="ratio",
         page="community",
-        sources=("git",),
+        sources=("git", "github_commit_authors", "github_profile"),
     ),
     "single_org_share": MetricMeta(
         metric_id="single_org_share",
@@ -323,7 +401,7 @@ M0_METRICS: dict[str, MetricMeta] = {
         direction_of_good="lower",
         value_kind="percent",
         page="community",
-        sources=("git",),
+        sources=("git", "github_commit_authors", "github_profile"),
     ),
     "unknown_affiliation_rate": MetricMeta(
         metric_id="unknown_affiliation_rate",
@@ -333,7 +411,7 @@ M0_METRICS: dict[str, MetricMeta] = {
         direction_of_good="none",
         value_kind="percent",
         page="community",
-        sources=("git",),
+        sources=("git", "github_commit_authors", "github_profile"),
     ),
     # issue #35: dev@ mailing-list responsiveness (D16), metadata only.
     "time_to_first_reply_devlist": MetricMeta(
@@ -428,6 +506,48 @@ M0_METRICS: dict[str, MetricMeta] = {
 # in metrics_meta") — building the `/governance/` page itself (reading these
 # out of a snapshot, rendering the per-commit table) is issue #37's scope,
 # not this one's.
+#
+# `sources` below (fixup: orchestrator review of issue #86) is derived from
+# `pipeline.py::_collect_governance` and `governance/checks.py`'s scoring
+# functions, not from the check's name/docs prose:
+#
+# - EVERY check scores `commit_record` rows from governance's own,
+#   separately-watermarked local git walk (`_collect_governance_commit_
+#   records`), which reads the SAME `workdir` clone the real `git` source
+#   populates via `clone_or_fetch` (`_collect_git`, called earlier in
+#   `run_pipeline`) — governance never re-clones. So a `git` collection
+#   failure means governance scores a stale local clone too: 'git' belongs
+#   on all four.
+# - `reviewer-present` ALSO checks `jira_reviewers` — read straight from the
+#   real, accumulated `jira` source's `review_event` table
+#   (`pipeline._governance_reviewers_by_issue`:
+#   `storage.read_table(data_dir, "jira", "review_event")`), so 'jira'
+#   genuinely belongs there too.
+# - `jira-ticket-referenced` only regexes `commit.message`/`issue_keys` —
+#   no live JIRA lookup at all (`governance/checks.py::
+#   score_jira_ticket_referenced`) — so 'jira' does NOT belong there,
+#   despite the name.
+# - `pre-commit-ci-evidence`'s CI evidence comes from `JiraCommentsCollector`
+#   (`collectors/jira_comments.py`), a distinct collector from the `jira`
+#   search collector, whose results only ever land in governance's own
+#   `raw/governance/ci_evidence` table
+#   (`pipeline._governance_ci_evidence_found_map`) — never in
+#   `manifest.sources`. There is no manifest source key this evidence's own
+#   staleness can be attributed to today (verified: `manifest["sources"]`
+#   has no `jira_comments`/`governance` entry — `governance` is a distinct,
+#   differently-shaped top-level manifest field, `site.manifest.
+#   GovernanceStatus`, with no `last_good_snapshot`). Documented here rather
+#   than guessed at, per this project's "collect imperfectly but honestly,
+#   not silently" rule — a future issue adding a real per-source status for
+#   that collector should add it here too.
+# - `code-style-checkstyle`'s evidence likewise comes from
+#   `GitHubChecksCollector` (`collectors/github_checks.py`), a distinct
+#   collector from the PR collector `sources.github` reports on, whose
+#   results only ever land in governance's own `raw/governance/check_run`
+#   table (`pipeline._governance_check_run_evidence_for_scoring`) — never in
+#   `sources.github`. Same documented gap as CI evidence above; 'github'
+#   does NOT belong here despite the check's evidence literally coming from
+#   GitHub, because `sources.github`'s status doesn't track it.
 GOVERNANCE_METRICS: dict[str, MetricMeta] = {
     "governance_reviewer_present_pass_rate": MetricMeta(
         metric_id="governance_reviewer_present_pass_rate",
@@ -447,7 +567,7 @@ GOVERNANCE_METRICS: dict[str, MetricMeta] = {
         direction_of_good="higher",
         value_kind="percent",
         page="governance",
-        sources=("git", "jira"),
+        sources=("git",),
     ),
     "governance_pre_commit_ci_evidence_pass_rate": MetricMeta(
         metric_id="governance_pre_commit_ci_evidence_pass_rate",
@@ -457,7 +577,7 @@ GOVERNANCE_METRICS: dict[str, MetricMeta] = {
         direction_of_good="higher",
         value_kind="percent",
         page="governance",
-        sources=("jira",),
+        sources=("git",),
     ),
     "governance_code_style_checkstyle_pass_rate": MetricMeta(
         metric_id="governance_code_style_checkstyle_pass_rate",
@@ -467,7 +587,7 @@ GOVERNANCE_METRICS: dict[str, MetricMeta] = {
         direction_of_good="higher",
         value_kind="percent",
         page="governance",
-        sources=("github",),
+        sources=("git",),
     ),
 }
 

@@ -4,6 +4,13 @@
    that same page (see this page's own comment at the include site). #}
 <section class="security-section" aria-labelledby="security-heading">
   <h2 id="security-heading">Security</h2>
+  {% if security.staleness_badges %}
+  <p class="card-staleness">
+    {% for b in security.staleness_badges %}
+    <span class="badge badge--{{ b.status }}" role="status">{{ b.text }}</span>
+    {% endfor %}
+  </p>
+  {% endif %}
   <p class="page-intro">
     Two independent, external, publicly reproducible feeds — never blended into a single score, and
     never a substitute for the per-commit compliance checks on this page. See

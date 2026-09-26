@@ -66,6 +66,7 @@ from project_health.site.metrics_meta import (
     HOME_CARD_METRIC_LIMIT,
     M0_METRICS,
     PAGES,
+    SECURITY_SOURCES,
     MetricMeta,
     PageMeta,
     format_days,
@@ -638,6 +639,11 @@ class SecurityContext:
     advisories: list[dict[str, Any]]
     advisory_count: int
     advisories_by_year: list[tuple[int, int]]
+    # issue #86: this section reads `sources.security` directly (module
+    # docstring above), so its badge comes straight from
+    # `metrics_meta.SECURITY_SOURCES` rather than a `MetricMeta.sources`
+    # lookup.
+    staleness_badges: list[dict[str, Any]]
 
 
 def _dedupe_latest(rows: list[dict[str, Any]], key: str, tiebreak: str) -> list[dict[str, Any]]:
@@ -655,7 +661,7 @@ def _dedupe_latest(rows: list[dict[str, Any]], key: str, tiebreak: str) -> list[
     return list(best.values())
 
 
-def _read_security_context(data_dir: Path) -> SecurityContext:
+def _read_security_context(data_dir: Path, manifest: RunManifest) -> SecurityContext:
     scorecard_rows = storage.read_table(data_dir, "security", "scorecard_check").to_pylist()
     advisory_rows = storage.read_table(data_dir, "security", "security_advisory").to_pylist()
 
@@ -712,6 +718,7 @@ def _read_security_context(data_dir: Path) -> SecurityContext:
         advisories=deduped_advisories,
         advisory_count=len(deduped_advisories),
         advisories_by_year=sorted(by_year.items(), reverse=True),
+        staleness_badges=source_staleness_badges(SECURITY_SOURCES, manifest),
     )
 
 
@@ -984,7 +991,7 @@ def _render_pages(
     # template (`_security.html`) so it stays isolated from this page
     # section's own churn, same reasoning `governance_page.py`'s own
     # docstring gives for staying out of this module.
-    security_context = _read_security_context(data_dir)
+    security_context = _read_security_context(data_dir, manifest)
     governance_context = build_governance_page_context(
         data_dir, run_id, out_dir, manifest, base_prefix=SUBPAGE_BASE_PREFIX
     )

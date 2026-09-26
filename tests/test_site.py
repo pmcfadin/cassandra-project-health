@@ -22,7 +22,7 @@ import pytest
 from project_health import storage
 from project_health.schema import get_schema, validate
 from project_health.site.generate import generate
-from project_health.site.metrics_meta import M0_METRICS, PAGES
+from project_health.site.metrics_meta import GOVERNANCE_METRICS, M0_METRICS, PAGES
 
 SITE_PAGES = ["", "community/", "conversations/", "governance/"]
 
@@ -1260,6 +1260,32 @@ def test_community_card_for_a_git_only_metric_omits_jira_staleness_badge(tmp_pat
     assert "JIRA data last refreshed" not in card_html
 
 
+def test_unique_reviewers_card_has_no_badge_when_only_github_failed(tmp_path):
+    """review_event only ever gets 'commit_trailer' (git) or 'jira_field'
+    (jira) rows -- never a github one -- so unique_reviewers_monthly's card
+    must show no staleness badge at all when only 'github' has failed. This
+    is the exact bug the orchestrator's review caught (a GitHub badge
+    wrongly shown on this card)."""
+    out_dir = _build_site(
+        tmp_path,
+        completed_at=BUILD_TIME - timedelta(hours=1),
+        sources={
+            "git": {"status": "ok", "watermark": "sha:aaa", "records_collected": 10},
+            "jira": {"status": "ok", "watermark": "2026-09-25T00:00:00Z", "records_collected": 3},
+            "github": {
+                "status": "failed",
+                "reason": "Unterminated string starting at: line 1 column 219263",
+                "last_good_snapshot": "2026-09-24T074929Z-371daf4",
+            },
+        },
+    )
+    html_text = _page_html(out_dir, "community/")
+    card_start = html_text.index("Unique Reviewers")
+    card_html = html_text[card_start : card_start + 800]
+    assert "card-staleness" not in card_html
+    assert "GitHub data last refreshed" not in card_html
+
+
 def test_home_summary_card_shows_staleness_badge_when_a_page_source_failed(tmp_path):
     out_dir = _build_site(
         tmp_path, completed_at=BUILD_TIME - timedelta(hours=1), sources=_failed_jira_sources()
@@ -1289,7 +1315,34 @@ def test_staleness_badge_not_shown_for_partial_status(tmp_path):
     assert "collection failed on" not in html_text
 
 
-def test_governance_card_for_a_github_sourced_check_shows_staleness_badge(tmp_path):
+def test_governance_cards_show_staleness_badge_when_git_failed(tmp_path):
+    """Every governance check scores governance's own git commit walk,
+    which reuses the same local clone the 'git' source's clone_or_fetch
+    step maintains (metrics_meta.py's GOVERNANCE_METRICS comment) -- so a
+    'git' failure must badge every governance card, including
+    code-style-checkstyle even though its own evidence collector
+    (GitHubChecksCollector) has no manifest.sources entry of its own."""
+    out_dir, _ = _build_site_with_governance(
+        tmp_path,
+        sources={
+            "git": {
+                "status": "failed",
+                "reason": "git fetch failed",
+                "last_good_snapshot": "2026-09-24T074929Z-371daf4",
+            },
+            "jira": {"status": "ok", "watermark": "2026-09-25T00:00:00Z", "records_collected": 3},
+        },
+    )
+    html_text = _page_html(out_dir, "governance/")
+    assert "Git data last refreshed 2026-09-24" in html_text
+
+
+def test_governance_checkstyle_card_omits_github_staleness_badge(tmp_path):
+    """A 'github' failure must NOT badge code-style-checkstyle: that check's
+    own evidence collector (GitHubChecksCollector) is distinct from the PR
+    collector 'github' status tracks, and has no manifest.sources entry of
+    its own (metrics_meta.py's GOVERNANCE_METRICS comment) -- a wrong
+    mapping here was exactly the orchestrator-review bug this fixup fixes."""
     out_dir, _ = _build_site_with_governance(
         tmp_path,
         sources={
@@ -1303,8 +1356,7 @@ def test_governance_card_for_a_github_sourced_check_shows_staleness_badge(tmp_pa
         },
     )
     html_text = _page_html(out_dir, "governance/")
-    # code-style-checkstyle declares sources=("github",) in metrics_meta.py.
-    assert "GitHub data last refreshed 2026-09-24" in html_text
+    assert "GitHub data last refreshed" not in html_text
 
 
 def test_leaderboard_section_shows_staleness_badge_when_git_failed(tmp_path):
@@ -1372,6 +1424,90 @@ def test_all_m0_metrics_declare_a_known_page():
     for metric_id, meta in M0_METRICS.items():
         assert meta.page == expected_pages.get(metric_id, "community")
         assert meta.page in PAGES
+
+
+def test_every_registered_metric_declares_a_nonempty_source_mapping():
+    """issue #86 fixup (orchestrator review): every metric_id registered in
+    `metrics.registry.METRIC_IDS` -- the actual set the pipeline computes
+    and writes `metric_value` rows for -- must have a `MetricMeta` entry
+    here with a non-empty `sources` tuple, so its card can always render a
+    staleness badge when one of its real dependencies fails. A registered
+    metric silently missing from `M0_METRICS` entirely (as
+    `pmc_joins_quarterly` was before this fixup) gets no card on the site at
+    all -- this test catches that class of bug too, not just an empty
+    `sources` tuple on an already-present entry."""
+    from project_health.metrics.registry import METRIC_IDS
+
+    missing = set(METRIC_IDS) - set(M0_METRICS)
+    assert not missing, f"registered metric(s) with no MetricMeta at all: {missing}"
+    for metric_id in METRIC_IDS:
+        assert M0_METRICS[metric_id].sources, f"{metric_id} declares no sources"
+
+
+def test_every_governance_check_declares_a_nonempty_source_mapping():
+    from project_health.governance.registry import _CHECK_IDS
+    from project_health.governance.metrics import metric_id_for_check
+
+    expected_metric_ids = {metric_id_for_check(check_id) for check_id in _CHECK_IDS}
+    assert expected_metric_ids == set(GOVERNANCE_METRICS)
+    for metric_id, meta in GOVERNANCE_METRICS.items():
+        assert meta.sources, f"{metric_id} declares no sources"
+
+
+def test_metric_source_mappings_match_the_actual_engine_queries_and_collectors():
+    """issue #86 fixup (orchestrator review): these mappings must be derived
+    from `metrics/engine.py`'s SQL and the collectors that actually populate
+    each table, never from a metric's name or prose description alone --
+    the original mapping wrongly credited `unique_reviewers_monthly`/
+    `reviewer_hhi` with a 'github' dependency `review_event` never has, and
+    missed the `github_commit_authors`/`github_profile` dependency every
+    organizational-diversity metric's `affiliation_period` join actually
+    has. See metrics_meta.py's own inline comments for the full per-metric
+    citation into engine.py/pipeline.py/collectors/*.py this test guards."""
+    # review_event only ever gets 'commit_trailer' (git) or 'jira_field'
+    # (jira) rows (collectors/git.py, collectors/jira.py) -- never a GitHub
+    # row -- so neither reviewer metric below has a 'github' dependency.
+    assert M0_METRICS["unique_reviewers_monthly"].sources == ("git", "jira")
+    # reviewer_hhi's displayed value/chart is commit_trailer-only
+    # (metrics/engine.py::_reviewer_hhi's own docstring) -- jira_field_hhi
+    # is a details_json-only cross-check, never the rendered number.
+    assert M0_METRICS["reviewer_hhi"].sources == ("git",)
+
+    # Every organizational-diversity metric joins affiliation_period, whose
+    # github_company priority level reads github_profile (keyed by logins
+    # github_commit_authors links), on top of the git commits being resolved.
+    for metric_id in (
+        "elephant_factor",
+        "organizational_hhi",
+        "single_org_share",
+        "unknown_affiliation_rate",
+    ):
+        assert M0_METRICS[metric_id].sources == ("git", "github_commit_authors", "github_profile")
+
+    # pmc_joins_quarterly reads roster_entry only -- no git/jira at all.
+    assert M0_METRICS["pmc_joins_quarterly"].sources == ("asf_roster",)
+
+    # Governance: every check scores governance's own git commit walk (git),
+    # but only reviewer-present also reads the real jira source's
+    # review_event table -- jira-ticket-referenced is pure commit-message
+    # regex, and the CI-evidence/checkstyle evidence collectors
+    # (JiraCommentsCollector/GitHubChecksCollector) have no manifest.sources
+    # entry of their own to attribute a badge to.
+    assert GOVERNANCE_METRICS["governance_reviewer_present_pass_rate"].sources == ("git", "jira")
+    assert GOVERNANCE_METRICS["governance_jira_ticket_referenced_pass_rate"].sources == ("git",)
+    assert GOVERNANCE_METRICS["governance_pre_commit_ci_evidence_pass_rate"].sources == ("git",)
+    assert GOVERNANCE_METRICS["governance_code_style_checkstyle_pass_rate"].sources == ("git",)
+
+    # Leaderboard: commits/reviews are git-only (reviews credit
+    # commit_trailer only, same as reviewer_hhi), jira_issues_resolved is
+    # jira, and every list's organization column is the same
+    # affiliation_period-derived github_commit_authors/github_profile
+    # dependency the org metrics have -- never 'github' (PRs): leaderboard.py
+    # never reads pr/pr_review at all.
+    from project_health.site.metrics_meta import LEADERBOARD_SOURCES, SECURITY_SOURCES
+
+    assert LEADERBOARD_SOURCES == ("git", "jira", "github_commit_authors", "github_profile")
+    assert SECURITY_SOURCES == ("security",)
 
 
 def test_group_by_page_rejects_a_metric_with_an_unknown_page(tmp_path):

@@ -56,7 +56,7 @@ flowchart LR
     NORM --> PARQUET["Parquet (data branch)"]
     PARQUET --> DUCKDB["DuckDB / Polars: metric SQL + Python"]
 
-    CLASS["Versioned classifier (phase 2a)\nAnthropic Message Batches API"] -. reads normalized threads .-> NORM
+    CLASS["Versioned classifier (phase 2a)\nTypeSafe Jev (pinned)"] -. reads normalized threads .-> NORM
     CLASS -. writes .-> CLASSTBL["classification table\n(full provenance)"]
     CLASSTBL --> DUCKDB
     CSLACK -. in-run only, no raw text persisted .-> SLACKAGG["slack_aggregate_metric\n(aggregate counts only)"]
@@ -605,7 +605,7 @@ independent of the `data` branch.
 |---|---|---|
 | `GITHUB_TOKEN` (built-in) | 1 | `contents: write` (data branch + reports), `pages: write`, `id-token: write` (OIDC for Pages deploy) |
 | `GH_PAT` (classic PAT) | 1 | Repo secret; recommended, not strictly required (`DATA-SOURCES.md` §13) — public read-only scope (`public_repo` or equivalent); gives the full 5,000 req/hr shared budget across all `apache/*` repos in one run instead of the built-in token's 1,000 req/hr/repo bucket |
-| `ANTHROPIC_API_KEY` | 2a | Repo secret; used only by the classifier batch-submission step |
+| `TYPESAFE_API_KEY` | 2a | Repo secret; used only by the classifier step (D17). Locally read from the gitignored `.env`. |
 | Slack bot token | 2b | Repo/org secret; read-only scope on the specific public channels approved by ASF Infra (D1) |
 
 ### 7.5 Pages deployment
@@ -684,7 +684,7 @@ cassandra-project-health/
 │   ├── adapters/                    # Protocol definitions + concrete implementations
 │   │   ├── git.py, jira.py, github.py, ponymail.py, github_releases.py, asf_roster.py, slack.py
 │   ├── identity/                    # identity resolution + unresolved-identity rule (§3)
-│   ├── classify/                    # Classifier Protocol + Anthropic Batches implementation (phase 2)
+│   ├── classify/                    # Classifier Protocol + TypeSafe Jev implementation (phase 2, D17)
 │   ├── metrics/                     # metric SQL/Python + metric_definition_version registry
 │   ├── provenance/                  # run_manifest + metric_value provenance assembly
 │   └── schema/                      # normalized-table schema definitions, used by both collectors and tests

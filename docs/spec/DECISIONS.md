@@ -59,7 +59,7 @@ dev@/user@ mailing lists, JIRA comments, GitHub PR comments; ASF Slack under D1 
 - GitHub PRs exist on `apache/cassandra` but cover only part of review activity.
 
 ## D10. Phase 2a API cost
-The project owner pays for classifier usage (Anthropic Batches API) with a personal key stored as a repo secret and a monthly spending cap. If a run hits the cap, classification pauses and the run manifest and site show a visible gap; the rest of the pipeline keeps running.
+The project owner pays for classifier usage (TypeSafe Jev API, per D17) with a personal key stored as a repo secret and a monthly spending cap. If a run hits the cap, classification pauses and the run manifest and site show a visible gap; the rest of the pipeline keeps running.
 
 ## D11. Community engagement timing
 The Cassandra community first hears about the project on dev@ once the Phase 1 prototype exists, so the announcement has something concrete to show. It is not announced at the spec stage. The repo is public from the start but not promoted until then. Phase 2 (communication analysis) is raised as its own dev@ discussion before any benchmark labeling begins.
@@ -99,8 +99,8 @@ Owner decisions (2026-09-25):
 - **Purpose.** A pilot before the full benchmark (`COMMUNITY-HEALTH.md` §6). It tests whether the taxonomy is workable, how Jev compares with a human rater label by label, how long rating takes, and whether the transient text pipeline works end to end. The results size the full benchmark. Nothing from the pilot is published except aggregate numbers.
 - **Scope.** 250 messages from dev@ and JIRA comments, 2017–2026: a 150-message prevalence stratum sampled in proportion to source volume and time, and a 100-message rare-label enrichment stratum from a keyword pre-filter. The two strata are never mixed when estimating prevalence. GitHub PR comments come later.
 - **Rater.** The project owner rates alone for the pilot, so there is no inter-rater agreement statistic yet. More raters, including at least one without a Cassandra PMC or committer affiliation, join before the full benchmark (§6.2). Jev's answers are compared against the human labels and never count as a rater.
-- **Tool.** A labeling page hosted as a claude.ai artifact with a shared database and viewer identity. It is private by default, shared only with raters, and exportable.
-- **Where labels live.** The messages are public, but the labels are unvalidated judgments about named people, so the pilot corpus and its labels stay private (the artifact's database plus a private repo, `pmcfadin/cassandra-project-health-benchmark`). The public repo holds the sampling code, the versioned Jev question set and aggregate results. Publishing the corpus can be revisited once it is multi-rater and validated.
+- **Tool.** A local labeling page (amended 2026-09-25, see D22): `project-health label` serves a static page on 127.0.0.1 that reads the private corpus JSONL and appends labels to a per-rater JSONL file in a checkout of the private benchmark repo. No hosted service is involved.
+- **Where labels live.** The messages are public, but the labels are unvalidated judgments about named people, so the pilot corpus and its labels stay private (a private repo, `pmcfadin/cassandra-project-health-benchmark`). The public repo holds the sampling code, the versioned Jev question set and aggregate results. Publishing the corpus can be revisited once it is multi-rater and validated.
 - **Text handling.** Message bodies are fetched only for the moment of classification or labeling and are never written to the public repo or the `data` branch (D1). Pilot texts live only in the private corpus.
 
 ## D19. Contributor leaderboard (amends D2 rule 7)
@@ -124,3 +124,10 @@ M1 covers:
 3. **Security on the Governance page.** OpenSSF Scorecard checks and a security-controls view next to commit compliance, plus CVE and advisory history from ASF security announcements.
 4. The contributor leaderboard (D19) and the composite score (D20).
 A Popularity page (downloads, stars, forks) is deferred.
+
+## D22. No LLM at runtime
+Owner decision (2026-09-25): the whole report must be re-runnable as plain scripts, with no LLM in the loop. LLMs help write the code but never run it.
+- Collection, metrics, governance scoring, site generation, pilot sampling, labeling and evaluation are all CLI commands.
+- The only model call at runtime is the pinned Jev classifier (D17). Its outputs are cached by input hash and stored as probabilities, so re-rendering never calls the model again.
+- No LLM acts as a rater, a tie-breaker or a triage step. Disagreements between raters are settled by humans.
+- The labeling tool is a local page served by `project-health label` rather than a hosted artifact (amends D18).

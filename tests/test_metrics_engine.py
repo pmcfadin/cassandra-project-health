@@ -25,8 +25,11 @@ from tests.fixtures.metrics.builders import (
     contribution_events,
     file_change_events,
     identity_link_for,
+    issue_comments,
     issues,
     messages,
+    pr_reviews,
+    prs,
     review_events,
     roster_entries,
 )
@@ -1551,6 +1554,362 @@ def test_pmc_joins_quarterly_includes_zero_join_quarters():
     assert q4["definition_version"] == "1.0"
     details_q4 = _details(q4)
     assert details_q4["pmc_new_joins"] == 0
+
+
+# --- issue #54: pr_merge_lead_time --------------------------------------
+
+
+def test_pr_merge_lead_time_golden():
+    pr_rows = []
+    lead_days = [2, 4, 6, 8, 10]
+    for i, days in enumerate(lead_days):
+        pr_rows.append(
+            {
+                "repo": "apache/cassandra",
+                "number": 100 + i,
+                "merged": True,
+                "created_at": _ts(2024, 1, 1, hh=0),
+                "merged_at": _ts(2024, 1, 1, hh=0) + _days(days),
+            }
+        )
+    # February: only 1 merged PR -> below the floor.
+    pr_rows.append(
+        {
+            "repo": "apache/cassandra",
+            "number": 200,
+            "merged": True,
+            "created_at": _ts(2024, 2, 1, hh=0),
+            "merged_at": _ts(2024, 2, 3, hh=0),
+        }
+    )
+    # March (as_of month) must be excluded; an unmerged PR must never count.
+    pr_rows.append(
+        {
+            "repo": "apache/cassandra",
+            "number": 300,
+            "merged": False,
+            "created_at": _ts(2024, 1, 1, hh=0),
+            "closed_at": _ts(2024, 1, 2, hh=0),
+        }
+    )
+
+    result = compute_all(
+        {"pr": prs(pr_rows)}, as_of=AS_OF, run_id=RUN_ID, computed_at=COMPUTED_AT, config=CONFIG
+    )
+
+    rows = _rows_for(result, "pr_merge_lead_time")
+    assert [r["window_start"] for r in rows] == [date(2024, 1, 1), date(2024, 2, 1)]
+
+    jan, feb = rows
+    assert jan["n"] == 5
+    assert jan["value"] == pytest.approx(6.0)
+    assert jan["flag"] == "ok"
+    assert _details(jan)["p90_days"] == pytest.approx(9.2)
+
+    assert feb["n"] == 1
+    assert feb["value"] is None
+    assert feb["flag"] == "insufficient_data"
+
+
+# --- issue #54: pr_time_to_first_review ----------------------------------
+
+
+def test_pr_time_to_first_review_golden():
+    pr_rows = [
+        {"repo": "apache/cassandra", "number": 100 + i, "created_at": _ts(2024, 1, 1, hh=0)}
+        for i in range(5)
+    ]
+    review_rows = [
+        {
+            "repo": "apache/cassandra",
+            "pr_number": 100 + i,
+            "reviewer_raw_value": "bob-reviewer",
+            "submitted_at": _ts(2024, 1, 1, hh=0) + _days(days),
+        }
+        for i, days in enumerate([1, 2, 3, 4, 5])
+    ]
+    # A PR with no review at all must never contribute a latency value.
+    pr_rows.append(
+        {"repo": "apache/cassandra", "number": 999, "created_at": _ts(2024, 1, 1, hh=0)}
+    )
+
+    result = compute_all(
+        {"pr": prs(pr_rows), "pr_review": pr_reviews(review_rows)},
+        as_of=AS_OF,
+        run_id=RUN_ID,
+        computed_at=COMPUTED_AT,
+        config=CONFIG,
+    )
+
+    rows = _rows_for(result, "pr_time_to_first_review")
+    # Dense months: February has no PR data at all, so it still emits an
+    # insufficient_data row (n=0) rather than being skipped.
+    assert [r["window_start"] for r in rows] == [date(2024, 1, 1), date(2024, 2, 1)]
+    jan, feb = rows
+    assert jan["n"] == 5
+    assert jan["value"] == pytest.approx(3.0)
+    assert jan["flag"] == "ok"  # n == floor (5) clears it, not below it
+    assert feb["n"] == 0
+    assert feb["value"] is None
+    assert feb["flag"] == "insufficient_data"
+
+
+def test_pr_time_to_first_review_uses_earliest_review_per_pr():
+    pr_rows = [{"repo": "apache/cassandra", "number": 100, "created_at": _ts(2024, 1, 1, hh=0)}]
+    review_rows = [
+        {
+            "repo": "apache/cassandra",
+            "pr_number": 100,
+            "reviewer_raw_value": "later-reviewer",
+            "submitted_at": _ts(2024, 1, 5, hh=0),
+        },
+        {
+            "repo": "apache/cassandra",
+            "pr_number": 100,
+            "reviewer_raw_value": "earlier-reviewer",
+            "submitted_at": _ts(2024, 1, 2, hh=0),
+        },
+    ]
+    result = compute_all(
+        {"pr": prs(pr_rows), "pr_review": pr_reviews(review_rows)},
+        as_of=AS_OF,
+        run_id=RUN_ID,
+        computed_at=COMPUTED_AT,
+        config=CONFIG,
+    )
+    rows = _rows_for(result, "pr_time_to_first_review")
+    assert rows[0]["n"] == 1
+    assert _details(rows[0])["n"] == 1
+    # below the floor -> insufficient_data, but the underlying latency (1 day
+    # from the *earliest* of the two reviews, not the 4-day later one) is
+    # still what a details_json list would show.
+
+
+# --- issue #54: pr_time_to_close ------------------------------------------
+
+
+def test_pr_time_to_close_golden():
+    pr_rows = []
+    for i, days in enumerate([1, 3, 5, 7, 9]):
+        pr_rows.append(
+            {
+                "repo": "apache/cassandra",
+                "number": 100 + i,
+                "merged": i % 2 == 0,  # 3 merged, 2 closed-without-merge
+                "created_at": _ts(2024, 1, 1, hh=0),
+                "closed_at": _ts(2024, 1, 1, hh=0) + _days(days),
+                "merged_at": _ts(2024, 1, 1, hh=0) + _days(days) if i % 2 == 0 else None,
+            }
+        )
+    result = compute_all(
+        {"pr": prs(pr_rows)}, as_of=AS_OF, run_id=RUN_ID, computed_at=COMPUTED_AT, config=CONFIG
+    )
+
+    rows = _rows_for(result, "pr_time_to_close")
+    # Dense months: February has no data -> still a row (n=0).
+    assert [r["window_start"] for r in rows] == [date(2024, 1, 1), date(2024, 2, 1)]
+    jan, feb = rows
+    assert feb["n"] == 0
+    assert feb["flag"] == "insufficient_data"
+    assert jan["n"] == 5
+    assert jan["value"] == pytest.approx(5.0)
+    assert jan["flag"] == "ok"
+    details = _details(jan)
+    assert details["n_merged"] == 3
+
+
+# --- issue #54: pr_review_engagement --------------------------------------
+
+
+def test_pr_review_engagement_golden():
+    review_rows = []
+    # 5 PRs reviewed in January: PR i gets (i+1) unique reviewers, each
+    # reviewing once, so reviews_per_pr == unique_reviewers_per_pr here.
+    for pr_i in range(5):
+        for reviewer_i in range(pr_i + 1):
+            review_rows.append(
+                {
+                    "repo": "apache/cassandra",
+                    "pr_number": 100 + pr_i,
+                    "reviewer_raw_value": f"reviewer-{reviewer_i}",
+                    "submitted_at": _ts(2024, 1, 10, hh=0),
+                }
+            )
+    result = compute_all(
+        {"pr_review": pr_reviews(review_rows)},
+        as_of=AS_OF,
+        run_id=RUN_ID,
+        computed_at=COMPUTED_AT,
+        config=CONFIG,
+    )
+
+    rows = _rows_for(result, "pr_review_engagement")
+    # Dense months: February has no review activity -> still a row (n=0).
+    assert [r["window_start"] for r in rows] == [date(2024, 1, 1), date(2024, 2, 1)]
+    jan, feb = rows
+    assert feb["n"] == 0
+    assert feb["flag"] == "insufficient_data"
+    assert jan["n"] == 5  # 5 PRs reviewed
+    assert jan["value"] == pytest.approx((1 + 2 + 3 + 4 + 5) / 5)
+    assert jan["flag"] == "ok"
+    details = _details(jan)
+    assert details["mean_reviews_per_pr"] == pytest.approx((1 + 2 + 3 + 4 + 5) / 5)
+    assert details["n_prs"] == 5
+    assert details["n_reviews"] == 1 + 2 + 3 + 4 + 5
+    assert details["n_unique_reviewers_total"] == 5  # reviewer-0..reviewer-4
+
+
+# --- issue #54: time_to_first_response_jira -------------------------------
+
+
+def test_time_to_first_response_jira_golden():
+    issue_rows = []
+    comment_rows = []
+    for i, days in enumerate([1, 2, 3, 4, 5]):
+        issue_key = f"CASSANDRA-{1000 + i}"
+        issue_rows.append(
+            {
+                "issue_key": issue_key,
+                "created_at": _ts(2024, 1, 1, hh=0),
+                "updated_at": _ts(2024, 1, 1, hh=0) + _days(days),
+                "reporter_raw": "reporter-a",
+            }
+        )
+        comment_rows.append(
+            {
+                "issue_key": issue_key,
+                "author_raw_value": "responder-b",
+                "created_at": _ts(2024, 1, 1, hh=0) + _days(days),
+            }
+        )
+    # An issue whose only comment is by the reporter -- must not count as a
+    # response.
+    issue_rows.append(
+        {
+            "issue_key": "CASSANDRA-2000",
+            "created_at": _ts(2024, 1, 1, hh=0),
+            "updated_at": _ts(2024, 1, 2, hh=0),
+            "reporter_raw": "reporter-a",
+        }
+    )
+    comment_rows.append(
+        {
+            "issue_key": "CASSANDRA-2000",
+            "author_raw_value": "reporter-a",
+            "created_at": _ts(2024, 1, 1, hh=12),
+        }
+    )
+    # An issue whose only comment is from a bot (svn-role) -- must not count.
+    issue_rows.append(
+        {
+            "issue_key": "CASSANDRA-2001",
+            "created_at": _ts(2024, 1, 1, hh=0),
+            "updated_at": _ts(2024, 1, 2, hh=0),
+            "reporter_raw": "reporter-a",
+        }
+    )
+    comment_rows.append(
+        {
+            "issue_key": "CASSANDRA-2001",
+            "author_raw_value": "svn-role",
+            "created_at": _ts(2024, 1, 1, hh=12),
+        }
+    )
+
+    result = compute_all(
+        {"issue": issues(issue_rows), "issue_comment": issue_comments(comment_rows)},
+        as_of=AS_OF,
+        run_id=RUN_ID,
+        computed_at=COMPUTED_AT,
+        config=CONFIG,
+    )
+
+    rows = _rows_for(result, "time_to_first_response_jira")
+    assert [r["window_start"] for r in rows] == [date(2024, 1, 1), date(2024, 2, 1)]
+    jan, feb = rows
+    assert feb["n"] == 0
+    assert feb["flag"] == "insufficient_data"
+    # Only the 5 issues with a genuine human, non-reporter response count.
+    assert jan["n"] == 5
+    assert jan["value"] == pytest.approx(3.0)
+    assert jan["flag"] == "ok"  # n == floor (5) clears it, not below it
+    details = _details(jan)
+    assert details["n_opened_in_window"] == 7  # all 7 issues opened in January
+    assert details["closed_in_window"]["n"] == 5
+
+
+# --- issue #54: stale_pr_rate ----------------------------------------------
+
+
+def test_stale_pr_rate_golden_single_snapshot_row():
+    pr_rows = [
+        # Stale: last updated well before the 90-day cutoff.
+        {
+            "repo": "apache/cassandra",
+            "number": 1,
+            "state": "OPEN",
+            "created_at": _ts(2019, 1, 1),
+            "updated_at": _ts(2022, 1, 1),
+        },
+        {
+            "repo": "apache/cassandra",
+            "number": 2,
+            "state": "OPEN",
+            "created_at": _ts(2019, 1, 1),
+            "updated_at": _ts(2022, 6, 1),
+        },
+        {
+            "repo": "apache/cassandra",
+            "number": 3,
+            "state": "OPEN",
+            "created_at": _ts(2019, 1, 1),
+            "updated_at": _ts(2020, 1, 1),
+        },
+        # Not stale: updated after the cutoff.
+        {
+            "repo": "apache/cassandra",
+            "number": 4,
+            "state": "OPEN",
+            "created_at": _ts(2023, 1, 1),
+            "updated_at": _ts(2024, 3, 1),
+        },
+        {
+            "repo": "apache/cassandra",
+            "number": 5,
+            "state": "OPEN",
+            "created_at": _ts(2023, 1, 1),
+            "updated_at": _ts(2024, 2, 1),
+        },
+        # Merged/closed -- must not count in either open-PR bucket.
+        {
+            "repo": "apache/cassandra",
+            "number": 6,
+            "state": "MERGED",
+            "merged": True,
+            "created_at": _ts(2019, 1, 1),
+            "updated_at": _ts(2019, 2, 1),
+            "closed_at": _ts(2019, 2, 1),
+            "merged_at": _ts(2019, 2, 1),
+        },
+    ]
+
+    result = compute_all(
+        {"pr": prs(pr_rows)}, as_of=AS_OF, run_id=RUN_ID, computed_at=COMPUTED_AT, config=CONFIG
+    )
+
+    rows = _rows_for(result, "stale_pr_rate")
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["window_start"] == AS_OF
+    assert row["window_end"] == AS_OF
+    assert row["n"] == 5
+    assert row["value"] == pytest.approx(0.6)
+    assert row["flag"] == "ok"
+    details = _details(row)
+    assert details["n_open"] == 5
+    assert details["n_stale"] == 3
+    assert details["threshold_days"] == 90
+    assert {r["repo"] for r in details["by_repo"]} == {"apache/cassandra"}
 
 
 # --- No per-person values (D2 rule 4 spirit) ----------------------------

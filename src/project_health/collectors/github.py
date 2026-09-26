@@ -354,9 +354,14 @@ class GitHubCollectionResult:
     reviews: pa.Table
     comments: pa.Table
     repos: dict[str, GitHubRepoOutcome] = field(default_factory=dict)
-    # status: 'ok' only if every configured repo's outcome was 'ok'; 'failed' otherwise
-    # (ARCHITECTURE.md §7.3 -- callers use this to record source-level status without
-    # losing the partial data this run did collect).
+    # status: 'ok' if every configured repo's outcome was 'ok'; 'partial' if the
+    # rest were only 'rate_limited'/'skipped' (a clean, resumable backfill-in-
+    # progress -- issue #54, pipeline.py review note on issue #51: a large
+    # first backfill legitimately spans several nightly runs via each repo's
+    # own watermark, and that isn't the same thing as a failure); 'failed' if
+    # any repo hit a hard `CollectionError` (ARCHITECTURE.md §7.3 -- callers
+    # use this to record source-level status without losing the partial data
+    # this run did collect).
     status: str = "ok"
 
 
@@ -693,7 +698,16 @@ class GitHubCollector:
             "pr_comment", _rows_to_table(all_comment_rows, get_schema("pr_comment"))
         )
 
-        overall_status = "ok" if all(o.status == "ok" for o in outcomes.values()) else "failed"
+        statuses = {o.status for o in outcomes.values()}
+        if statuses <= {"ok"}:
+            overall_status = "ok"
+        elif "failed" in statuses:
+            overall_status = "failed"
+        else:
+            # only 'rate_limited'/'skipped' remain -- a clean, resumable
+            # partial backfill, not a failure (see GitHubCollectionResult
+            # docstring).
+            overall_status = "partial"
 
         return GitHubCollectionResult(
             prs=prs_table,

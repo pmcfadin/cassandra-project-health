@@ -151,6 +151,8 @@ each `none`/debatable assignment is in that metric's own section below, not just
 | `effective_reviewer_population` | Effective Reviewer Population (1/HHI) | reviewer capacity | proxy | 1 | trailing-12m | higher | supporting |
 | `merge_authority_concentration` | Merge-Authority Concentration | reviewer capacity | established | 1 | trailing-12m | none — see §3 | supporting |
 | `review_latency` | Review Latency (time to first review) | reviewer capacity | proxy | 1 | monthly | lower | **key** |
+| `pr_time_to_first_review` | PR Time to First Review (GitHub-only) | reviewer capacity | proxy | 1 | monthly | lower | supporting |
+| `pr_review_engagement` | PR Review Engagement (reviewers/PR, reviews/PR) | reviewer capacity | proxy | 1 | monthly | none — see §3 | supporting |
 | `review_load_per_reviewer` | Review Load per Reviewer | reviewer capacity | proxy | 1 | monthly | none — see §3 | supporting |
 | `contributor_reviewer_ratio` | Contributor:Reviewer Ratio | reviewer capacity | proxy | 1 | monthly | lower | supporting |
 | `time_to_first_response_pr` | Time to First Response — GitHub PR | responsiveness | established | 1 | monthly | lower | supporting |
@@ -161,6 +163,8 @@ each `none`/debatable assignment is in that metric's own section below, not just
 | `stale_pr_rate` | Stale PR Rate | responsiveness | established | 1 | monthly | lower | supporting |
 | `stale_jira_rate` | Stale JIRA Issue Rate | responsiveness | established | 1 | monthly | lower | **key** |
 | `median_resolution_latency_jira` | Median JIRA Resolution Latency | responsiveness | established | 1 | monthly | lower | supporting |
+| `pr_merge_lead_time` | PR Merge Lead Time (open→merge) | responsiveness | proxy | 1 | monthly | lower | supporting |
+| `pr_time_to_close` | PR Time to Close | responsiveness | proxy | 1 | monthly | lower | supporting |
 | `elephant_factor` | Elephant Factor | organizational diversity | experimental | 1 | trailing-12m | higher | **key** |
 | `organizational_hhi` | Organizational Concentration (HHI) | organizational diversity | established | 1 | trailing-12m | lower | **key** |
 | `effective_organizational_population` | Effective Organizational Population (1/HHI) | organizational diversity | established | 1 | trailing-12m | higher | supporting |
@@ -618,6 +622,28 @@ baseline or an improving/stable/declining status (see `SCORING.md` §6). All are
   same underlying data — reported once, used in two dimension contexts, never double-weighted into a combined
   score, per `SCORING.md`).
 
+### `pr_time_to_first_review` (issue #54)
+- **Definition:** Median and P90 days from a GitHub PR's `created_at` to the earliest review event on it, among PRs with at least one review, bucketed by the PR's creation month. The GitHub-PR-specific analog of `review_latency` above — the same underlying "time to first review" concept, computed from GitHub's own review events instead of the git-trailer/JIRA-reviewer-field proxy, since GitHub PRs cover only part of Cassandra's review activity (DECISIONS.md "Cassandra-specific facts").
+- **Direction of good:** lower. **Role:** supporting (reviewer capacity) — `review_latency` already holds this dimension's latency `key` slot; reported alongside it as a narrower, GitHub-only cross-check, never double-weighted into a combined score (SCORING.md).
+- **Formula:** Median/P90 of `t_first_review − t_pr_opened` over PRs with ≥1 review, bucketed by PR creation month.
+- **Population & exclusions:** §0.5, §0.6 (floor 5). Bot-authored PRs/reviews already excluded at collection time (`collectors/github.py`'s own bot-login filtering).
+- **Window:** monthly.
+- **Required data / source:** GitHub PR/Reviews API (`collectors/github.py`, issue #51).
+- **Strengths:** Directly comparable to `review_latency` without the proxy's cross-source identity-merge caveats (§0.4).
+- **Weaknesses / gaming risk:** Same as `review_latency`'s "a one-line +1 counts the same as a substantive review"; additionally only reflects GitHub's slice of review activity, not JIRA's (the project's primary review venue).
+- **CHAOSS equivalent:** [Time to First Response](https://www.chaoss.community/kb/metric-time-to-first-response/), GitHub-only variant.
+
+### `pr_review_engagement` (issue #54)
+- **Definition:** Two related numbers reported together (never collapsed into one, per `reviewer_top_k_share`'s own convention): mean unique reviewers per PR, and mean/median reviews per PR, among GitHub PRs that received ≥1 review in a completed calendar month (bucketed by review submission month).
+- **Direction of good:** none — a rising mean isn't obviously good (more collaborative review) or bad (a few contentious PRs) on its own; read alongside `reviewer_hhi`/`unique_reviewers_monthly`. **Role:** supporting (reviewer capacity).
+- **Formula:** For PRs with ≥1 review in month `m`: `mean(unique_reviewers_per_pr)` (the metric's `value`) and `mean(reviews_per_pr)`/`median(reviews_per_pr)` (`details_json`).
+- **Population & exclusions:** §0.5, §0.6 (floor 5 PRs). Counts raw GitHub logins directly, not `resolved_identity` — identity resolution (#6) doesn't yet cover `github_login` raw identifiers (`metrics/dev_metrics.py` module docstring).
+- **Window:** monthly.
+- **Required data / source:** GitHub PR/Reviews API.
+- **Strengths:** Direct, GitHub-native read of collaborative review depth, distinct from pure headcount (`unique_reviewers_monthly`).
+- **Weaknesses / gaming risk:** GitHub-only slice; a PR reviewed by many people isn't necessarily reviewed *well*.
+- **CHAOSS equivalent:** adjacent to [Change Request Reviews](https://chaoss.community/kb/metric-change-request-reviews/).
+
 ### `review_load_per_reviewer`
 - **Definition:** Distribution (median, P90) of review credits per active reviewer per month — the flip side of
   concentration: how much work the median/busiest reviewer is actually carrying.
@@ -752,6 +778,28 @@ baseline or an improving/stable/declining status (see `SCORING.md` §6). All are
   — again, this is why status is judged against the project's *own* baseline (D2.2), not an absolute threshold.
 - **CHAOSS equivalent:** adjacent to [Change Requests](https://chaoss.community/kb/metric-change-requests/) /
   [Change Requests Declined](https://chaoss.community/kb/metric-change-requests-declined/).
+
+### `pr_merge_lead_time` (issue #54, DECISIONS.md D21 item 2)
+- **Definition:** Median and P90 days from a GitHub PR's `created_at` to `merged_at` ("open→merge"), for PRs merged in a completed calendar month, bucketed by merge month.
+- **Direction of good:** lower. **Role:** supporting (responsiveness) — this dimension's key slots (`time_to_first_response_jira`, `stale_jira_rate`, `time_to_first_reply_devlist`) are already at SCORING.md §5.3's 1–3 cap.
+- **Formula:** Median/P90 of `t_merged − t_opened` over PRs merged in the window.
+- **Population & exclusions:** §0.5, §0.6 (floor 5 merged PRs in the window). Only `merged = true` PRs count — a closed-without-merging PR contributes to `pr_time_to_close` instead, never to this metric.
+- **Window:** monthly.
+- **Required data / source:** GitHub PR API (`collectors/github.py`, issue #51).
+- **Strengths:** Direct "how long does a merged change take end to end" signal, comparable in spirit to LFX Insights' own Merge Lead Time.
+- **Weaknesses / gaming risk:** Tier `proxy`, not `established` — GitHub PRs cover only part of Cassandra's actual review/merge activity (many patches land via a committer applying a JIRA-attached patch directly, never opening a GitHub PR at all), so this measures GitHub's slice, not the project's whole merge-lead-time picture; expect it to read faster than the project's true typical lead time for exactly that reason (LFX Insights, which is also GitHub-PR-only for Cassandra, reports ~28 days — see the issue #54 real-data check for a comparison).
+- **CHAOSS equivalent:** adjacent to [Change Request Closure Ratio](https://chaoss.community/kb/metric-change-request-closure-ratio/)'s underlying data; no exact named "merge lead time" CHAOSS metric.
+
+### `pr_time_to_close` (issue #54, DECISIONS.md D21 item 2)
+- **Definition:** Median and P90 days from a GitHub PR's `created_at` to `closed_at` (merged or declined), for PRs closed in a completed calendar month, bucketed by close month.
+- **Direction of good:** lower. **Role:** supporting (responsiveness).
+- **Formula:** Median/P90 of `t_closed − t_opened` over PRs closed in the window; `details_json.n_merged` carries the subset that were also merged, so a reader can see how much of a month's "closed" figure was actually merged vs. declined.
+- **Population & exclusions:** §0.5, §0.6 (floor 5). Includes both merged and declined-without-merging closes, per CHAOSS's own "credit maintainers for closing out things that won't be merged" guidance (`change_request_closure_ratio`'s Strengths note).
+- **Window:** monthly.
+- **Required data / source:** GitHub PR API.
+- **Strengths:** Broader than `pr_merge_lead_time` — captures the full "how long does a PR stay open" picture, including declines.
+- **Weaknesses / gaming risk:** Same GitHub-only-slice caveat as `pr_merge_lead_time`.
+- **CHAOSS equivalent:** adjacent to [Change Requests](https://chaoss.community/kb/metric-change-requests/).
 
 ### `median_resolution_latency_jira`
 - **Definition:** Median (and P90) time from JIRA issue creation to resolution, for issues resolved in the window.

@@ -25,13 +25,16 @@ import pytest
 
 from project_health import storage
 from project_health.collectors.asf_roster import AsfRosterCollector
+from project_health.collectors.github import GitHubCollector
 from project_health.collectors.jira import JiraCollector
 from project_health.collectors.ponymail import PonyMailCollector
 from project_health.collectors.security import SecurityCollector
-from project_health.config import load_project
+from project_health.config import FlexibleSection, load_project
 from project_health.pipeline import (
     _dedupe_issue_rows,
     _dedupe_jira_review_events,
+    _dedupe_pr_review_rows,
+    _dedupe_pr_rows,
     _dedupe_roster_entries,
     _dedupe_security_advisories,
     run_pipeline,
@@ -154,6 +157,74 @@ def _security_factory(transport: httpx.MockTransport | None = None):
             config,
             transport=transport,
             max_retries=1,
+            sleep_fn=lambda s: None,
+        )
+
+    return factory
+
+
+# issue #54: a minimal single-PR, single-review GraphQL page -- keeps every
+# pre-existing test in this file (none of which care about GitHub PRs
+# specifically) from tripping issue #24's "a *registered* metric produced
+# zero rows" check once `pr_merge_lead_time`/`pr_time_to_first_review`/
+# `pr_time_to_close`/`pr_review_engagement` are registered metrics (they
+# need at least one merged, reviewed, closed PR somewhere in history to ever
+# emit a row at all -- see metrics/dev_metrics.py). One PR is enough; these
+# tests aren't asserting anything about the *value*, only that the run isn't
+# `degraded`.
+GITHUB_SINGLE_PR_PAGE = {
+    "data": {
+        "rateLimit": {"remaining": 4999, "resetAt": "2026-09-25T22:00:00Z", "cost": 1},
+        "repository": {
+            "pullRequests": {
+                "pageInfo": {"hasNextPage": False, "endCursor": None},
+                "nodes": [
+                    {
+                        "id": "PR_test_0001",
+                        "number": 1,
+                        "state": "MERGED",
+                        "title": "Fixture PR",
+                        "isDraft": False,
+                        "merged": True,
+                        "additions": 1,
+                        "deletions": 1,
+                        "changedFiles": 1,
+                        "author": {"login": "alice-dev"},
+                        "createdAt": "2026-01-01T10:00:00Z",
+                        "updatedAt": "2026-01-02T10:00:00Z",
+                        "closedAt": "2026-01-02T09:00:00Z",
+                        "mergedAt": "2026-01-02T09:00:00Z",
+                        "reviews": {
+                            "nodes": [
+                                {
+                                    "id": "PRR_test_0001",
+                                    "state": "APPROVED",
+                                    "submittedAt": "2026-01-01T20:00:00Z",
+                                    "author": {"login": "bob-reviewer"},
+                                    "comments": {"nodes": []},
+                                }
+                            ]
+                        },
+                        "comments": {"nodes": []},
+                    }
+                ],
+            }
+        },
+    }
+}
+
+
+def _github_factory():
+    transport = httpx.MockTransport(
+        lambda request: httpx.Response(200, json=GITHUB_SINGLE_PR_PAGE)
+    )
+
+    def factory(config):
+        return GitHubCollector(
+            config,
+            transport=transport,
+            token="test-token",
+            min_request_interval=0,
             sleep_fn=lambda s: None,
         )
 
@@ -301,7 +372,7 @@ class TestEndToEnd:
             # governance compliance scoring gets its own dedicated coverage in
             # TestGovernanceIntegration below rather than every call site here
             # needing an offline governance evidence-source stub.
-            sources=["git", "jira", "asf_roster", "ponymail"],
+            sources=["git", "jira", "asf_roster", "ponymail", "github"],
             site_out=site_out,
             now=NOW,
             code_sha="abc1234",
@@ -310,6 +381,7 @@ class TestEndToEnd:
             ponymail_collector_factory=_ponymail_factory(),
             github_commit_author_collector_factory=_github_commit_author_factory(),
             github_profile_collector_factory=_github_profile_factory(),
+            github_collector_factory=_github_factory(),
         )
 
         # exit_code is 0 (ok) because all metrics are now computable with roster data
@@ -481,7 +553,7 @@ class TestReproducibility:
             # governance compliance scoring gets its own dedicated coverage in
             # TestGovernanceIntegration below rather than every call site here
             # needing an offline governance evidence-source stub.
-            sources=["git", "jira", "asf_roster"],
+            sources=["git", "jira", "asf_roster", "github"],
             now=NOW,
             code_sha="abc1234",
             jira_collector_factory=_jira_factory(transport_1),
@@ -489,6 +561,7 @@ class TestReproducibility:
             ponymail_collector_factory=_ponymail_factory(),
             github_commit_author_collector_factory=_github_commit_author_factory(),
             github_profile_collector_factory=_github_profile_factory(),
+            github_collector_factory=_github_factory(),
         )
         # Exit code is 0 (ok) because all metrics are computable with roster data
         assert first.exit_code == 0
@@ -511,7 +584,7 @@ class TestReproducibility:
             # governance compliance scoring gets its own dedicated coverage in
             # TestGovernanceIntegration below rather than every call site here
             # needing an offline governance evidence-source stub.
-            sources=["git", "jira", "asf_roster"],
+            sources=["git", "jira", "asf_roster", "github"],
             now=NOW.replace(hour=7),
             code_sha="abc1234",
             jira_collector_factory=_jira_factory(transport_2),
@@ -519,6 +592,7 @@ class TestReproducibility:
             ponymail_collector_factory=_ponymail_factory(),
             github_commit_author_collector_factory=_github_commit_author_factory(),
             github_profile_collector_factory=_github_profile_factory(),
+            github_collector_factory=_github_factory(),
         )
         # Exit code is 0 (ok) because all metrics are computable with roster data
         assert second.exit_code == 0
@@ -581,7 +655,7 @@ class TestPartialFailure:
             # governance compliance scoring gets its own dedicated coverage in
             # TestGovernanceIntegration below rather than every call site here
             # needing an offline governance evidence-source stub.
-            sources=["git", "jira", "asf_roster"],
+            sources=["git", "jira", "asf_roster", "github"],
             now=NOW,
             code_sha="abc1234",
             jira_collector_factory=_jira_factory(good_transport),
@@ -589,6 +663,7 @@ class TestPartialFailure:
             ponymail_collector_factory=_ponymail_factory(),
             github_commit_author_collector_factory=_github_commit_author_factory(),
             github_profile_collector_factory=_github_profile_factory(),
+            github_collector_factory=_github_factory(),
         )
         assert first.manifest["sources"]["jira"]["status"] == "ok"
 
@@ -601,7 +676,7 @@ class TestPartialFailure:
             # governance compliance scoring gets its own dedicated coverage in
             # TestGovernanceIntegration below rather than every call site here
             # needing an offline governance evidence-source stub.
-            sources=["git", "jira", "asf_roster"],
+            sources=["git", "jira", "asf_roster", "github"],
             now=NOW.replace(hour=7),
             code_sha="abc1234",
             jira_collector_factory=_jira_factory(broken_transport, max_retries=2),
@@ -609,6 +684,7 @@ class TestPartialFailure:
             ponymail_collector_factory=_ponymail_factory(),
             github_commit_author_collector_factory=_github_commit_author_factory(),
             github_profile_collector_factory=_github_profile_factory(),
+            github_collector_factory=_github_factory(),
         )
 
         # A JIRA source outage still produces valid metrics via prior JIRA data
@@ -659,13 +735,14 @@ class TestFileChangeEventBackfillGap:
             # issue #36: this test exercises the file_change_event watermark
             # fix specifically; governance's own coverage lives in
             # TestGovernanceIntegration below.
-            sources=["git", "jira", "asf_roster"],
+            sources=["git", "jira", "asf_roster", "github"],
             now=NOW,
             code_sha="abc1234",
             jira_collector_factory=_jira_factory(transport),
             asf_roster_collector_factory=_roster_factory(),
             github_commit_author_collector_factory=_github_commit_author_factory(),
             github_profile_collector_factory=_github_profile_factory(),
+            github_collector_factory=_github_factory(),
         )
         assert first.exit_code == 0
         assert first.manifest["metrics_missing"] == []
@@ -693,13 +770,14 @@ class TestFileChangeEventBackfillGap:
             config=config,
             data_dir=data_dir,
             workdir=git_workdir,
-            sources=["git", "jira", "asf_roster"],
+            sources=["git", "jira", "asf_roster", "github"],
             now=NOW.replace(hour=7),
             code_sha="abc1234",
             jira_collector_factory=_jira_factory(_paginated_transport({0: EMPTY_PAGE})),
             asf_roster_collector_factory=_roster_factory(),
             github_commit_author_collector_factory=_github_commit_author_factory(),
             github_profile_collector_factory=_github_profile_factory(),
+            github_collector_factory=_github_factory(),
         )
 
         assert second.exit_code == 0
@@ -807,7 +885,7 @@ class TestDegradedMetrics:
             # governance compliance scoring gets its own dedicated coverage in
             # TestGovernanceIntegration below rather than every call site here
             # needing an offline governance evidence-source stub.
-            sources=["git", "jira", "asf_roster"],
+            sources=["git", "jira", "asf_roster", "github"],
             site_out=site_out,
             now=NOW,
             code_sha="abc1234",
@@ -816,6 +894,7 @@ class TestDegradedMetrics:
             ponymail_collector_factory=_ponymail_factory(),
             github_commit_author_collector_factory=_github_commit_author_factory(),
             github_profile_collector_factory=_github_profile_factory(),
+            github_collector_factory=_github_factory(),
         )
 
         assert result.exit_code != 0
@@ -1303,7 +1382,7 @@ class TestGovernanceIntegration:
             config=_with_governance(config),
             data_dir=data_dir,
             workdir=git_workdir,
-            sources=["git", "jira", "asf_roster", "governance"],
+            sources=["git", "jira", "asf_roster", "governance", "github"],
             jira_collector_factory=_jira_factory(
                 _paginated_transport({0: PAGE_1, 5: PAGE_2, 10: EMPTY_PAGE})
             ),
@@ -1312,6 +1391,7 @@ class TestGovernanceIntegration:
             code_sha="abc1234",
             governance_jira_comments_factory=lambda base_url: jira_stub,
             governance_github_checks_factory=lambda owner, repo: github_stub,
+            github_collector_factory=_github_factory(),
         )
 
         assert result.exit_code == 0
@@ -1394,7 +1474,7 @@ class TestGovernanceIntegration:
             config=config,
             data_dir=data_dir,
             workdir=git_workdir,
-            sources=["git", "jira", "asf_roster", "governance"],
+            sources=["git", "jira", "asf_roster", "governance", "github"],
             jira_collector_factory=_jira_factory(
                 _paginated_transport({0: PAGE_1, 5: PAGE_2, 10: EMPTY_PAGE})
             ),
@@ -1403,6 +1483,7 @@ class TestGovernanceIntegration:
             code_sha="abc1234",
             governance_jira_comments_factory=lambda base_url: _StubJiraComments({}),
             governance_github_checks_factory=lambda owner, repo: _StubGitHubChecks({}),
+            github_collector_factory=_github_factory(),
         )
 
         assert result.exit_code == 0
@@ -1732,12 +1813,13 @@ class TestSecurityIntegration:
             config=config,
             data_dir=data_dir,
             workdir=git_workdir,
-            sources=["git", "jira", "asf_roster", "security"],
+            sources=["git", "jira", "asf_roster", "security", "github"],
             now=NOW,
             code_sha="abc1234",
             jira_collector_factory=_jira_factory(transport),
             asf_roster_collector_factory=_roster_factory(),
             security_collector_factory=_security_factory(),
+            github_collector_factory=_github_factory(),
         )
 
         assert result.exit_code == 0
@@ -1764,12 +1846,13 @@ class TestSecurityIntegration:
             config=config,
             data_dir=data_dir,
             workdir=git_workdir,
-            sources=["git", "jira", "asf_roster", "security"],
+            sources=["git", "jira", "asf_roster", "security", "github"],
             now=NOW,
             code_sha="abc1234",
             jira_collector_factory=_jira_factory(transport),
             asf_roster_collector_factory=_roster_factory(),
             security_collector_factory=_security_factory(_always_503_transport()),
+            github_collector_factory=_github_factory(),
         )
 
         assert result.exit_code == 0
@@ -1963,3 +2046,205 @@ class TestLeaderboardIntegration:
         )
         assert (site_out / "data" / "leaderboard.json").is_file()
         assert (site_out / "data" / "leaderboard.csv").is_file()
+
+
+# --- GitHub PR collector wiring (issue #54) ----------------------------------
+
+
+class TestGitHubIntegration:
+    def test_github_source_produces_raw_partitions_and_manifest_fields(
+        self, tmp_path, config, git_workdir
+    ):
+        data_dir = tmp_path / "data"
+
+        result = run_pipeline(
+            config=config,
+            data_dir=data_dir,
+            workdir=git_workdir,
+            sources=["git", "jira", "asf_roster", "github"],
+            now=NOW,
+            code_sha="abc1234",
+            jira_collector_factory=_jira_factory(
+                _paginated_transport({0: PAGE_1, 5: PAGE_2, 10: EMPTY_PAGE})
+            ),
+            asf_roster_collector_factory=_roster_factory(),
+            github_collector_factory=_github_factory(),
+        )
+
+        assert result.exit_code == 0
+        github = result.manifest["sources"]["github"]
+        assert github["status"] == "ok"
+        # projects/cassandra.yaml configures 7 pull_requests.repos; the single
+        # mock GraphQL page is served once per repo -> 7 PRs, 7 reviews.
+        assert github["records_collected"] == 7
+        assert github["review_count"] == 7
+        assert set(github["repos"].values()) == {"ok"}
+
+        assert list((data_dir / "raw" / "github" / "pr").glob("date=*/part-*.parquet"))
+        assert list((data_dir / "raw" / "github" / "pr_review").glob("date=*/part-*.parquet"))
+
+        metrics_table = pq.read_table(data_dir / "snapshots" / result.run_id / "metrics.parquet")
+        metric_ids = {r["metric_id"] for r in metrics_table.to_pylist()}
+        for metric_id in (
+            "pr_merge_lead_time",
+            "pr_time_to_first_review",
+            "pr_time_to_close",
+            "pr_review_engagement",
+            "stale_pr_rate",
+        ):
+            assert metric_id in metric_ids
+
+    def test_github_source_watermark_persists_across_runs(self, tmp_path, config, git_workdir):
+        data_dir = tmp_path / "data"
+
+        run_pipeline(
+            config=config,
+            data_dir=data_dir,
+            workdir=git_workdir,
+            sources=["git", "jira", "asf_roster", "github"],
+            now=NOW,
+            code_sha="abc1234",
+            jira_collector_factory=_jira_factory(
+                _paginated_transport({0: PAGE_1, 5: PAGE_2, 10: EMPTY_PAGE})
+            ),
+            asf_roster_collector_factory=_roster_factory(),
+            github_collector_factory=_github_factory(),
+        )
+
+        raw = storage.read_watermark(data_dir, "github")
+        assert raw is not None
+        watermarks = json.loads(raw)
+        assert set(watermarks) == set(config.pull_requests.repos)
+
+    def test_rate_limited_repo_marks_partial_not_failed_and_still_computes_metrics(
+        self, tmp_path, git_workdir
+    ):
+        """A repo that hits GitHubCollector's rate_limit_floor mid-backfill
+        must show up as `partial` on the manifest (a clean, resumable stop --
+        issue #54, `collectors/github.py`'s three-valued
+        `GitHubCollectionResult.status`), never `failed`, and the M0 run
+        itself must still exit 0 with the PR data collected before the floor
+        was hit."""
+        small_config = load_project("projects/cassandra.yaml").model_copy(
+            update={
+                "pull_requests": FlexibleSection(
+                    type="github", repos=["synthtest/repo-a", "synthtest/repo-b"]
+                )
+            }
+        )
+        data_dir = tmp_path / "data"
+
+        # remaining=0 (<= the default rate_limit_floor) on the very first
+        # page -> repo-a stops immediately after keeping its one page of
+        # data; repo-b is never queried at all (skipped).
+        single_pr_node = GITHUB_SINGLE_PR_PAGE["data"]["repository"]["pullRequests"]["nodes"][0]
+        page = {
+            "data": {
+                "rateLimit": {"remaining": 0, "resetAt": "2026-09-25T22:00:00Z", "cost": 1},
+                "repository": {
+                    "pullRequests": {
+                        "pageInfo": {"hasNextPage": False, "endCursor": None},
+                        "nodes": [single_pr_node],
+                    }
+                },
+            }
+        }
+
+        def github_factory(cfg):
+            transport = httpx.MockTransport(lambda request: httpx.Response(200, json=page))
+            return GitHubCollector(
+                cfg,
+                transport=transport,
+                token="test-token",
+                min_request_interval=0,
+                sleep_fn=lambda s: None,
+            )
+
+        result = run_pipeline(
+            config=small_config,
+            data_dir=data_dir,
+            workdir=git_workdir,
+            sources=["git", "jira", "asf_roster", "github"],
+            now=NOW,
+            code_sha="abc1234",
+            jira_collector_factory=_jira_factory(
+                _paginated_transport({0: PAGE_1, 5: PAGE_2, 10: EMPTY_PAGE})
+            ),
+            asf_roster_collector_factory=_roster_factory(),
+            github_collector_factory=github_factory,
+        )
+
+        github = result.manifest["sources"]["github"]
+        assert github["status"] == "partial"
+        assert github["repos"] == {
+            "synthtest/repo-a": "rate_limited",
+            "synthtest/repo-b": "skipped",
+        }
+        assert result.exit_code == 0
+        assert result.manifest["status"] == "ok"
+
+
+class TestGitHubDedupe:
+    def test_dedupe_pr_rows_keeps_latest_updated_at_per_repo_and_number(self):
+        schema = get_schema("pr")
+        base = {
+            "repo": "apache/cassandra",
+            "number": 1,
+            "state": "OPEN",
+            "is_draft": False,
+            "merged": False,
+            "author_identity_id": None,
+            "author_raw_type": "github_login",
+            "author_raw_value": "alice-dev",
+            "title_hash": "hash-1",
+            "created_at": datetime(2026, 1, 1, tzinfo=timezone.utc),
+            "closed_at": None,
+            "merged_at": None,
+            "additions": None,
+            "deletions": None,
+            "changed_files": None,
+        }
+        rows = [
+            {
+                **base,
+                "updated_at": datetime(2026, 1, 1, tzinfo=timezone.utc),
+                "source_snapshot_id": "run-1",
+            },
+            {
+                **base,
+                "updated_at": datetime(2026, 1, 5, tzinfo=timezone.utc),
+                "source_snapshot_id": "run-2",
+            },
+        ]
+        table = pa.Table.from_pylist(rows, schema=schema)
+
+        deduped = _dedupe_pr_rows(table)
+
+        assert deduped.num_rows == 1
+        assert deduped.to_pylist()[0]["source_snapshot_id"] == "run-2"
+
+    def test_dedupe_pr_review_rows_keeps_one_per_review_id(self):
+        schema = get_schema("pr_review")
+        base = {
+            "repo": "apache/cassandra",
+            "pr_number": 1,
+            "reviewer_identity_id": None,
+            "reviewer_raw_type": "github_login",
+            "reviewer_raw_value": "bob-reviewer",
+            "state": "APPROVED",
+            "submitted_at": datetime(2026, 1, 1, tzinfo=timezone.utc),
+        }
+        rows = [
+            {**base, "review_id": "PRR_1", "source_snapshot_id": "run-1"},
+            {**base, "review_id": "PRR_1", "source_snapshot_id": "run-2"},
+            {**base, "review_id": "PRR_2", "source_snapshot_id": "run-2"},
+        ]
+        table = pa.Table.from_pylist(rows, schema=schema)
+
+        deduped = _dedupe_pr_review_rows(table)
+
+        assert sorted(deduped.column("review_id").to_pylist()) == ["PRR_1", "PRR_2"]
+
+    def test_dedupe_functions_are_noop_on_empty_tables(self):
+        assert _dedupe_pr_rows(get_schema("pr").empty_table()).num_rows == 0
+        assert _dedupe_pr_review_rows(get_schema("pr_review").empty_table()).num_rows == 0

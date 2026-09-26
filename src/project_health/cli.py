@@ -77,6 +77,16 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Cap the number of GraphQL commit-history pages fetched this run (API-budget control)",
     )
     run_parser.add_argument(
+        "--max-prs-per-repo",
+        type=int,
+        default=None,
+        help=(
+            "Cap the number of PR nodes fetched per GitHub repo this run (testing / smoke "
+            "runs). Production runs leave this unset -- GitHubCollector's own rate_limit_floor "
+            "is the real per-run API budget (collectors/github.py)."
+        ),
+    )
+    run_parser.add_argument(
         "--trigger",
         default="manual",
         help="Recorded verbatim in the run manifest's `trigger` field (default: manual)",
@@ -183,6 +193,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
         max_ponymail_months=args.max_ponymail_months,
         max_github_profiles=args.max_github_profiles,
         max_github_commit_author_pages=args.max_github_commit_author_pages,
+        max_prs_per_repo=args.max_prs_per_repo,
         trigger=args.trigger,
         identity_overrides_path=args.identity_overrides,
         governance_since=args.governance_since,

@@ -28,6 +28,13 @@ EXPECTED_METRIC_IDS = {
     # issue #35
     "time_to_first_reply_devlist",
     "unanswered_thread_rate_devlist",
+    # issue #54
+    "pr_merge_lead_time",
+    "pr_time_to_first_review",
+    "pr_time_to_close",
+    "pr_review_engagement",
+    "time_to_first_response_jira",
+    "stale_pr_rate",
 }
 
 HEADCOUNT_METRIC_IDS = {

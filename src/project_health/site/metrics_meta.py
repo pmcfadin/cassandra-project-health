@@ -35,6 +35,10 @@ _VEGA_FORMAT = {
     "ratio": ".3f",
     "percent": ".1%",
     "days": ".1f",
+    # 'avg' (issue #54): a mean/average count that isn't a 0-1 ratio and
+    # isn't an integer headcount either (e.g. mean reviewers per PR, 2.3) --
+    # one decimal place, no unit suffix.
+    "avg": ".1f",
 }
 
 # Y-axis tick label formats (issue #16 follow-up to #8: the axis showed a
@@ -48,6 +52,7 @@ _AXIS_FORMAT = {
     "ratio": ".3f",
     "percent": ".0%",
     "days": ".1f",
+    "avg": ".1f",
 }
 
 # A Vega-Lite axis `labelExpr` suffix appended after `_AXIS_FORMAT` renders
@@ -88,6 +93,8 @@ class MetricMeta:
             return f"{value * 100:.1f}%"
         if self.value_kind == "days":
             return f"{value:.1f} days"
+        if self.value_kind == "avg":
+            return f"{value:.1f}"
         raise ValueError(f"unknown value_kind {self.value_kind!r}")
 
     @property
@@ -124,6 +131,8 @@ class MetricMeta:
             return f"{self.name} (%)"
         if self.value_kind == "days":
             return f"{self.name} (days)"
+        if self.value_kind == "avg":
+            return f"{self.name} (avg per PR)"
         return self.name
 
 
@@ -268,6 +277,61 @@ M0_METRICS: dict[str, MetricMeta] = {
         direction_of_good="lower",
         value_kind="percent",
         page="conversations",
+    ),
+    # issue #54: GitHub-PR development metrics + JIRA responsiveness
+    "pr_merge_lead_time": MetricMeta(
+        metric_id="pr_merge_lead_time",
+        name="PR Merge Lead Time",
+        dimension="responsiveness",
+        tier="proxy",
+        direction_of_good="lower",
+        value_kind="days",
+        page="community",
+    ),
+    "pr_time_to_first_review": MetricMeta(
+        metric_id="pr_time_to_first_review",
+        name="PR Time to First Review",
+        dimension="reviewer capacity",
+        tier="proxy",
+        direction_of_good="lower",
+        value_kind="days",
+        page="community",
+    ),
+    "pr_time_to_close": MetricMeta(
+        metric_id="pr_time_to_close",
+        name="PR Time to Close",
+        dimension="responsiveness",
+        tier="proxy",
+        direction_of_good="lower",
+        value_kind="days",
+        page="community",
+    ),
+    "pr_review_engagement": MetricMeta(
+        metric_id="pr_review_engagement",
+        name="PR Review Engagement (Reviewers/PR)",
+        dimension="reviewer capacity",
+        tier="proxy",
+        direction_of_good="none",
+        value_kind="avg",
+        page="community",
+    ),
+    "time_to_first_response_jira": MetricMeta(
+        metric_id="time_to_first_response_jira",
+        name="Time to First Response (JIRA)",
+        dimension="responsiveness",
+        tier="established",
+        direction_of_good="lower",
+        value_kind="days",
+        page="community",
+    ),
+    "stale_pr_rate": MetricMeta(
+        metric_id="stale_pr_rate",
+        name="Stale PR Rate",
+        dimension="responsiveness",
+        tier="established",
+        direction_of_good="lower",
+        value_kind="percent",
+        page="community",
     ),
 }
 

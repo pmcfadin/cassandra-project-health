@@ -184,6 +184,21 @@ ALL_SOURCES: tuple[str, ...] = (
 DEFAULT_GOVERNANCE_MAX_GITHUB_CALLS_PER_RUN = 500
 DEFAULT_GOVERNANCE_MAX_JIRA_CALLS_PER_RUN = 300
 
+# --- JIRA issue_comment historical backfill (issue #79) ---------------------
+#
+# Issue #54 added comment-metadata collection to `collectors/jira.py`'s
+# existing `/search` fetch, but that only ever covers issues fetched *after*
+# #54 landed — production's JIRA watermark was already current when #54
+# shipped, so the ~21.5k pre-existing issues have no `issue_comment` rows and
+# never will without a dedicated backfill (`_collect_jira_comment_backfill`
+# below). ~1,000 issues/run at `jira_comments.DEFAULT_MIN_REQUEST_INTERVAL`
+# (0.55s/call, one call per issue) costs ~9-10 minutes — comfortably inside a
+# nightly run's budget alongside everything else — and clears the full
+# backlog in roughly 2-3 weeks, same order of magnitude as the issue's own
+# estimate. Configurable via `projects/<id>.yaml`'s
+# `jira_comment_backfill.max_issues_per_run` (`_jira_comment_backfill_budget`).
+DEFAULT_JIRA_COMMENT_BACKFILL_MAX_ISSUES_PER_RUN = 1000
+
 # `code-style-checkstyle`'s GitHub check-run re-fetch window (issue #36
 # fixup cycle 1): a check-run that's still pending/absent is only worth
 # re-checking while its commit is recent — GitHub's own check-run/workflow
@@ -719,6 +734,204 @@ def _collect_git(
         }
 
 
+def _record_jira_comment_checked(
+    data_dir: Path,
+    partition_date: date,
+    run_id: str,
+    issues: pa.Table,
+    comments: pa.Table,
+    checked_via: str,
+) -> None:
+    """Append one `comment_backfill_checked` row (issue #79) per issue in
+    `issues`, regardless of whether `comments` has any rows for it -- so a
+    genuinely zero-comment issue is never mistaken for "never checked" and
+    endlessly re-fetched by `_collect_jira_comment_backfill` below. Called
+    both after the ordinary incremental `/search` fetch (`checked_via=
+    'incremental'`) and after a backfill batch (`checked_via='backfill'`,
+    see that function) -- either one fully covers the issues it touches.
+    A no-op when `issues` is empty (nothing to mark checked).
+    """
+    if issues.num_rows == 0:
+        return
+    checked_at = datetime.now(timezone.utc)
+    comment_counts: dict[str, int] = {}
+    for row in comments.to_pylist():
+        comment_counts[row["issue_key"]] = comment_counts.get(row["issue_key"], 0) + 1
+    snapshot_id = f"{run_id}:jira_comment_checked"
+    seen: dict[str, None] = {}
+    for row in issues.to_pylist():
+        seen.setdefault(row["issue_key"], None)
+    rows = [
+        {
+            "issue_key": issue_key,
+            "checked_at": checked_at,
+            "comment_count": comment_counts.get(issue_key, 0),
+            "checked_via": checked_via,
+            "source_snapshot_id": snapshot_id,
+        }
+        for issue_key in seen
+    ]
+    table = pa.Table.from_pylist(rows, schema=_governance_get_schema("comment_backfill_checked"))
+    storage.write_partition(
+        data_dir, "jira", "comment_backfill_checked", partition_date, run_id, table
+    )
+
+
+def _jira_comment_backfill_budget(config: ProjectConfig) -> int:
+    """`max_issues_per_run` for the historical `issue_comment` backfill
+    (issue #79) from `projects/<id>.yaml`'s optional `jira_comment_backfill:`
+    block, defaulting to `DEFAULT_JIRA_COMMENT_BACKFILL_MAX_ISSUES_PER_RUN` --
+    same "arbitrary extra top-level key, read defensively" pattern as
+    `_governance_budget` above (`ProjectConfig`'s own `extra="allow"`)."""
+    raw = getattr(config, "jira_comment_backfill", None)
+    if not isinstance(raw, dict):
+        raw = {}
+    return int(raw.get("max_issues_per_run", DEFAULT_JIRA_COMMENT_BACKFILL_MAX_ISSUES_PER_RUN))
+
+
+def _jira_comment_backfill_checked_keys(data_dir: Path) -> set[str]:
+    """Every `issue_key` the accumulated `comment_backfill_checked` table has
+    a row for, from *either* an ordinary incremental fetch or a prior
+    backfill run -- both are equally "covered" (see `_record_jira_comment_
+    checked`'s docstring)."""
+    table = storage.read_table(data_dir, "jira", "comment_backfill_checked")
+    return set(table.column("issue_key").to_pylist())
+
+
+def _jira_comment_backfill_eligible_keys_newest_first(
+    data_dir: Path, checked: set[str]
+) -> list[str]:
+    """Every `issue_key` in the accumulated `jira/issue` table not yet in
+    `checked` (issue #79), newest `created_at` first -- so a tight per-run
+    budget resolves the most recently opened historical issues before
+    working further back, the same newest-first bias
+    `_ci_eligible_issue_keys_newest_first` applies to a different evidence
+    backlog."""
+    table = storage.read_table(data_dir, "jira", "issue")
+    by_key: dict[str, datetime] = {}
+    for row in table.to_pylist():
+        key = row["issue_key"]
+        created_at = row["created_at"]
+        if key not in by_key or created_at > by_key[key]:
+            by_key[key] = created_at
+    eligible = [key for key in by_key if key not in checked]
+    return sorted(eligible, key=lambda key: by_key[key], reverse=True)
+
+
+def _collect_jira_comment_backfill(
+    data_dir: Path,
+    run_id: str,
+    started_at: datetime,
+    max_issues: int,
+    jira_base_url: str | None,
+    jira_comments_factory: Callable[[str], object] | None,
+) -> dict[str, Any]:
+    """Budgeted, resumable historical backfill of `issue_comment` metadata
+    for `time_to_first_response_jira` (issue #79) -- fetches up to
+    `max_issues` issues that have never had their comments checked
+    (`_jira_comment_backfill_checked_keys`), newest-created first, at the
+    same JIRA politeness pacing `collectors/jira_comments.py`'s
+    `JiraCommentsCollector` already uses for governance's CI-evidence
+    backfill (`_collect_governance_ci_evidence` above). Modeled directly on
+    that function's budget/resume/never-fail shape.
+
+    Never raises and never marks the `jira` source `'failed'` on its own
+    account -- a partial backfill is a legitimate, resumable state (this
+    run's leftover backlog is simply `pending` for the next one), not an
+    outage; an exception constructing the collector, or fetching one issue's
+    comments, is logged and that issue is left `pending` rather than
+    aborting the batch.
+
+    Returns `{checked, pending, calls_made}` (recorded on the manifest under
+    `sources.jira.backfill`), the same shape
+    `site.manifest.GovernanceEvidenceStats` already models for governance's
+    equivalent per-run backlog stats.
+    """
+    stats: dict[str, Any] = {"checked": 0, "pending": 0, "calls_made": 0}
+    if not jira_base_url or max_issues <= 0:
+        return stats
+
+    checked = _jira_comment_backfill_checked_keys(data_dir)
+    eligible = _jira_comment_backfill_eligible_keys_newest_first(data_dir, checked)
+    if not eligible:
+        return stats
+
+    to_fetch = eligible[:max_issues]
+
+    try:
+        collector = (jira_comments_factory or JiraCommentsCollector)(jira_base_url)
+    except Exception as exc:  # noqa: BLE001 - an evidence source's outage must not abort the run.
+        _log("jira_comment_backfill_failed", error=str(exc))
+        stats["pending"] = len(eligible)
+        return stats
+
+    checked_at = datetime.now(timezone.utc)
+    comment_rows: list[dict[str, Any]] = []
+    checked_rows: list[dict[str, Any]] = []
+    snapshot_id = f"{run_id}:jira_comment_backfill"
+    try:
+        for issue_key in to_fetch:
+            try:
+                found_rows = collector.fetch_comment_metadata(issue_key)
+            except Exception as exc:  # noqa: BLE001 - one bad issue must not stop the batch.
+                _log("jira_comment_backfill_issue_failed", issue_key=issue_key, error=str(exc))
+                continue
+            for row in found_rows:
+                comment_rows.append({**row, "source_snapshot_id": snapshot_id})
+            checked_rows.append(
+                {
+                    "issue_key": issue_key,
+                    "checked_at": checked_at,
+                    "comment_count": len(found_rows),
+                    "checked_via": "backfill",
+                    "source_snapshot_id": snapshot_id,
+                }
+            )
+            stats["checked"] += 1
+    finally:
+        stats["calls_made"] = collector.call_count
+        collector.close()
+
+    stats["pending"] = len(eligible) - stats["checked"]
+
+    # A separate `run_id` suffix (matches `_reparse_governance_commit_
+    # records_if_needed`'s own `f"{run_id}-reparse"`) -- `_collect_jira`'s
+    # ordinary incremental fetch already wrote a `part-<run_id>.parquet`
+    # partition for these same two tables this run; reusing plain `run_id`
+    # here would collide with `storage.write_partition`'s
+    # never-overwrite guarantee.
+    backfill_run_id = f"{run_id}-comment-backfill"
+    partition_date = started_at.date()
+    if comment_rows:
+        comment_table = pa.Table.from_pylist(
+            comment_rows, schema=_governance_get_schema("issue_comment")
+        )
+        storage.write_partition(
+            data_dir, "jira", "issue_comment", partition_date, backfill_run_id, comment_table
+        )
+    if checked_rows:
+        checked_table = pa.Table.from_pylist(
+            checked_rows, schema=_governance_get_schema("comment_backfill_checked")
+        )
+        storage.write_partition(
+            data_dir,
+            "jira",
+            "comment_backfill_checked",
+            partition_date,
+            backfill_run_id,
+            checked_table,
+        )
+
+    _log(
+        "jira_comment_backfill_completed",
+        run_id=run_id,
+        checked=stats["checked"],
+        pending=stats["pending"],
+        calls_made=stats["calls_made"],
+    )
+    return stats
+
+
 def _collect_jira(
     config: ProjectConfig,
     data_dir: Path,
@@ -726,6 +939,7 @@ def _collect_jira(
     started_at: datetime,
     max_issues: int | None,
     collector_factory: Callable[[ProjectConfig], JiraCollector] | None,
+    jira_comment_backfill_factory: Callable[[str], object] | None = None,
 ) -> dict[str, Any]:
     watermark = storage.read_watermark(data_dir, "jira")
     snapshot_id = f"{run_id}:jira"
@@ -747,6 +961,17 @@ def _collect_jira(
         storage.write_partition(
             data_dir, "jira", "issue_comment", partition_date, run_id, result.comments
         )
+        # issue #79: every issue this run fetched (regardless of comment
+        # count) is now current on comments -- record that so the historical
+        # backfill below never re-treats it as pending.
+        _record_jira_comment_checked(
+            data_dir,
+            partition_date,
+            run_id,
+            result.issues,
+            result.comments,
+            checked_via="incremental",
+        )
         if result.next_watermark:
             storage.write_watermark(data_dir, "jira", result.next_watermark)
         record_last_good_snapshot(data_dir, "jira", run_id)
@@ -758,7 +983,7 @@ def _collect_jira(
             comment_count=result.comment_count,
             next_watermark=result.next_watermark,
         )
-        return {
+        source_result: dict[str, Any] = {
             "status": "ok",
             "watermark": result.next_watermark,
             "records_collected": result.issue_count,
@@ -766,7 +991,7 @@ def _collect_jira(
         }
     except Exception as exc:  # noqa: BLE001 - a source outage must never abort the run (§7.3)
         _log("source_collect_failed", source="jira", error=str(exc))
-        return {
+        source_result = {
             "status": "failed",
             "watermark": watermark,
             "records_collected": 0,
@@ -775,6 +1000,25 @@ def _collect_jira(
         }
     finally:
         collector.close()
+
+    # issue #79: the budgeted, resumable historical `issue_comment` backfill
+    # -- its own try/except (inside `_collect_jira_comment_backfill`) means a
+    # backfill hiccup never turns an otherwise-successful ordinary fetch
+    # above into a `'failed'` jira source, and a partial backfill never
+    # marks this run degraded (it isn't part of `metrics.registry.
+    # METRIC_IDS`'s `metrics_missing` check).
+    jira_base_url = (
+        getattr(config.issue_tracker, "base_url", None) if config.issue_tracker else None
+    )
+    source_result["backfill"] = _collect_jira_comment_backfill(
+        data_dir,
+        run_id,
+        started_at,
+        _jira_comment_backfill_budget(config),
+        jira_base_url,
+        jira_comment_backfill_factory,
+    )
+    return source_result
 
 
 def _collect_github(
@@ -2090,6 +2334,12 @@ def run_pipeline(
     identity_overrides_path: str | Path | None = None,
     trigger: str = "manual",
     jira_collector_factory: Callable[[ProjectConfig], JiraCollector] | None = None,
+    # issue #79: injects an offline-testable stand-in for `collectors.
+    # jira_comments.JiraCommentsCollector` into the historical `issue_comment`
+    # backfill (`_collect_jira_comment_backfill`) -- same `Callable[[str],
+    # object]` shape as `governance_jira_comments_factory` below, since both
+    # construct the same collector class from just a base URL.
+    jira_comment_backfill_factory: Callable[[str], object] | None = None,
     github_collector_factory: Callable[[ProjectConfig], GitHubCollector] | None = None,
     asf_roster_collector_factory: Callable[[ProjectConfig], AsfRosterCollector] | None = None,
     ponymail_collector_factory: Callable[[ProjectConfig], PonyMailCollector] | None = None,
@@ -2120,6 +2370,12 @@ def run_pipeline(
     `httpx.MockTransport` (and a sleep-free retry loop) without
     `run_pipeline` needing to know about every one of the collector's tuning
     knobs.
+
+    `jira_comment_backfill_factory` (issue #79), given, replaces the default
+    `JiraCommentsCollector(base_url)` construction the historical
+    `issue_comment` backfill uses -- same offline-test injection pattern as
+    `governance_jira_comments_factory` below, since both construct that same
+    collector class.
 
     `asf_roster_collector_factory`, given, replaces the default
     `AsfRosterCollector(config)` construction — this is how tests inject an
@@ -2164,7 +2420,13 @@ def run_pipeline(
         source_results["git"] = _collect_git(config, data_dir, workdir, run_id, started_at)
     if "jira" in active_sources:
         source_results["jira"] = _collect_jira(
-            config, data_dir, run_id, started_at, max_jira_issues, jira_collector_factory
+            config,
+            data_dir,
+            run_id,
+            started_at,
+            max_jira_issues,
+            jira_collector_factory,
+            jira_comment_backfill_factory,
         )
     if "github" in active_sources:
         source_results["github"] = _collect_github(
@@ -2222,6 +2484,12 @@ def run_pipeline(
     issue_comment = _dedupe_issue_comment_rows(
         storage.read_table(data_dir, "jira", "issue_comment")
     )
+    # issue #79: which issues have ever had their comments checked (via the
+    # ordinary incremental fetch or the historical backfill) -- read raw,
+    # undeduped, since `time_to_first_response_jira`'s per-month coverage
+    # check only ever needs `EXISTS(issue_key)`, which a duplicate row across
+    # partitions can't change.
+    comment_backfill_checked = storage.read_table(data_dir, "jira", "comment_backfill_checked")
     roster_raw = storage.read_table(data_dir, "asf_roster", "roster_entry")
     roster_entry = _dedupe_roster_entries(roster_raw)
     # issue #35: dev@/user@ message metadata (D3 -- always recomputed from
@@ -2308,6 +2576,7 @@ def run_pipeline(
                 "pr": pr,
                 "pr_review": pr_review,
                 "issue_comment": issue_comment,
+                "comment_backfill_checked": comment_backfill_checked,
             },
             as_of=started_at.date(),
             run_id=run_id,

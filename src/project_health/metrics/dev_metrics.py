@@ -383,7 +383,47 @@ def _time_to_first_response_jira(
     assignee (the common case) was never a "self" response to begin with and
     was never excluded, which is correct -- an assignee who isn't the
     reporter answering their own assigned issue is a genuine first response.
+
+    Issue #79: `issue.created_at`/`.count` is always current (the `issue`
+    table itself isn't gapped by the comment backfill), but a month can still
+    be missing part or all of its `issue_comment` data for issues collected
+    before issue #54 added comment collection -- production's JIRA watermark
+    was already current when #54 shipped, so those historical issues have no
+    comment rows and won't get any until `pipeline._collect_jira_comment_
+    backfill`'s budgeted backfill reaches them. A month with any issue not
+    yet covered by that backfill (`comment_backfill_checked`, written for
+    *every* issue whose comments have ever been fetched, checked or
+    unchecked -- see that table's schema docstring) gets `details_json.
+    backfill_in_progress: true`, the same disclosure pattern
+    `_devlist_eligible_months`'s dev@ backfill uses. This never changes
+    `value`/`flag` -- a month with zero *qualifying* comment data already
+    reads as `insufficient_data`/`None` under the ordinary sample floor
+    (never a real zero); the flag only discloses *why* a gap might be an
+    artifact of collection state, not a genuine absence of responses. An
+    empty `comment_backfill_checked` table (no row for the coverage query to
+    even find, e.g. a golden test that doesn't model backfill state, or
+    `compute_all` called without that table) is treated as "not modeling
+    backfill" and never flags any month -- mirrors `_devlist_eligible_
+    months`'s `watermark_month=None` fallback for the same reason.
     """
+    checked_total = con.execute("SELECT COUNT(*) FROM comment_backfill_checked").fetchone()[0]
+    backfill_pending_by_month: dict[date, bool] = {}
+    if checked_total > 0:
+        coverage_rows = con.execute(
+            """
+            SELECT
+                date_trunc('month', i.created_at)::DATE AS m,
+                COUNT(*) AS n_total,
+                COUNT(DISTINCT c.issue_key) AS n_covered
+            FROM issue i
+            LEFT JOIN comment_backfill_checked c ON c.issue_key = i.issue_key
+            GROUP BY 1
+            """
+        ).fetchall()
+        backfill_pending_by_month = {
+            m: n_covered < n_total for m, n_total, n_covered in coverage_rows
+        }
+
     month_rows = con.execute(
         "SELECT DISTINCT date_trunc('month', created_at)::DATE AS m FROM issue"
     ).fetchall()
@@ -440,6 +480,16 @@ def _time_to_first_response_jira(
             "p90_days": _percentile(closed_latencies, 0.90) if closed_latencies else None,
         }
 
+        details: dict = {
+            "p90_days": p90_days,
+            "n_opened_in_window": opened_counts.get(month, 0),
+            "closed_in_window": closed_window,
+        }
+        if backfill_pending_by_month.get(month, False):
+            # issue #79: at least one issue opened this month hasn't had its
+            # comments checked yet -- see this function's docstring.
+            details["backfill_in_progress"] = True
+
         out.append(
             _make_row(
                 metric_id="time_to_first_response_jira",
@@ -450,11 +500,7 @@ def _time_to_first_response_jira(
                 floor=FLOOR_LATENCY,
                 run_id=run_id,
                 computed_at=computed_at,
-                details={
-                    "p90_days": p90_days,
-                    "n_opened_in_window": opened_counts.get(month, 0),
-                    "closed_in_window": closed_window,
-                },
+                details=details,
             )
         )
     return out

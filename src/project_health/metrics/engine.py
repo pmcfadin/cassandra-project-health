@@ -207,6 +207,11 @@ def _connect(tables: dict[str, pa.Table]) -> duckdb.DuckDBPyConnection:
         "pr",
         "pr_review",
         "issue_comment",
+        # issue #79: which issues have ever had their comments checked (via
+        # the ordinary incremental JIRA fetch or the historical backfill) --
+        # `time_to_first_response_jira`'s per-month `backfill_in_progress`
+        # coverage check (metrics/dev_metrics.py).
+        "comment_backfill_checked",
     ):
         con.register(name, _table_or_empty(tables, name))
     con.execute(

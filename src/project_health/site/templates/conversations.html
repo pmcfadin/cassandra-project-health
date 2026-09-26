@@ -25,6 +25,9 @@
           {% else %}
             <span class="value value--insufficient">insufficient data</span>
           {% endif %}
+          {% if m.backfill_in_progress %}
+          <span class="badge badge--backfill-pending">backfill in progress</span>
+          {% endif %}
         </p>
 
         <p class="card-status">Status: baseline scoring arrives in M3.</p>

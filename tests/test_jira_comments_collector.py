@@ -136,3 +136,101 @@ class TestJiraCommentsCollector:
         with collector:
             assert collector.fetch_ci_evidence("CASSANDRA-1") is None
         assert attempts["count"] == 2
+
+
+class TestFetchCommentMetadata:
+    """Issue #79: `fetch_comment_metadata` returns *every* comment's
+    metadata for the historical `issue_comment` backfill, not just a
+    CI-evidence match."""
+
+    def test_returns_metadata_for_every_comment(self):
+        comments = {
+            "CASSANDRA-100": [
+                _comment("1", "alice", "2024-06-01T00:00:00.000+0000", "first response"),
+                _comment("2", "bob", "2024-06-02T00:00:00.000+0000", "second response"),
+            ]
+        }
+        with _collector(comments) as collector:
+            rows = collector.fetch_comment_metadata("CASSANDRA-100")
+        assert [r["comment_id"] for r in rows] == ["1", "2"]
+        assert rows[0]["author_raw_value"] == "alice"
+        assert rows[0]["author_raw_type"] == "jira_username"
+        assert rows[0]["issue_key"] == "CASSANDRA-100"
+        assert rows[0]["author_identity_id"] is None
+        assert rows[0]["created_at"].isoformat() == "2024-06-01T00:00:00+00:00"
+
+    def test_never_returns_comment_body(self):
+        body_text = "a very specific secret-looking sentence"
+        comments = {
+            "CASSANDRA-1": [_comment("1", "alice", "2024-06-01T00:00:00.000+0000", body_text)]
+        }
+        with _collector(comments) as collector:
+            rows = collector.fetch_comment_metadata("CASSANDRA-1")
+        assert len(rows) == 1
+        for value in rows[0].values():
+            assert value != body_text
+
+    def test_returns_empty_list_for_issue_with_no_comments(self):
+        with _collector({"CASSANDRA-1": []}) as collector:
+            assert collector.fetch_comment_metadata("CASSANDRA-1") == []
+
+    def test_returns_empty_list_for_404_issue(self):
+        with _collector({}) as collector:
+            assert collector.fetch_comment_metadata("CASSANDRA-999") == []
+
+    def test_capped_at_max_comments_per_issue_stored(self):
+        from project_health.collectors.jira import MAX_COMMENTS_PER_ISSUE_STORED
+
+        comments = {
+            "CASSANDRA-1": [
+                _comment(str(i), f"user{i}", "2024-06-01T00:00:00.000+0000", "x")
+                for i in range(MAX_COMMENTS_PER_ISSUE_STORED + 10)
+            ]
+        }
+        with _collector(comments) as collector:
+            rows = collector.fetch_comment_metadata("CASSANDRA-1")
+        assert len(rows) == MAX_COMMENTS_PER_ISSUE_STORED
+
+    def test_paginates_across_multiple_pages(self):
+        all_comments = [
+            _comment(str(i), f"user{i}", "2024-06-01T00:00:00.000+0000", "x") for i in range(7)
+        ]
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            from urllib.parse import parse_qs
+
+            query = parse_qs(request.url.query.decode())
+            start_at = int(query.get("startAt", ["0"])[0])
+            max_results = int(query.get("maxResults", ["5"])[0])
+            page = all_comments[start_at : start_at + max_results]
+            return httpx.Response(
+                200,
+                json={
+                    "comments": page,
+                    "total": len(all_comments),
+                    "startAt": start_at,
+                    "maxResults": max_results,
+                },
+            )
+
+        collector = JiraCommentsCollector(
+            "https://issues.apache.org/jira",
+            transport=httpx.MockTransport(handler),
+            page_size=3,
+            min_request_interval=0,
+            sleep_fn=lambda _seconds: None,
+        )
+        with collector:
+            rows = collector.fetch_comment_metadata("CASSANDRA-1")
+        assert [r["comment_id"] for r in rows] == [str(i) for i in range(7)]
+
+    def test_skips_a_comment_missing_created(self):
+        comments = {
+            "CASSANDRA-1": [
+                {"id": "1", "author": {"name": "alice"}, "created": None, "body": "x"},
+                _comment("2", "bob", "2024-06-02T00:00:00.000+0000", "y"),
+            ]
+        }
+        with _collector(comments) as collector:
+            rows = collector.fetch_comment_metadata("CASSANDRA-1")
+        assert [r["comment_id"] for r in rows] == ["2"]

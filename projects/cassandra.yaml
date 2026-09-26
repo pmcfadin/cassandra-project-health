@@ -205,3 +205,16 @@ slack:                       # phase 2b only; absent/null until PMC + Infra gate
 governance:
   max_github_calls_per_run: 500
   max_jira_calls_per_run: 300
+
+# Historical `issue_comment` backfill (issue #79): issue #54 added comment
+# metadata to the ordinary incremental JIRA `/search` fetch, but production's
+# JIRA watermark was already current when #54 shipped, so the ~21.5k
+# pre-existing CASSANDRA issues have no comment rows and time_to_first_
+# response_jira has no historical data. `pipeline._collect_jira_comment_
+# backfill` fetches up to `max_issues_per_run` issues per run that have never
+# had their comments checked, newest-created first, at the same JIRA
+# politeness pacing (jira_comments.DEFAULT_MIN_REQUEST_INTERVAL, ~0.55s/call)
+# governance's own CI-evidence backfill already uses -- ~1,000/run clears the
+# backlog in roughly 2-3 weeks.
+jira_comment_backfill:
+  max_issues_per_run: 1000

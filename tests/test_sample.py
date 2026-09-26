@@ -50,7 +50,7 @@ ENRICHMENT_FILTERS_PATH = (
     / "src"
     / "project_health"
     / "classify"
-    / "enrichment_filters_v1.yaml"
+    / "enrichment_filters_v2.yaml"
 )
 
 AUTOMATED_SENDER_PATTERNS = [
@@ -420,6 +420,11 @@ def _jira_client(transport: httpx.MockTransport) -> _PacedJiraScanClient:
 
 
 class TestScanJiraCandidates:
+    # A single-year window keeps these unit tests to one population-count
+    # call + a small number of block-search calls, rather than exercising
+    # the full 10-year default frame every time.
+    ONE_YEAR = (date(2020, 1, 1), date(2020, 12, 31))
+
     def test_finds_eligible_comments_in_window(self):
         comments_by_issue = {
             _jira_issue_key(0): [
@@ -440,15 +445,17 @@ class TestScanJiraCandidates:
         transport = _make_jira_transport(1, comments_by_issue)
         client = _jira_client(transport)
         filters = load_enrichment_filters(ENRICHMENT_FILTERS_PATH)
+        start, end = self.ONE_YEAR
         candidates, text_by_id, parent_by_id, stats = scan_jira_candidates(
             client,
             seed=1,
             project_key="SYNTH",
             automated_sender_patterns=AUTOMATED_SENDER_PATTERNS,
             enrichment_filter_map=filters,
-            start=date(2017, 1, 1),
-            end=date(2026, 8, 31),
-            issue_blocks=1,
+            start=start,
+            end=end,
+            total_issue_target=10,
+            min_issues_per_year=10,
             block_size=10,
         )
         assert stats.comments_eligible == 2
@@ -457,6 +464,7 @@ class TestScanJiraCandidates:
         assert "status_authority_invocation" in second.hits
         assert parent_by_id["2"] is not None
         assert "1" in text_by_id
+        assert stats.year_issue_counts == {2020: 1}
 
     def test_excludes_automated_author(self):
         comments_by_issue = {
@@ -472,13 +480,17 @@ class TestScanJiraCandidates:
         transport = _make_jira_transport(1, comments_by_issue)
         client = _jira_client(transport)
         filters = load_enrichment_filters(ENRICHMENT_FILTERS_PATH)
+        start, end = self.ONE_YEAR
         candidates, _text, _parent, stats = scan_jira_candidates(
             client,
             seed=1,
             project_key="SYNTH",
             automated_sender_patterns=AUTOMATED_SENDER_PATTERNS,
             enrichment_filter_map=filters,
-            issue_blocks=1,
+            start=start,
+            end=end,
+            total_issue_target=10,
+            min_issues_per_year=10,
             block_size=10,
         )
         assert candidates == []
@@ -499,13 +511,17 @@ class TestScanJiraCandidates:
         transport = _make_jira_transport(1, comments_by_issue)
         client = _jira_client(transport)
         filters = load_enrichment_filters(ENRICHMENT_FILTERS_PATH)
+        start, end = self.ONE_YEAR
         candidates, _text, _parent, stats = scan_jira_candidates(
             client,
             seed=1,
             project_key="SYNTH",
             automated_sender_patterns=AUTOMATED_SENDER_PATTERNS,
             enrichment_filter_map=filters,
-            issue_blocks=1,
+            start=start,
+            end=end,
+            total_issue_target=10,
+            min_issues_per_year=10,
             block_size=10,
         )
         assert candidates == []
@@ -526,13 +542,17 @@ class TestScanJiraCandidates:
         transport = _make_jira_transport(20, comments_by_issue)
         client = _jira_client(transport)
         filters = load_enrichment_filters(ENRICHMENT_FILTERS_PATH)
+        start, end = self.ONE_YEAR
         _candidates, _text, _parent, stats = scan_jira_candidates(
             client,
             seed=1,
             project_key="SYNTH",
             automated_sender_patterns=AUTOMATED_SENDER_PATTERNS,
             enrichment_filter_map=filters,
-            issue_blocks=1,
+            start=start,
+            end=end,
+            total_issue_target=20,
+            min_issues_per_year=20,
             block_size=20,
             max_calls=5,
         )
@@ -553,17 +573,72 @@ class TestScanJiraCandidates:
         transport = _make_jira_transport(1, comments_by_issue)
         client = _jira_client(transport)
         filters = load_enrichment_filters(ENRICHMENT_FILTERS_PATH)
+        start, end = self.ONE_YEAR
         candidates, _text, _parent, stats = scan_jira_candidates(
             client,
             seed=1,
             project_key="SYNTH",
             automated_sender_patterns=AUTOMATED_SENDER_PATTERNS,
             enrichment_filter_map=filters,
-            issue_blocks=1,
+            start=start,
+            end=end,
+            total_issue_target=10,
+            min_issues_per_year=10,
             block_size=10,
         )
         assert "SECRET_BODY_MARKER" not in repr(candidates)
         assert "SECRET_BODY_MARKER" not in repr(stats)
+
+    def test_year_weights_come_from_population_not_scan_luck(self):
+        """Issue #44 fix round 2 (1a): a transport whose per-year population
+        counts are wildly uneven should be reflected exactly in
+        `year_issue_counts`, read verbatim off each year's own JQL
+        `maxResults=0` count -- never inferred from the (separately budgeted,
+        potentially uneven) issue-key block search."""
+        year_totals = {2020: 5, 2021: 500, 2022: 50}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            params = parse_qs(request.url.query.decode())
+            jql = params.get("jql", [""])[0]
+            max_results = int(params.get("maxResults", ["50"])[0])
+            if request.url.path.endswith("/rest/api/2/search"):
+                year = next(y for y in year_totals if f"{y}-01-01" in jql)
+                total = year_totals[year]
+                if max_results == 0:
+                    return httpx.Response(200, json={"total": total})
+                start_at = int(params.get("startAt", ["0"])[0])
+                # However many issues exist for this year, return distinct,
+                # year-tagged keys so each year's own scan can't collide.
+                end_at = min(start_at + max_results, total)
+                keys = [f"SYNTH-{year}-{i}" for i in range(start_at, end_at)]
+                return httpx.Response(
+                    200,
+                    json={
+                        "total": total,
+                        "startAt": start_at,
+                        "issues": [{"key": k} for k in keys],
+                    },
+                )
+            return httpx.Response(404, json={"errorMessages": ["not found"]})
+
+        client = _jira_client(httpx.MockTransport(handler))
+        filters = load_enrichment_filters(ENRICHMENT_FILTERS_PATH)
+        _candidates, _text, _parent, stats = scan_jira_candidates(
+            client,
+            seed=1,
+            project_key="SYNTH",
+            automated_sender_patterns=AUTOMATED_SENDER_PATTERNS,
+            enrichment_filter_map=filters,
+            start=date(2020, 1, 1),
+            end=date(2022, 12, 31),
+            total_issue_target=30,
+            min_issues_per_year=2,
+            block_size=10,
+        )
+        assert stats.year_issue_counts == year_totals
+        # 2021 has 100x 2020's population -- it must get more of the (small)
+        # issue-scan budget, never an equal or smaller share.
+        assert stats.issues_scanned_by_year[2021] > stats.issues_scanned_by_year[2020]
 
 
 # --- select_prevalence / select_enrichment -----------------------------------
@@ -611,6 +686,7 @@ class TestSelectPrevalence:
             api_calls=100,
             budget_exhausted=False,
             estimated_total_eligible=3000.0,
+            year_issue_counts={2020: 1000, 2021: 1000, 2022: 1000},
         )
         dev_ids, jira_ids, sel_stats = select_prevalence(7, dev, jira, stats, target=150)
         assert len(dev_ids) + len(jira_ids) == 150
@@ -621,14 +697,21 @@ class TestSelectPrevalence:
     def test_dev_heavy_weight_selects_more_dev_items(self):
         dev = [_dev_candidate(f"m{i}", 2020) for i in range(300)]
         jira = [_jira_candidate(f"c{i}", 2020) for i in range(300)]
-        stats = JiraScanStats(1000, 100, 300, 300, 300, 100, False, estimated_total_eligible=1.0)
+        stats = JiraScanStats(
+            1000, 100, 300, 300, 300, 100, False,
+            estimated_total_eligible=1.0, year_issue_counts={2020: 300},
+        )
         dev_ids, jira_ids, _stats = select_prevalence(7, dev, jira, stats, target=150)
         assert len(dev_ids) > len(jira_ids)
 
     def test_is_deterministic_across_repeated_calls(self):
         dev = [_dev_candidate(f"m{i}", 2020 + (i % 3)) for i in range(50)]
         jira = [_jira_candidate(f"c{i}", 2020 + (i % 3)) for i in range(50)]
-        stats = JiraScanStats(200, 50, 50, 50, 50, 50, False, estimated_total_eligible=200.0)
+        stats = JiraScanStats(
+            200, 50, 50, 50, 50, 50, False,
+            estimated_total_eligible=200.0,
+            year_issue_counts={2020: 200, 2021: 200, 2022: 200},
+        )
         result_a = select_prevalence(7, dev, jira, stats, target=40)
         result_b = select_prevalence(7, dev, jira, stats, target=40)
         assert result_a[0] == result_b[0]
@@ -639,10 +722,42 @@ class TestSelectPrevalence:
         # even though its weight alone would otherwise entitle it to more.
         dev = [_dev_candidate(f"m{i}", 2020) for i in range(3)]
         jira = [_jira_candidate(f"c{i}", 2020) for i in range(300)]
-        stats = JiraScanStats(1000, 100, 300, 300, 300, 100, False, estimated_total_eligible=1.0)
+        stats = JiraScanStats(
+            1000, 100, 300, 300, 300, 100, False,
+            estimated_total_eligible=1.0, year_issue_counts={2020: 1000},
+        )
         dev_ids, jira_ids, _stats = select_prevalence(7, dev, jira, stats, target=150)
         assert len(dev_ids) == 3
         assert len(jira_ids) <= 300
+
+    def test_jira_year_allocation_follows_population_not_scan_sample_counts(self):
+        """Issue #44 fix round 2 (1a): give the scan an even per-year sample
+        (100 eligible comments in each of three years) but a population
+        wildly skewed toward one year, and confirm the *population* weight
+        drives the year split -- not the scan's own even-looking sample,
+        which is exactly the bug the coordinator flagged (year weights
+        reflected which blocks the seed picked, not JIRA's real volume)."""
+        jira = (
+            [_jira_candidate(f"c2020-{i}", 2020) for i in range(100)]
+            + [_jira_candidate(f"c2021-{i}", 2021) for i in range(100)]
+            + [_jira_candidate(f"c2022-{i}", 2022) for i in range(100)]
+        )
+        stats = JiraScanStats(
+            10000, 300, 300, 300, 300, 300, False,
+            estimated_total_eligible=10000.0,
+            # Population is 100x bigger in 2021 than in 2020/2022, even
+            # though the scan itself sampled exactly 100 eligible comments
+            # from each year above.
+            year_issue_counts={2020: 10, 2021: 1000, 2022: 10},
+        )
+        _dev_ids, jira_ids, stats_out = select_prevalence(7, [], jira, stats, target=90)
+        by_year = {2020: 0, 2021: 0, 2022: 0}
+        for comment_id in jira_ids:
+            year = int(comment_id.split("-")[0].removeprefix("c"))
+            by_year[year] += 1
+        assert by_year[2021] > by_year[2020]
+        assert by_year[2021] > by_year[2022]
+        assert stats_out["jira_by_year_population"] == {2020: 10, 2021: 1000, 2022: 10}
 
 
 class TestSelectEnrichment:
@@ -720,17 +835,20 @@ class TestCorpusAssembly:
         lines = out_path.read_text(encoding="utf-8").splitlines()
         assert len(lines) == 2
         record = json.loads(lines[0])
+        # Matches project_health.label.store's required corpus fields
+        # exactly (`id, stratum, source, archive_url, text, parent_text`,
+        # issue #44 fix round 2/3) plus the tolerated extras `year`/`checksum`.
         assert set(record) == {
-            "item_id",
+            "id",
             "stratum",
             "source",
             "archive_url",
             "year",
-            "message",
-            "parent",
+            "text",
+            "parent_text",
             "checksum",
         }
-        assert "text" in record["message"]
+        assert isinstance(record["text"], str) and record["text"]
 
     def test_public_manifest_markdown_has_no_message_text(self, tmp_path):
         items = self._sample_items()
@@ -773,6 +891,29 @@ class TestCorpusAssembly:
         assert "c1" not in markdown
         assert str(42) in markdown
         assert checksum in markdown
+
+    def test_corpus_loads_with_the_labeling_tools_own_loader(self, tmp_path):
+        """Issue #44 fix round 2 (fix 3): a corpus this sampler writes must
+        load with `project_health.label.store.load_corpus` unchanged -- the
+        two modules are maintained separately (issue #46 landed after this
+        one) and previously drifted (`item_id`/`message.text`/`parent.text`
+        here vs. `id`/`text`/`parent_text` there). This is the regression
+        test for that drift, using only synthetic text."""
+        from project_health.label.store import load_corpus
+
+        items = self._sample_items()
+        out_path = tmp_path / "corpus" / "v0" / "pilot.jsonl"
+        write_corpus_jsonl(items, out_path)
+
+        loaded = load_corpus(out_path)
+        assert {item.id for item in loaded} == {"mail:m1", "jira:SYNTH-1:c1"}
+        mail_item = next(item for item in loaded if item.id == "mail:m1")
+        assert mail_item.text == "Synthetic dev message text with enough words in it."
+        assert mail_item.parent_text is None
+        jira_item = next(item for item in loaded if item.id == "jira:SYNTH-1:c1")
+        assert jira_item.parent_text == "Synthetic parent comment text."
+        assert jira_item.source == "jira_comment"
+        assert jira_item.checksum is not None
 
 
 # --- run_pilot_sample end-to-end smoke test ----------------------------------
@@ -842,7 +983,8 @@ class TestRunPilotSampleEndToEnd:
             manifest_output_path=tmp_path / "out" / "manifest.json",
             ponymail_fetcher=_ponymail_fetcher(),
             jira_client=jira_client,
-            jira_issue_blocks=1,
+            jira_total_issue_target=10,
+            jira_min_issues_per_year=1,
             jira_block_size=10,
         )
         assert result.corpus_path.exists()
@@ -867,7 +1009,8 @@ class TestRunPilotSampleEndToEnd:
             manifest_output_path=tmp_path / "out_a" / "manifest.json",
             ponymail_fetcher=_ponymail_fetcher(),
             jira_client=jira_client_a,
-            jira_issue_blocks=1,
+            jira_total_issue_target=10,
+            jira_min_issues_per_year=1,
             jira_block_size=10,
         )
         result_b = run_pilot_sample(
@@ -883,7 +1026,8 @@ class TestRunPilotSampleEndToEnd:
             manifest_output_path=tmp_path / "out_b" / "manifest.json",
             ponymail_fetcher=_ponymail_fetcher(),
             jira_client=jira_client_b,
-            jira_issue_blocks=1,
+            jira_total_issue_target=10,
+            jira_min_issues_per_year=1,
             jira_block_size=10,
         )
         ids_a = sorted(i.item_id for i in result_a.items)

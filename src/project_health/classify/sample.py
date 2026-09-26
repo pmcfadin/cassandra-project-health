@@ -25,7 +25,7 @@ never this repo.
   common is X" number on its own.
 - **Enrichment** (`select_enrichment`, target 100): drawn only from
   candidates the keyword/heuristic pre-filter
-  (`classify/enrichment_filters_v1.yaml`) flags for one of the five rare
+  (`classify/enrichment_filters_v2.yaml`) flags for one of the five rare
   labels (`personal_attack`, `gatekeeping`, `dismissiveness`,
   `status_authority_invocation`, `sarcasm`). **This stratum is never used to
   estimate prevalence** -- `select_prevalence` never reads its output, and
@@ -47,20 +47,45 @@ cheap, exact "list every comment across the whole project in a date
 window" JIRA REST endpoint on this instance. `scan_jira_candidates`
 therefore:
 
-1. Counts candidate issues via one JQL search (`updated >= start`,
-   `maxResults=0`).
-2. Draws a small, seeded-random set of contiguous issue-key blocks spanning
-   that candidate range (few search calls, not one per issue).
-3. Lists every comment on each block's issues, reading each comment's body
+1. Counts candidate issues **per calendar year** via one JQL search per year
+   (`created` within that year's window, `maxResults=0`) -- an issue's
+   `created` timestamp falls in exactly one year and is immutable, so these
+   counts are disjoint, sum to the whole-window total with no
+   double-counting, and can never be silently rewritten later. (`updated`
+   was tried first and rejected: verified live against the real CASSANDRA
+   project, `updated` in [2017, 2018] came back 0 both years, with 2019
+   alone showing over half the entire 2017-2026 candidate population --
+   almost certainly a mass reindex/migration event bumping historical
+   issues' `updated` timestamps into 2019 regardless of real activity.
+   `created`, checked the same way, gave a smooth ~500-1100 issues/year with
+   no such artifact.) These per-year counts are a **population** statistic
+   -- a proxy for how much JIRA activity actually happened each year -- and
+   are the only thing this module uses to weight JIRA's year stratification
+   (`JiraScanStats.year_issue_counts`, read by `select_prevalence`). This
+   exists because an earlier version of this function weighted years by
+   what its own small, contiguous-block scan happened to land on, which is
+   scan luck, not JIRA's real volume -- issue #44 fix round 2.
+2. Allocates a total issue-scan budget across years in proportion to those
+   population weights (the same `allocate_with_capacity` apportionment
+   `select_prevalence` uses), with a floor (`min_issues_per_year`) so a
+   small/rare year still gets scanned instead of being crowded out by a
+   busy one.
+3. For each year, draws seeded-random `startAt` offsets **within that
+   year's own JQL result set** (never a block spanning multiple years, which
+   is what caused the bias in (1)) and fetches those issues' keys, one
+   search call per block. Years are interleaved round-robin while fetching,
+   so a budget cutoff partially covers every year rather than fully covering
+   the first ones scanned and starving the rest.
+4. Lists every comment on each sampled issue, reading each comment's body
    **once, in memory**, to compute eligibility and enrichment-filter hits,
    then discards the body -- the same "read once, never persist" shape
    `collectors/jira_comments.py`'s CI-evidence collector already uses for a
    different fixed term list. Only comment id, issue key, year, word count,
    language flag and enrichment-label hits are kept.
-4. Stops once a call budget is spent (`JiraScanStats.budget_exhausted`).
+5. Stops once a call budget is spent (`JiraScanStats.budget_exhausted`).
 
-The resulting JIRA comment count is real (every comment this function
-enumerates, it enumerates in full via `updated`), but the *frame* is a
+The resulting JIRA comment count is real (every comment a scanned issue
+has, in the requested window, this function sees), but the *frame* is a
 sample of issues, not every CASSANDRA issue -- so the sampler only uses
 this scan's totals to *estimate* the dev@/JIRA prevalence split
 (`JiraScanStats.estimated_total_eligible`), and always draws actual sampled
@@ -93,6 +118,7 @@ import re
 import time
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
+from dataclasses import field as dataclasses_field
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -128,9 +154,10 @@ RARE_LABELS: tuple[str, ...] = (
 SOURCE_MAILING_LIST = "mailing_list"
 SOURCE_JIRA_COMMENT = "jira_comment"
 
-DEFAULT_JIRA_ISSUE_BLOCKS = 10
-DEFAULT_JIRA_BLOCK_SIZE = 100
-DEFAULT_JIRA_MAX_CALLS = 1600
+DEFAULT_JIRA_TOTAL_ISSUE_TARGET = 1300
+DEFAULT_JIRA_MIN_ISSUES_PER_YEAR = 40
+DEFAULT_JIRA_BLOCK_SIZE = 50
+DEFAULT_JIRA_MAX_CALLS = 1500
 DEFAULT_JIRA_BASE_URL = "https://issues.apache.org/jira"
 
 # --- Language heuristic -------------------------------------------------------
@@ -182,7 +209,8 @@ EnrichmentFilterMap = dict[str, tuple["re.Pattern[str]", ...]]
 
 
 def load_enrichment_filters(path: str | Path) -> EnrichmentFilterMap:
-    """Load `classify/enrichment_filters_v1.yaml`'s `labels:` map into
+    """Load an enrichment pre-filter YAML's `labels:` map (e.g.
+    `classify/enrichment_filters_v2.yaml`) into
     compiled, case-insensitive regexes, keyed by rare label id."""
     raw = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
     filters: EnrichmentFilterMap = {}
@@ -191,12 +219,55 @@ def load_enrichment_filters(path: str | Path) -> EnrichmentFilterMap:
     return filters
 
 
-def enrichment_hits(text: str, filters: EnrichmentFilterMap) -> frozenset[str]:
+#  A very short, bare negative reply ("No.", "Nope.", "-1, no", "Won't fix.")
+# with no fixed phrasing this file's regexes would catch on their own -- the
+# structural signal the coordinator asked for on issue #44's fix round 2:
+# "very short negative replies to long proposals" as a dismissiveness
+# candidate. Deliberately a plain word-count/regex heuristic, not a model
+# call (D22 forbids Jev/any LLM in the pre-filter -- see module docstring).
+_SHORT_NEGATIVE_REPLY_RE = re.compile(
+    r"(?i)^[\s\-]*"
+    r"(no|nope|nah|won'?t\s*fix|wontfix|declined|rejected|-1)"
+    r"[\s.,!]*$"
+)
+DISMISSIVENESS_SHORT_REPLY_MAX_WORDS = 6
+DISMISSIVENESS_LONG_PARENT_MIN_WORDS = 40
+
+
+def _is_short_dismissive_reply_to_long_parent(text: str, parent_text: str | None) -> bool:
+    """Structural (word-count-based, not keyword-based) dismissiveness
+    signal: `text` is a short, bare negative reply (`_SHORT_NEGATIVE_REPLY_RE`,
+    at most `DISMISSIVENESS_SHORT_REPLY_MAX_WORDS` words) to a `parent_text`
+    long enough (`DISMISSIVENESS_LONG_PARENT_MIN_WORDS`+ words) to represent
+    a substantive proposal -- "declined without engaging the substance" per
+    COMMUNITY-HEALTH.md §1.2's dismissiveness definition, even when no single
+    fixed phrase applies. Returns `False` with no parent (a thread root has
+    nothing to dismiss).
+    """
+    if parent_text is None:
+        return False
+    words = text.split()
+    if not words or len(words) > DISMISSIVENESS_SHORT_REPLY_MAX_WORDS:
+        return False
+    if not _SHORT_NEGATIVE_REPLY_RE.match(text.strip()):
+        return False
+    return len(parent_text.split()) >= DISMISSIVENESS_LONG_PARENT_MIN_WORDS
+
+
+def enrichment_hits(
+    text: str, filters: EnrichmentFilterMap, parent_text: str | None = None
+) -> frozenset[str]:
     """The set of rare labels whose pre-filter terms match `text` (already
-    preprocessed). Empty if none match."""
-    return frozenset(
+    preprocessed), plus `dismissiveness` if `text`/`parent_text` match the
+    structural short-negative-reply-to-a-long-proposal signal above. Empty if
+    none match. `parent_text` is optional so callers that don't have it
+    (or don't want the structural signal applied) can omit it."""
+    hits = {
         label for label, patterns in filters.items() if any(p.search(text) for p in patterns)
-    )
+    }
+    if _is_short_dismissive_reply_to_long_parent(text, parent_text):
+        hits.add("dismissiveness")
+    return frozenset(hits)
 
 
 # --- Deterministic selection helpers ------------------------------------------
@@ -368,10 +439,14 @@ def scan_dev_candidates(
     parent_text_by_id: dict[str, str | None] = {}
     for message_id, state in states.items():
         text = state["message"]["text"]
+        parent = state["parent"]
+        parent_text = parent["text"] if parent else None
         word_count = len(text.split())
         english = is_english_heuristic(text)
         eligible = word_count >= MIN_WORDS_AFTER_PREPROCESS and english
-        hits = enrichment_hits(text, enrichment_filter_map) if eligible else frozenset()
+        hits = (
+            enrichment_hits(text, enrichment_filter_map, parent_text) if eligible else frozenset()
+        )
         mid = mid_by_message_id.get(message_id)
         archive_url = f"https://lists.apache.org/thread/{mid}" if mid else ""
         candidates.append(
@@ -387,8 +462,7 @@ def scan_dev_candidates(
         )
         if eligible:
             text_by_id[message_id] = text
-            parent = state["parent"]
-            parent_text_by_id[message_id] = parent["text"] if parent else None
+            parent_text_by_id[message_id] = parent_text
     return candidates, text_by_id, parent_text_by_id
 
 
@@ -525,6 +599,44 @@ class JiraScanStats:
     api_calls: int
     budget_exhausted: bool
     estimated_total_eligible: float
+    # Population per-year issue counts (task #44 fix round 2, 1a) -- the
+    # weight `select_prevalence` uses for JIRA's year stratification, never
+    # derived from this scan's own (budgeted, potentially uneven) sample.
+    # Defaults to `{}` so existing positional call sites that predate this
+    # field keep working.
+    year_issue_counts: dict[int, int] = dataclasses_field(default_factory=dict)
+    # How many unique issues this run actually scanned per year -- purely
+    # diagnostic (surfaced in the manifest), not read by any selection logic.
+    issues_scanned_by_year: dict[int, int] = dataclasses_field(default_factory=dict)
+
+
+def _year_window(year: int, start: date, end: date) -> tuple[date, date]:
+    """`(year_start, year_end)`, both clipped to `[start, end]`."""
+    return max(date(year, 1, 1), start), min(date(year, 12, 31), end)
+
+
+def _year_jql(project_key: str, year_start: date, year_end: date, *, order: bool = False) -> str:
+    # `created`, not `updated` -- verified live against the real CASSANDRA
+    # project (issue #44 fix round 2) that `updated` is unusable for this:
+    # `updated` in [2017-01-01, 2018-12-31]` returned 0 both years, with
+    # 2019 alone showing 12,282 issues (over half the whole 2017-2026
+    # candidate population) -- a mass reindex/migration event apparently
+    # bumped nearly every historical issue's `updated` timestamp into 2019,
+    # regardless of when it was actually last commented on. `created` has no
+    # such artifact (a smooth ~500-1100 issues/year across 2017-2026,
+    # verified live the same way) and, being immutable, can never be
+    # rewritten by a later bulk operation. It has its own known,
+    # already-documented limitation (a comment can land on an issue created
+    # in an earlier year than the comment itself), but that is a far smaller
+    # distortion than `updated`'s -- every comment is still bucketed into
+    # its own real year by its own `created` timestamp later in this
+    # function; only *which issues get scanned at all* for a given year is
+    # affected here.
+    jql = (
+        f'project = {project_key} AND created >= "{year_start.isoformat()}" '
+        f'AND created <= "{year_end.isoformat()}"'
+    )
+    return f"{jql} ORDER BY key ASC" if order else jql
 
 
 def scan_jira_candidates(
@@ -535,43 +647,93 @@ def scan_jira_candidates(
     enrichment_filter_map: EnrichmentFilterMap,
     start: date = FRAME_START,
     end: date = FRAME_END,
-    issue_blocks: int = DEFAULT_JIRA_ISSUE_BLOCKS,
+    total_issue_target: int = DEFAULT_JIRA_TOTAL_ISSUE_TARGET,
+    min_issues_per_year: int = DEFAULT_JIRA_MIN_ISSUES_PER_YEAR,
     block_size: int = DEFAULT_JIRA_BLOCK_SIZE,
     max_calls: int = DEFAULT_JIRA_MAX_CALLS,
     base_url: str = DEFAULT_JIRA_BASE_URL,
 ) -> tuple[list[JiraCandidate], dict[str, str], dict[str, str | None], JiraScanStats]:
-    """Budgeted, metadata-only JIRA comment frame builder -- see module
-    docstring for the full rationale. Returns `(candidates, text_by_id,
-    parent_text_by_id, stats)`.
+    """Budgeted, metadata-only, per-year-stratified JIRA comment frame
+    builder -- see module docstring for the full rationale (issue #44 fix
+    round 2: year weights come from population counts, not scan luck).
+    Returns `(candidates, text_by_id, parent_text_by_id, stats)`.
     """
-    total_resp = client.get(
-        _JIRA_SEARCH_PATH,
-        {"jql": f'project = {project_key} AND updated >= "{start.isoformat()}"', "maxResults": 0},
-    )
-    candidate_issue_total = (
-        total_resp.json().get("total", 0) if total_resp.status_code == 200 else 0
-    )
+    years = list(range(start.year, end.year + 1))
 
-    issue_keys: dict[str, None] = {}
-    if candidate_issue_total > 0:
-        max_offset = max(candidate_issue_total - block_size, 0)
-        rng = random.Random(f"{seed}:jira_issue_blocks")
+    # 1. Population per-year issue counts -- one JQL maxResults=0 call per
+    # year. Disjoint by construction (an issue's `created` falls in exactly
+    # one year), so summing them never double-counts.
+    year_issue_counts: dict[int, int] = {}
+    for year in years:
+        if client.call_count >= max_calls:
+            year_issue_counts[year] = 0
+            continue
+        year_start, year_end = _year_window(year, start, end)
+        resp = client.get(
+            _JIRA_SEARCH_PATH,
+            {"jql": _year_jql(project_key, year_start, year_end), "maxResults": 0},
+        )
+        year_issue_counts[year] = resp.json().get("total", 0) if resp.status_code == 200 else 0
+
+    candidate_issue_total = sum(year_issue_counts.values())
+
+    # 2. Allocate the issue-scan budget across years in proportion to their
+    # population weight, floored at `min_issues_per_year` (capped at that
+    # year's own population) so a small/rare year is never crowded out.
+    weights = {str(y): float(c) for y, c in year_issue_counts.items()}
+    capacity = {str(y): c for y, c in year_issue_counts.items()}
+    proportional = allocate_with_capacity(total_issue_target, weights, capacity)
+    issues_target_by_year = {
+        year: (
+            min(year_issue_counts[year], max(proportional[str(year)], min_issues_per_year))
+            if year_issue_counts[year] > 0
+            else 0
+        )
+        for year in years
+    }
+
+    # 3. Seeded-random `startAt` blocks *within each year's own* JQL result
+    # set (never a block spanning multiple years -- that's what biased the
+    # first version of this scan toward whichever years its few contiguous
+    # blocks happened to land in), interleaved round-robin across years so a
+    # budget cutoff partially covers every year instead of exhausting itself
+    # on the first ones.
+    year_offsets: dict[int, list[int]] = {}
+    for year in years:
+        target = issues_target_by_year[year]
+        count = year_issue_counts[year]
+        if target <= 0 or count <= 0:
+            year_offsets[year] = []
+            continue
+        max_offset = max(count - block_size, 0)
+        num_blocks = max(1, -(-target // block_size))  # ceil(target / block_size)
+        rng = random.Random(f"{seed}:jira_year_block:{year}")
         if max_offset > 0:
-            num_offsets = min(issue_blocks, max_offset + 1)
-            offsets = sorted(rng.sample(range(0, max_offset + 1), k=num_offsets))
+            num_offsets = min(num_blocks, max_offset + 1)
+            year_offsets[year] = sorted(rng.sample(range(0, max_offset + 1), k=num_offsets))
         else:
-            offsets = [0]
-        for offset in offsets:
+            year_offsets[year] = [0]
+
+    issue_keys_by_year: dict[int, list[str]] = {year: [] for year in years}
+    seen_issue_keys: set[str] = set()
+    budget_exhausted = False
+    max_rounds = max((len(offsets) for offsets in year_offsets.values()), default=0)
+    for round_index in range(max_rounds):
+        if budget_exhausted:
+            break
+        for year in years:
             if client.call_count >= max_calls:
+                budget_exhausted = True
                 break
+            offsets = year_offsets[year]
+            if round_index >= len(offsets):
+                continue
+            year_start, year_end = _year_window(year, start, end)
             resp = client.get(
                 _JIRA_SEARCH_PATH,
                 {
-                    "jql": (
-                        f'project = {project_key} AND updated >= "{start.isoformat()}" '
-                        "ORDER BY key ASC"
-                    ),
-                    "startAt": offset,
+                    "jql": _year_jql(project_key, year_start, year_end, order=True),
+                    "startAt": offsets[round_index],
                     "maxResults": block_size,
                     "fields": "key",
                 },
@@ -579,8 +741,13 @@ def scan_jira_candidates(
             if resp.status_code != 200:
                 continue
             for issue in resp.json().get("issues", []):
-                issue_keys.setdefault(issue["key"], None)
+                key = issue["key"]
+                if key not in seen_issue_keys:
+                    seen_issue_keys.add(key)
+                    issue_keys_by_year[year].append(key)
 
+    # 4. List every comment on each sampled issue -- unchanged in shape from
+    # the first version: read the body once, in memory, then discard it.
     candidates: list[JiraCandidate] = []
     text_by_id: dict[str, str] = {}
     parent_text_by_id: dict[str, str | None] = {}
@@ -588,9 +755,9 @@ def scan_jira_candidates(
     comments_in_window = 0
     comments_eligible = 0
     issues_scanned = 0
-    budget_exhausted = False
 
-    for issue_key in issue_keys:
+    all_issue_keys = [key for year in years for key in issue_keys_by_year[year]]
+    for issue_key in all_issue_keys:
         if client.call_count >= max_calls:
             budget_exhausted = True
             break
@@ -639,7 +806,11 @@ def scan_jira_candidates(
             word_count = len(text.split())
             english = is_english_heuristic(text)
             eligible = word_count >= MIN_WORDS_AFTER_PREPROCESS and english
-            hits = enrichment_hits(text, enrichment_filter_map) if eligible else frozenset()
+            hits = (
+                enrichment_hits(text, enrichment_filter_map, prev_text)
+                if eligible
+                else frozenset()
+            )
             archive_url = (
                 f"{base_url}/browse/{issue_key}?focusedCommentId={comment_id}#comment-{comment_id}"
             )
@@ -672,6 +843,8 @@ def scan_jira_candidates(
         api_calls=client.call_count,
         budget_exhausted=budget_exhausted,
         estimated_total_eligible=estimated_total_eligible,
+        year_issue_counts=year_issue_counts,
+        issues_scanned_by_year={y: len(keys) for y, keys in issue_keys_by_year.items()},
     )
     return candidates, text_by_id, parent_text_by_id, stats
 
@@ -708,20 +881,38 @@ def select_prevalence(
     dev_groups = _year_groups(dev_eligible, "message_id")
     jira_groups = _year_groups(jira_eligible, "comment_id")
 
-    def _pick(groups: dict[int, list[str]], n: int, namespace: str) -> list[str]:
-        if not groups or n <= 0:
+    def _pick(
+        groups: dict[int, list[str]], weights: dict[int, float], n: int, namespace: str
+    ) -> list[str]:
+        if not weights or n <= 0:
             return []
-        weights = {str(y): float(len(ids)) for y, ids in groups.items()}
-        capacity = {str(y): len(ids) for y, ids in groups.items()}
-        year_alloc = allocate_with_capacity(n, weights, capacity)
+        weight_keys = {str(y): w for y, w in weights.items()}
+        capacity_keys = {str(y): len(groups.get(y, [])) for y in weights}
+        year_alloc = allocate_with_capacity(n, weight_keys, capacity_keys)
         picked: list[str] = []
         for y_str, count in year_alloc.items():
             y = int(y_str)
-            picked.extend(deterministic_sample(seed, f"{namespace}:{y}", groups[y], count))
+            picked.extend(deterministic_sample(seed, f"{namespace}:{y}", groups.get(y, []), count))
         return picked
 
-    dev_ids = _pick(dev_groups, source_alloc.get("dev", 0), "prevalence:dev")
-    jira_ids = _pick(jira_groups, source_alloc.get("jira", 0), "prevalence:jira")
+    # dev@'s year weights come from the (fully enumerated) eligible pool
+    # itself -- there is no separate population statistic to prefer, unlike
+    # JIRA below. JIRA's year weights come from `jira_stats.
+    # year_issue_counts` -- a POPULATION statistic (`scan_jira_candidates`'s
+    # per-year JQL counts), not from `jira_groups`' own scanned-sample sizes.
+    # Weighting by the scan's own per-year counts was issue #44 fix round
+    # 2's bug: a handful of seeded-random contiguous blocks landed unevenly
+    # across years, so years the scan happened to sample more of looked
+    # artificially "bigger" than years it barely touched, independent of how
+    # much JIRA activity actually happened in either. `jira_groups` (the
+    # scan's own per-year eligible counts) still sets each year's *capacity*
+    # in `_pick` above -- we can never select more comments from a year than
+    # the scan actually found -- just not its *weight*.
+    dev_weights = {y: float(len(ids)) for y, ids in dev_groups.items()}
+    jira_weights = {y: float(c) for y, c in jira_stats.year_issue_counts.items()}
+
+    dev_ids = _pick(dev_groups, dev_weights, source_alloc.get("dev", 0), "prevalence:dev")
+    jira_ids = _pick(jira_groups, jira_weights, source_alloc.get("jira", 0), "prevalence:jira")
 
     stats = {
         "target": target,
@@ -732,6 +923,7 @@ def select_prevalence(
         "jira_selected": len(jira_ids),
         "dev_by_year": {y: len(ids) for y, ids in dev_groups.items()},
         "jira_by_year_sampled": {y: len(ids) for y, ids in jira_groups.items()},
+        "jira_by_year_population": dict(jira_stats.year_issue_counts),
     }
     return dev_ids, jira_ids, stats
 
@@ -830,14 +1022,24 @@ class CorpusItem:
     checksum: str
 
     def to_jsonl_dict(self) -> dict[str, Any]:
+        """The corpus row exactly as `project_health.label.store.load_corpus`
+        (issue #46) requires it: `id`, `text` and `parent_text` as top-level,
+        plain-string fields (`parent_text` is `null` for a thread root), plus
+        `stratum`, `source`, `archive_url` and `checksum`. `year` is an extra
+        field the labeler's loader ignores (it only reads its own named
+        keys) -- kept because the public manifest's per-year counts are
+        rebuilt from this same corpus, and because a future consumer other
+        than the labeler may want it without re-deriving it from
+        `archive_url`.
+        """
         return {
-            "item_id": self.item_id,
+            "id": self.item_id,
             "stratum": self.stratum,
             "source": self.source,
             "archive_url": self.archive_url,
             "year": self.year,
-            "message": {"text": self.message_text},
-            "parent": {"text": self.parent_text} if self.parent_text is not None else None,
+            "text": self.message_text,
+            "parent_text": self.parent_text,
             "checksum": self.checksum,
         }
 
@@ -977,10 +1179,15 @@ def build_manifest(
             "api_calls": jira_scan_stats.api_calls,
             "budget_exhausted": jira_scan_stats.budget_exhausted,
             "estimated_total_eligible_in_window": jira_scan_stats.estimated_total_eligible,
+            "year_issue_counts": dict(jira_scan_stats.year_issue_counts),
+            "issues_scanned_by_year": dict(jira_scan_stats.issues_scanned_by_year),
             "note": (
                 "JIRA comment volume is estimated from a budgeted random sample of "
                 "issues (see classify/sample.py module docstring), not an exhaustive "
-                "listing; used only to weight the dev@/JIRA prevalence split."
+                "listing; used only to weight the dev@/JIRA prevalence split. Year "
+                "weights for JIRA's own prevalence stratification come from "
+                "year_issue_counts (a population statistic -- per-year issue counts "
+                "via JQL), never from this scan's own per-year sample sizes."
             ),
         },
         "corpus_checksum_sha256": corpus_checksum,
@@ -1066,7 +1273,8 @@ def render_public_manifest_markdown(manifest: dict[str, Any]) -> str:
         "",
         "## JIRA comment metadata listing (budgeted, not exhaustive)",
         "",
-        f"- Candidate issues in window (`updated >= {manifest['frame_window']['start']}`): "
+        f"- Candidate issues, summed per-year (`created` within each year, "
+        f"{manifest['frame_window']['start']} to {manifest['frame_window']['end']}): "
         f"{jira_scan['candidate_issue_total']}",
         f"- Issues scanned this run: {jira_scan['issues_scanned']}",
         f"- Comments seen / in window / eligible: {jira_scan['comments_seen']} / "
@@ -1076,7 +1284,16 @@ def render_public_manifest_markdown(manifest: dict[str, Any]) -> str:
         f"- Estimated total eligible JIRA comments in window: "
         f"{jira_scan['estimated_total_eligible_in_window']:.1f}",
         f"- {jira_scan['note']}",
+        "",
+        "Per-year JIRA population (issues, via JQL) vs. issues this scan actually sampled:",
+        "",
+        "| Year | Population issue count | Issues scanned |",
+        "|---|---|---|",
     ]
+    for year in sorted(jira_scan["year_issue_counts"]):
+        population = jira_scan["year_issue_counts"][year]
+        scanned = jira_scan["issues_scanned_by_year"].get(year, 0)
+        lines.append(f"| {year} | {population} | {scanned} |")
     return "\n".join(lines) + "\n"
 
 
@@ -1106,7 +1323,8 @@ def run_pilot_sample(
     manifest_output_path: str | Path,
     ponymail_fetcher: PonyMailTextFetcher | None = None,
     jira_client: _PacedJiraScanClient | None = None,
-    jira_issue_blocks: int = DEFAULT_JIRA_ISSUE_BLOCKS,
+    jira_total_issue_target: int = DEFAULT_JIRA_TOTAL_ISSUE_TARGET,
+    jira_min_issues_per_year: int = DEFAULT_JIRA_MIN_ISSUES_PER_YEAR,
     jira_block_size: int = DEFAULT_JIRA_BLOCK_SIZE,
     jira_max_calls: int = DEFAULT_JIRA_MAX_CALLS,
     start: date = FRAME_START,
@@ -1150,7 +1368,8 @@ def run_pilot_sample(
             enrichment_filter_map,
             start=start,
             end=end,
-            issue_blocks=jira_issue_blocks,
+            total_issue_target=jira_total_issue_target,
+            min_issues_per_year=jira_min_issues_per_year,
             block_size=jira_block_size,
             max_calls=jira_max_calls,
             base_url=jira_base_url,

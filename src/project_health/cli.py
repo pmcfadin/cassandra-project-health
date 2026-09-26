@@ -21,7 +21,8 @@ from pathlib import Path
 
 from project_health.classify.sample import (
     DEFAULT_JIRA_BLOCK_SIZE,
-    DEFAULT_JIRA_ISSUE_BLOCKS,
+    DEFAULT_JIRA_MIN_ISSUES_PER_YEAR,
+    DEFAULT_JIRA_TOTAL_ISSUE_TARGET,
     DEFAULT_JIRA_MAX_CALLS,
     run_pilot_sample,
 )
@@ -168,9 +169,14 @@ def _build_parser() -> argparse.ArgumentParser:
     pilot_parser.add_argument(
         "--enrichment-filters",
         default=None,
-        help="Path to the enrichment pre-filter YAML (default: classify/enrichment_filters_v1)",
+        help="Path to the enrichment pre-filter YAML (default: classify/enrichment_filters_v2)",
     )
-    pilot_parser.add_argument("--jira-issue-blocks", type=int, default=DEFAULT_JIRA_ISSUE_BLOCKS)
+    pilot_parser.add_argument(
+        "--jira-total-issue-target", type=int, default=DEFAULT_JIRA_TOTAL_ISSUE_TARGET
+    )
+    pilot_parser.add_argument(
+        "--jira-min-issues-per-year", type=int, default=DEFAULT_JIRA_MIN_ISSUES_PER_YEAR
+    )
     pilot_parser.add_argument("--jira-block-size", type=int, default=DEFAULT_JIRA_BLOCK_SIZE)
     pilot_parser.add_argument("--jira-max-calls", type=int, default=DEFAULT_JIRA_MAX_CALLS)
 
@@ -253,7 +259,7 @@ def _cmd_pilot_sample(args: argparse.Namespace) -> int:
         return 2
 
     enrichment_filters = args.enrichment_filters or str(
-        Path(__file__).resolve().parent / "classify" / "enrichment_filters_v1.yaml"
+        Path(__file__).resolve().parent / "classify" / "enrichment_filters_v2.yaml"
     )
 
     result = run_pilot_sample(
@@ -267,7 +273,8 @@ def _cmd_pilot_sample(args: argparse.Namespace) -> int:
         enrichment_filters_path=enrichment_filters,
         corpus_output_path=args.corpus_out,
         manifest_output_path=args.manifest_out,
-        jira_issue_blocks=args.jira_issue_blocks,
+        jira_total_issue_target=args.jira_total_issue_target,
+        jira_min_issues_per_year=args.jira_min_issues_per_year,
         jira_block_size=args.jira_block_size,
         jira_max_calls=args.jira_max_calls,
     )

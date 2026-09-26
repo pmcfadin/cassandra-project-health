@@ -1,0 +1,143 @@
+# Rare-label keyword/heuristic pre-filter — Phase 2a Jev pilot (issue #44;
+# COMMUNITY-HEALTH.md §6.1's "lightweight keyword/heuristic pre-filter... not
+# the production classifier itself"; OPEN-QUESTIONS.md #11).
+#
+# v2 (issue #44 fix round 2). v1's real run (corpus v0, seed 44) found zero
+# gatekeeping and zero dismissiveness candidates across 13,933 eligible dev@
+# messages and 2,776 eligible JIRA comments -- not necessarily because those
+# labels don't occur, but because v1's phrasing list for both was too narrow
+# to catch how they're actually written. This version broadens both label's
+# term lists with the phrasings the orchestrator's review specifically named
+# ("not how we do things here", "you need to be a committer", "read the
+# contributor guide first", "this was already decided" for gatekeeping;
+# "this is pointless", "not worth discussing", "we already said no", "-1,
+# no", curt "won't fix" for dismissiveness) plus close variants. The other
+# three labels are unchanged from v1 (kept in enrichment_filters_v1.yaml,
+# frozen, for audit history -- corrections are appended as a new version,
+# never edited into the old one, mirroring COMMUNITY-HEALTH.md §6.1's rule
+# for the frozen benchmark corpus itself).
+#
+# This version also gains a code-side (not YAML-side) structural
+# dismissiveness signal, `sample.py`'s `_is_short_dismissive_reply_to_long_
+# parent`: a very short, bare negative reply ("No.", "-1, no", "Won't fix.")
+# to a long parent message reads as "declined without engaging the
+# substance" even when it uses no single fixed phrase a regex list could
+# enumerate in advance. It is a word-count/regex heuristic over the message
+# and its parent, not a model call -- D22 forbids Jev or any LLM in this
+# pre-filter, and using one would make the eventual classifier evaluation
+# circular (the pre-filter would be selecting the cases the classifier is
+# later scored on).
+#
+# Purpose: surface CANDIDATE messages likely to carry one of the five rare
+# labels below, so the pilot's enrichment stratum contains enough positive
+# examples to be useful at all. A term match is a hint for human review, not
+# a label -- Jev and the human rater still make the actual call per
+# COMMUNITY-HEALTH.md §1.2's definitions. This stratum is never used to
+# estimate how common a label is in the wild (COMMUNITY-HEALTH.md §6.1); it
+# exists only to enrich the labeling set with rare-label candidates.
+#
+# STATUS: unreviewed. OPEN-QUESTIONS.md #11's default is "have a second
+# person (not the filter's author) review the filter's candidate set against
+# a small random sample before the enrichment stratum is finalized" — that
+# review has not happened yet, for v1 or this v2 broadening. This file, and
+# every corpus v0 enrichment item it produced, is flagged for that review
+# before the pilot's results are treated as final. A biased or narrow filter
+# here would bias which rare instances raters ever see, not just how many.
+#
+# Each pattern is a case-insensitive regex (re.IGNORECASE), matched against
+# `message.text` (preprocessed, per classify/preprocess.py). Patterns are
+# deliberately broad/high-recall — the filter only needs to beat random
+# sampling at surfacing rare positives, and a human still reviews every
+# candidate before it counts as a label. False positives here cost a rater a
+# few seconds; false negatives are the actual risk (an enrichment stratum
+# that never surfaces some rare label's real presentation), so recall is
+# valued over precision in this file, unlike the classifier's own
+# label-group precision/recall gates in COMMUNITY-HEALTH.md §6.4, which are
+# the opposite priority for a different reason (publication safety).
+labels:
+  personal_attack:
+    - "you (clearly|obviously) (have|has) no idea"
+    - "you (don't|do not) (know|understand) (what|how)"
+    - "maybe (read|learn|try) (the|some)? ?(code|docs|documentation)? ?before"
+    - "\\bidiot(ic)?\\b"
+    - "\\bincompetent\\b"
+    - "\\bstupid\\b"
+    - "\\bmoron(ic)?\\b"
+    - "you (are|'re) (the problem|wrong about everything)"
+    - "\\bclueless\\b"
+    - "grow up"
+
+  gatekeeping:
+    # v1 terms (kept).
+    - "you (need to|have to|should) (have )?(committed|contributed)"
+    - "not (really |exactly )?a call for someone who"
+    - "you (haven't|have not) (earned|worked on|touched)"
+    - "who (are|even are) you to"
+    - "before you get an opinion"
+    - "this isn't (for|really for) (newcomers|new contributors|outsiders)"
+    - "you don't get a vote"
+    - "not your (place|call) to"
+    # v2 additions -- standing/tenure/process gatekeeping phrasings v1 missed.
+    - "not how we do things here"
+    - "you need to be a committer"
+    - "read the contributor guide first"
+    - "read the contributing (guide|guidelines|doc(ument)?) first"
+    - "this was already decided"
+    - "the decision has (already )?been made"
+    - "not up for debate"
+    - "come back when you('ve| have) (more experience|contributed more)"
+    - "wait until you('ve| have) contributed more"
+    - "you('re| are) not a committer"
+    - "only committers (can|get to|are allowed to)"
+    - "that('s| is) not (for you|your place) to decide"
+    - "outsiders don't get to (decide|weigh in|have a say)"
+    - "you haven't (been around|earned that) long enough"
+    - "new(comer)?s don't (get to|have) (a say|standing)"
+
+  dismissiveness:
+    # v1 terms (kept).
+    - "^no\\.?\\s*$"
+    - "^not doing this\\.?\\s*$"
+    - "this has been discussed,? move on"
+    - "^(nope|nah)\\.?\\s*$"
+    - "not (going to|gonna) (happen|discuss)"
+    - "we('re| are) not doing (this|that)"
+    - "end of (discussion|story)"
+    - "\\bwhatever\\b.{0,20}\\byour way\\b"
+    # v2 additions -- curt closures/rejections v1 missed. Note: a bare
+    # "won't fix"/"-1, no" with NO other context is also caught structurally
+    # for any message length by `_SHORT_NEGATIVE_REPLY_RE` in sample.py when
+    # it's a short reply to a long parent -- these regex entries additionally
+    # catch the phrase wherever it appears (not just as the whole message).
+    - "this is pointless"
+    - "not worth discussing"
+    - "we('ve| have) already said no"
+    - "already (said|answered|addressed) (no|that)"
+    - "-1,? no\\b"
+    - "^won'?t fix\\.?\\s*$"
+    - "^wontfix\\.?\\s*$"
+    - "this isn't going anywhere"
+    - "not this again"
+    - "we('re| are) done (here|with this)"
+    - "^case closed\\.?\\s*$"
+    - "^moving on\\.?\\s*$"
+    - "^next\\.?\\s*$"
+
+  status_authority_invocation:
+    - "\\bi designed\\b.{0,40}\\b(subsystem|system|component|module)\\b"
+    - "\\bi wrote\\b.{0,40}\\b(this code|this class|this subsystem)\\b"
+    - "as (the|a) (committer|pmc member|maintainer|author of this)"
+    - "it stays as[- ]is"
+    - "\\bi (built|created) (this|it) (originally)?\\b"
+    - "trust me,? i('ve| have) been (doing|working on) this (for years|since)"
+    - "\\bi('m| am) the (one who|original) (author|maintainer)\\b"
+
+  sarcasm:
+    - "oh (great|wonderful|fantastic|perfect)[,.!]"
+    - "that('s| is) (definitely|totally|surely) going to"
+    - "^sure[,.]? (why not)"
+    - "\\bshocking\\b.{0,20}\\bnobody\\b"
+    - "what could (possibly )?go wrong"
+    - "\\bgee\\b.{0,10}\\bthanks\\b"
+    - "yet another (rewrite|refactor) of the same"
+    - "\\b/s\\b"

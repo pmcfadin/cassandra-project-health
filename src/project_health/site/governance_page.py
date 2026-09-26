@@ -42,7 +42,7 @@ import csv
 import io
 import json
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
@@ -56,6 +56,7 @@ from project_health.governance.overrides import DEFAULT_OVERRIDES_PATH, load_ove
 from project_health.governance.policy import DEFAULT_POLICY_PATH, Policy, load_policy
 from project_health.metrics.windows import add_months, month_start
 from project_health.schema import get_schema, validate
+from project_health.site import chart_spec
 from project_health.site.manifest import GovernanceStatus, RunManifest
 
 REPO_URL = "https://github.com/pmcfadin/cassandra-project-health"
@@ -94,8 +95,6 @@ _STATE_COLORS = {
     "exempt": "#718096",
 }
 _STATE_ORDER = ("pass", "fail", "unknown", "exempt")
-
-_X_DOMAIN_PAD_DAYS = 15
 
 # issue #69: a governance headline card gets a "backfill pending" tag when
 # the run manifest says this run's governance backfill is `partial` *and*
@@ -417,18 +416,26 @@ def _write_commits_csv(path: Path, commit_rows: list[dict[str, Any]]) -> None:
 
 
 # --- Compliance trend charts (per check: monthly pass/fail/unknown/exempt) --
-
-
-def _month_ceil_exclusive(d: date) -> date:
-    if d.month == 12:
-        return date(d.year + 1, 1, 1)
-    return date(d.year, d.month + 1, 1)
+#
+# Domain padding, the recent/full-history window, and the low-n
+# de-emphasis threshold are shared with generate.py's single-series M0/
+# conversations charts -- see `site/chart_spec.py` (issue #28).
 
 
 def _trend_vega_spec(
     records: list[dict[str, Any]], *, value_field: str, value_format: str, value_title: str
 ) -> dict[str, Any]:
-    months = sorted({r["month"] for r in records})
+    """Build a (possibly multi-series) compliance-trend chart's Vega-Lite
+    spec. Two layers (a full-opacity line, a point layer whose opacity is
+    conditioned on `datum.low_n`) so a low-n/insufficient-data point
+    (issue #28) renders de-emphasised without fading the trend line -- same
+    approach `generate._vega_lite_spec` uses for the M0/conversations
+    charts, kept independent here because this chart's `records` are
+    per-(month, state) rows, not per-month rows, and its multi-series color
+    encoding must keep working (`_STATE_COLORS`/`_STATE_ORDER`)."""
+    dates = [date.fromisoformat(r["month"]) for r in records]
+    window = chart_spec.chart_window(dates)
+
     x_encoding: dict[str, Any] = {
         "field": "month",
         "type": "temporal",
@@ -436,11 +443,12 @@ def _trend_vega_spec(
         "title": None,
         "axis": {"format": "%b %Y"},
     }
-    if months:
-        pad = timedelta(days=_X_DOMAIN_PAD_DAYS)
-        start = month_start(date.fromisoformat(months[0])) - pad
-        end = _month_ceil_exclusive(date.fromisoformat(months[-1])) + pad
-        x_encoding["scale"] = {"domain": [start.isoformat(), end.isoformat()], "nice": False}
+    if window is not None:
+        # No explicit `tickCount` here (unlike generate.py's chart) --
+        # Vega-Lite's automatic temporal ticking already reacts correctly
+        # to `static/app.js` swapping this domain for the full one, so
+        # there's no separate recent/full tick step to carry.
+        x_encoding["scale"] = {"domain": window["domain"]["recent"], "nice": False}
 
     encoding: dict[str, Any] = {
         "x": x_encoding,
@@ -469,18 +477,34 @@ def _trend_vega_spec(
             "scale": {"domain": list(_STATE_ORDER), "range": state_range},
         }
         encoding["tooltip"].insert(1, {"field": "state", "type": "nominal", "title": "Result"})
+    if any("n" in r for r in records):
+        encoding["tooltip"].append({"field": "n", "type": "quantitative", "title": "n"})
+    if any("flag" in r for r in records):
+        encoding["tooltip"].append({"field": "flag", "type": "nominal", "title": "Flag"})
 
-    return {
+    spec: dict[str, Any] = {
         "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
         "width": "container",
         "height": 160,
         "autosize": {"type": "fit-x", "contains": "padding"},
         "background": None,
         "data": {"values": records},
-        "mark": {"type": "line", "point": True, "clip": True},
+        # Shared across both layers (Vega-Lite merges a layered spec's
+        # top-level `encoding` into each layer); only the point layer's
+        # `opacity` differs.
         "encoding": encoding,
+        "layer": [
+            {"mark": {"type": "line", "clip": True}},
+            {
+                "mark": {"type": "point", "clip": True, "filled": True},
+                "encoding": {"opacity": chart_spec.LOW_N_OPACITY_ENCODING},
+            },
+        ],
         "config": {"view": {"stroke": None}},
     }
+    if window is not None:
+        spec["usermeta"] = {"chartWindow": window}
+    return spec
 
 
 def _latest_scored_shares(rows: list[dict[str, Any]]) -> dict[str, float] | None:
@@ -525,10 +549,35 @@ def _compliance_trend_context(governance_metric_rows: list[dict[str, Any]]) -> l
             total = details.get("total_including_exempt_and_not_in_force") or 0
             window_end = row["window_end"]
             month = window_end.isoformat() if hasattr(window_end, "isoformat") else str(window_end)
+            # `row["n"]`/`row["flag"]` are the same scored (pass+fail+
+            # unknown) sample size and ok/insufficient_data flag
+            # `governance/metrics.py` computed the month's pass rate from
+            # (`_latest_scored_shares` above reads the identical fields) --
+            # every state's record for this month carries them so the
+            # tooltip and low-n de-emphasis (issue #28) read the real
+            # sample size, not a re-derived one.
+            n = row["n"]
+            flag = row["flag"]
+            # Every scored check's pass rate is a `value_kind="percent"`
+            # metric in `metrics_meta.GOVERNANCE_METRICS` -- a rate over
+            # `n` scored commits, not a plain headcount -- so it's eligible
+            # for low-n de-emphasis the same as any other rate/ratio/
+            # latency chart (`chart_spec.is_low_n`).
+            low_n = chart_spec.is_low_n(n, flag, value_kind="percent")
             for state in _STATE_ORDER:
                 count = details.get(state, 0)
                 rate = (count / total) if total else None
-                records.append({"month": month, "state": state, "rate": rate, "count": count})
+                records.append(
+                    {
+                        "month": month,
+                        "state": state,
+                        "rate": rate,
+                        "count": count,
+                        "n": n,
+                        "flag": flag,
+                        "low_n": low_n,
+                    }
+                )
         spec = _trend_vega_spec(
             records, value_field="rate", value_format=".0%", value_title="Share of commits"
         )

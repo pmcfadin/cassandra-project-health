@@ -1,9 +1,14 @@
 """M0 metric registry (`metric_definition_version` rows, ARCHITECTURE.md §4.4).
 
-Every M0 metric ships at version ``"1.0"``. `changed_at`/`changelog_note`
-record when and why a version was introduced; per ARCHITECTURE.md §4.4 a
-version is never mutated in place — a future formula change adds a new
-`(metric_id, version)` row rather than editing this one.
+Most M0 metrics ship at version ``"1.0"``. The three headcount metrics
+(`active_contributors_monthly`, `new_contributors_monthly`,
+`unique_reviewers_monthly`) are at ``"1.1"`` as of issue #27 (2026-09-25):
+they no longer apply METRICS.md §0.6's sample-size floor, since a raw
+headcount is already the complete, meaningful statistic at any `n`,
+including 0. `changed_at`/`changelog_note` record when and why a version
+was introduced; per ARCHITECTURE.md §4.4 a version is never mutated in
+place — a future formula change adds a new `(metric_id, version)` row
+rather than editing this one.
 
 Descriptions are condensed from each metric's own section in
 `docs/spec/METRICS.md` (source of truth); this module exists so a
@@ -20,21 +25,57 @@ import pyarrow as pa
 
 from project_health.schema import get_schema, validate
 
-DEFINITION_VERSION = "1.0"
+# metric_id -> the version that metric currently ships at. Kept in lockstep
+# with engine.py's `DEFINITION_VERSIONS` for the same metric_id.
+_VERSIONS: dict[str, str] = {
+    "active_contributors_monthly": "1.1",
+    "new_contributors_monthly": "1.1",
+    "unique_reviewers_monthly": "1.1",
+    "reviewer_hhi": "1.0",
+    "median_resolution_latency_jira": "1.0",
+    "stale_jira_rate": "1.0",
+}
+
+_INITIAL_M0_CHANGELOG_NOTE = "Initial M0 implementation (issue #7)."
+
+_HEADCOUNT_FLOOR_CHANGELOG_NOTE = (
+    "1.0 -> 1.1 (issue #27, 2026-09-25): no longer applies METRICS.md §0.6's rate/ratio "
+    "sample-size floor. Reports its value for any sample size n, including 0, always with "
+    "flag='ok' -- a raw headcount is already the complete, meaningful statistic at any n, "
+    "not an estimate whose stability depends on sample size. Previously a low-n month (e.g. "
+    "3 new contributors) was suppressed as insufficient_data, hiding real onboarding/attrition "
+    "signal."
+)
+
+# metric_id -> changelog_note for its current version.
+_CHANGELOG_NOTES: dict[str, str] = {
+    "active_contributors_monthly": _HEADCOUNT_FLOOR_CHANGELOG_NOTE,
+    "new_contributors_monthly": _HEADCOUNT_FLOOR_CHANGELOG_NOTE,
+    "unique_reviewers_monthly": _HEADCOUNT_FLOOR_CHANGELOG_NOTE,
+    "reviewer_hhi": _INITIAL_M0_CHANGELOG_NOTE,
+    "median_resolution_latency_jira": _INITIAL_M0_CHANGELOG_NOTE,
+    "stale_jira_rate": _INITIAL_M0_CHANGELOG_NOTE,
+}
 
 # metric_id -> description, condensed from METRICS.md's own "## <id>" sections.
 _DESCRIPTIONS: dict[str, str] = {
     "active_contributors_monthly": (
         "Count of distinct non-bot, identity-resolved individuals who performed at least one "
         "code_commit (non-merge git commit, attributed by author email) in the calendar month. "
-        "Tier: established. Dimension: contributor sustainability. Role: supporting. "
-        "Direction of good: higher. Window: monthly, completed months only. METRICS.md §2."
+        "No sample-size floor applies (issue #27, definition_version 1.1): reports its value for "
+        "any n, including 0, always with flag='ok' -- a raw headcount is already the complete, "
+        "meaningful statistic regardless of sample size. Tier: established. Dimension: "
+        "contributor sustainability. Role: supporting. Direction of good: higher. Window: "
+        "monthly, completed months only. METRICS.md §2."
     ),
     "new_contributors_monthly": (
         "Count of contributors whose first-ever code_commit to the tracked repo(s), across the "
-        "full project history (not just the current window), falls in the calendar month. "
-        "Tier: established. Dimension: contributor sustainability. Role: supporting. "
-        "Direction of good: higher. Window: monthly, completed months only. METRICS.md §2."
+        "full project history (not just the current window), falls in the calendar month. No "
+        "sample-size floor applies (issue #27, definition_version 1.1): reports its value for "
+        "any n, including 0, always with flag='ok' -- a raw headcount is already the complete, "
+        "meaningful statistic regardless of sample size. Tier: established. Dimension: "
+        "contributor sustainability. Role: supporting. Direction of good: higher. Window: "
+        "monthly, completed months only. METRICS.md §2."
     ),
     "unique_reviewers_monthly": (
         "Count of distinct non-bot individuals credited as a reviewer -- via non-merge commit "
@@ -42,7 +83,10 @@ _DESCRIPTIONS: dict[str, str] = {
         "(source=jira_field) -- on at least one change in the calendar month. Value is the union "
         "across both sources (OPEN-QUESTIONS.md #2 default); details_json carries "
         "commit_trailer_count, jira_field_count and union_count so the per-source breakdown is "
-        "auditable (D2.3). KNOWN v1.0 LIMITATION: naive M0 identity resolution "
+        "auditable (D2.3). No sample-size floor applies (issue #27, definition_version 1.1): "
+        "reports its value for any n, including 0, always with flag='ok' -- a raw headcount is "
+        "already the complete, meaningful statistic regardless of sample size. KNOWN LIMITATION: "
+        "naive M0 identity resolution "
         "(normalize/identity.py) never cross-type-merges a commit-trailer git_name identity with "
         "the same person's git_email or jira_username identity, so one human credited via both a "
         "trailer and a JIRA field can be counted twice in the union -- an honest overcount, "
@@ -92,18 +136,22 @@ METRIC_IDS: tuple[str, ...] = tuple(_DESCRIPTIONS)
 
 
 def build_registry(changed_at: datetime) -> pa.Table:
-    """Build the `metric_definition_version` table: all 6 M0 metrics at "1.0".
+    """Build the `metric_definition_version` table: one row per M0 metric,
+    each stamped with its own current `version` (see `_VERSIONS`) and a
+    `changelog_note` describing that version.
 
     `changed_at` is caller-supplied (not wall-clock) so the table is a pure
-    function of its input, matching this project's reproducibility rule.
+    function of its input, matching this project's reproducibility rule. All
+    6 rows share the same `changed_at` in a given `build_registry()` call --
+    the per-metric distinction is `version`/`changelog_note`, not `changed_at`.
     """
     rows = [
         {
             "metric_id": metric_id,
-            "version": DEFINITION_VERSION,
+            "version": _VERSIONS[metric_id],
             "description": description,
             "changed_at": changed_at,
-            "changelog_note": "Initial M0 implementation (issue #7).",
+            "changelog_note": _CHANGELOG_NOTES[metric_id],
         }
         for metric_id, description in _DESCRIPTIONS.items()
     ]

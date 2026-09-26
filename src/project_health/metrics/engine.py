@@ -28,11 +28,21 @@ Design notes:
   it is real information (it may be exactly the decline this project exists
   to surface); it gets `n = 0`, `flag = 'insufficient_data'`, `value = null`,
   never a missing row. `_dense_months` below is the shared helper.
-- METRICS.md §0.6 minimum sample floors: when the window's population `n` is
-  below the metric's floor, `flag = 'insufficient_data'` and `value = null`
-  -- but the row is still emitted (with its real `n`) so a reader can see how
-  far short of the floor the window fell, rather than the window silently
-  vanishing.
+- METRICS.md §0.6 minimum sample floors: these apply only to rate/ratio
+  metrics, concentration metrics, and latency statistics, where a small `n`
+  makes the *statistic* unstable (a rate computed over 2 events, or a median
+  of 2 latencies, is not trustworthy). For those metrics, when the window's
+  population `n` is below the metric's floor, `flag = 'insufficient_data'`
+  and `value = null` -- but the row is still emitted (with its real `n`) so
+  a reader can see how far short of the floor the window fell, rather than
+  the window silently vanishing.
+  Plain headcount metrics (`active_contributors_monthly`,
+  `new_contributors_monthly`, `unique_reviewers_monthly`) are exempt from
+  this floor (issue #27, owner decision 2026-09-25): a raw count of "how
+  many people did X" is already the complete, meaningful statistic at any
+  `n`, including 0 -- it is not an estimate whose variance shrinks with `n`.
+  These three metrics always report `value = n` and `flag = 'ok'`, for any
+  `n` including 0.
 """
 
 from __future__ import annotations
@@ -49,7 +59,31 @@ from project_health.config import ProjectConfig
 from project_health.metrics.windows import add_months, month_end, month_start, trailing_12m_window
 from project_health.schema import CODE_COMMIT, get_schema, validate
 
-DEFINITION_VERSION = "1.0"
+# Per-metric definition_version (ARCHITECTURE.md §4.4 / D2 rule 6: "nothing
+# changes silently" -- a formula/floor-behavior change bumps only the
+# affected metric's version, never a blanket module constant applied to
+# every row). Kept in lockstep with registry.py's `_DESCRIPTIONS`/version
+# rows for the same metric_id.
+DEFINITION_VERSIONS: dict[str, str] = {
+    # issue #27: headcount metrics no longer apply the §0.6 sample floor.
+    "active_contributors_monthly": "1.1",
+    "new_contributors_monthly": "1.1",
+    "unique_reviewers_monthly": "1.1",
+    "reviewer_hhi": "1.0",
+    "median_resolution_latency_jira": "1.0",
+    "stale_jira_rate": "1.0",
+}
+
+# Headcount metrics are plain counts, not rate/ratio/concentration/latency
+# statistics -- METRICS.md §0.6's sample floor does not apply to them
+# (issue #27). They always report `value = n`, `flag = 'ok'`, for any `n`.
+HEADCOUNT_METRICS = frozenset(
+    {
+        "active_contributors_monthly",
+        "new_contributors_monthly",
+        "unique_reviewers_monthly",
+    }
+)
 
 # METRICS.md §0.6 default floors (this project's 6 M0 metrics use only these
 # three categories -- see the task report for exactly how each metric maps
@@ -221,8 +255,16 @@ def _make_row(
     computed_at: datetime,
     details: dict,
 ) -> dict:
-    """Apply the METRICS.md §0.6 floor and build one `metric_value` row dict."""
-    if n < floor or raw_value is None:
+    """Apply the METRICS.md §0.6 floor (headcount metrics exempt, issue #27)
+    and build one `metric_value` row dict."""
+    if metric_id in HEADCOUNT_METRICS:
+        # Headcounts report their value for any n, including 0 -- never
+        # gated by a sample floor (issue #27). `raw_value` is always a
+        # computable count for these three metrics (never None), but guard
+        # anyway rather than assume that invariant holds forever.
+        value = float(raw_value) if raw_value is not None else None
+        flag = "ok" if raw_value is not None else "insufficient_data"
+    elif n < floor or raw_value is None:
         value = None
         flag = "insufficient_data"
     else:
@@ -230,7 +272,7 @@ def _make_row(
         flag = "ok"
     return {
         "metric_id": metric_id,
-        "definition_version": DEFINITION_VERSION,
+        "definition_version": DEFINITION_VERSIONS[metric_id],
         "window_start": window_start,
         "window_end": window_end,
         "value": value,

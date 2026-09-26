@@ -25,7 +25,6 @@ The pipeline produces snapshots from nightly collection runs only. Frozen, citab
 
 - **Reliable from 2017 onward**: Commit-trailer and JIRA reviewer data are considered reliable from 2017-01-01 onward. Coverage is patchier before this date.
 - **Placeholder reviewers dropped**: Placeholder values like "TBD" in reviewer fields are excluded and counted separately.
-- **new_contributors_monthly sample floor**: This metric is mostly blank because the sample floor (minimum threshold) is applied to headcounts, not individual dates. See [issue #27](https://github.com/pmcfadin/cassandra-project-health/issues/27) for details.
 
 ## Architecture References
 

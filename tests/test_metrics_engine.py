@@ -52,12 +52,12 @@ def _details(row: dict) -> dict:
     return json.loads(row["details_json"]) if row["details_json"] else {}
 
 
-# --- active_contributors_monthly (also the insufficient-data case) ----------
+# --- active_contributors_monthly (headcount: reports any n, issue #27) -----
 
 
-def test_active_contributors_monthly_golden_and_insufficient_data():
+def test_active_contributors_monthly_golden_reports_any_n():
     ce_rows = []
-    # January 2024: 5 distinct authors -> meets the floor (5).
+    # January 2024: 5 distinct authors.
     for i in range(5):
         ce_rows.append(
             {
@@ -74,7 +74,8 @@ def test_active_contributors_monthly_golden_and_insufficient_data():
             "occurred_at": _ts(2024, 1, 6),
         }
     )
-    # February 2024: only 2 distinct authors -> below the floor (5).
+    # February 2024: only 2 distinct authors -- below the old floor (5), but
+    # headcounts are exempt from §0.6 (issue #27): still flag='ok'.
     for i in range(2):
         ce_rows.append(
             {
@@ -111,13 +112,15 @@ def test_active_contributors_monthly_golden_and_insufficient_data():
     assert jan["n"] == 5
     assert jan["value"] == 5.0
     assert jan["flag"] == "ok"
-    assert jan["definition_version"] == "1.0"
+    assert jan["definition_version"] == "1.1"
     assert jan["run_id"] == RUN_ID
     assert jan["computed_at"] == COMPUTED_AT
 
+    # Below the old rate/ratio floor (5), but headcounts are exempt (#27).
     assert feb["n"] == 2
-    assert feb["value"] is None
-    assert feb["flag"] == "insufficient_data"
+    assert feb["value"] == 2.0
+    assert feb["flag"] == "ok"
+    assert feb["definition_version"] == "1.1"
 
 
 def test_active_contributors_monthly_excludes_current_month_and_bots():
@@ -164,7 +167,8 @@ def test_new_contributors_monthly_golden():
         }
     )
     # bob0's first-ever commit, in February -- exactly one new contributor
-    # that month, below the floor.
+    # that month; below the old rate/ratio floor, but headcounts are exempt
+    # (issue #27), so this still reports flag='ok'.
     ce_rows.append(
         {
             "author_raw_type": "git_email",
@@ -199,10 +203,62 @@ def test_new_contributors_monthly_golden():
     assert jan["n"] == 5
     assert jan["value"] == 5.0
     assert jan["flag"] == "ok"
+    assert jan["definition_version"] == "1.1"
 
     assert feb["n"] == 1
-    assert feb["value"] is None
-    assert feb["flag"] == "insufficient_data"
+    assert feb["value"] == 1.0
+    assert feb["flag"] == "ok"
+    assert feb["definition_version"] == "1.1"
+
+
+def test_new_contributors_monthly_reports_low_and_zero_n_as_ok():
+    """Issue #27: (a) n=3 in a month, and (b) a fully empty gap month
+    (n=0) must both report `flag='ok'` with `value=n`, never
+    `insufficient_data` due to the old §0.6 sample floor."""
+    as_of = date(2024, 5, 1)
+    ce_rows = []
+    # January 2024: 3 first-ever commits -- below the old floor (5).
+    for i in range(3):
+        ce_rows.append(
+            {
+                "author_raw_type": "git_email",
+                "author_raw_value": f"alice{i}@example.org",
+                "occurred_at": _ts(2024, 1, 5),
+            }
+        )
+    # March 2024: one first-ever commit, so the dense-months range covers
+    # February (a fully empty gap month, n=0) between January and March.
+    ce_rows.append(
+        {
+            "author_raw_type": "git_email",
+            "author_raw_value": "carol@example.org",
+            "occurred_at": _ts(2024, 3, 1),
+        }
+    )
+
+    contribution_event = contribution_events(ce_rows)
+    identity_link = identity_link_for(contribution_events=contribution_event, now=NOW)
+
+    result = compute_all(
+        {"contribution_event": contribution_event, "identity_link": identity_link},
+        as_of=as_of,
+        run_id=RUN_ID,
+        computed_at=COMPUTED_AT,
+        config=CONFIG,
+    )
+
+    rows = {r["window_start"]: r for r in _rows_for(result, "new_contributors_monthly")}
+    assert sorted(rows) == [date(2024, 1, 1), date(2024, 2, 1), date(2024, 3, 1), date(2024, 4, 1)]
+
+    jan = rows[date(2024, 1, 1)]
+    assert jan["n"] == 3
+    assert jan["value"] == 3.0
+    assert jan["flag"] == "ok"
+
+    feb = rows[date(2024, 2, 1)]  # fully empty gap month
+    assert feb["n"] == 0
+    assert feb["value"] == 0.0
+    assert feb["flag"] == "ok"
 
 
 # --- unique_reviewers_monthly ------------------------------------------------
@@ -230,7 +286,8 @@ def test_unique_reviewers_monthly_golden_union_with_per_source_breakdown():
                 "occurred_at": _ts(2024, 1, 12),
             }
         )
-    # February: only 2 distinct reviewers -> below the floor.
+    # February: only 2 distinct reviewers -- below the old floor, but
+    # headcounts are exempt from §0.6 (issue #27): still flag='ok'.
     re_rows.append(
         {
             "source": "commit_trailer",
@@ -266,6 +323,7 @@ def test_unique_reviewers_monthly_golden_union_with_per_source_breakdown():
     assert jan["n"] == 6
     assert jan["value"] == 6.0
     assert jan["flag"] == "ok"
+    assert jan["definition_version"] == "1.1"
     jan_details = _details(jan)
     assert jan_details == {
         "commit_trailer_count": 3,
@@ -274,8 +332,9 @@ def test_unique_reviewers_monthly_golden_union_with_per_source_breakdown():
     }
 
     assert feb["n"] == 2
-    assert feb["value"] is None
-    assert feb["flag"] == "insufficient_data"
+    assert feb["value"] == 2.0
+    assert feb["flag"] == "ok"
+    assert feb["definition_version"] == "1.1"
 
 
 def test_monthly_metrics_are_dense_across_a_gap_month_and_a_trailing_gap():
@@ -347,11 +406,13 @@ def test_monthly_metrics_are_dense_across_a_gap_month_and_a_trailing_gap():
         assert rows[date(2024, 1, 1)]["flag"] == "ok"
         assert rows[date(2024, 4, 1)]["n"] == 5
         assert rows[date(2024, 4, 1)]["flag"] == "ok"
+        # Fully empty gap months are still headcounts: n=0, flag='ok',
+        # value=0.0 (issue #27) -- never insufficient_data.
         for gap_month in (date(2024, 2, 1), date(2024, 3, 1), date(2024, 5, 1)):
             gap_row = rows[gap_month]
             assert gap_row["n"] == 0
-            assert gap_row["value"] is None
-            assert gap_row["flag"] == "insufficient_data"
+            assert gap_row["value"] == 0.0
+            assert gap_row["flag"] == "ok"
 
     reviewer_rows = {r["window_start"]: r for r in _rows_for(result, "unique_reviewers_monthly")}
     assert sorted(reviewer_rows) == expected_months
@@ -360,8 +421,8 @@ def test_monthly_metrics_are_dense_across_a_gap_month_and_a_trailing_gap():
     for gap_month in (date(2024, 2, 1), date(2024, 3, 1), date(2024, 5, 1)):
         gap_row = reviewer_rows[gap_month]
         assert gap_row["n"] == 0
-        assert gap_row["value"] is None
-        assert gap_row["flag"] == "insufficient_data"
+        assert gap_row["value"] == 0.0
+        assert gap_row["flag"] == "ok"
         assert _details(gap_row) == {
             "commit_trailer_count": 0,
             "jira_field_count": 0,

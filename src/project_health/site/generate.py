@@ -59,6 +59,13 @@ STATIC_DIR = _PACKAGE_DIR / "static"
 METHODOLOGY_URL = "https://github.com/pmcfadin/cassandra-project-health/tree/main/docs/spec"
 
 
+def _version_key(version: str) -> tuple[int, ...]:
+    """Parse a semver-ish `definition_version` string (e.g. "1.10") into a
+    tuple of ints for numeric comparison -- lexicographic string comparison
+    would rank "1.10" below "1.9", which is wrong (ARCHITECTURE.md §4.4)."""
+    return tuple(int(part) for part in version.split("."))
+
+
 @dataclass(frozen=True)
 class MetricPoint:
     """One rendered window of a metric's history."""
@@ -165,7 +172,17 @@ def _build_series(table: pa.Table) -> dict[str, MetricSeries]:
             )
             for r in metric_rows
         ]
-        definition_version = metric_rows[-1]["definition_version"] if metric_rows else None
+        # The reported definition_version is the MAXIMUM version present
+        # among this metric's rows, not whichever row the window_start sort
+        # happens to put last -- a snapshot can hold rows from more than one
+        # definition_version at once (old-version rows are never overwritten,
+        # ARCHITECTURE.md §4.4), and a bump doesn't necessarily land on the
+        # latest window_start.
+        definition_version = (
+            max((r["definition_version"] for r in metric_rows), key=_version_key)
+            if metric_rows
+            else None
+        )
         series_by_id[metric_id] = MetricSeries(
             meta=meta, definition_version=definition_version, points=points
         )

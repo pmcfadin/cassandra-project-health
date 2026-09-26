@@ -72,7 +72,7 @@ import subprocess
 import sys
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -99,7 +99,76 @@ from project_health.provenance import (
 from project_health.site.generate import generate as generate_site
 from project_health.site.manifest import manifest_path
 
-ALL_SOURCES: tuple[str, ...] = ("git", "jira", "asf_roster", "ponymail")
+# --- Governance compliance engine (issue #36) -------------------------------
+#
+# Kept in its own clearly-delimited block, called once from `run_pipeline`
+# (see `_collect_governance` and its call site below), so this addition
+# stays easy to isolate/rebase against #33/#42's parallel work on the
+# shared collection functions above.
+from project_health.collectors.github_checks import GitHubChecksCollector
+from project_health.collectors.governance_git import collect_commits, resolve_sha
+from project_health.collectors.jira_comments import JiraCommentsCollector
+from project_health.governance.checks import CheckstyleEvidence, CIEvidence, CommitFacts
+from project_health.governance.engine import build_commit_compliance_rows, build_commit_facts_rows
+from project_health.governance.metrics import compute_monthly_check_metrics
+from project_health.governance.overrides import DEFAULT_OVERRIDES_PATH
+from project_health.governance.overrides import load_overrides as load_governance_overrides
+from project_health.governance.policy import DEFAULT_POLICY_PATH, load_policy
+from project_health.governance.registry import build_governance_registry
+from project_health.schema import get_schema as _governance_get_schema
+from project_health.schema import validate as _governance_validate
+
+ALL_SOURCES: tuple[str, ...] = ("git", "jira", "asf_roster", "ponymail", "governance")
+
+# --- Governance evidence-collection tuning (issue #36 fixup cycle 1) --------
+#
+# Conservative per-run defaults, used whenever `projects/<id>.yaml` doesn't
+# set its own `governance.max_github_calls_per_run` /
+# `governance.max_jira_calls_per_run` — see `_governance_budget` below. A
+# nightly GitHub Actions run has a 60-minute timeout and a shared
+# ~1,000 req/hr token; at `github_checks.DEFAULT_MIN_REQUEST_INTERVAL`
+# (0.25s/call) 500 calls costs ~125s, and at
+# `jira_comments.DEFAULT_MIN_REQUEST_INTERVAL` (0.55s/call) 300 calls costs
+# ~165s — both comfortably inside the timeout alongside the rest of the
+# pipeline (git/jira collection, metrics, site generation).
+DEFAULT_GOVERNANCE_MAX_GITHUB_CALLS_PER_RUN = 500
+DEFAULT_GOVERNANCE_MAX_JIRA_CALLS_PER_RUN = 300
+
+# `code-style-checkstyle`'s GitHub check-run re-fetch window (issue #36
+# fixup cycle 1): a check-run that's still pending/absent is only worth
+# re-checking while its commit is recent — GitHub's own check-run/workflow
+# history rolls off well before this (docs/spec/GOVERNANCE.md §10's
+# checkstyle-since-2024 finding: only 25.5% of a 21-month window still had
+# a retrievable run at all), so retrying a `unknown`-status old commit
+# forever would just burn budget for a result that will never resolve.
+GOVERNANCE_CHECK_RUN_RETRY_WINDOW_DAYS = 30
+
+# `code-style-checkstyle`'s GitHub check-run *retention* horizon (issue #36
+# fixup cycle 2, distinct from the 30-day *re-fetch* window above): beyond
+# this many days old, a commit is never fetched at all — not even once —
+# because docs/spec/GOVERNANCE.md §10's live finding says GitHub's own
+# check-run history has almost certainly already rolled off, so a fetch
+# would just spend budget to learn nothing. Configurable via
+# `projects/<id>.yaml`'s `governance.checkstyle_retention_days`
+# (`_governance_checkstyle_retention_days`).
+DEFAULT_GOVERNANCE_CHECKSTYLE_RETENTION_DAYS = 400
+
+# GitHub Checks API conclusions that are a definitive failure on their own
+# (mirrors `governance.checks._FAILING_CONCLUSIONS`) — used by
+# `_governance_check_run_latest_is_resolved_map` to decide a sha's latest
+# fetch batch is final: any one of these means "resolved", regardless of
+# what the *other* checkstyle run name in that same batch says (a red
+# `ant-check-jdk11` is definitive even while `ant-check-jdk17` is still
+# queued). Absent a failure, every row in the batch must be `success` for
+# the batch to count as resolved.
+_GOVERNANCE_FAILING_CONCLUSIONS = frozenset(
+    {"failure", "timed_out", "cancelled", "action_required"}
+)
+
+# The `governance_check_run` / `governance_ci_evidence` sentinel value
+# recorded when a fetch found nothing at all (as opposed to "not yet
+# fetched") — never a real GitHub check-run name.
+_GOVERNANCE_NO_RUN_FOUND_SENTINEL = "__none_found__"
 
 
 def _log(event: str, **fields: Any) -> None:
@@ -498,6 +567,714 @@ def _collect_ponymail(
         collector.close()
 
 
+def _governance_reviewers_by_issue(data_dir: Path) -> dict[str, tuple[str, ...]]:
+    """`issue_key -> reviewer names`, from the already-collected JIRA
+    `review_event` raw table (`source == 'jira_field'`) — no extra network
+    call: this is the same JIRA-reviewer-field evidence the M0 collectors
+    already fetch (`collectors/jira.py`), just re-keyed by issue for
+    `governance/checks.py`'s `reviewer-present` check.
+    """
+    table = storage.read_table(data_dir, "jira", "review_event")
+    by_issue: dict[str, list[str]] = {}
+    for row in table.to_pylist():
+        if row["source"] != "jira_field" or not row["issue_key"]:
+            continue
+        by_issue.setdefault(row["issue_key"], []).append(row["reviewer_raw_value"])
+    return {key: tuple(dict.fromkeys(names)) for key, names in by_issue.items()}
+
+
+def _governance_budget(config: ProjectConfig) -> tuple[int, int]:
+    """`(max_github_calls_per_run, max_jira_calls_per_run)` from
+    `projects/<id>.yaml`'s optional `governance:` block (issue #36 fixup
+    cycle 1), defaulting to `DEFAULT_GOVERNANCE_MAX_*_CALLS_PER_RUN` so a
+    project without that block still gets a bounded, polite per-run budget
+    rather than an unbounded backfill every night. `ProjectConfig` allows
+    arbitrary extra top-level keys (`config.py`'s own `extra="allow"`
+    docstring), so `governance:` never has to be added to that pydantic
+    model — it's read here as a plain dict, defensively.
+    """
+    raw = getattr(config, "governance", None)
+    if not isinstance(raw, dict):
+        raw = {}
+    max_github = int(
+        raw.get("max_github_calls_per_run", DEFAULT_GOVERNANCE_MAX_GITHUB_CALLS_PER_RUN)
+    )
+    max_jira = int(raw.get("max_jira_calls_per_run", DEFAULT_GOVERNANCE_MAX_JIRA_CALLS_PER_RUN))
+    return max_github, max_jira
+
+
+def _governance_checkstyle_retention_days(config: ProjectConfig) -> int:
+    """How far back (in days, from `started_at`) `code-style-checkstyle`
+    will even attempt a GitHub check-runs fetch (issue #36 fixup cycle 2) —
+    from `projects/<id>.yaml`'s `governance.checkstyle_retention_days`,
+    defaulting to `DEFAULT_GOVERNANCE_CHECKSTYLE_RETENTION_DAYS`.
+
+    docs/spec/GOVERNANCE.md §10's live finding: GitHub Actions check-run
+    history itself rolls off well before this project's own scoring horizon
+    (only 25.5% of a 21-month sample still had a retrievable run at all) —
+    fetching for a commit older than this is not "politely incremental", it
+    is guaranteed wasted budget, since GitHub will never have the answer.
+    Those commits are scored `unknown` directly (`checks.py`'s
+    `score_code_style_checkstyle` `retention_cutoff` parameter), never
+    fetched, and never counted as "pending" backlog — see
+    `_collect_governance_check_runs`'s `skipped_outside_retention` stat.
+    """
+    raw = getattr(config, "governance", None)
+    if not isinstance(raw, dict):
+        raw = {}
+    return int(raw.get("checkstyle_retention_days", DEFAULT_GOVERNANCE_CHECKSTYLE_RETENTION_DAYS))
+
+
+def _collect_governance_commit_records(
+    data_dir: Path, workdir: Path, repo_cfg: Any, run_id: str, governance_since: str | None
+) -> int:
+    """Incrementally walk new commits (issue #36 fixup cycle 1) and append
+    them to `raw/governance/commit_record`, then advance the
+    `governance_git` watermark (a separate watermark key from the M0
+    `GitCollector`'s `git`, since this walk deliberately includes merges).
+
+    The walk itself is unbounded and cheap (local `git log`, no external API
+    involved) — `governance_since` only bounds the very first run, when no
+    watermark exists yet, to keep an initial backfill's *scoring* input
+    reasonably sized; once a watermark exists, every subsequent run only
+    ever walks commits strictly newer than it, regardless of `governance_since`.
+
+    Returns the number of new commit records collected this run.
+    """
+    watermark = storage.read_watermark(data_dir, "governance_git")
+    records = collect_commits(
+        workdir,
+        repo_cfg.default_branch,
+        branch_label=repo_cfg.default_branch,
+        since=governance_since,
+        since_sha=watermark,
+    )
+    rows = [
+        {
+            "sha": r.sha,
+            "branch": r.branch,
+            "commit_date": r.commit_date,
+            "message": r.message,
+            "author": r.author,
+            "author_email": r.author_email,
+            "committer": r.committer,
+            "committer_email": r.committer_email,
+            "is_merge": r.is_merge,
+            "trailer_reviewers": list(r.trailer_reviewers),
+            "issue_keys": list(r.issue_keys),
+            "changed_paths": list(r.changed_paths) if r.changed_paths is not None else None,
+            "source_snapshot_id": f"{run_id}:governance_git",
+        }
+        for r in records
+    ]
+    schema = _governance_get_schema("commit_record")
+    table = _governance_validate(
+        "commit_record",
+        pa.Table.from_pylist(rows, schema=schema) if rows else schema.empty_table(),
+    )
+    storage.write_partition(
+        data_dir, "governance", "commit_record", datetime.now(timezone.utc).date(), run_id, table
+    )
+    # Always re-resolve and persist the current HEAD sha, even when `records`
+    # is empty (the ref may not have moved, or moved to a merge/no-op state)
+    # -- matches `GitCollector`'s own "watermark = git rev-parse ref" pattern.
+    new_watermark = resolve_sha(workdir, repo_cfg.default_branch)
+    storage.write_watermark(data_dir, "governance_git", new_watermark)
+    return len(rows)
+
+
+def _read_all_governance_commits(data_dir: Path) -> list[CommitFacts]:
+    """Every commit ever collected by `_collect_governance_commit_records`
+    (D3: scoring always reads the *entire* accumulated raw cache, never just
+    this run's delta)."""
+    table = storage.read_table(data_dir, "governance", "commit_record")
+    commits = []
+    for row in table.to_pylist():
+        changed_paths = row["changed_paths"]
+        commits.append(
+            CommitFacts(
+                sha=row["sha"],
+                branch=row["branch"],
+                commit_date=row["commit_date"],
+                message=row["message"],
+                author=row["author"],
+                committer=row["committer"],
+                is_merge=row["is_merge"],
+                trailer_reviewers=tuple(row["trailer_reviewers"]),
+                issue_keys=tuple(row["issue_keys"]),
+                changed_paths=tuple(changed_paths) if changed_paths is not None else None,
+            )
+        )
+    return commits
+
+
+def _governance_issue_updated_map(data_dir: Path) -> dict[str, datetime]:
+    """`issue_key -> updated_at`, from the already-collected M0 `raw/jira/issue`
+    table — this *is* "reusing the JIRA collector's approach" to a watermark
+    (issue #36 fixup cycle 1): an issue's own `updated` field is what decides
+    whether its CI-evidence comments are worth re-checking."""
+    table = storage.read_table(data_dir, "jira", "issue")
+    return {row["issue_key"]: row["updated_at"] for row in table.to_pylist()}
+
+
+def _governance_ci_evidence_checked_map(data_dir: Path) -> dict[str, datetime]:
+    """`issue_key -> issue_updated_at` of the *latest* check recorded in the
+    accumulated `raw/governance/ci_evidence` table (regardless of whether
+    that check found anything) — this is what "have we already checked this
+    issue since it last changed" compares against."""
+    table = storage.read_table(data_dir, "governance", "ci_evidence")
+    latest: dict[str, datetime] = {}
+    latest_checked_at_by_key: dict[str, datetime] = {}
+    for row in table.to_pylist():
+        key = row["issue_key"]
+        if key not in latest_checked_at_by_key or row["checked_at"] > latest_checked_at_by_key[key]:
+            latest_checked_at_by_key[key] = row["checked_at"]
+            latest[key] = row["issue_updated_at"]
+    return latest
+
+
+def _governance_ci_evidence_found_map(data_dir: Path) -> dict[str, CIEvidence]:
+    """`issue_key -> CIEvidence`, one entry per issue that has ever had a
+    `found=True` row in the accumulated `raw/governance/ci_evidence` table
+    (the most recently checked positive match wins if more than one)."""
+    table = storage.read_table(data_dir, "governance", "ci_evidence")
+    best: dict[str, tuple[datetime, CIEvidence]] = {}
+    for row in table.to_pylist():
+        if not row["found"]:
+            continue
+        key = row["issue_key"]
+        checked_at = row["checked_at"]
+        if key not in best or checked_at > best[key][0]:
+            best[key] = (
+                checked_at,
+                CIEvidence(
+                    issue_key=key,
+                    comment_id=row["comment_id"],
+                    comment_author=row["comment_author"],
+                    comment_created_at=row["comment_created_at"],
+                    matched_term=row["matched_term"],
+                    matched_url=row["matched_url"],
+                ),
+            )
+    return {key: evidence for key, (_checked_at, evidence) in best.items()}
+
+
+def _ci_eligible_issue_keys_newest_first(commits: list[CommitFacts], ci_rule) -> list[str]:
+    """Issue keys worth fetching JIRA-comment CI evidence for at all (issue
+    #36 fixup cycle 2), newest-referencing-commit-first.
+
+    Only commits where `pre-commit-ci-evidence` could actually change the
+    result are considered: a commit before the rule's own `effective_from`
+    (or on a branch the rule doesn't apply to at all) always scores
+    `not_in_force` regardless of any evidence, so fetching for its issue key
+    would be pure wasted budget — unless that same key is *also* referenced
+    by a genuinely in-force commit, which the union here still catches.
+    Ordering newest-referencing-commit-first means a tight per-run budget
+    resolves the commits people are actually looking at before working
+    through the historical backlog.
+    """
+    ci_eligible_commits = [
+        c
+        for c in commits
+        if ci_rule.applies_to_branch(c.branch) and ci_rule.in_force_on(c.commit_date.date())
+    ]
+    latest_commit_date_by_issue: dict[str, datetime] = {}
+    for c in ci_eligible_commits:
+        for key in c.issue_keys:
+            current = latest_commit_date_by_issue.get(key)
+            if current is None or c.commit_date > current:
+                latest_commit_date_by_issue[key] = c.commit_date
+    return sorted(
+        latest_commit_date_by_issue, key=lambda k: latest_commit_date_by_issue[k], reverse=True
+    )
+
+
+def _collect_governance_ci_evidence(
+    data_dir: Path,
+    run_id: str,
+    started_at: datetime,
+    issue_keys_newest_first: list[str],
+    max_calls: int,
+    jira_base_url: str | None,
+    jira_comments_factory: Callable[[str], object] | None,
+) -> dict[str, Any]:
+    """Fetch JIRA-comment CI evidence for issues that are new or have
+    changed since they were last checked (issue #36 fixup cycle 1),
+    stopping cleanly once `max_calls` HTTP requests have been made this run.
+
+    `issue_keys_newest_first` (fixup cycle 2) is already both (a) restricted
+    to only the issue keys referenced by a commit where
+    `pre-commit-ci-evidence` could actually be in force and scorable (the
+    caller, `_collect_governance`, filters out commits before the rule's
+    `effective_from` — those are `not_in_force` regardless of evidence, so
+    fetching for them would only ever waste budget) and (b) ordered by each
+    issue's most recent referencing commit, newest first, so a tight budget
+    resolves the commits people are actually looking at before working
+    through the historical backlog.
+
+    Returns a stats dict: `checked`, `skipped_up_to_date`, `pending`
+    (eligible but left unfetched because the budget ran out), `calls_made`.
+    Never raises — a JIRA outage degrades every affected check to `unknown`
+    (via an empty evidence map at scoring time), it never aborts the run.
+    """
+    stats = {"checked": 0, "skipped_up_to_date": 0, "pending": 0, "calls_made": 0}
+    if not jira_base_url or not issue_keys_newest_first:
+        return stats
+
+    issue_updated = _governance_issue_updated_map(data_dir)
+    already_checked = _governance_ci_evidence_checked_map(data_dir)
+
+    eligible: list[str] = []
+    for key in issue_keys_newest_first:
+        last_checked = already_checked.get(key)
+        if last_checked is None:
+            eligible.append(key)
+            continue
+        current_updated = issue_updated.get(key)
+        if current_updated is not None and current_updated > last_checked:
+            eligible.append(key)
+        else:
+            stats["skipped_up_to_date"] += 1
+
+    if not eligible:
+        return stats
+
+    try:
+        collector = (jira_comments_factory or JiraCommentsCollector)(jira_base_url)
+    except Exception as exc:  # noqa: BLE001 - an evidence source's outage must not abort the run.
+        _log("governance_jira_comments_failed", error=str(exc))
+        stats["pending"] = len(eligible)
+        return stats
+
+    rows: list[dict[str, Any]] = []
+    try:
+        for key in eligible:
+            if collector.call_count >= max_calls:
+                break
+            try:
+                found = collector.fetch_ci_evidence(key)
+            except Exception as exc:  # noqa: BLE001 - one bad issue must not stop the batch.
+                _log("governance_jira_comments_issue_failed", issue_key=key, error=str(exc))
+                continue
+            checked_at = datetime.now(timezone.utc)
+            issue_updated_at = issue_updated.get(key, checked_at)
+            if found is not None:
+                rows.append(
+                    {
+                        "issue_key": key,
+                        "issue_updated_at": issue_updated_at,
+                        "checked_at": checked_at,
+                        "found": True,
+                        "comment_id": found.comment_id,
+                        "comment_author": found.comment_author,
+                        "comment_created_at": found.comment_created_at,
+                        "matched_term": found.matched_term,
+                        "matched_url": found.matched_url,
+                        "source_snapshot_id": f"{run_id}:governance_ci",
+                    }
+                )
+            else:
+                rows.append(
+                    {
+                        "issue_key": key,
+                        "issue_updated_at": issue_updated_at,
+                        "checked_at": checked_at,
+                        "found": False,
+                        "comment_id": None,
+                        "comment_author": None,
+                        "comment_created_at": None,
+                        "matched_term": None,
+                        "matched_url": None,
+                        "source_snapshot_id": f"{run_id}:governance_ci",
+                    }
+                )
+            stats["checked"] += 1
+    finally:
+        stats["calls_made"] = collector.call_count
+        collector.close()
+
+    stats["pending"] = len(eligible) - stats["checked"]
+
+    schema = _governance_get_schema("ci_evidence")
+    table = _governance_validate(
+        "ci_evidence",
+        pa.Table.from_pylist(rows, schema=schema) if rows else schema.empty_table(),
+    )
+    storage.write_partition(
+        data_dir, "governance", "ci_evidence", started_at.date(), run_id, table
+    )
+    return stats
+
+
+def _governance_check_run_latest_batch(data_dir: Path) -> dict[str, list[dict[str, Any]]]:
+    """`sha -> every row from its *latest* fetch batch` (all rows sharing
+    that sha's single most recent `fetched_at`, e.g. both `ant-check-jdk11`
+    and `ant-check-jdk17` from one fetch, or the one sentinel "no run found"
+    row) — a superseded, older fetch is never mixed in. Shared grouping
+    logic behind both `_governance_check_run_latest_is_resolved_map` (is a
+    sha worth re-fetching) and `_governance_check_run_evidence_for_scoring`
+    (what evidence to score it with).
+    """
+    table = storage.read_table(data_dir, "governance", "check_run")
+    latest_fetched_at: dict[str, datetime] = {}
+    rows_by_sha: dict[str, list[dict[str, Any]]] = {}
+    for row in table.to_pylist():
+        sha = row["sha"]
+        fetched_at = row["fetched_at"]
+        if sha not in latest_fetched_at or fetched_at > latest_fetched_at[sha]:
+            latest_fetched_at[sha] = fetched_at
+            rows_by_sha[sha] = [row]
+        elif fetched_at == latest_fetched_at[sha]:
+            rows_by_sha[sha].append(row)
+    return rows_by_sha
+
+
+def _governance_check_run_latest_is_resolved_map(data_dir: Path) -> dict[str, bool]:
+    """`sha -> is the latest fetch batch's result already final`, from the
+    accumulated `raw/governance/check_run` table. `True` when the latest
+    batch contains at least one terminal conclusion (a failing conclusion is
+    definitive on its own, matching `checks.score_code_style_checkstyle`'s
+    "failing takes priority" rule; otherwise every row in the batch must be
+    `success`). `False` covers both the sentinel "no run found" batch and a
+    batch with a real but still-pending/neutral conclusion. A sha absent
+    from this dict has never been checked at all.
+    """
+    resolved: dict[str, bool] = {}
+    for sha, rows in _governance_check_run_latest_batch(data_dir).items():
+        conclusions = [row["conclusion"] for row in rows]
+        has_failure = any(c in _GOVERNANCE_FAILING_CONCLUSIONS for c in conclusions)
+        all_success = bool(conclusions) and all(c == "success" for c in conclusions)
+        resolved[sha] = has_failure or all_success
+    return resolved
+
+
+def _governance_check_run_evidence_for_scoring(
+    data_dir: Path,
+) -> dict[str, tuple[CheckstyleEvidence, ...]]:
+    """`sha -> checkstyle CheckstyleEvidence tuple` for scoring, built from
+    each sha's *latest* fetch batch only — sentinel "no run found" rows
+    contribute an empty tuple, identical to `checks.py`'s "never checked"
+    case."""
+    result: dict[str, tuple[CheckstyleEvidence, ...]] = {}
+    for sha, rows in _governance_check_run_latest_batch(data_dir).items():
+        evidence = tuple(
+            CheckstyleEvidence(
+                sha=sha,
+                check_run_name=row["check_run_name"],
+                conclusion=row["conclusion"],
+                html_url=row["html_url"],
+            )
+            for row in rows
+            if row["check_run_name"] != _GOVERNANCE_NO_RUN_FOUND_SENTINEL
+        )
+        if evidence:
+            result[sha] = evidence
+    return result
+
+
+def _collect_governance_check_runs(
+    data_dir: Path,
+    run_id: str,
+    started_at: datetime,
+    eligible_commits: list[CommitFacts],
+    max_calls: int,
+    owner: str,
+    repo: str,
+    github_checks_factory: Callable[[str, str], object] | None,
+    *,
+    retention_cutoff: datetime,
+) -> dict[str, Any]:
+    """Fetch GitHub checkstyle check-runs for shas that have never been
+    checked, or whose last known result is still pending/absent and whose
+    commit is under `GOVERNANCE_CHECK_RUN_RETRY_WINDOW_DAYS` old (issue #36
+    fixup cycle 1) — stopping cleanly once `max_calls` HTTP requests have
+    been made this run. Never raises.
+
+    `retention_cutoff` (fixup cycle 2) is a hard floor: a commit older than
+    this is never fetched at all, not even once — see
+    `checks.score_code_style_checkstyle`'s `retention_cutoff` parameter,
+    which independently recognizes this same cutoff at scoring time and
+    reports these commits `unknown` with a distinct "outside GitHub
+    retention" evidence string, so they're never confused with a commit
+    that's merely still pending. `eligible_commits` here should already be
+    everything in policy scope for this rule (`applies_to_branch`); this
+    function does the (cheaper, purely local) retention/resolved/recency
+    filtering to decide which of those are actually worth an HTTP call this
+    run.
+    """
+    stats = {
+        "checked": 0,
+        "skipped_resolved": 0,
+        "skipped_too_old": 0,
+        "skipped_outside_retention": 0,
+        "pending": 0,
+        "calls_made": 0,
+    }
+    if not eligible_commits:
+        return stats
+
+    is_resolved = _governance_check_run_latest_is_resolved_map(data_dir)
+    now = started_at
+    cutoff = now - timedelta(days=GOVERNANCE_CHECK_RUN_RETRY_WINDOW_DAYS)
+
+    # Newest commits first: when the budget is tight, the most recently
+    # merged (and most likely to actually have a fresh check-run) commits
+    # get priority over an old, probably-permanently-`unknown` backlog.
+    eligible_commits = sorted(eligible_commits, key=lambda c: c.commit_date, reverse=True)
+
+    to_fetch: list[CommitFacts] = []
+    for commit in eligible_commits:
+        if commit.commit_date < retention_cutoff:
+            # Never fetched, ever -- GitHub's own check-run history has
+            # almost certainly already rolled off (docs/spec/GOVERNANCE.md
+            # §10); scoring independently reports this as `unknown` with
+            # "check-run history outside GitHub retention", not as backlog.
+            stats["skipped_outside_retention"] += 1
+        elif commit.sha not in is_resolved:
+            to_fetch.append(commit)  # never checked
+        elif is_resolved[commit.sha]:
+            stats["skipped_resolved"] += 1
+        elif commit.commit_date >= cutoff:
+            to_fetch.append(commit)
+        else:
+            stats["skipped_too_old"] += 1
+
+    if not to_fetch:
+        return stats
+
+    try:
+        collector = (github_checks_factory or GitHubChecksCollector)(owner, repo)
+    except Exception as exc:  # noqa: BLE001 - an evidence source's outage must not abort the run.
+        _log("governance_github_checks_failed", error=str(exc))
+        stats["pending"] = len(to_fetch)
+        return stats
+
+    rows: list[dict[str, Any]] = []
+    try:
+        for commit in to_fetch:
+            if collector.call_count >= max_calls:
+                break
+            try:
+                runs = collector.fetch_checkstyle_evidence(commit.sha)
+            except Exception as exc:  # noqa: BLE001 - one bad sha must not stop the batch.
+                _log("governance_github_checks_sha_failed", sha=commit.sha, error=str(exc))
+                continue
+            fetched_at = datetime.now(timezone.utc)
+            if runs:
+                for run in runs:
+                    rows.append(
+                        {
+                            "sha": commit.sha,
+                            "commit_date": commit.commit_date,
+                            "check_run_name": run.check_run_name,
+                            "conclusion": run.conclusion,
+                            "html_url": run.html_url,
+                            "fetched_at": fetched_at,
+                            "source_snapshot_id": f"{run_id}:governance_gh",
+                        }
+                    )
+            else:
+                rows.append(
+                    {
+                        "sha": commit.sha,
+                        "commit_date": commit.commit_date,
+                        "check_run_name": _GOVERNANCE_NO_RUN_FOUND_SENTINEL,
+                        "conclusion": None,
+                        "html_url": None,
+                        "fetched_at": fetched_at,
+                        "source_snapshot_id": f"{run_id}:governance_gh",
+                    }
+                )
+            stats["checked"] += 1
+    finally:
+        stats["calls_made"] = collector.call_count
+        collector.close()
+
+    stats["pending"] = len(to_fetch) - stats["checked"]
+
+    schema = _governance_get_schema("check_run")
+    table = _governance_validate(
+        "check_run",
+        pa.Table.from_pylist(rows, schema=schema) if rows else schema.empty_table(),
+    )
+    storage.write_partition(data_dir, "governance", "check_run", started_at.date(), run_id, table)
+    return stats
+
+
+def _collect_governance(
+    config: ProjectConfig,
+    data_dir: Path,
+    workdir: Path,
+    run_id: str,
+    started_at: datetime,
+    *,
+    governance_since: str | None,
+    policy_path: str | Path,
+    overrides_path: str | Path,
+    github_checks_factory: Callable[[str, str], object] | None,
+    jira_comments_factory: Callable[[str], object] | None,
+) -> dict[str, Any]:
+    """Governance compliance engine (issue #36, fixup cycle 1): incrementally
+    collect evidence, then score the *entire* accumulated commit set against
+    `governance-policy.yaml` every run.
+
+    Three independent collection steps, each incremental against its own
+    source's actual constraints (never a source-wide `governance_since`
+    re-fetch every night):
+
+    1. `_collect_governance_commit_records` — a cheap, local, unbounded git
+       walk, incremental via a commit-SHA watermark
+       (`collectors/git.py`-style).
+    2. `_collect_governance_ci_evidence` — JIRA-comment CI evidence,
+       incremental via each issue's own `updated` field (reusing
+       `collectors/jira.py`'s watermark idea), budget-limited per run.
+    3. `_collect_governance_check_runs` — GitHub checkstyle check-runs,
+       incremental via "already resolved, or too old to bother retrying",
+       budget-limited per run.
+
+    Scoring (`governance/engine.py`) then always reads the *entire*
+    accumulated output of all three (D3 — "never incremental"), exactly like
+    `metrics.compute_all` does for the M0 metrics; only *collection* is
+    incremental here, for the same reason `collectors/git.py`/`jira.py`'s
+    collection is incremental while `metrics/engine.py`'s computation isn't.
+
+    `manifest["governance"]["status"]` is `'ok'` only when every eligible
+    JIRA issue and GitHub sha was actually checked this run; if either
+    budget ran out first, it's `'partial'` — the remaining backlog is picked
+    up by a later run (the same "first backfill may take several nightly
+    runs" contract `collectors/github.py`'s PR collector documents for its
+    own GraphQL rate-limit budget). A failure here is caught and reported as
+    `'failed'` (mirrors `_collect_git`/`_collect_jira`'s "a source outage
+    must never abort the run" contract, §7.3) — the M0 pipeline (metrics,
+    site) is unaffected either way.
+
+    Governance metrics are deliberately **not** registered in
+    `metrics.registry.METRIC_IDS` (see `governance/metrics.py`'s module
+    docstring): they're scored/aggregated and written to their own
+    `snapshots/<run_id>/governance_*.parquet` files, entirely outside
+    `compute_all`/`_write_metrics_snapshot` — so a governance evidence gap,
+    or a `'partial'` backlog run, can never trip issue #24's "a *registered*
+    metric produced zero rows" `metrics_missing` check and mark the M0
+    pipeline `degraded`. This is a deliberate scope boundary, not an
+    oversight: governance's own completeness is reported entirely through
+    `manifest["governance"]`.
+    """
+    if not config.repos:
+        return {"status": "skipped", "reason": "no repos configured"}
+
+    repo_cfg = config.repos[0]
+    max_github_calls, max_jira_calls = _governance_budget(config)
+    checkstyle_retention_days = _governance_checkstyle_retention_days(config)
+    checkstyle_retention_cutoff = started_at - timedelta(days=checkstyle_retention_days)
+    try:
+        policy = load_policy(policy_path)
+        overrides = load_governance_overrides(overrides_path)
+
+        git_records_collected = _collect_governance_commit_records(
+            data_dir, workdir, repo_cfg, run_id, governance_since
+        )
+        commits = _read_all_governance_commits(data_dir)
+
+        jira_reviewers_by_issue = _governance_reviewers_by_issue(data_dir)
+
+        ci_rule = policy.rule("pre-commit-ci-evidence")
+        issue_keys_newest_first = _ci_eligible_issue_keys_newest_first(commits, ci_rule)
+
+        base_url = getattr(config.issue_tracker, "base_url", None) if config.issue_tracker else None
+        ci_stats = _collect_governance_ci_evidence(
+            data_dir,
+            run_id,
+            started_at,
+            issue_keys_newest_first,
+            max_jira_calls,
+            base_url,
+            jira_comments_factory,
+        )
+        ci_evidence_by_issue = _governance_ci_evidence_found_map(data_dir)
+
+        checkstyle_rule = policy.rule("code-style-checkstyle")
+        checkstyle_eligible_commits = [
+            c for c in commits if not c.is_merge and checkstyle_rule.applies_to_branch(c.branch)
+        ]
+        check_run_stats = _collect_governance_check_runs(
+            data_dir,
+            run_id,
+            started_at,
+            checkstyle_eligible_commits,
+            max_github_calls,
+            repo_cfg.owner,
+            repo_cfg.name,
+            github_checks_factory,
+            retention_cutoff=checkstyle_retention_cutoff,
+        )
+        checkstyle_runs_by_sha = _governance_check_run_evidence_for_scoring(data_dir)
+
+        compliance_rows = build_commit_compliance_rows(
+            policy,
+            commits,
+            jira_reviewers_by_issue=jira_reviewers_by_issue,
+            ci_evidence_by_issue=ci_evidence_by_issue,
+            checkstyle_runs_by_sha=checkstyle_runs_by_sha,
+            checkstyle_retention_cutoff=checkstyle_retention_cutoff,
+            overrides=overrides,
+        )
+        fact_rows = build_commit_facts_rows(commits)
+
+        compliance_schema = _governance_get_schema("commit_compliance")
+        compliance_table = _governance_validate(
+            "commit_compliance",
+            pa.Table.from_pylist(compliance_rows, schema=compliance_schema)
+            if compliance_rows
+            else compliance_schema.empty_table(),
+        )
+        fact_schema = _governance_get_schema("commit_fact")
+        fact_table = _governance_validate(
+            "commit_fact",
+            pa.Table.from_pylist(fact_rows, schema=fact_schema)
+            if fact_rows
+            else fact_schema.empty_table(),
+        )
+
+        governance_metrics = compute_monthly_check_metrics(
+            compliance_table, as_of=started_at.date(), run_id=run_id, computed_at=started_at
+        )
+        governance_registry = build_governance_registry(started_at)
+
+        snapshot_dir = Path(data_dir) / "snapshots" / run_id
+        snapshot_dir.mkdir(parents=True, exist_ok=True)
+        pq.write_table(compliance_table, snapshot_dir / "governance_commit_compliance.parquet")
+        pq.write_table(fact_table, snapshot_dir / "governance_commit_fact.parquet")
+        pq.write_table(governance_metrics, snapshot_dir / "governance_metric_value.parquet")
+        pq.write_table(
+            governance_registry, snapshot_dir / "governance_metric_definition_version.parquet"
+        )
+
+        status = "ok" if ci_stats["pending"] == 0 and check_run_stats["pending"] == 0 else "partial"
+
+        _log(
+            "governance_scored",
+            run_id=run_id,
+            status=status,
+            commits_scored=len(commits),
+            compliance_rows=compliance_table.num_rows,
+            policy_version=policy.version,
+            ci_evidence=ci_stats,
+            check_runs=check_run_stats,
+        )
+        return {
+            "status": status,
+            "commits_scored": len(commits),
+            "compliance_rows": compliance_table.num_rows,
+            "policy_version": policy.version,
+            "git_records_collected": git_records_collected,
+            "ci_evidence": ci_stats,
+            "check_runs": check_run_stats,
+        }
+    except Exception as exc:  # noqa: BLE001 - governance must never abort the run (§7.3-style)
+        _log("governance_failed", error=str(exc))
+        return {"status": "failed", "reason": str(exc)}
+
+
 def _write_metrics_snapshot(data_dir: Path, run_id: str, metrics_table: pa.Table) -> Path:
     snapshot_dir = Path(data_dir) / "snapshots" / run_id
     snapshot_dir.mkdir(parents=True, exist_ok=True)
@@ -525,6 +1302,15 @@ def run_pipeline(
     jira_collector_factory: Callable[[ProjectConfig], JiraCollector] | None = None,
     asf_roster_collector_factory: Callable[[ProjectConfig], AsfRosterCollector] | None = None,
     ponymail_collector_factory: Callable[[ProjectConfig], PonyMailCollector] | None = None,
+    # --- Governance compliance engine (issue #36) ---------------------------
+    # Controlled the same way as `git`/`jira`/`asf_roster`: via `sources`
+    # (default: all of `ALL_SOURCES`, so a plain `run_pipeline(...)` call
+    # runs governance too). Pass `sources=["git", "jira"]` to opt out.
+    governance_since: str | None = None,
+    governance_policy_path: str | Path = DEFAULT_POLICY_PATH,
+    governance_overrides_path: str | Path = DEFAULT_OVERRIDES_PATH,
+    governance_jira_comments_factory: Callable[[str], object] | None = None,
+    governance_github_checks_factory: Callable[[str, str], object] | None = None,
 ) -> RunResult:
     """Run one collect -> identity -> metrics -> manifest (-> site) pass.
 
@@ -683,6 +1469,27 @@ def run_pipeline(
         error=metrics_error,
         metrics_missing=metrics_missing,
     )
+
+    # --- Governance compliance engine (issue #36) ---------------------------
+    # A separate, independent step: never gates the M0 run's exit code or
+    # `status` (mirrors a source-collection failure, §7.3 — see
+    # `_collect_governance`'s own docstring). Recorded on the manifest as an
+    # extra top-level key; `site.manifest.RunManifest` ignores unknown keys
+    # (provenance/manifest.py's own docstring), so this is safe to add
+    # without touching that loader.
+    if "governance" in active_sources:
+        manifest["governance"] = _collect_governance(
+            config,
+            data_dir,
+            workdir,
+            run_id,
+            started_at,
+            governance_since=governance_since,
+            policy_path=governance_policy_path,
+            overrides_path=governance_overrides_path,
+            github_checks_factory=governance_github_checks_factory,
+            jira_comments_factory=governance_jira_comments_factory,
+        )
 
     out_path = manifest_path(data_dir, run_id)
     out_path.parent.mkdir(parents=True, exist_ok=True)

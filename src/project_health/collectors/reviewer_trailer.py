@@ -54,6 +54,54 @@ _TRAILER_LINE_RE = re.compile(
     re.MULTILINE,
 )
 
+# --- Governance engine (issue #36) extension: two forms real trunk history
+# uses that the strict trailer above misses (governance-policy.yaml
+# `reviewer-present.review_wording_check.regression_examples`,
+# docs/spec/GOVERNANCE.md §8):
+#
+#   1. "reviewed <Name>" — the reviewer is named without the word "by" at
+#      all (sha 208d87513f: "patch by Mick Semb Wever; reviewed Štefan
+#      Miklošovič for CASSANDRA-21489").
+#   2. "Authored by <Name>; Reviewed by <Name> for ..." — the line opens
+#      with "Authored by", not "patch by"/"reviewed by", so the strict
+#      regex's `^`-anchor never reaches the real "Reviewed by" clause later
+#      in the same line (sha 05186d7869: "Authored by Lorina Poland
+#      (polandll); Reviewed by Branimir Lambov (blambov) for
+#      CASSANDRA-18236").
+#
+# Only tried as a *fallback*, after `_TRAILER_LINE_RE` has already failed to
+# match (see `ReviewerExtractor.extract`) — every message the strict regex
+# already parses keeps parsing exactly the same way; this can only turn a
+# previous `None` into a real attribution, never change an existing one.
+#
+# `reviewed_by`'s required first character (`[^\Wa-z0-9_]`) — a word
+# character that is not a lowercase ASCII letter/digit/underscore — accepts
+# a capitalized or accented name (`Štefan`, `Brandon`) while rejecting a
+# lowercase filler word (`a`, `the`, `on`, ...), which is what keeps a
+# sentence like "reviewed a fix for CASSANDRA-100" from being mistaken for a
+# named reviewer. The `for <issue_tail>` clause is *mandatory* here (unlike
+# the strict regex, where it's optional) as a second guard against the same
+# false-positive risk — both real regression examples have one.
+#
+# Case-insensitivity is applied per-keyword via scoped inline groups
+# (`(?i:...)`), never as a global `(?i)` flag: a *global* flag would also
+# case-fold the `[^\Wa-z0-9_]` character class's `a-z` range to match
+# uppercase too, silently defeating the "starts with a capital" guard this
+# regex depends on (found live while testing against the regression shas —
+# a global `(?i)` made `reviewed_by`'s required-uppercase-first-char check a
+# no-op).
+_TRAILER_LINE_RE_EXT = re.compile(
+    r"""(?x)
+    ^[ \t]*
+    (?:(?i:(?:patch|authored)\s+by)\s+(?P<patch_by>.+?)\s*[;,]?\s*)?
+    (?i:reviewed)\s+(?:(?i:by)\s*:?\s*)?
+    (?P<reviewed_by>[^\Wa-z0-9_].+?)
+    \s+(?i:for)\s+(?P<issue_tail>.+?)
+    [ \t]*\.?[ \t]*$
+    """,
+    re.MULTILINE,
+)
+
 # Splits a "reviewed by" clause into individual names on `,`, `&`, or a
 # whole-word `and` (case-insensitive) — e.g. "Alice, Bob and Carol" ->
 # ["Alice", "Bob", "Carol"].
@@ -151,6 +199,18 @@ def _extract_issue_keys(raw: str | None) -> tuple[str, ...]:
     return tuple(seen)
 
 
+def extract_issue_keys(message: str) -> tuple[str, ...]:
+    """Every CASSANDRA-N-style issue key anywhere in `message` (order-
+    preserved, de-duplicated).
+
+    Public wrapper around the same `_ISSUE_KEY_RE` used to parse a trailer's
+    "for <issue_tail>" clause, for callers (governance engine, issue #36)
+    that need "does this commit reference a JIRA key at all" independent of
+    whether a reviewer trailer was found.
+    """
+    return _extract_issue_keys(message)
+
+
 def looks_like_reviewer_trailer(commit_message: str) -> bool:
     """True if `commit_message` contains the phrase "reviewed by" (any case).
 
@@ -192,6 +252,12 @@ class ReviewerExtractor:
         data quality issues.
         """
         match = _TRAILER_LINE_RE.search(commit_message)
+        if match is None:
+            # Fallback for the "reviewed <Name>" (missing "by") and
+            # "Authored by ...; Reviewed by ..." forms (issue #36) — see
+            # `_TRAILER_LINE_RE_EXT`'s docstring above. Never changes the
+            # result for a message the strict regex already parses.
+            match = _TRAILER_LINE_RE_EXT.search(commit_message)
         if match is None:
             return None
 

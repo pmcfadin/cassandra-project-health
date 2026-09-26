@@ -1,0 +1,30 @@
+# Governance compliance corrections (issue #36, D15).
+#
+# D15: "every row links to the corrections process, and a correction is a
+# PR-reviewed override with the reason recorded." Each entry below overrides
+# exactly one (sha, check_id) pair's `commit_compliance` result — applied
+# LAST, after every other scoring step (`governance/engine.py`'s
+# `build_commit_compliance_rows`), and always recorded in that row's
+# `evidence` column (never a silent number change).
+#
+# A correction here must go through a reviewed pull request, same as any
+# other change to this repo (D2). Loaded by
+# `project_health.governance.overrides.load_overrides`; a malformed entry
+# (missing field, or a `result` that isn't one of governance-policy.yaml's
+# five result states) fails the pipeline run loudly rather than silently
+# doing nothing.
+#
+# Example shape (remove the leading '#' and fill in real values to add a
+# correction — do not leave a non-comment example in this file):
+#
+# overrides:
+#   - sha: "abc123def456..."
+#     check_id: reviewer-present
+#     result: pass
+#     reason: >
+#       CASSANDRA-NNNNN's reviewer was recorded only in a since-migrated
+#       JIRA field this engine doesn't read yet; confirmed manually against
+#       the issue's audit log.
+#     reviewer: <asf-username-of-the-PR-approver>
+
+overrides: []

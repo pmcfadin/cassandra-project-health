@@ -356,6 +356,151 @@ PR_COMMENT = pa.schema(
     ]
 )
 
+# --- Governance compliance engine (issue #36, D14/D15) ---------------------
+#
+# `COMMIT_COMPLIANCE` is the per-(commit, check) scoring output of
+# `governance/engine.py`: one row per commit per scored `check_id` from
+# `governance-policy.yaml` (`reviewer-present`, `jira-ticket-referenced`,
+# `pre-commit-ci-evidence`, `code-style-checkstyle`). Runs on every commit,
+# including merge commits that carry a real reviewer trailer
+# (docs/spec/GOVERNANCE.md §3) — `branch`/`commit_date` are the commit's own,
+# not a window; `reviewers`/`jira_keys` are the full set found on the commit
+# by any evidence source, shown alongside every check_id row for that sha
+# (D15: "full per-commit detail, including names"). `evidence` always
+# describes what the result is based on (D15); `evidence_url`, when present,
+# links straight to that evidence (a JIRA comment, a GitHub check-run).
+#
+# `COMMIT_FACT` holds the three `scored: false` rules
+# (`changes-txt-entry`/`news-txt-entry`/`test-touched`) — plain per-commit
+# facts displayed on the commit row, never a pass/fail/unknown verdict
+# (governance-policy.yaml's own `result_semantics.display_only: true`), kept
+# in a separate table from `COMMIT_COMPLIANCE` so "a scored check result"
+# and "a displayed fact" are never confused in the data model.
+
+COMMIT_COMPLIANCE = pa.schema(
+    [
+        pa.field("sha", pa.string(), nullable=False),
+        pa.field("branch", pa.string(), nullable=False),
+        pa.field("commit_date", TIMESTAMP_UTC, nullable=False),
+        pa.field("author", pa.string(), nullable=False),
+        pa.field("committer", pa.string(), nullable=False),
+        # True for a merge commit (>=2 parents) — always scored (GOVERNANCE.md
+        # §3), but excluded from `governance/metrics.py`'s aggregate-rate
+        # denominators, which is why this flag travels with every row rather
+        # than being re-derived at aggregation time.
+        pa.field("is_merge", pa.bool_(), nullable=False),
+        pa.field("reviewers", pa.list_(pa.string()), nullable=False),
+        pa.field("jira_keys", pa.list_(pa.string()), nullable=False),
+        pa.field("policy_version", pa.int64(), nullable=False),
+        # check_id: one of governance-policy.yaml `rules[].id`
+        # ('reviewer-present' | 'jira-ticket-referenced' |
+        # 'pre-commit-ci-evidence' | 'code-style-checkstyle')
+        pa.field("check_id", pa.string(), nullable=False),
+        # result: 'pass' | 'fail' | 'unknown' | 'exempt' | 'not_in_force'
+        # (governance-policy.yaml top-level `result_states`)
+        pa.field("result", pa.string(), nullable=False),
+        pa.field("evidence", pa.string(), nullable=False),
+        pa.field("evidence_url", pa.string(), nullable=True),
+    ]
+)
+
+COMMIT_FACT = pa.schema(
+    [
+        pa.field("sha", pa.string(), nullable=False),
+        pa.field("branch", pa.string(), nullable=False),
+        pa.field("commit_date", TIMESTAMP_UTC, nullable=False),
+        pa.field("changes_txt_touched", pa.bool_(), nullable=False),
+        pa.field("news_txt_touched", pa.bool_(), nullable=False),
+        pa.field("test_touched", pa.bool_(), nullable=False),
+    ]
+)
+
+# --- Governance raw evidence (issue #36 fixup cycle 1: incremental collection) --
+#
+# Everything below is *raw*, append-only, watermarked collector output
+# (ARCHITECTURE.md §4.3), the same contract as `contribution_event`/`issue` —
+# `governance/engine.py`'s scoring step (`pipeline.py`'s `_collect_governance`)
+# always recomputes `COMMIT_COMPLIANCE`/`COMMIT_FACT`/`metric_value` fresh from
+# the *entire* accumulated raw cache below (D3), never incrementally; only the
+# three collectors that populate these three tables are incremental, each
+# against its own external source's actual rate/retention constraints.
+#
+# `GOVERNANCE_COMMIT_RECORD` is `collectors/governance_git.py`'s walked commit
+# output, persisted so the (unbounded, but cheap/local) git walk itself never
+# has to re-walk history it already has — watermarked by commit SHA range,
+# same mechanism as `collectors/git.py`'s own watermark, but tracked under a
+# separate `state/watermarks.json` key (`governance_git`) since this walk
+# deliberately includes merge commits `collectors/git.py`'s walk excludes.
+GOVERNANCE_COMMIT_RECORD = pa.schema(
+    [
+        pa.field("sha", pa.string(), nullable=False),
+        pa.field("branch", pa.string(), nullable=False),
+        pa.field("commit_date", TIMESTAMP_UTC, nullable=False),
+        pa.field("message", pa.string(), nullable=False),
+        pa.field("author", pa.string(), nullable=False),
+        pa.field("author_email", pa.string(), nullable=False),
+        pa.field("committer", pa.string(), nullable=False),
+        pa.field("committer_email", pa.string(), nullable=False),
+        pa.field("is_merge", pa.bool_(), nullable=False),
+        pa.field("trailer_reviewers", pa.list_(pa.string()), nullable=False),
+        pa.field("issue_keys", pa.list_(pa.string()), nullable=False),
+        # null for a merge commit (changed-path collection is a non-merge-only
+        # bulk `git log --name-only` pass, `collectors/governance_git.py`);
+        # an empty (non-null) list for a real non-merge commit that touched
+        # no listed path is never expected in practice but is a valid value.
+        pa.field("changed_paths", pa.list_(pa.string()), nullable=True),
+        pa.field("source_snapshot_id", pa.string(), nullable=False),
+    ]
+)
+
+# `GOVERNANCE_CI_EVIDENCE` is one row per (issue_key, check attempt) for
+# `pre-commit-ci-evidence`'s JIRA-comment evidence source
+# (`collectors/jira_comments.py`) — **comment metadata plus the matched CI
+# URL only, never the comment body** (issue #36 scope). `issue_updated_at` is
+# this row's watermark value (the JIRA issue's own `updated` field, "reusing
+# the JIRA collector's approach" per the fixup-cycle-1 review): a row is
+# written for *every* checked issue, `found=False` and the four evidence
+# columns null when no comment matched, so "have we already checked this
+# issue since it last changed" is answerable by comparing the latest row's
+# `issue_updated_at` to the issue's current `updated_at` — without a second,
+# separate state file.
+GOVERNANCE_CI_EVIDENCE = pa.schema(
+    [
+        pa.field("issue_key", pa.string(), nullable=False),
+        pa.field("issue_updated_at", TIMESTAMP_UTC, nullable=False),
+        pa.field("checked_at", TIMESTAMP_UTC, nullable=False),
+        pa.field("found", pa.bool_(), nullable=False),
+        pa.field("comment_id", pa.string(), nullable=True),
+        pa.field("comment_author", pa.string(), nullable=True),
+        pa.field("comment_created_at", pa.string(), nullable=True),
+        pa.field("matched_term", pa.string(), nullable=True),
+        pa.field("matched_url", pa.string(), nullable=True),
+        pa.field("source_snapshot_id", pa.string(), nullable=False),
+    ]
+)
+
+# `GOVERNANCE_CHECK_RUN` is one row per (sha, check attempt) for
+# `code-style-checkstyle`'s GitHub-check-runs evidence source
+# (`collectors/github_checks.py`). `check_run_name`/`conclusion` are both
+# null for a "checked, no checkstyle run recorded at all yet" sentinel row
+# (GitHub's Checks API found nothing for that sha at fetch time) — this is
+# what lets a later run tell "never checked" (`fetch_checkstyle_evidence_for_shas`
+# never called for this sha) apart from "checked and still pending/absent"
+# (a sentinel row exists, so the fixup-cycle-1 30-day re-fetch window applies)
+# without a second table. `commit_date` is denormalized from
+# `GOVERNANCE_COMMIT_RECORD` so eligibility ("is this commit under 30 days
+# old") never needs a join back to it.
+GOVERNANCE_CHECK_RUN = pa.schema(
+    [
+        pa.field("sha", pa.string(), nullable=False),
+        pa.field("commit_date", TIMESTAMP_UTC, nullable=False),
+        pa.field("check_run_name", pa.string(), nullable=True),
+        pa.field("conclusion", pa.string(), nullable=True),
+        pa.field("html_url", pa.string(), nullable=True),
+        pa.field("fetched_at", TIMESTAMP_UTC, nullable=False),
+        pa.field("source_snapshot_id", pa.string(), nullable=False),
+    ]
+)
 
 TABLE_SCHEMAS: dict[str, pa.Schema] = {
     "person_identity": PERSON_IDENTITY,
@@ -374,4 +519,16 @@ TABLE_SCHEMAS: dict[str, pa.Schema] = {
     "pr": PR,
     "pr_review": PR_REVIEW,
     "pr_comment": PR_COMMENT,
+    "commit_compliance": COMMIT_COMPLIANCE,
+    "commit_fact": COMMIT_FACT,
+    # Registered under `source='governance'`'s own bare table names (matching
+    # `contribution_event`'s "source namespaces, table name doesn't repeat
+    # it" convention) — `storage.write_partition`/`read_table`'s `table`
+    # argument is both the schema-registry lookup key and the `raw/<source>/
+    # <table>/` directory segment, so these must be the bare names, not
+    # `governance_<name>` (the `GOVERNANCE_` prefix on the Python constants
+    # above is just this module's own naming choice).
+    "commit_record": GOVERNANCE_COMMIT_RECORD,
+    "ci_evidence": GOVERNANCE_CI_EVIDENCE,
+    "check_run": GOVERNANCE_CHECK_RUN,
 }

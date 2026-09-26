@@ -61,6 +61,19 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Path to an identity_overrides.yaml file (default: none applied)",
     )
+    run_parser.add_argument(
+        "--governance-since",
+        default=None,
+        help=(
+            "Bound the governance compliance engine's first commit walk (issue #36) to commits "
+            "on/after this date (a `git log --since=` string, e.g. '2025-01-01'). Only matters "
+            "before a `governance_git` watermark exists -- every later run walks forward from "
+            "that watermark regardless of this flag. Useful to keep an initial backfill's "
+            "JIRA/GitHub evidence backlog a manageable size; the default (unset) walks full "
+            "history, which the per-run API budget (`projects/<id>.yaml`'s `governance:` block) "
+            "may then take several nightly runs to catch up on."
+        ),
+    )
 
     return parser
 
@@ -78,6 +91,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
         max_ponymail_months=args.max_ponymail_months,
         trigger=args.trigger,
         identity_overrides_path=args.identity_overrides,
+        governance_since=args.governance_since,
     )
     return result.exit_code
 

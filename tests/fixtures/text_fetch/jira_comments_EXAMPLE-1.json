@@ -1,0 +1,25 @@
+{
+  "startAt": 0,
+  "maxResults": 50,
+  "total": 3,
+  "comments": [
+    {
+      "id": "90000001",
+      "author": {"name": "asfexample", "displayName": "ASF Example Person"},
+      "created": "2026-09-01T10:00:00.000+0000",
+      "body": "h2. Repro steps\n\nI can reproduce this with the following:\n\n{code:java}\nSystemExample.run();\n{code}\n\nSee the attached {{example.log}} for details."
+    },
+    {
+      "id": "90000002",
+      "author": {"name": "githubbot", "displayName": "ASF GitHub Bot"},
+      "created": "2026-09-01T11:00:00.000+0000",
+      "body": "Synthetic automated GitHub link notification comment, unrelated to the discussion."
+    },
+    {
+      "id": "90000003",
+      "author": {"name": "exampleuser2", "displayName": "Example User Two"},
+      "created": "2026-09-02T09:00:00.000+0000",
+      "body": "Thanks for the repro -- I don't think this is a real bug though, the\nbehavior matches the documented contract. Closing as not-a-bug unless you\ncan show otherwise."
+    }
+  ]
+}

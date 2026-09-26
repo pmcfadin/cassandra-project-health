@@ -97,6 +97,28 @@ class BotPattern(BaseModel):
     regex: str
 
 
+class AutomatedSenderPattern(BaseModel):
+    """One entry in `automated_senders:` (issue #43; shared with issue #35's
+    dev@ automated-sender work — append new patterns here rather than
+    starting a second list).
+
+    Distinct from `bot_patterns` above: `bot_patterns` is applied by Phase 1
+    identity resolution to *contributor identities* (git author email,
+    GitHub login, JIRA username) so bot commits/reviews don't get counted as
+    a person's activity. `automated_senders` is applied by
+    `classify/preprocess.py` to the *sender string on a single message*
+    (a mailing-list `From:` address or a JIRA comment's author username)
+    before that message is fetched/classified at all (COMMUNITY-HEALTH.md
+    §4.1: automated/notification traffic — JIRA/GitHub/CI bots, commit
+    notification bots — is not a human communication to classify).
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    regex: str
+    note: str | None = None
+
+
 class CommitTrailerExtraction(BaseModel):
     """`reviewer_extraction.commit_trailer` — see ARCHITECTURE.md §3.1."""
 
@@ -189,6 +211,9 @@ class ProjectConfig(BaseModel):
     security: FlexibleSection | None = None
     affiliations_file: str | None = None
     bot_patterns: list[BotPattern] = []
+    # Phase 2a (issue #43, D18): automated dev@/JIRA senders to exclude before
+    # fetching/classifying a message. See `AutomatedSenderPattern` docstring.
+    automated_senders: list[AutomatedSenderPattern] = []
     reviewer_extraction: ReviewerExtraction
     truck_factor: TruckFactorConfig = Field(default_factory=TruckFactorConfig)
     baseline_window: BaselineWindow | None = None

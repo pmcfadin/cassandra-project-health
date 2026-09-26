@@ -80,6 +80,34 @@ bot_patterns:
   - field: jira_username
     regex: '(?i)^svn-role$|^git-role$'   # ASF infra service accounts
 
+# Phase 2a text pipeline (issue #43, D18): automated senders whose messages are
+# dropped before fetch/preprocess -- never fetched for classification at all,
+# since they are not human communication (COMMUNITY-HEALTH.md §4.1). Matched
+# case-insensitively against a message's raw sender: the mailing-list `From:`
+# address for dev@/user@, or the JIRA comment author's username. This is a
+# distinct config key from `bot_patterns` above (which excludes bot *identities*
+# from Phase 1 contributor-activity metrics, keyed by git/GitHub/JIRA identity
+# fields, not message sender strings) -- kept separate so identity resolution
+# and text-pipeline filtering can each evolve independently.
+# Shared with issue #35's dev@ automated-sender work: append new patterns here
+# rather than starting a second list, so both issues filter from one place.
+# Placeholder set, unreviewed -- confirm against real dev@ `From:` addresses
+# and JIRA comment authors (commits@-style bots, ASF Infra JIRA/GitHub
+# integration accounts, CI bots) before Phase 2a fetches real messages at scale.
+automated_senders:
+  - regex: '(?i)^jira@|@jira\.apache\.org$'
+    note: "ASF JIRA's own notification/integration address"
+  - regex: '(?i)^git@|^commits?@'
+    note: "commit-notification mail, not discussion (issue #33 excludes commits@ from mailing_lists.lists for the same reason)"
+  - regex: '(?i)noreply@github\.com$|^notifications@github\.com$'
+    note: "GitHub notification mail"
+  - regex: '(?i)\[bot\]|-bot$|^dependabot'
+    note: "GitHub App / dependabot-style bot accounts, mirrors bot_patterns.github_login"
+  - regex: '(?i)^hudson@|^jenkins@|^ci@|^builds?@'
+    note: "CI system notification senders"
+  - regex: '(?i)^svn-role$|^git-role$'
+    note: "ASF infra service accounts (JIRA username form), mirrors bot_patterns.jira_username"
+
 reviewer_extraction:
   # Two independent sources, cross-checked against each other (ARCHITECTURE.md §3.1).
   commit_trailer:

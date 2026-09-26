@@ -84,6 +84,7 @@ from project_health.collectors.asf_roster import AsfRosterCollector
 from project_health.collectors.git import GitCollector, clone_or_fetch, github_clone_url
 from project_health.collectors.jira import JiraCollector
 from project_health.collectors.ponymail import PonyMailCollector
+from project_health.collectors.security import SecurityCollector
 from project_health.config import ProjectConfig
 from project_health.metrics import METRIC_IDS, compute_all
 from project_health.normalize.identity import (
@@ -118,7 +119,14 @@ from project_health.governance.registry import build_governance_registry
 from project_health.schema import get_schema as _governance_get_schema
 from project_health.schema import validate as _governance_validate
 
-ALL_SOURCES: tuple[str, ...] = ("git", "jira", "asf_roster", "ponymail", "governance")
+ALL_SOURCES: tuple[str, ...] = (
+    "git",
+    "jira",
+    "asf_roster",
+    "ponymail",
+    "governance",
+    "security",
+)
 
 # --- Governance evidence-collection tuning (issue #36 fixup cycle 1) --------
 #
@@ -287,6 +295,29 @@ def _dedupe_roster_entries(table: pa.Table) -> pa.Table:
         if current is None or row["source_snapshot_id"] > current["source_snapshot_id"]:
             best[asf_id] = row
     kept = sorted(best.values(), key=lambda r: r["asf_id"])
+    return pa.Table.from_pylist(kept, schema=table.schema)
+
+
+def _dedupe_security_advisories(table: pa.Table) -> pa.Table:
+    """Keep the latest `collected_at` row per `cve_id` (issue #55).
+
+    Unlike `scorecard_check` (every run's rows are all kept -- that's the
+    Scorecard *history*, deliberately never deduped), an advisory's own
+    identity is its CVE id: a re-fetch of the same CVE (NVD's own metadata
+    can change, e.g. a CVSS score correction or a newly added reference) is
+    a refreshed snapshot of the same fact, not a new historical event. Same
+    "dedupe at read time over immutable append-only raw data" pattern as
+    `_dedupe_issue_rows`.
+    """
+    if table.num_rows == 0:
+        return table
+    best: dict[str, dict[str, Any]] = {}
+    for row in table.to_pylist():
+        cve_id = row["cve_id"]
+        current = best.get(cve_id)
+        if current is None or row["collected_at"] > current["collected_at"]:
+            best[cve_id] = row
+    kept = sorted(best.values(), key=lambda r: r["cve_id"])
     return pa.Table.from_pylist(kept, schema=table.schema)
 
 
@@ -1275,6 +1306,60 @@ def _collect_governance(
         return {"status": "failed", "reason": str(exc)}
 
 
+def _collect_security(
+    config: ProjectConfig,
+    data_dir: Path,
+    run_id: str,
+    started_at: datetime,
+    collector_factory: Callable[[ProjectConfig], SecurityCollector] | None,
+) -> dict[str, Any]:
+    """Collect OpenSSF Scorecard + NVD advisory data (issue #55, D21 item 3).
+
+    Both `scorecard_check` and `security_advisory` are written as one raw
+    partition per run, same append-only pattern as every other source; the
+    Governance page's Security section (`site/generate.py`) reads the full
+    accumulated history directly, independent of the metrics engine (this
+    source registers no `metric_value` rows -- its per-check/per-CVE facts
+    don't fit the monthly-windowed-rate shape the metrics registry assumes,
+    and the issue itself permits skipping metric registration entirely
+    rather than forcing a bad fit).
+    """
+    _log("source_collect_started", source="security")
+    collector = (collector_factory or SecurityCollector)(config)
+    try:
+        result = collector.collect()
+        partition_date = started_at.date()
+        storage.write_partition(
+            data_dir, "security", "scorecard_check", partition_date, run_id, result.scorecard_checks
+        )
+        storage.write_partition(
+            data_dir, "security", "security_advisory", partition_date, run_id, result.advisories
+        )
+        record_last_good_snapshot(data_dir, "security", run_id)
+        _log(
+            "source_collect_succeeded",
+            source="security",
+            scorecard_checks_collected=result.scorecard_check_count,
+            advisories_collected=result.advisory_count,
+        )
+        return {
+            "status": "ok",
+            "records_collected": result.scorecard_check_count + result.advisory_count,
+            "scorecard_checks_collected": result.scorecard_check_count,
+            "advisories_collected": result.advisory_count,
+        }
+    except Exception as exc:  # noqa: BLE001 - a source outage must never abort the run (§7.3)
+        _log("source_collect_failed", source="security", error=str(exc))
+        return {
+            "status": "failed",
+            "records_collected": 0,
+            "last_good_snapshot": read_last_good_snapshot(data_dir, "security"),
+            "reason": str(exc),
+        }
+    finally:
+        collector.close()
+
+
 def _write_metrics_snapshot(data_dir: Path, run_id: str, metrics_table: pa.Table) -> Path:
     snapshot_dir = Path(data_dir) / "snapshots" / run_id
     snapshot_dir.mkdir(parents=True, exist_ok=True)
@@ -1311,6 +1396,7 @@ def run_pipeline(
     governance_overrides_path: str | Path = DEFAULT_OVERRIDES_PATH,
     governance_jira_comments_factory: Callable[[str], object] | None = None,
     governance_github_checks_factory: Callable[[str, str], object] | None = None,
+    security_collector_factory: Callable[[ProjectConfig], SecurityCollector] | None = None,
 ) -> RunResult:
     """Run one collect -> identity -> metrics -> manifest (-> site) pass.
 
@@ -1328,6 +1414,10 @@ def run_pipeline(
     `asf_roster_collector_factory`, given, replaces the default
     `AsfRosterCollector(config)` construction — this is how tests inject an
     `AsfRosterCollector` wired to an offline `httpx.MockTransport`.
+
+    `security_collector_factory`, given, replaces the default
+    `SecurityCollector(config)` construction (issue #55) — same offline-test
+    injection pattern as the two factories above.
     """
     data_dir = Path(data_dir)
     workdir = Path(workdir)
@@ -1369,6 +1459,10 @@ def run_pipeline(
             started_at,
             max_ponymail_months,
             ponymail_collector_factory,
+        )
+    if "security" in active_sources:
+        source_results["security"] = _collect_security(
+            config, data_dir, run_id, started_at, security_collector_factory
         )
 
     # D3: identity resolution and metrics always recompute from the ENTIRE

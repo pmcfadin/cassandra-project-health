@@ -482,3 +482,87 @@ entirely. A v2 upgrade using this source would only be honest as a **forward-loo
 "this commit, if made in roughly the last N weeks on its branch, has a joinable Jenkins result"),
 never as a way to fill in `unknown` rows for older commits — and even then, `N` varies by branch and
 would need to be re-measured periodically as retention rolls forward, not hard-coded once.
+
+---
+## 11. Security: OpenSSF Scorecard + CVE/advisory history (issue #55)
+
+Distinct from §§1-9 above (which score Cassandra's own *process* — review, CI, ticket linkage), this
+section covers two **external, third-party** security signals shown alongside (never blended into) the
+per-commit compliance results: the OpenSSF Scorecard's per-check security-posture results, and CVE/
+advisory metadata. Neither is a community-health or process-compliance measure (`RESEARCH.md` §6
+already established this for Scorecard specifically) — they are shown because a governance/trust page
+for a project this size is incomplete without them, per D21 item 3.
+
+### 10.1 OpenSSF Scorecard — per-check, never a single score
+
+**Source**: `https://api.securityscorecards.dev/projects/github.com/apache/cassandra`, anonymous,
+unauthenticated, verified live 2026-09-25: `score: 4.6`, `scorecard.version: v5.5.1-...`, `date:
+2026-09-21`, 14 checks returned. This matches `RESEARCH.md` §6.2's own independent live check on the
+same date (same score, same `Code-Review` reason string), confirming the API is stable and
+reproducible run-to-run within the same day.
+
+**Storage**: every collection run writes each check as its own row (`scorecard_check`, one raw
+partition per run, `storage.write_partition`'s existing append-only guarantee) — this is how "history
+from now on" is implemented, with no bespoke history table. The site leads with the per-check table and
+never renders the aggregate as a headline number — it appears only as a small, secondary line
+underneath the table (RESEARCH.md §6.2's own warning: "aggregate scores... tell you nothing about what
+individual behaviors a repository is or is not doing").
+
+**Per-check "why" notes** (shown on the Governance page next to a check, only where there's a verified,
+specific reason — everything else is shown with Scorecard's own `reason` string and no added claim):
+
+- **Maintained** (10/10) — the check's own reason string is "30 commit(s) and 0 issue activity found in
+  the last 90 days." **Verified**: `apache/cassandra` has `has_issues: false` (`DATA-SOURCES.md` §3) —
+  GitHub Issues is disabled project-wide because Cassandra tracks issues in JIRA, not GitHub. The "0
+  issue activity" component of this score is a config fact about which tracker is used, not a
+  maintenance signal, and does not indicate inactivity.
+- **Code-Review** (0/10) — "Found 0/30 approved changesets." **Verified**: this check counts only
+  approved *GitHub pull-request* reviews. Cassandra's actual review process is the commit-trailer
+  (`patch by X; reviewed by Y for CASSANDRA-N`) and JIRA-reviewer-field evidence this document's §2 R1
+  measures directly — 79-87% trailer coverage since 2018, 93% JIRA-field coverage on a live 30-issue
+  sample (§2 R1). Scorecard has no visibility into either evidence source, so a 0 here is a measurement
+  blind spot, not an absence of review.
+- **Branch-Protection** (1/10) — Scorecard's own evidence lists force pushes enabled and no required
+  status checks found on `trunk`. This is a directly observable GitHub setting, unlike Code-Review — no
+  ASF-process explanation is being asserted for it. **Unverified**: whether Cassandra/ASF Infra
+  deliberately favors a non-GitHub-native protection mechanism for this repo; no ASF Infra source was
+  checked for this in this round.
+- **Signed-Releases** (-1, not applicable) — "no releases found," because this check only recognizes
+  GitHub Releases, and `apache/cassandra` publishes 0 of those (`DATA-SOURCES.md` §5: "Cassandra does
+  not use GitHub's Releases feature at all"). **Verified live 2026-09-25**: `downloads.apache.org`
+  release directories (e.g. `cassandra/4.0.21/`) each carry a `.asc` GPG signature and `.sha256`/
+  `.sha512` checksum file alongside the release artifact, plus a project-wide `KEYS` file (public
+  keyring) at `downloads.apache.org/cassandra/KEYS` (200). ASF releases are signed; Scorecard simply
+  checks the wrong channel for it.
+- **Packaging** (-1, not applicable) — "packaging workflow not detected," same blind spot as
+  Signed-Releases: Cassandra's release pipeline is the ASF dist/archive process above, not a GitHub
+  Actions/Packages publish step.
+
+Every other check returned (Dangerous-Workflow, Security-Policy, License, Binary-Artifacts,
+Token-Permissions, CII-Best-Practices, SAST, Pinned-Dependencies, Fuzzing) reflects real, directly
+observable GitHub-repo/workflow configuration with no ASF-specific measurement gap identified — shown
+with Scorecard's own `reason` string and no added "why" note.
+
+### 10.2 CVE / advisory history — metadata only
+
+**Sources tried, live-verified 2026-09-25**:
+
+| Source | Result | Used? |
+|---|---|---|
+| `cassandra.apache.org/_/cve.html`, `.../security.html` | 404 (neither page exists) | No — Cassandra has no dedicated security-advisory page of its own |
+| `cve.org` search API (`cveawg.mitre.org/api/cve`) | `400 BAD_REQUEST` without a `CVE-API-ORG` header (ASF-internal credential) | No — bulk search needs credentials this project doesn't have |
+| `cve.org` per-CVE record (`cveawg.mitre.org/api/cve/<id>`) | 200, works anonymously | No — redundant with NVD's own record for the same id |
+| **NVD API, CPE search** (`services.nvd.nist.gov/rest/json/cves/2.0?virtualMatchString=cpe:2.3:a:apache:cassandra:*...`) | 200, **16 CVEs**, 2015-2026, all genuinely Cassandra-relevant | **Yes — primary source** |
+| NVD API, free-text keyword search (`keywordSearch=apache cassandra`) | 200, 25 results | No — 9 more results than the CPE search, some unrelated to the Cassandra CPE entry; CPE search is the precise, authoritative query the issue itself asks for ("vendor apache product cassandra") |
+| `lists.apache.org` announce@ archive | 200, live | No — plain HTML, no structured per-advisory API; would need bespoke scraping, deferred |
+
+Collected per CVE (metadata only, no exploit/PoC content): CVE id, published/last-modified date,
+severity + CVSS score/version (preferring the newest CVSS version NVD provides), an English summary,
+affected/fixed version ranges (parsed from NVD's own `configurations[].nodes[].cpeMatch[]`, restricted
+to lines naming the `apache:cassandra` CPE — a CVE's configuration can name other products too, e.g.
+CVE-2016-3427's Oracle JDK/JRE entries alongside its Cassandra range), and the NVD detail-page URL.
+
+One collection run's per-CVE rows are deduped at read time on `cve_id` (keep the latest fetch) — a
+re-fetch's NVD metadata (e.g. a corrected CVSS score) is a refreshed snapshot of the same fact, not a
+new historical event, matching this project's existing `issue` table dedupe convention
+(`pipeline.py`'s `_dedupe_issue_rows`).

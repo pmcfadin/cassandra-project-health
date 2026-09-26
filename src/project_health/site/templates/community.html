@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block title %}Community — Cassandra Project Health{% endblock %}
+{% block content %}
+<p class="page-intro">Code and contributor health metrics: sustainability, review capacity, and responsiveness — computed from Git, ASF JIRA and GitHub PR history.</p>
+
+{% for group in dimensions %}
+  <section class="dimension" aria-labelledby="dim-{{ loop.index }}">
+    <h2 id="dim-{{ loop.index }}">{{ group.dimension | title }}</h2>
+    <div class="card-grid">
+      {% for m in group.metrics %}
+      <article class="card">
+        <header class="card-header">
+          <h3>{{ m.name }}</h3>
+          <span class="badge badge--tier badge--tier-{{ m.tier }}">{{ m.tier }}</span>
+        </header>
+
+        <p class="card-value">
+          {% if m.latest_value_display is not none %}
+            <span class="value">{{ m.latest_value_display }}</span>
+            <span class="value-period">{{ m.latest_month_label }}</span>
+          {% else %}
+            <span class="value value--insufficient">insufficient data</span>
+          {% endif %}
+        </p>
+
+        <p class="card-status">Status: baseline scoring arrives in M3.</p>
+
+        <div class="chart" data-vega-spec='{{ m.vega_spec_json }}' role="img" aria-label="History chart for {{ m.name }}">
+          <noscript>Enable JavaScript to see the {{ m.name }} history chart, or use the data links below.</noscript>
+        </div>
+
+        <p class="card-links">
+          <a href="{{ m.json_href }}">JSON</a> &middot; <a href="{{ m.csv_href }}">CSV</a>
+        </p>
+      </article>
+      {% endfor %}
+    </div>
+  </section>
+{% endfor %}
+{% endblock %}

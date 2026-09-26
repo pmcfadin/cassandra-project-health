@@ -61,9 +61,62 @@ body {
   margin: 0 0 0.25rem;
   font-size: 1.75rem;
 }
+.site-title-link {
+  color: inherit;
+  text-decoration: none;
+}
 .tagline {
   color: var(--fg-muted);
   margin: 0;
+}
+
+.site-nav {
+  max-width: 60rem;
+  margin: 0 auto 1rem;
+  padding: 0 1.5rem;
+  display: flex;
+  gap: 1.25rem;
+  border-bottom: 1px solid var(--border);
+  /* A narrow viewport (e.g. 390px) can't always fit all four tabs at full
+     size without wrapping; scroll horizontally within the nav itself
+     rather than letting it (or the page) overflow (issue #34). */
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+.site-nav a {
+  display: inline-block;
+  flex: none;
+  padding: 0.6rem 0.1rem;
+  color: var(--fg-muted);
+  text-decoration: none;
+  font-weight: 600;
+  border-bottom: 2px solid transparent;
+  white-space: nowrap;
+}
+.site-nav a:hover {
+  color: var(--fg);
+}
+.site-nav a[aria-current="page"] {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
+@media (max-width: 480px) {
+  .site-nav {
+    gap: 0.85rem;
+    padding: 0 1rem;
+  }
+  .site-header {
+    padding: 1.5rem 1rem 1rem;
+  }
+  main {
+    padding: 0 1rem 3rem;
+  }
+}
+
+.page-intro {
+  margin: 1.5rem 0;
+  color: var(--fg-muted);
 }
 
 .banner {
@@ -206,6 +259,106 @@ main {
 }
 .card-links a {
   color: var(--accent);
+}
+
+/* --- Home page: one summary card per top-level page (D13) -------------- */
+
+.summary-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 1rem;
+  margin: 1.5rem 0 3rem;
+}
+
+.card--summary .card-header h2 {
+  margin: 0;
+  font-size: 1.15rem;
+}
+.card--summary .card-header h2 a {
+  color: var(--fg);
+  text-decoration: none;
+}
+.card--summary .card-header h2 a:hover {
+  color: var(--accent);
+}
+
+.card-summary-blurb {
+  color: var(--fg-muted);
+  font-size: 0.9rem;
+  margin: 0.5rem 0;
+}
+
+.headline-metrics {
+  list-style: none;
+  margin: 0.75rem 0;
+  padding: 0;
+}
+.headline-metrics li {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.35rem 0;
+  border-top: 1px solid var(--border);
+}
+.headline-metrics li:first-child {
+  border-top: none;
+}
+.headline-metric-name {
+  font-size: 0.85rem;
+  color: var(--fg-muted);
+}
+.headline-metric-value {
+  font-weight: 600;
+}
+.headline-metric-value--insufficient {
+  font-weight: 500;
+  font-size: 0.85rem;
+  color: var(--fg-muted);
+}
+.headline-metric-period {
+  font-size: 0.75rem;
+  color: var(--fg-muted);
+}
+
+.card-more {
+  font-size: 0.8rem;
+  color: var(--fg-muted);
+  margin: 0.25rem 0;
+}
+
+.card-empty-state {
+  color: var(--fg-muted);
+  font-size: 0.9rem;
+  margin: 0.75rem 0;
+}
+
+/* --- Conversations / Governance: empty state + "what's coming" --------- */
+
+.empty-state {
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1rem 1.5rem;
+  margin-bottom: 2rem;
+}
+.empty-state h2 {
+  margin-top: 0;
+}
+
+.whats-coming h2 {
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 0.5rem;
+}
+
+.phase-card {
+  margin-bottom: 1.5rem;
+}
+.phase-card h3 {
+  margin-bottom: 0.35rem;
+}
+.phase-card p {
+  color: var(--fg-muted);
 }
 
 .site-footer {

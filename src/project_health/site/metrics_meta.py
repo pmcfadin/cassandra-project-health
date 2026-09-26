@@ -1,17 +1,23 @@
-"""Presentation metadata for the M0 metrics the home page renders.
+"""Presentation metadata for the M0 metrics the site renders.
 
-`id -> name, dimension, tier, direction_of_good, value_kind`, taken
+`id -> name, dimension, tier, direction_of_good, value_kind, page`, taken
 straight from `docs/spec/METRICS.md` §1's summary table (plus each
 metric's own units, described in its own section). Metric-computation
 code (#7) doesn't need this map — it's display-only metadata (card
-grouping, tier badge, chart title, number formatting), owned here in one
-place rather than duplicated into every metric's `metric_value
-.details_json`, so a wording, tier, or unit change is a one-line edit here
-instead of a metrics-engine recompute.
+grouping, tier badge, chart title, number formatting, which site page it
+renders on), owned here in one place rather than duplicated into every
+metric's `metric_value.details_json`, so a wording, tier, unit, or
+page-placement change is a one-line edit here instead of a metrics-engine
+recompute.
 
-M0 ships exactly these six metrics (ROADMAP.md §0); a metric_id present in
-a `metric_value` snapshot but absent from this map is out of scope for the
-home page and is silently not rendered.
+`page` (D13, issue #34) is the site page a metric's card renders on
+(`"community"`, `"conversations"`, or `"governance"`); the generator
+(`site/generate.py`) groups metrics by this field, so a new metric only
+needs to declare its page here to show up in the right place.
+
+M0 ships exactly these six metrics (ROADMAP.md §0), all on the community
+page; a metric_id present in a `metric_value` snapshot but absent from
+this map is out of scope for the site and is silently not rendered.
 """
 
 from __future__ import annotations
@@ -66,6 +72,9 @@ class MetricMeta:
     #   'percent' -> a 0-1 fraction shown as a percentage, e.g. "12.3%"
     #   'days'    -> 1 decimal place with a " days" suffix, e.g. "14.2 days"
     value_kind: str
+    # page: which site page (D13) renders this metric's card —
+    # 'community' | 'conversations' | 'governance'.
+    page: str
 
     def format_value(self, value: float) -> str:
         """Format `value` for display (the card's big number)."""
@@ -127,6 +136,7 @@ M0_METRICS: dict[str, MetricMeta] = {
         tier="established",
         direction_of_good="higher",
         value_kind="count",
+        page="community",
     ),
     "new_contributors_monthly": MetricMeta(
         metric_id="new_contributors_monthly",
@@ -135,6 +145,7 @@ M0_METRICS: dict[str, MetricMeta] = {
         tier="established",
         direction_of_good="higher",
         value_kind="count",
+        page="community",
     ),
     "unique_reviewers_monthly": MetricMeta(
         metric_id="unique_reviewers_monthly",
@@ -143,6 +154,7 @@ M0_METRICS: dict[str, MetricMeta] = {
         tier="proxy",
         direction_of_good="higher",
         value_kind="count",
+        page="community",
     ),
     "reviewer_hhi": MetricMeta(
         metric_id="reviewer_hhi",
@@ -151,6 +163,7 @@ M0_METRICS: dict[str, MetricMeta] = {
         tier="proxy",
         direction_of_good="lower",
         value_kind="ratio",
+        page="community",
     ),
     "median_resolution_latency_jira": MetricMeta(
         metric_id="median_resolution_latency_jira",
@@ -159,6 +172,7 @@ M0_METRICS: dict[str, MetricMeta] = {
         tier="established",
         direction_of_good="lower",
         value_kind="days",
+        page="community",
     ),
     "stale_jira_rate": MetricMeta(
         metric_id="stale_jira_rate",
@@ -167,5 +181,56 @@ M0_METRICS: dict[str, MetricMeta] = {
         tier="established",
         direction_of_good="lower",
         value_kind="percent",
+        page="community",
     ),
 }
+
+
+@dataclass(frozen=True)
+class PageMeta:
+    """Presentation metadata for one of the site's top-level pages (D13,
+    issue #34): its nav label, its directory (relative to the site root,
+    trailing slash), and the one-line blurb the home page's summary card
+    shows above that page's headline metrics."""
+
+    page_id: str
+    title: str
+    path: str
+    summary: str
+    # Shown on the home page's summary card in place of headline metrics
+    # when this page has none published yet (an honest empty state, not a
+    # broken-looking blank card).
+    empty_message: str
+
+
+# The site's top-level pages, in nav/home-card order (D13). `page_id` is
+# what `MetricMeta.page` values match against; a metric whose `page` isn't
+# a key here is a bug, not a silent drop (see `generate._group_by_page`).
+PAGES: dict[str, PageMeta] = {
+    "community": PageMeta(
+        page_id="community",
+        title="Community",
+        path="community/",
+        summary="Code and contributor health: sustainability, review capacity, and responsiveness.",
+        empty_message="No metrics published yet.",
+    ),
+    "conversations": PageMeta(
+        page_id="conversations",
+        title="Conversations",
+        path="conversations/",
+        summary="Mailing-list metrics, computed from metadata only — never message content.",
+        empty_message="No conversation metrics yet — mailing-list collection is in progress.",
+    ),
+    "governance": PageMeta(
+        page_id="governance",
+        title="Governance",
+        path="governance/",
+        summary="Per-commit minimums checked against an owner-approved policy.",
+        empty_message="Governance policy in development — no compliance results yet.",
+    ),
+}
+
+# Home-page summary cards show at most this many headline metrics per page
+# before linking through for the rest (D13: "one summary card per page:
+# its headline metrics ... and a link").
+HOME_CARD_METRIC_LIMIT = 3

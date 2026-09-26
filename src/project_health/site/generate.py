@@ -51,6 +51,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
+from project_health import storage
 from project_health.schema import validate
 from project_health.site.manifest import RunManifest, load_manifest
 from project_health.site.metrics_meta import (
@@ -80,6 +81,15 @@ METHODOLOGY_URL = "https://github.com/pmcfadin/cassandra-project-health/tree/mai
 DECISIONS_URL = "https://github.com/pmcfadin/cassandra-project-health/blob/main/docs/spec/DECISIONS.md"
 COMMUNITY_HEALTH_SPEC_URL = (
     "https://github.com/pmcfadin/cassandra-project-health/blob/main/docs/spec/COMMUNITY-HEALTH.md"
+)
+GOVERNANCE_SPEC_URL = (
+    "https://github.com/pmcfadin/cassandra-project-health/blob/main/docs/spec/GOVERNANCE.md"
+)
+# GitHub's auto-generated heading anchor for GOVERNANCE.md's Security
+# section (issue #55) — see that section for the per-check citations
+# `_SECURITY_CHECK_NOTES` below condenses.
+GOVERNANCE_SECURITY_ANCHOR = (
+    "11-security-openssf-scorecard--cve-advisory-history-issue-55"
 )
 # GitHub's auto-generated heading anchors for DECISIONS.md's D14/D15
 # sections (governance.html deep-links straight to them).
@@ -168,7 +178,7 @@ def generate(
         _write_csv(data_out / f"{metric_id}.csv", series, manifest)
 
     _copy_static(out_dir)
-    _render_pages(out_dir, series_by_id, manifest, build_time)
+    _render_pages(out_dir, series_by_id, manifest, build_time, data_dir)
 
 
 def _read_metrics(data_dir: Path, run_id: str) -> pa.Table:
@@ -429,6 +439,141 @@ def _is_stale(manifest: RunManifest, build_time: datetime) -> bool:
     return age.total_seconds() > FRESHNESS_WARNING_HOURS * 3600
 
 
+# --- Governance / Security section (issue #55, D21 item 3) -----------------
+#
+# Deliberately separate from the `metric_value` machinery above: OpenSSF
+# Scorecard's per-check results and NVD's per-CVE records are discrete
+# facts, not monthly-windowed rates, so this reads the `security` source's
+# raw tables directly from `data_dir` (same accumulated-history read
+# `run_pipeline` itself uses for metrics, `storage.read_table`) rather than
+# registering a poorly-fitting `metric_value` metric for them.
+
+# Short, source-backed notes on *why* an ASF-hosted project like Cassandra
+# scores the way it does on a given Scorecard check -- shown next to that
+# check's row, only where there's a verified, specific reason to give one.
+# See docs/spec/GOVERNANCE.md §11 for the full citations behind each note.
+_SECURITY_CHECK_NOTES: dict[str, str] = {
+    "Maintained": (
+        "Scorecard's own evidence records “0 issue activity” because GitHub "
+        "Issues is disabled on apache/cassandra — Cassandra tracks issues in JIRA, "
+        "not GitHub — not because the project is inactive (verified: RESEARCH.md §6.2)."
+    ),
+    "Code-Review": (
+        "This check only counts approved GitHub pull-request reviews. Cassandra's actual "
+        "review process runs through commit-message trailers (“patch by X; reviewed by "
+        "Y”) and JIRA reviewer fields, both invisible to it — see this page's own "
+        "governance compliance results above for the real review-coverage numbers "
+        "(verified: RESEARCH.md §6.2, GOVERNANCE.md R1)."
+    ),
+    "Branch-Protection": (
+        "Scorecard's own evidence: force pushes are enabled and no required status checks "
+        "were found on ‘trunk’ — a directly observable GitHub setting, not an artifact "
+        "of Cassandra's review process living elsewhere. Unverified: whether this reflects "
+        "a deliberate ASF Infra/commit-workflow choice rather than an oversight — not "
+        "confirmed against an ASF Infra source."
+    ),
+    "Signed-Releases": (
+        "This check only recognizes GitHub Releases, and apache/cassandra publishes none "
+        "(0 GitHub Releases; DATA-SOURCES.md §5). ASF signs and checksums releases on "
+        "downloads.apache.org/archive.apache.org instead — verified live: each release "
+        "carries a .asc GPG signature plus .sha256/.sha512 checksums, and a public KEYS "
+        "file is published alongside them. Scorecard has no visibility into that channel."
+    ),
+    "Packaging": (
+        "Scorecard found no GitHub/GitLab publishing workflow. Cassandra's release process "
+        "is the ASF dist/archive pipeline noted under Signed-Releases, not GitHub Packages "
+        "or Actions-based publishing — same blind spot."
+    ),
+}
+
+
+@dataclass(frozen=True)
+class SecurityContext:
+    """Everything the Security partial (`templates/_security.html`) needs."""
+
+    scorecard: dict[str, Any] | None
+    scorecard_run_count: int
+    scorecard_history: list[dict[str, Any]]
+    advisories: list[dict[str, Any]]
+    advisory_count: int
+    advisories_by_year: list[tuple[int, int]]
+
+
+def _dedupe_latest(rows: list[dict[str, Any]], key: str, tiebreak: str) -> list[dict[str, Any]]:
+    """Keep the row with the greatest `tiebreak` value per `key`.
+
+    Mirrors `pipeline._dedupe_security_advisories`'s logic, duplicated here
+    (rather than imported) to avoid a site -> pipeline import cycle
+    (`pipeline` already imports `site.generate`).
+    """
+    best: dict[Any, dict[str, Any]] = {}
+    for row in rows:
+        current = best.get(row[key])
+        if current is None or row[tiebreak] > current[tiebreak]:
+            best[row[key]] = row
+    return list(best.values())
+
+
+def _read_security_context(data_dir: Path) -> SecurityContext:
+    scorecard_rows = storage.read_table(data_dir, "security", "scorecard_check").to_pylist()
+    advisory_rows = storage.read_table(data_dir, "security", "security_advisory").to_pylist()
+
+    scorecard: dict[str, Any] | None = None
+    scorecard_history: list[dict[str, Any]] = []
+    runs: dict[str, list[dict[str, Any]]] = {}
+    for row in scorecard_rows:
+        runs.setdefault(row["source_snapshot_id"], []).append(row)
+
+    if runs:
+        ordered_snapshot_ids = sorted(
+            runs, key=lambda sid: max(r["collected_at"] for r in runs[sid])
+        )
+        scorecard_history = [
+            {
+                "scorecard_date": runs[sid][0]["scorecard_date"],
+                "overall_score": runs[sid][0]["overall_score"],
+            }
+            for sid in ordered_snapshot_ids
+        ]
+        latest_rows = sorted(runs[ordered_snapshot_ids[-1]], key=lambda r: r["check_name"])
+        scorecard = {
+            "repo": latest_rows[0]["repo"],
+            "scorecard_date": latest_rows[0]["scorecard_date"],
+            "scorecard_version": latest_rows[0]["scorecard_version"],
+            "overall_score": latest_rows[0]["overall_score"],
+            "checks": [
+                {
+                    "name": row["check_name"],
+                    "score": row["check_score"],
+                    "reason": row["check_reason"],
+                    "details_summary": row["check_details_summary"],
+                    "note": _SECURITY_CHECK_NOTES.get(row["check_name"]),
+                }
+                for row in latest_rows
+            ],
+        }
+
+    deduped_advisories = _dedupe_latest(advisory_rows, "cve_id", "collected_at")
+    deduped_advisories.sort(
+        key=lambda r: r["published_date"] or date.min, reverse=True
+    )
+
+    by_year: dict[int, int] = {}
+    for row in deduped_advisories:
+        if row["published_date"] is not None:
+            year = row["published_date"].year
+            by_year[year] = by_year.get(year, 0) + 1
+
+    return SecurityContext(
+        scorecard=scorecard,
+        scorecard_run_count=len(runs),
+        scorecard_history=scorecard_history,
+        advisories=deduped_advisories,
+        advisory_count=len(deduped_advisories),
+        advisories_by_year=sorted(by_year.items(), reverse=True),
+    )
+
+
 # --- HTML rendering -----------------------------------------------------
 
 
@@ -538,6 +683,8 @@ def _common_page_context(manifest: RunManifest, build_time: datetime) -> dict[st
         "community_health_spec_url": COMMUNITY_HEALTH_SPEC_URL,
         "decisions_d14_anchor": DECISIONS_D14_ANCHOR,
         "decisions_d15_anchor": DECISIONS_D15_ANCHOR,
+        "governance_spec_url": GOVERNANCE_SPEC_URL,
+        "governance_security_anchor": GOVERNANCE_SECURITY_ANCHOR,
         "vega_version": VEGA_VERSION,
         "vega_lite_version": VEGA_LITE_VERSION,
         "vega_embed_version": VEGA_EMBED_VERSION,
@@ -549,6 +696,7 @@ def _render_pages(
     series_by_id: dict[str, MetricSeries],
     manifest: RunManifest,
     build_time: datetime,
+    data_dir: Path,
 ) -> None:
     """Render all four top-level pages (D13): `/`, `/community/`,
     `/conversations/`, `/governance/`, sharing `templates/base.html`'s nav
@@ -598,10 +746,15 @@ def _render_pages(
     _write_subpage(out_dir, "conversations", conversations_html)
 
     # Governance (`/governance/`) — placeholder until the compliance engine
-    # ships (D14, D15).
+    # ships (D14, D15), plus the Security section (OpenSSF Scorecard + CVE/
+    # advisory history, issue #55, D21 item 3) rendered from its own
+    # partial template (`_security.html`) so it stays isolated from #36's
+    # compliance-engine work on this same page.
+    security_context = _read_security_context(data_dir)
     governance_html = env.get_template("governance.html").render(
         current_page="governance",
         base_prefix=SUBPAGE_BASE_PREFIX,
+        security=security_context,
         **common_ctx,
     )
     _write_subpage(out_dir, "governance", governance_html)

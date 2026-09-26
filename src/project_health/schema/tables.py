@@ -221,6 +221,66 @@ MESSAGE_THREAD = pa.schema(
     ]
 )
 
+# --- Security tables (issue #55, D21 item 3) --------------------------------
+#
+# Both tables are collected fresh on every `security` source run and are
+# never overwritten (storage.write_partition's append-only guarantee) --
+# this is deliberately how issue #55 gets "history from now on" for the
+# OpenSSF Scorecard without a bespoke history mechanism: every run's raw
+# per-check rows simply accumulate under their own `date=<run date>`
+# partition, same as every other raw table.
+
+SCORECARD_CHECK = pa.schema(
+    [
+        pa.field("check_id", pa.string(), nullable=False),
+        # the OpenSSF-scored repo, e.g. "github.com/apache/cassandra"
+        pa.field("repo", pa.string(), nullable=False),
+        # the date field in api.securityscorecards.dev's response -- the
+        # date the Scorecard run itself was computed, not our collection date
+        pa.field("scorecard_date", pa.date32(), nullable=True),
+        pa.field("scorecard_version", pa.string(), nullable=True),
+        # the aggregate 0-10 score for this run, repeated on every check row
+        # so a reader never has to join back to a separate "run" table to
+        # see it next to a check (RESEARCH.md §6.2: never presented alone)
+        pa.field("overall_score", pa.float64(), nullable=True),
+        pa.field("check_name", pa.string(), nullable=False),
+        # -1 means "not applicable / not detected" per Scorecard's own
+        # convention (e.g. Packaging, Signed-Releases on apache/cassandra)
+        pa.field("check_score", pa.float64(), nullable=True),
+        pa.field("check_reason", pa.string(), nullable=True),
+        # `details` list items joined, truncated -- the free-text evidence
+        # Scorecard itself returns for this check
+        pa.field("check_details_summary", pa.string(), nullable=True),
+        pa.field("source_snapshot_id", pa.string(), nullable=False),
+        pa.field("collected_at", TIMESTAMP_UTC, nullable=False),
+    ]
+)
+
+SECURITY_ADVISORY = pa.schema(
+    [
+        pa.field("advisory_id", pa.string(), nullable=False),
+        pa.field("cve_id", pa.string(), nullable=False),
+        pa.field("published_date", pa.date32(), nullable=True),
+        pa.field("last_modified_date", pa.date32(), nullable=True),
+        # severity: NVD's own baseSeverity string ('LOW'|'MEDIUM'|'HIGH'|'CRITICAL'),
+        # null if NVD hasn't scored it
+        pa.field("severity", pa.string(), nullable=True),
+        pa.field("cvss_score", pa.float64(), nullable=True),
+        pa.field("cvss_version", pa.string(), nullable=True),
+        pa.field("summary", pa.string(), nullable=True),
+        # human-readable summary of affected version range(s)/enumeration,
+        # derived from the source's CPE match data -- metadata only, never
+        # a claim about which line of code was vulnerable
+        pa.field("affected_versions", pa.string(), nullable=True),
+        pa.field("fixed_versions", pa.string(), nullable=True),
+        pa.field("advisory_url", pa.string(), nullable=False),
+        # source: 'nvd' (v1; cve.org/other sources may be added later)
+        pa.field("source", pa.string(), nullable=False),
+        pa.field("source_snapshot_id", pa.string(), nullable=False),
+        pa.field("collected_at", TIMESTAMP_UTC, nullable=False),
+    ]
+)
+
 # --- Run / provenance registry tables (ARCHITECTURE.md §5) ------------------
 
 SOURCE_SNAPSHOT = pa.schema(
@@ -512,6 +572,8 @@ TABLE_SCHEMAS: dict[str, pa.Schema] = {
     "roster_entry": ROSTER_ENTRY,
     "message": MESSAGE,
     "message_thread": MESSAGE_THREAD,
+    "scorecard_check": SCORECARD_CHECK,
+    "security_advisory": SECURITY_ADVISORY,
     "source_snapshot": SOURCE_SNAPSHOT,
     "run_manifest": RUN_MANIFEST,
     "metric_definition_version": METRIC_DEFINITION_VERSION,

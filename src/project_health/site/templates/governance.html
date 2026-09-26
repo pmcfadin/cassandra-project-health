@@ -37,4 +37,9 @@
     </p>
   </article>
 </section>
+
+{# Security section (OpenSSF Scorecard + CVE/advisory history, issue #55,
+   D21 item 3) — kept in its own partial/include so #36's compliance-engine
+   work on this same page never needs to touch this section's markup. #}
+{% include "_security.html" %}
 {% endblock %}

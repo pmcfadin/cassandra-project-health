@@ -14,7 +14,7 @@ import json
 import os
 import shutil
 import subprocess
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import parse_qs
 
@@ -27,11 +27,13 @@ from project_health import storage
 from project_health.collectors.asf_roster import AsfRosterCollector
 from project_health.collectors.jira import JiraCollector
 from project_health.collectors.ponymail import PonyMailCollector
+from project_health.collectors.security import SecurityCollector
 from project_health.config import load_project
 from project_health.pipeline import (
     _dedupe_issue_rows,
     _dedupe_jira_review_events,
     _dedupe_roster_entries,
+    _dedupe_security_advisories,
     run_pipeline,
 )
 from project_health.schema import get_schema, validate
@@ -40,6 +42,7 @@ from tests.fixtures.git.build_repo import build_repo
 
 JIRA_FIXTURES_DIR = Path(__file__).parent / "fixtures" / "jira"
 ROSTER_FIXTURES_DIR = Path(__file__).parent / "fixtures" / "asf_roster"
+SECURITY_FIXTURES_DIR = Path(__file__).parent / "fixtures" / "security"
 
 
 def _load_jira_fixture(name: str) -> dict:
@@ -50,12 +53,19 @@ def _load_roster_fixture(name: str) -> dict:
     return json.loads((ROSTER_FIXTURES_DIR / name).read_text())
 
 
+def _load_security_fixture(name: str) -> dict:
+    return json.loads((SECURITY_FIXTURES_DIR / name).read_text())
+
+
 PAGE_1 = _load_jira_fixture("search_with_reviewers.json")
 PAGE_2 = _load_jira_fixture("search_with_reviewers_page2.json")
 EMPTY_PAGE = {"expand": "schema,names", "startAt": 0, "maxResults": 5, "total": 0, "issues": []}
 
 COMMITTEE_INFO = _load_roster_fixture("committee_info_cassandra.json")
 PUBLIC_LDAP_PROJECTS = _load_roster_fixture("public_ldap_projects_cassandra.json")
+
+SCORECARD_RESPONSE = _load_security_fixture("scorecard_cassandra.json")
+NVD_RESPONSE = _load_security_fixture("nvd_cassandra.json")
 
 NOW = datetime(2026, 9, 25, 6, 0, tzinfo=timezone.utc)
 
@@ -112,6 +122,35 @@ def _roster_factory(transport: httpx.MockTransport | None = None):
 
     def factory(config):
         return AsfRosterCollector(
+            config,
+            transport=transport,
+            max_retries=1,
+            sleep_fn=lambda s: None,
+        )
+
+    return factory
+
+
+def _security_transport() -> httpx.MockTransport:
+    """Mock transport for the OpenSSF Scorecard + NVD endpoints (issue #55)."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        url_str = str(request.url)
+        if "securityscorecards.dev" in url_str:
+            return httpx.Response(200, json=SCORECARD_RESPONSE)
+        if "nvd.nist.gov" in url_str:
+            return httpx.Response(200, json=NVD_RESPONSE)
+        raise AssertionError(f"unexpected security request: {url_str}")
+
+    return httpx.MockTransport(handler)
+
+
+def _security_factory(transport: httpx.MockTransport | None = None):
+    """Create a factory for offline OpenSSF Scorecard + NVD collection."""
+    transport = transport or _security_transport()
+
+    def factory(config):
+        return SecurityCollector(
             config,
             transport=transport,
             max_retries=1,
@@ -843,10 +882,60 @@ class TestDedupe:
         assert by_id["testuser"]["display_name"] == "Test User (updated)"
         assert by_id["other"]["source_snapshot_id"] == "run-1:asf_roster"
 
+    def test_dedupe_security_advisories_keeps_latest_collected_at_per_cve(self):
+        schema = get_schema("security_advisory")
+        base = {
+            "advisory_id": "adv-1",
+            "published_date": date(2025, 8, 25),
+            "last_modified_date": None,
+            "severity": "HIGH",
+            "cvss_score": 8.8,
+            "cvss_version": "3.1",
+            "summary": "old fetch",
+            "affected_versions": None,
+            "fixed_versions": None,
+            "advisory_url": "https://nvd.nist.gov/vuln/detail/CVE-2025-26467",
+            "source": "nvd",
+        }
+        rows = [
+            {
+                **base,
+                "cve_id": "CVE-2025-26467",
+                "collected_at": datetime(2026, 9, 1, tzinfo=timezone.utc),
+                "source_snapshot_id": "run-1:security",
+            },
+            {
+                **base,
+                "cve_id": "CVE-2025-26467",
+                "summary": "re-fetched, newer metadata",
+                "collected_at": datetime(2026, 9, 25, tzinfo=timezone.utc),
+                "source_snapshot_id": "run-2:security",
+            },
+            {
+                **base,
+                "cve_id": "CVE-2026-27314",
+                "summary": "unrelated CVE",
+                "collected_at": datetime(2026, 9, 1, tzinfo=timezone.utc),
+                "source_snapshot_id": "run-1:security",
+            },
+        ]
+        table = validate("security_advisory", pa.Table.from_pylist(rows, schema=schema))
+
+        deduped = _dedupe_security_advisories(table)
+
+        assert deduped.num_rows == 2
+        by_id = {r["cve_id"]: r for r in deduped.to_pylist()}
+        assert by_id["CVE-2025-26467"]["summary"] == "re-fetched, newer metadata"
+        assert by_id["CVE-2026-27314"]["summary"] == "unrelated CVE"
+
     def test_dedupe_functions_are_noop_on_empty_tables(self):
         assert _dedupe_issue_rows(get_schema("issue").empty_table()).num_rows == 0
         assert _dedupe_jira_review_events(get_schema("review_event").empty_table()).num_rows == 0
         assert _dedupe_roster_entries(get_schema("roster_entry").empty_table()).num_rows == 0
+        assert (
+            _dedupe_security_advisories(get_schema("security_advisory").empty_table()).num_rows
+            == 0
+        )
 
 
 # --- Ponymail backfill cap (issue #33 fixup) ---------------------------------
@@ -1529,3 +1618,122 @@ class TestGovernanceIncrementalCollection:
             data_dir / "snapshots" / result.run_id / "governance_commit_compliance.parquet"
         ).to_pylist()
         assert any(r["check_id"] == "pre-commit-ci-evidence" for r in rows)
+
+
+# --- security source wiring (issue #55, D21 item 3) --------------------------
+#
+# Same convention as ponymail/governance above: every other test in this file
+# opts out of "security" via its own explicit `sources=` list, so security
+# gets its own dedicated coverage here with mocked Scorecard/NVD transports
+# (tests/conftest.py's autouse network block would fail loudly if this ever
+# fell through to a real request).
+
+
+class TestSecurityIntegration:
+    def test_security_source_produces_scorecard_and_advisory_partitions(
+        self, tmp_path, config, git_workdir
+    ):
+        data_dir = tmp_path / "data"
+        transport = _paginated_transport({0: PAGE_1, 5: PAGE_2, 10: EMPTY_PAGE})
+
+        result = run_pipeline(
+            config=config,
+            data_dir=data_dir,
+            workdir=git_workdir,
+            sources=["git", "jira", "asf_roster", "security"],
+            now=NOW,
+            code_sha="abc1234",
+            jira_collector_factory=_jira_factory(transport),
+            asf_roster_collector_factory=_roster_factory(),
+            security_collector_factory=_security_factory(),
+        )
+
+        assert result.exit_code == 0
+        assert result.manifest["status"] == "ok"
+        assert result.manifest["sources"]["security"]["status"] == "ok"
+        # Real fixtures: 14 Scorecard checks + 16 CVEs (docs/spec/GOVERNANCE.md
+        # §11, live-verified 2026-09-25).
+        assert result.manifest["sources"]["security"]["scorecard_checks_collected"] == 14
+        assert result.manifest["sources"]["security"]["advisories_collected"] == 16
+
+        scorecard_raw_dir = data_dir / "raw" / "security" / "scorecard_check"
+        assert list(scorecard_raw_dir.glob("date=*/part-*.parquet"))
+        advisory_raw_dir = data_dir / "raw" / "security" / "security_advisory"
+        assert list(advisory_raw_dir.glob("date=*/part-*.parquet"))
+
+    def test_security_failure_does_not_block_the_run(self, tmp_path, config, git_workdir):
+        """A Scorecard/NVD outage is a source failure, not a pipeline failure
+        -- git/jira/asf_roster and metric computation are unaffected, same
+        granularity as jira's own outage handling elsewhere in this file."""
+        data_dir = tmp_path / "data"
+        transport = _paginated_transport({0: PAGE_1, 5: PAGE_2, 10: EMPTY_PAGE})
+
+        result = run_pipeline(
+            config=config,
+            data_dir=data_dir,
+            workdir=git_workdir,
+            sources=["git", "jira", "asf_roster", "security"],
+            now=NOW,
+            code_sha="abc1234",
+            jira_collector_factory=_jira_factory(transport),
+            asf_roster_collector_factory=_roster_factory(),
+            security_collector_factory=_security_factory(_always_503_transport()),
+        )
+
+        assert result.exit_code == 0
+        assert result.manifest["status"] == "ok"
+        assert result.manifest["sources"]["security"]["status"] == "failed"
+        assert "reason" in result.manifest["sources"]["security"]
+        assert result.manifest["sources"]["git"]["status"] == "ok"
+        assert not list(
+            (data_dir / "raw" / "security" / "scorecard_check").glob("date=*/part-*.parquet")
+        )
+
+    def test_second_run_accumulates_scorecard_history_without_overwriting(
+        self, tmp_path, config, git_workdir
+    ):
+        """Each run's Scorecard rows are their own partition (issue #55's
+        "history from now on") -- a second run adds rows, it never replaces
+        the first run's."""
+        data_dir = tmp_path / "data"
+        transport = _paginated_transport({0: PAGE_1, 5: PAGE_2, 10: EMPTY_PAGE})
+
+        first = run_pipeline(
+            config=config,
+            data_dir=data_dir,
+            workdir=git_workdir,
+            sources=["git", "jira", "asf_roster", "security"],
+            now=NOW,
+            code_sha="abc1234",
+            jira_collector_factory=_jira_factory(transport),
+            asf_roster_collector_factory=_roster_factory(),
+            security_collector_factory=_security_factory(),
+        )
+        assert first.manifest["sources"]["security"]["scorecard_checks_collected"] == 14
+
+        second = run_pipeline(
+            config=config,
+            data_dir=data_dir,
+            workdir=git_workdir,
+            sources=["git", "jira", "asf_roster", "security"],
+            now=NOW.replace(day=NOW.day + 1),
+            code_sha="abc1234",
+            jira_collector_factory=_jira_factory(_paginated_transport({0: EMPTY_PAGE})),
+            asf_roster_collector_factory=_roster_factory(),
+            security_collector_factory=_security_factory(),
+        )
+        assert second.manifest["sources"]["security"]["scorecard_checks_collected"] == 14
+
+        # Both runs' 14-row partitions are on disk -- 28 rows total, never
+        # overwritten (storage.write_partition's append-only guarantee).
+        accumulated = storage.read_table(data_dir, "security", "scorecard_check")
+        assert accumulated.num_rows == 28
+        snapshot_ids = {row["source_snapshot_id"] for row in accumulated.to_pylist()}
+        assert len(snapshot_ids) == 2
+
+        # Advisories dedupe down to 16 distinct CVEs even though both runs
+        # wrote 16 rows each (32 raw rows on disk).
+        advisories_raw = storage.read_table(data_dir, "security", "security_advisory")
+        assert advisories_raw.num_rows == 32
+        deduped = _dedupe_security_advisories(advisories_raw)
+        assert deduped.num_rows == 16

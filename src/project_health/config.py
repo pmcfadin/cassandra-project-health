@@ -183,6 +183,10 @@ class ProjectConfig(BaseModel):
     mailing_lists: MailingListsConfig | None = None
     roster: FlexibleSection | None = None
     releases: FlexibleSection | None = None
+    # `security:` (issue #55, D21 item 3) — OpenSSF Scorecard + CVE/advisory
+    # collector endpoints; a `FlexibleSection` like `roster`, since its full
+    # shape is owned by `collectors/security.py`, not core.
+    security: FlexibleSection | None = None
     affiliations_file: str | None = None
     bot_patterns: list[BotPattern] = []
     reviewer_extraction: ReviewerExtraction

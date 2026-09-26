@@ -55,6 +55,18 @@ releases:
   type: github_releases
   repos: [apache/cassandra]
 
+# OpenSSF Scorecard + CVE/advisory collector (issue #55, D21 item 3). Both
+# endpoints verified live and anonymous/unauthenticated, 2026-09-25.
+security:
+  type: openssf_scorecard_and_nvd    # selects collectors/security.py
+  scorecard_url: https://api.securityscorecards.dev/projects/github.com/apache/cassandra
+  nvd_cve_url: https://services.nvd.nist.gov/rest/json/cves/2.0
+  # NVD's own CPE dictionary entry for this project (vendor=apache,
+  # product=cassandra) -- verified live to return 16 CVEs, 2015-2026,
+  # cleaner than a free-text keyword search (which also matched 9 unrelated
+  # results mentioning "cassandra" in passing).
+  cpe_match_string: "cpe:2.3:a:apache:cassandra:*:*:*:*:*:*:*:*"
+
 affiliations_file: affiliations.yaml   # D6: curated, PR-reviewed, dated ranges
 
 # Applied by identity resolution before any metric counts a contributor.

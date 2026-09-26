@@ -1,0 +1,202 @@
+{
+    "date": "2026-09-21",
+    "repo": {
+        "name": "github.com/apache/cassandra",
+        "commit": "64a9030b37f1df90e937bb874620db58395512a6"
+    },
+    "scorecard": {
+        "version": "v5.5.1-0.20260908181711-f92023a3f778",
+        "commit": "f92023a3f77879f96e0c9c1305f289d755be4bb6"
+    },
+    "score": 4.6,
+    "checks": [
+        {
+            "name": "Maintained",
+            "score": 10,
+            "reason": "30 commit(s) and 0 issue activity found in the last 90 days -- score normalized to 10",
+            "details": null,
+            "documentation": {
+                "url": "https://github.com/ossf/scorecard/blob/f92023a3f77879f96e0c9c1305f289d755be4bb6/docs/checks.md#maintained",
+                "short": "Determines if the project is \"actively maintained\"."
+            }
+        },
+        {
+            "name": "Dangerous-Workflow",
+            "score": 10,
+            "reason": "no dangerous workflow patterns detected",
+            "details": null,
+            "documentation": {
+                "url": "https://github.com/ossf/scorecard/blob/f92023a3f77879f96e0c9c1305f289d755be4bb6/docs/checks.md#dangerous-workflow",
+                "short": "Determines if the project's GitHub Action workflows avoid dangerous patterns."
+            }
+        },
+        {
+            "name": "Packaging",
+            "score": -1,
+            "reason": "packaging workflow not detected",
+            "details": [
+                "Warn: no GitHub/GitLab publishing workflow detected."
+            ],
+            "documentation": {
+                "url": "https://github.com/ossf/scorecard/blob/f92023a3f77879f96e0c9c1305f289d755be4bb6/docs/checks.md#packaging",
+                "short": "Determines if the project is published as a package that others can easily download, install, easily update, and uninstall."
+            }
+        },
+        {
+            "name": "Security-Policy",
+            "score": 10,
+            "reason": "security policy file detected",
+            "details": [
+                "Info: security policy file detected: SECURITY.md:1",
+                "Info: Found linked content: SECURITY.md:1",
+                "Info: Found disclosure, vulnerability, and/or timelines in security policy: SECURITY.md:1",
+                "Info: Found text in security policy: SECURITY.md:1"
+            ],
+            "documentation": {
+                "url": "https://github.com/ossf/scorecard/blob/f92023a3f77879f96e0c9c1305f289d755be4bb6/docs/checks.md#security-policy",
+                "short": "Determines if the project has published a security policy."
+            }
+        },
+        {
+            "name": "Token-Permissions",
+            "score": 0,
+            "reason": "detected GitHub workflow tokens with excessive permissions",
+            "details": [
+                "Warn: no topLevel permission defined: .github/workflows/build-scripts.yaml:1",
+                "Warn: no topLevel permission defined: .github/workflows/code-check.yaml:1",
+                "Warn: no topLevel permission defined: .github/workflows/jenkins-check.yaml:1",
+                "Info: no jobLevel write permissions found"
+            ],
+            "documentation": {
+                "url": "https://github.com/ossf/scorecard/blob/f92023a3f77879f96e0c9c1305f289d755be4bb6/docs/checks.md#token-permissions",
+                "short": "Determines if the project's workflows follow the principle of least privilege."
+            }
+        },
+        {
+            "name": "Code-Review",
+            "score": 0,
+            "reason": "Found 0/30 approved changesets -- score normalized to 0",
+            "details": null,
+            "documentation": {
+                "url": "https://github.com/ossf/scorecard/blob/f92023a3f77879f96e0c9c1305f289d755be4bb6/docs/checks.md#code-review",
+                "short": "Determines if the project requires human code review before pull requests (aka merge requests) are merged."
+            }
+        },
+        {
+            "name": "CII-Best-Practices",
+            "score": 0,
+            "reason": "no effort to earn an OpenSSF best practices badge detected",
+            "details": null,
+            "documentation": {
+                "url": "https://github.com/ossf/scorecard/blob/f92023a3f77879f96e0c9c1305f289d755be4bb6/docs/checks.md#cii-best-practices",
+                "short": "Determines if the project has an OpenSSF (formerly CII) Best Practices Badge."
+            }
+        },
+        {
+            "name": "SAST",
+            "score": 0,
+            "reason": "no SAST tool detected",
+            "details": [
+                "Warn: no pull requests merged into dev branch"
+            ],
+            "documentation": {
+                "url": "https://github.com/ossf/scorecard/blob/f92023a3f77879f96e0c9c1305f289d755be4bb6/docs/checks.md#sast",
+                "short": "Determines if the project uses static code analysis."
+            }
+        },
+        {
+            "name": "License",
+            "score": 10,
+            "reason": "license file detected",
+            "details": [
+                "Info: project has a license file: LICENSE.txt:0",
+                "Info: FSF or OSI recognized license: Apache License 2.0: LICENSE.txt:0"
+            ],
+            "documentation": {
+                "url": "https://github.com/ossf/scorecard/blob/f92023a3f77879f96e0c9c1305f289d755be4bb6/docs/checks.md#license",
+                "short": "Determines if the project has defined a license."
+            }
+        },
+        {
+            "name": "Signed-Releases",
+            "score": -1,
+            "reason": "no releases found",
+            "details": null,
+            "documentation": {
+                "url": "https://github.com/ossf/scorecard/blob/f92023a3f77879f96e0c9c1305f289d755be4bb6/docs/checks.md#signed-releases",
+                "short": "Determines if the project cryptographically signs release artifacts."
+            }
+        },
+        {
+            "name": "Binary-Artifacts",
+            "score": 10,
+            "reason": "no binaries found in the repo",
+            "details": null,
+            "documentation": {
+                "url": "https://github.com/ossf/scorecard/blob/f92023a3f77879f96e0c9c1305f289d755be4bb6/docs/checks.md#binary-artifacts",
+                "short": "Determines if the project has generated executable (binary) artifacts in the source repository."
+            }
+        },
+        {
+            "name": "Branch-Protection",
+            "score": 1,
+            "reason": "branch protection is not maximal on development and all release branches",
+            "details": [
+                "Info: 'allow deletion' disabled on branch 'trunk'",
+                "Warn: 'force pushes' enabled on branch 'trunk'",
+                "Warn: 'branch protection settings apply to administrators' is disabled on branch 'trunk'",
+                "Warn: could not determine whether codeowners review is allowed",
+                "Warn: no status checks found to merge onto branch 'trunk'",
+                "Warn: PRs are not required to make changes on branch 'trunk'; or we don't have data to detect it.If you think it might be the latter, make sure to run Scorecard with a PAT or use Repo Rules (that are always public) instead of Branch Protection settings"
+            ],
+            "documentation": {
+                "url": "https://github.com/ossf/scorecard/blob/f92023a3f77879f96e0c9c1305f289d755be4bb6/docs/checks.md#branch-protection",
+                "short": "Determines if the default and release branches are protected with GitHub's branch protection settings."
+            }
+        },
+        {
+            "name": "Pinned-Dependencies",
+            "score": 0,
+            "reason": "dependency not pinned by hash detected -- score normalized to 0",
+            "details": [
+                "Info: Possibly incomplete results: error parsing shell code: > must be followed by a word: doc/modules/cassandra/examples/BASH/snapshot_one_table.sh:0",
+                "Warn: GitHub-owned GitHubAction not pinned by hash: .github/workflows/build-scripts.yaml:38: update your workflow using https://app.stepsecurity.io/secureworkflow/apache/cassandra/build-scripts.yaml/trunk?enable=pin",
+                "Warn: GitHub-owned GitHubAction not pinned by hash: .github/workflows/build-scripts.yaml:40: update your workflow using https://app.stepsecurity.io/secureworkflow/apache/cassandra/build-scripts.yaml/trunk?enable=pin",
+                "Warn: GitHub-owned GitHubAction not pinned by hash: .github/workflows/code-check.yaml:14: update your workflow using https://app.stepsecurity.io/secureworkflow/apache/cassandra/code-check.yaml/trunk?enable=pin",
+                "Warn: GitHub-owned GitHubAction not pinned by hash: .github/workflows/code-check.yaml:16: update your workflow using https://app.stepsecurity.io/secureworkflow/apache/cassandra/code-check.yaml/trunk?enable=pin",
+                "Warn: GitHub-owned GitHubAction not pinned by hash: .github/workflows/code-check.yaml:28: update your workflow using https://app.stepsecurity.io/secureworkflow/apache/cassandra/code-check.yaml/trunk?enable=pin",
+                "Warn: GitHub-owned GitHubAction not pinned by hash: .github/workflows/code-check.yaml:30: update your workflow using https://app.stepsecurity.io/secureworkflow/apache/cassandra/code-check.yaml/trunk?enable=pin",
+                "Warn: GitHub-owned GitHubAction not pinned by hash: .github/workflows/jenkins-check.yaml:28: update your workflow using https://app.stepsecurity.io/secureworkflow/apache/cassandra/jenkins-check.yaml/trunk?enable=pin",
+                "Warn: GitHub-owned GitHubAction not pinned by hash: .github/workflows/jenkins-check.yaml:30: update your workflow using https://app.stepsecurity.io/secureworkflow/apache/cassandra/jenkins-check.yaml/trunk?enable=pin",
+                "Warn: GitHub-owned GitHubAction not pinned by hash: .github/workflows/jenkins-check.yaml:47: update your workflow using https://app.stepsecurity.io/secureworkflow/apache/cassandra/jenkins-check.yaml/trunk?enable=pin",
+                "Warn: GitHub-owned GitHubAction not pinned by hash: .github/workflows/jenkins-check.yaml:49: update your workflow using https://app.stepsecurity.io/secureworkflow/apache/cassandra/jenkins-check.yaml/trunk?enable=pin",
+                "Warn: pipCommand not pinned by hash: .build/run-python-dtests.sh:139",
+                "Warn: pipCommand not pinned by hash: pylib/cassandra-cqlsh-tests.sh:72",
+                "Warn: pipCommand not pinned by hash: pylib/cassandra-cqlsh-tests.sh:77",
+                "Warn: pipCommand not pinned by hash: .github/workflows/build-scripts.yaml:69",
+                "Warn: pipCommand not pinned by hash: .github/workflows/jenkins-check.yaml:35",
+                "Warn: pipCommand not pinned by hash: .github/workflows/jenkins-check.yaml:54",
+                "Warn: downloadThenRun not pinned by hash: .github/workflows/jenkins-check.yaml:59",
+                "Info:   0 out of  10 GitHub-owned GitHubAction dependencies pinned",
+                "Info:   0 out of   6 pipCommand dependencies pinned",
+                "Info:   0 out of   1 downloadThenRun dependencies pinned"
+            ],
+            "documentation": {
+                "url": "https://github.com/ossf/scorecard/blob/f92023a3f77879f96e0c9c1305f289d755be4bb6/docs/checks.md#pinned-dependencies",
+                "short": "Determines if the project has declared and pinned the dependencies of its build process."
+            }
+        },
+        {
+            "name": "Fuzzing",
+            "score": 0,
+            "reason": "project is not fuzzed",
+            "details": [
+                "Warn: no fuzzer integrations found"
+            ],
+            "documentation": {
+                "url": "https://github.com/ossf/scorecard/blob/f92023a3f77879f96e0c9c1305f289d755be4bb6/docs/checks.md#fuzzing",
+                "short": "Determines if the project uses fuzzing."
+            }
+        }
+    ]
+}

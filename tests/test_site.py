@@ -19,7 +19,8 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-from project_health.schema import validate
+from project_health import storage
+from project_health.schema import get_schema, validate
 from project_health.site.generate import generate
 from project_health.site.metrics_meta import M0_METRICS, PAGES
 
@@ -143,6 +144,70 @@ def _build_site(tmp_path: Path, rows: list[dict] | None = None, **manifest_kwarg
     return out_dir
 
 
+def _scorecard_row(**overrides) -> dict:
+    row = {
+        "check_id": "check-1",
+        "repo": "github.com/apache/cassandra",
+        "scorecard_date": date(2026, 9, 21),
+        "scorecard_version": "v5.5.1-0.20260908181711-f92023a3f778",
+        "overall_score": 4.6,
+        "check_name": "Maintained",
+        "check_score": 10.0,
+        "check_reason": "30 commit(s) and 0 issue activity found in the last 90 days",
+        "check_details_summary": None,
+        "source_snapshot_id": "run-1:security",
+        "collected_at": datetime(2026, 9, 25, 6, 0, tzinfo=UTC),
+    }
+    row.update(overrides)
+    return row
+
+
+def _advisory_row(**overrides) -> dict:
+    row = {
+        "advisory_id": "adv-1",
+        "cve_id": "CVE-2025-26467",
+        "published_date": date(2025, 8, 25),
+        "last_modified_date": None,
+        "severity": "HIGH",
+        "cvss_score": 8.8,
+        "cvss_version": "3.1",
+        "summary": "A vulnerability in Apache Cassandra.",
+        "affected_versions": "3.0.0–3.0.31",
+        "fixed_versions": "3.0.31",
+        "advisory_url": "https://nvd.nist.gov/vuln/detail/CVE-2025-26467",
+        "source": "nvd",
+        "source_snapshot_id": "run-1:security",
+        "collected_at": datetime(2026, 9, 25, 6, 0, tzinfo=UTC),
+    }
+    row.update(overrides)
+    return row
+
+
+def _write_security_partitions(
+    data_dir: Path,
+    run_id: str,
+    *,
+    scorecard_rows: list[dict] | None = None,
+    advisory_rows: list[dict] | None = None,
+) -> None:
+    if scorecard_rows:
+        table = validate(
+            "scorecard_check",
+            pa.Table.from_pylist(scorecard_rows, schema=get_schema("scorecard_check")),
+        )
+        storage.write_partition(
+            data_dir, "security", "scorecard_check", date(2026, 9, 25), run_id, table
+        )
+    if advisory_rows:
+        table = validate(
+            "security_advisory",
+            pa.Table.from_pylist(advisory_rows, schema=get_schema("security_advisory")),
+        )
+        storage.write_partition(
+            data_dir, "security", "security_advisory", date(2026, 9, 25), run_id, table
+        )
+
+
 def _page_html(out_dir: Path, page: str) -> str:
     """Read a rendered page's HTML. `page` is `""` for home or one of
     `"community/"`, `"conversations/"`, `"governance/"` for a subpage
@@ -253,6 +318,187 @@ def test_governance_page_is_a_placeholder_linking_to_decisions(tmp_path):
     assert "DECISIONS.md" in html_text
     assert "D14" in html_text
     assert "D15" in html_text
+
+
+# --- Security section (OpenSSF Scorecard + advisories, issue #55) -----------
+
+
+def test_governance_page_security_section_is_honest_when_no_data_yet(tmp_path):
+    """No `raw/security/*` partitions exist -- the section must say so
+    rather than rendering an empty table."""
+    out_dir = _build_site(tmp_path)
+    html_text = _page_html(out_dir, "governance/")
+
+    assert "Security" in html_text
+    assert "No OpenSSF Scorecard data collected yet." in html_text
+    assert "No CVE/advisory data collected yet." in html_text
+
+
+def test_governance_page_renders_scorecard_per_check_never_score_alone(tmp_path):
+    data_dir = tmp_path / "data"
+    out_dir = tmp_path / "out"
+    _write_snapshot(data_dir, RUN_ID, _default_rows())
+    _write_manifest(data_dir, RUN_ID, completed_at=BUILD_TIME - timedelta(hours=1))
+    _write_security_partitions(
+        data_dir,
+        RUN_ID,
+        scorecard_rows=[
+            _scorecard_row(
+                check_id="c1",
+                check_name="Maintained",
+                check_score=10.0,
+                check_reason="30 commit(s) and 0 issue activity found in the last 90 days",
+            ),
+            _scorecard_row(
+                check_id="c2",
+                check_name="Code-Review",
+                check_score=0.0,
+                check_reason="Found 0/30 approved changesets -- score normalized to 0",
+            ),
+        ],
+    )
+    generate(data_dir, RUN_ID, out_dir, now=BUILD_TIME)
+    html_text = _page_html(out_dir, "governance/")
+
+    # Every check shows its own reason -- the aggregate is labeled as never
+    # read alone (RESEARCH.md §6.2), and Code-Review's known blind spot gets
+    # its "why" note (GOVERNANCE.md §11.1).
+    assert "4.6/10" in html_text
+    assert "never as one number" in html_text
+    assert "Found 0/30 approved changesets" in html_text
+    assert "commit-message trailers" in html_text or "commit-trailer" in html_text
+    assert "30 commit(s) and 0 issue activity" in html_text
+    assert "GitHub Issues" in html_text  # Maintained's "why" note
+
+
+def test_governance_page_leads_with_per_check_table_never_a_headline_score(tmp_path):
+    """Coordinator review (issue #55): the aggregate must never render as a
+    large/headline number -- only as a small, secondary line under the
+    per-check table. This asserts the per-check table appears in the markup
+    before the aggregate line, and that the aggregate is never inside a
+    heading or any element carrying the (removed) big-number styling class."""
+    data_dir = tmp_path / "data"
+    out_dir = tmp_path / "out"
+    _write_snapshot(data_dir, RUN_ID, _default_rows())
+    _write_manifest(data_dir, RUN_ID, completed_at=BUILD_TIME - timedelta(hours=1))
+    _write_security_partitions(
+        data_dir,
+        RUN_ID,
+        scorecard_rows=[_scorecard_row(check_name="Maintained", check_score=10.0)],
+    )
+    generate(data_dir, RUN_ID, out_dir, now=BUILD_TIME)
+    html_text = _page_html(out_dir, "governance/")
+
+    # The per-check table's header row comes before the aggregate line.
+    table_index = html_text.index("<th scope=\"col\">Check</th>")
+    aggregate_index = html_text.index("Scorecard's own aggregate:")
+    assert table_index < aggregate_index
+
+    # The aggregate score is never inside any heading tag (h1-h6).
+    assert not re.search(r"<h[1-6][^>]*>[^<]*4\.6[^<]*</h[1-6]>", html_text)
+    # The now-removed big-number styling class is never used anywhere.
+    assert "security-score" not in html_text
+    # The aggregate line itself renders with the small/secondary styling.
+    assert 'class="security-meta">Scorecard\'s own aggregate: 4.6/10' in html_text
+
+
+def test_governance_page_renders_advisory_table_and_per_year_counts(tmp_path):
+    data_dir = tmp_path / "data"
+    out_dir = tmp_path / "out"
+    _write_snapshot(data_dir, RUN_ID, _default_rows())
+    _write_manifest(data_dir, RUN_ID, completed_at=BUILD_TIME - timedelta(hours=1))
+    _write_security_partitions(
+        data_dir,
+        RUN_ID,
+        advisory_rows=[
+            _advisory_row(cve_id="CVE-2025-26467", published_date=date(2025, 8, 25)),
+            _advisory_row(
+                advisory_id="adv-2",
+                cve_id="CVE-2026-27314",
+                published_date=date(2026, 4, 7),
+                severity="HIGH",
+                cvss_score=8.8,
+                fixed_versions="5.0.7",
+            ),
+        ],
+    )
+    generate(data_dir, RUN_ID, out_dir, now=BUILD_TIME)
+    html_text = _page_html(out_dir, "governance/")
+
+    assert "CVE-2025-26467" in html_text
+    assert "CVE-2026-27314" in html_text
+    assert "2025:" in html_text
+    assert "2026:" in html_text
+    assert "5.0.7" in html_text
+
+
+def test_governance_page_dedupes_advisories_by_cve_across_runs(tmp_path):
+    """A CVE re-collected in a later run (refreshed NVD metadata) shows once,
+    with the newer summary -- not twice."""
+    data_dir = tmp_path / "data"
+    out_dir = tmp_path / "out"
+    _write_snapshot(data_dir, RUN_ID, _default_rows())
+    _write_manifest(data_dir, RUN_ID, completed_at=BUILD_TIME - timedelta(hours=1))
+    _write_security_partitions(
+        data_dir,
+        "run-1",
+        advisory_rows=[
+            _advisory_row(
+                summary="original fetch",
+                collected_at=datetime(2026, 9, 1, tzinfo=UTC),
+                source_snapshot_id="run-1:security",
+            )
+        ],
+    )
+    _write_security_partitions(
+        data_dir,
+        RUN_ID,
+        advisory_rows=[
+            _advisory_row(
+                advisory_id="adv-refetched",
+                summary="re-fetched, newer metadata",
+                collected_at=datetime(2026, 9, 25, tzinfo=UTC),
+                source_snapshot_id="run-2:security",
+            )
+        ],
+    )
+    generate(data_dir, RUN_ID, out_dir, now=BUILD_TIME)
+    html_text = _page_html(out_dir, "governance/")
+
+    # The cve_id appears twice per row (link text + href URL) -- one row,
+    # not two, means it appears exactly twice, not four times.
+    assert html_text.count("CVE-2025-26467") == 2
+    assert "re-fetched, newer metadata" not in html_text  # summary isn't shown in the table
+    # but the row itself should reflect the later fetch's affected/fixed data
+    assert "3.0.31" in html_text
+
+
+def test_governance_page_shows_scorecard_run_count_across_runs(tmp_path):
+    data_dir = tmp_path / "data"
+    out_dir = tmp_path / "out"
+    _write_snapshot(data_dir, RUN_ID, _default_rows())
+    _write_manifest(data_dir, RUN_ID, completed_at=BUILD_TIME - timedelta(hours=1))
+    _write_security_partitions(
+        data_dir,
+        "run-1",
+        scorecard_rows=[_scorecard_row(source_snapshot_id="run-1:security", overall_score=4.6)],
+    )
+    _write_security_partitions(
+        data_dir,
+        RUN_ID,
+        scorecard_rows=[
+            _scorecard_row(
+                check_id="c2",
+                source_snapshot_id="run-2:security",
+                overall_score=4.8,
+                collected_at=datetime(2026, 9, 25, 12, 0, tzinfo=UTC),
+            )
+        ],
+    )
+    generate(data_dir, RUN_ID, out_dir, now=BUILD_TIME)
+    html_text = _page_html(out_dir, "governance/")
+
+    assert "2 Scorecard runs collected so far" in html_text
 
 
 def test_community_page_has_the_metric_cards_and_charts(tmp_path):

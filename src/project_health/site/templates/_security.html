@@ -1,0 +1,94 @@
+{# Security section (OpenSSF Scorecard + CVE/advisory history, issue #55,
+   D21 item 3). Kept as its own partial, included from governance.html,
+   so it stays isolated from #36's per-commit compliance-engine work on
+   that same page (see this page's own comment at the include site). #}
+<section class="security-section" aria-labelledby="security-heading">
+  <h2 id="security-heading">Security</h2>
+  <p class="page-intro">
+    Two independent, external, publicly reproducible feeds — never blended into a single score, and
+    never a substitute for the per-commit compliance checks on this page. See
+    <a href="{{ governance_spec_url }}#{{ governance_security_anchor }}">GOVERNANCE.md §11</a>
+    for full source citations.
+  </p>
+
+  <div class="security-subsection" aria-labelledby="scorecard-heading">
+    <h3 id="scorecard-heading">OpenSSF Scorecard</h3>
+    {% if security.scorecard %}
+      <p class="security-meta">
+        {{ security.scorecard.repo }} &middot; Scorecard {{ security.scorecard.scorecard_version }}
+        {% if security.scorecard.scorecard_date %}&middot; run dated {{ security.scorecard.scorecard_date.isoformat() }}{% endif %}
+      </p>
+      <table class="security-table">
+        <caption class="security-meta" style="text-align:left;">Per-check results — read individually, never as one number (RESEARCH.md §6.2)</caption>
+        <thead>
+          <tr>
+            <th scope="col">Check</th>
+            <th scope="col">Score</th>
+            <th scope="col">Reason</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for check in security.scorecard.checks %}
+          <tr>
+            <td>{{ check.name }}</td>
+            <td>{% if check.score == -1 %}n/a{% else %}{{ check.score }}/10{% endif %}</td>
+            <td>
+              {{ check.reason }}
+              {% if check.note %}<p class="security-note">Why: {{ check.note }}</p>{% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      <p class="security-meta">Scorecard's own aggregate: {{ security.scorecard.overall_score }}/10 (risk-weighted; not used by this project — see the per-check results above).</p>
+      {% if security.scorecard_run_count > 1 %}
+      <p class="security-history">
+        {{ security.scorecard_run_count }} Scorecard runs collected so far:
+        {% for point in security.scorecard_history %}{% if point.scorecard_date %}{{ point.scorecard_date.isoformat() }}{% else %}(undated){% endif %} = {{ point.overall_score }}{% if not loop.last %}; {% endif %}{% endfor %}.
+      </p>
+      {% else %}
+      <p class="security-history">First Scorecard run collected — history accumulates from here on (every run's per-check results are stored, never overwritten).</p>
+      {% endif %}
+    {% else %}
+      <p class="card-empty-state">No OpenSSF Scorecard data collected yet.</p>
+    {% endif %}
+  </div>
+
+  <div class="security-subsection" aria-labelledby="advisories-heading">
+    <h3 id="advisories-heading">CVE / advisory history</h3>
+    {% if security.advisories %}
+      <p class="security-meta">{{ security.advisory_count }} CVE(s) on record for Apache Cassandra (NVD, by CPE <code>cpe:2.3:a:apache:cassandra</code>). Metadata only — no exploit or proof-of-concept content.</p>
+      <ul class="security-by-year">
+        {% for year, count in security.advisories_by_year %}
+        <li><strong>{{ year }}:</strong> {{ count }}</li>
+        {% endfor %}
+      </ul>
+      <table class="security-table">
+        <thead>
+          <tr>
+            <th scope="col">CVE</th>
+            <th scope="col">Published</th>
+            <th scope="col">Severity</th>
+            <th scope="col">CVSS</th>
+            <th scope="col">Affected versions</th>
+            <th scope="col">Fixed in</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for advisory in security.advisories %}
+          <tr>
+            <td><a href="{{ advisory.advisory_url }}">{{ advisory.cve_id }}</a></td>
+            <td>{% if advisory.published_date %}{{ advisory.published_date.isoformat() }}{% else %}unknown{% endif %}</td>
+            <td>{{ advisory.severity or "unknown" }}</td>
+            <td>{% if advisory.cvss_score is not none %}{{ advisory.cvss_score }} (v{{ advisory.cvss_version }}){% else %}unknown{% endif %}</td>
+            <td>{{ advisory.affected_versions or "unknown" }}</td>
+            <td>{{ advisory.fixed_versions or "unknown" }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <p class="card-empty-state">No CVE/advisory data collected yet.</p>
+    {% endif %}
+  </div>
+</section>

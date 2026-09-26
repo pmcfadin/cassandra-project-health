@@ -25,6 +25,9 @@ EXPECTED_METRIC_IDS = {
     "organizational_hhi",
     "single_org_share",
     "unknown_affiliation_rate",
+    # issue #35
+    "time_to_first_reply_devlist",
+    "unanswered_thread_rate_devlist",
 }
 
 HEADCOUNT_METRIC_IDS = {
@@ -41,8 +44,9 @@ def test_registry_lists_exactly_the_registered_metrics():
 def test_build_registry_stamps_headcount_metrics_1_1_and_others_1_0():
     """Issue #27: the three headcount metrics bumped to "1.1" (no more
     sample-size floor); every other metric (including pmc_joins_quarterly
-    from issue #50, issue #53's three new ones, and issue #52's four new
-    organizational-diversity metrics) ships at "1.0"."""
+    from issue #50, issue #53's three new ones, issue #52's four new
+    organizational-diversity metrics, and issue #35's two new dev@
+    responsiveness metrics) ships at "1.0"."""
     table = build_registry(NOW)
 
     assert table.num_rows == len(EXPECTED_METRIC_IDS)

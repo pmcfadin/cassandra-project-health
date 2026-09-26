@@ -86,6 +86,18 @@ class MailingListsConfig(BaseModel):
     # see `pipeline._collect_ponymail` and `collectors.ponymail.
     # select_backfill_months`.
     max_months_per_run: int = 36
+    # issue #35: reviewed allow/deny list of automated dev@/user@ sender
+    # addresses (JIRA-to-list bridge, GitHub notifications, CI, ASF INFRA
+    # automation) -- Python `re` patterns matched against a message's
+    # lowercased `sender_raw_value` (schema/tables.py `MESSAGE`).
+    # `time_to_first_reply_devlist`/`unanswered_thread_rate_devlist`
+    # (METRICS.md §4) exclude any message from a matching sender as a
+    # candidate "reply", and exclude a whole thread from either metric's
+    # population when its root message's sender matches (METRICS.md
+    # `unanswered_thread_rate_devlist` "Population & exclusions": "excludes
+    # threads that are themselves auto-generated"). Additive default `[]` so
+    # a project config without this key still loads.
+    automated_senders: list[str] = []
 
 
 class BotPattern(BaseModel):

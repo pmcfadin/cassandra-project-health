@@ -250,6 +250,25 @@ M0_METRICS: dict[str, MetricMeta] = {
         value_kind="percent",
         page="community",
     ),
+    # issue #35: dev@ mailing-list responsiveness (D16), metadata only.
+    "time_to_first_reply_devlist": MetricMeta(
+        metric_id="time_to_first_reply_devlist",
+        name="Time to First Reply — dev@",
+        dimension="responsiveness",
+        tier="established",
+        direction_of_good="lower",
+        value_kind="days",
+        page="conversations",
+    ),
+    "unanswered_thread_rate_devlist": MetricMeta(
+        metric_id="unanswered_thread_rate_devlist",
+        name="Unanswered Thread Rate — dev@",
+        dimension="responsiveness",
+        tier="established",
+        direction_of_good="lower",
+        value_kind="percent",
+        page="conversations",
+    ),
 }
 
 # Governance compliance engine (issue #36, D14/D15): one monthly pass-rate

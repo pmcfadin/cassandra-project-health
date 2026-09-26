@@ -55,7 +55,7 @@ import json
 import math
 import re
 import statistics
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 import duckdb
 import pyarrow as pa
@@ -91,6 +91,9 @@ DEFINITION_VERSIONS: dict[str, str] = {
     "organizational_hhi": "1.0",
     "single_org_share": "1.0",
     "unknown_affiliation_rate": "1.0",
+    # issue #35
+    "time_to_first_reply_devlist": "1.0",
+    "unanswered_thread_rate_devlist": "1.0",
 }
 
 # Headcount metrics are plain counts, not rate/ratio/concentration/latency
@@ -126,6 +129,10 @@ FLOOR_LATENCY = 5
 UNKNOWN_SHARE_INSUFFICIENT_THRESHOLD = 0.5
 
 DEFAULT_STALE_THRESHOLD_DAYS = 90
+
+# METRICS.md `unanswered_thread_rate_devlist`: "receive zero replies within a
+# fixed follow-up window (default 30 days)".
+UNANSWERED_FOLLOWUP_DAYS = 30
 
 # Avelino et al. (2016) DOA regression coefficients, verified against the
 # primary-source PDF (docs/spec/RESEARCH.md §8.2) -- reused verbatim, never
@@ -186,6 +193,9 @@ def _connect(tables: dict[str, pa.Table]) -> duckdb.DuckDBPyConnection:
         "identity_link",
         "roster_entry",
         "affiliation_period",
+        # issue #35: dev@/user@ message metadata (schema/tables.py `MESSAGE`) --
+        # sender, timestamp, thread structure only, never a body/subject (D1/D16).
+        "message",
     ):
         con.register(name, _table_or_empty(tables, name))
     con.execute(
@@ -677,6 +687,351 @@ def _stale_jira_rate(
             },
         )
     ]
+
+
+# --- dev@ responsiveness (issue #35) -----------------------------------------
+#
+# Both metrics below share one thread-reconstruction pass over the raw
+# `message` table (schema/tables.py `MESSAGE`, collectors/ponymail.py) --
+# metadata only (D1/D16): sender address, timestamp and the `thread_id` the
+# collector already derived from `References`/`In-Reply-To`/`Message-ID`. No
+# message body or subject text is ever read here.
+#
+# Population & exclusions (METRICS.md §0.5, `time_to_first_reply_devlist`,
+# `unanswered_thread_rate_devlist`):
+# - list = 'dev' only (the `_devlist` metric-id suffix; `user@` is in scope
+#   for a future metric per METRICS.md's "optionally user@, reported
+#   separately", not this one).
+# - A thread's root is its earliest-`occurred_at` message in the accumulated
+#   `message` table (a pure function of the full raw cache, D3 -- not the
+#   collector's own per-collection-call `message_thread` roll-up, which is
+#   scoped to a single `collect()` call and would under-count a thread whose
+#   messages span more than one nightly run, collectors/ponymail.py "Thread
+#   reconstruction").
+# - Self-replies (same sender as the root) never qualify as an answer.
+# - A message from a configured automated sender (`projects/<id>.yaml`
+#   `mailing_lists.automated_senders`, issue #35) never qualifies as an
+#   answer either, and a thread whose *root* message came from an automated
+#   sender is dropped from both metrics' population entirely (METRICS.md
+#   `unanswered_thread_rate_devlist`: "excludes threads that are themselves
+#   auto-generated").
+#
+# Backfill-in-progress handling (issue #33's oldest-first, capped Pony Mail
+# backfill): unlike every other M0 metric, these two do NOT always emit a
+# dense row for every calendar month from first-data through the run's last
+# completed month. `collectors/ponymail.py`'s per-list watermark can sit far
+# behind "now" while older history is still being backfilled a bounded
+# number of months per night, while the *current* month is always
+# re-fetched in full on every run -- so the raw cache can hold an old,
+# completely-collected prefix plus an always-fresh latest month, with a real
+# gap of genuinely not-yet-collected months in between. Emitting dense zero
+# rows across that gap would misreport "not collected yet" as "zero
+# messages" (a materially different fact). `_devlist_eligible_months` below
+# instead caps the emitted range at the list's watermark, plus the run's
+# last completed month (always safe, since it's always freshly fetched), and
+# flags every row `backfill_in_progress: true` in `details_json` while a gap
+# remains -- so a reader can tell "no data yet" from "this specific month
+# had zero qualifying threads."
+
+
+def _devlist_automated_patterns(config: ProjectConfig) -> list[re.Pattern]:
+    mailing_lists = config.mailing_lists
+    raw_patterns = getattr(mailing_lists, "automated_senders", None) if mailing_lists else None
+    return [re.compile(pattern) for pattern in (raw_patterns or [])]
+
+
+def _is_automated_sender(address: str | None, patterns: list[re.Pattern]) -> bool:
+    if not address:
+        return False
+    return any(pattern.search(address) for pattern in patterns)
+
+
+def _devlist_thread_roots(
+    con: duckdb.DuckDBPyConnection, automated_patterns: list[re.Pattern]
+) -> list[dict]:
+    """One entry per qualifying dev@ thread: `root_at`/`first_reply_at` as
+    Unix-epoch `float`s (the thread's earliest message timestamp, and the
+    earliest *qualifying* reply's timestamp, or `None` if none exists yet in
+    this run's accumulated data).
+
+    Epoch floats, not raw `TIMESTAMPTZ` values, for the same reason
+    `_file_change_rows_through` uses `epoch(...)` instead of fetching the
+    column directly: some duckdb/Python driver builds need an optional
+    `pytz` install to convert a `TIMESTAMPTZ` to a Python object, which this
+    project doesn't otherwise depend on.
+
+    Threads whose root message came from an automated sender are dropped
+    entirely (never returned) -- METRICS.md `unanswered_thread_rate_devlist`
+    "excludes threads that are themselves auto-generated", applied to both
+    sibling metrics for consistency.
+    """
+    rows = con.execute(
+        """
+        SELECT thread_id, sender_raw_value, epoch(occurred_at) AS occurred_at_epoch, message_id
+        FROM message
+        WHERE list = 'dev'
+        ORDER BY thread_id, occurred_at_epoch, message_id
+        """
+    ).fetchall()
+
+    threads: dict[str, dict] = {}
+    order: list[str] = []
+    for thread_id, sender, occurred_at_epoch, _message_id in rows:
+        info = threads.get(thread_id)
+        if info is None:
+            info = {
+                "root_sender": sender,
+                "root_at": occurred_at_epoch,
+                "root_is_automated": _is_automated_sender(sender, automated_patterns),
+                "first_reply_at": None,
+            }
+            threads[thread_id] = info
+            order.append(thread_id)
+            continue
+        if info["first_reply_at"] is not None:
+            continue  # already found the first qualifying reply for this thread
+        if sender == info["root_sender"]:
+            continue  # self-reply: never counts as an answer
+        if _is_automated_sender(sender, automated_patterns):
+            continue  # automated reply: never counts as an answer
+        info["first_reply_at"] = occurred_at_epoch
+
+    return [
+        {"thread_id": thread_id, **threads[thread_id]}
+        for thread_id in order
+        if not threads[thread_id]["root_is_automated"]
+    ]
+
+
+def _epoch_to_date(epoch_seconds: float) -> date:
+    """Unix-epoch seconds -> the UTC calendar date -- `pytz`-free, matching
+    this section's `epoch(...)`-not-raw-`TIMESTAMPTZ` convention above."""
+    return datetime.fromtimestamp(epoch_seconds, tz=timezone.utc).date()
+
+
+def _parse_watermark_month(raw: str | None) -> date | None:
+    """Parse a Pony Mail per-list watermark ("YYYY-MM") into that month's
+    first day, or `None` for a list with no watermark yet."""
+    if not raw:
+        return None
+    year_str, month_str = raw.split("-")
+    return date(int(year_str), int(month_str), 1)
+
+
+def _devlist_eligible_months(
+    first_month: date | None, as_of: date, watermark_month: date | None
+) -> tuple[list[date], bool]:
+    """Months eligible for dense devlist-metric emission, and whether the
+    dev@ list is still mid-backfill (see this section's module-level note).
+
+    `watermark_month=None` means no watermark was supplied at all (e.g. a
+    golden test that doesn't model backfill state, or `compute_all` called
+    without `ponymail_watermarks`) -- falls back to this project's normal
+    dense-months-through-`as_of` behavior with `backfill_in_progress=False`.
+    """
+    if first_month is None:
+        return [], False
+    last_completed = _last_completed_month(as_of)
+    if watermark_month is None:
+        return _dense_months(first_month, as_of), False
+
+    capped_last = min(watermark_month, last_completed)
+    months = (
+        _dense_months(first_month, add_months(capped_last, 1)) if capped_last >= first_month else []
+    )
+    backfill_in_progress = watermark_month < last_completed
+    if backfill_in_progress and last_completed >= first_month and last_completed not in months:
+        months.append(last_completed)
+        months.sort()
+    return months, backfill_in_progress
+
+
+def _time_to_first_reply_devlist(
+    con: duckdb.DuckDBPyConnection,
+    as_of: date,
+    run_id: str,
+    computed_at: datetime,
+    automated_patterns: list[re.Pattern],
+    watermark_month: date | None,
+) -> list[dict]:
+    threads = _devlist_thread_roots(con, automated_patterns)
+    if not threads:
+        # No qualifying dev@ history collected yet -- still emit exactly one
+        # row (mirrors `_stale_jira_rate`'s always-emit-a-snapshot
+        # convention) so this registered metric is never silently "missing"
+        # from a run (pipeline.py's `metrics_missing` check) while Pony Mail
+        # collection is still in its earliest stages.
+        snapshot_month = _last_completed_month(as_of)
+        return [
+            _make_row(
+                metric_id="time_to_first_reply_devlist",
+                window_start=snapshot_month,
+                window_end=month_end(snapshot_month),
+                raw_value=None,
+                n=0,
+                floor=FLOOR_LATENCY,
+                run_id=run_id,
+                computed_at=computed_at,
+                details={"n": 0, "p90_days": None, "threads_started": 0},
+            )
+        ]
+
+    by_month: dict[date, list[dict]] = {}
+    for info in threads:
+        month = month_start(_epoch_to_date(info["root_at"]))
+        by_month.setdefault(month, []).append(info)
+
+    months, backfill_in_progress = _devlist_eligible_months(min(by_month), as_of, watermark_month)
+
+    out = []
+    for month in months:
+        thread_infos = by_month.get(month, [])
+        latencies = [
+            (info["first_reply_at"] - info["root_at"]) / 86400.0
+            for info in thread_infos
+            if info["first_reply_at"] is not None
+        ]
+        n = len(latencies)
+        median_days = statistics.median(latencies) if latencies else None
+        details: dict = {
+            "n": n,
+            "p90_days": _percentile(latencies, 0.90) if latencies else None,
+            "threads_started": len(thread_infos),
+        }
+        if backfill_in_progress:
+            details["backfill_in_progress"] = True
+        out.append(
+            _make_row(
+                metric_id="time_to_first_reply_devlist",
+                window_start=month,
+                window_end=month_end(month),
+                raw_value=median_days,
+                n=n,
+                floor=FLOOR_LATENCY,
+                run_id=run_id,
+                computed_at=computed_at,
+                details=details,
+            )
+        )
+    if not out:
+        # Degenerate edge case (e.g. the only qualifying threads so far all
+        # fall after a watermark that predates them): still never return
+        # zero rows for a registered metric.
+        snapshot_month = _last_completed_month(as_of)
+        out.append(
+            _make_row(
+                metric_id="time_to_first_reply_devlist",
+                window_start=snapshot_month,
+                window_end=month_end(snapshot_month),
+                raw_value=None,
+                n=0,
+                floor=FLOOR_LATENCY,
+                run_id=run_id,
+                computed_at=computed_at,
+                details={"n": 0, "p90_days": None, "threads_started": 0},
+            )
+        )
+    return out
+
+
+def _unanswered_thread_rate_devlist(
+    con: duckdb.DuckDBPyConnection,
+    as_of: date,
+    run_id: str,
+    computed_at: datetime,
+    automated_patterns: list[re.Pattern],
+    watermark_month: date | None,
+) -> list[dict]:
+    threads = _devlist_thread_roots(con, automated_patterns)
+    if not threads:
+        # See `_time_to_first_reply_devlist`'s matching fallback.
+        snapshot_month = _last_completed_month(as_of)
+        return [
+            _make_row(
+                metric_id="unanswered_thread_rate_devlist",
+                window_start=snapshot_month,
+                window_end=month_end(snapshot_month),
+                raw_value=None,
+                n=0,
+                floor=FLOOR_RATE_RATIO,
+                run_id=run_id,
+                computed_at=computed_at,
+                details={
+                    "n_total": 0,
+                    "n_unanswered": 0,
+                    "followup_days": UNANSWERED_FOLLOWUP_DAYS,
+                },
+            )
+        ]
+
+    by_month: dict[date, list[dict]] = {}
+    for info in threads:
+        month = month_start(_epoch_to_date(info["root_at"]))
+        by_month.setdefault(month, []).append(info)
+
+    months, backfill_in_progress = _devlist_eligible_months(min(by_month), as_of, watermark_month)
+    # D5-style completed-period rule specific to this metric (METRICS.md
+    # "evaluated only once the 30-day follow-up has elapsed"): a thread
+    # started in month `m` isn't a final answered/unanswered fact until
+    # `UNANSWERED_FOLLOWUP_DAYS` days after `m`'s own end have passed.
+    followup_seconds = UNANSWERED_FOLLOWUP_DAYS * 86400.0
+    followup_delta = timedelta(days=UNANSWERED_FOLLOWUP_DAYS)
+    eligible = [month for month in months if month_end(month) + followup_delta < as_of]
+
+    out = []
+    for month in eligible:
+        thread_infos = by_month.get(month, [])
+        n_total = len(thread_infos)
+        n_unanswered = sum(
+            1
+            for info in thread_infos
+            if info["first_reply_at"] is None
+            or (info["first_reply_at"] - info["root_at"]) > followup_seconds
+        )
+        raw_value = (n_unanswered / n_total) if n_total else None
+        details: dict = {
+            "n_total": n_total,
+            "n_unanswered": n_unanswered,
+            "followup_days": UNANSWERED_FOLLOWUP_DAYS,
+        }
+        if backfill_in_progress:
+            details["backfill_in_progress"] = True
+        out.append(
+            _make_row(
+                metric_id="unanswered_thread_rate_devlist",
+                window_start=month,
+                window_end=month_end(month),
+                raw_value=raw_value,
+                n=n_total,
+                floor=FLOOR_RATE_RATIO,
+                run_id=run_id,
+                computed_at=computed_at,
+                details=details,
+            )
+        )
+    if not out:
+        # Degenerate edge case (e.g. the only threads so far haven't cleared
+        # the 30-day follow-up gate yet): still never return zero rows for a
+        # registered metric.
+        snapshot_month = _last_completed_month(as_of)
+        out.append(
+            _make_row(
+                metric_id="unanswered_thread_rate_devlist",
+                window_start=snapshot_month,
+                window_end=month_end(snapshot_month),
+                raw_value=None,
+                n=0,
+                floor=FLOOR_RATE_RATIO,
+                run_id=run_id,
+                computed_at=computed_at,
+                details={
+                    "n_total": 0,
+                    "n_unanswered": 0,
+                    "followup_days": UNANSWERED_FOLLOWUP_DAYS,
+                },
+            )
+        )
+    return out
 
 
 def _pmc_joins_quarterly(
@@ -1591,14 +1946,24 @@ def compute_all(
     run_id: str,
     computed_at: datetime,
     config: ProjectConfig,
+    ponymail_watermarks: dict[str, str | None] | None = None,
 ) -> pa.Table:
     """Compute every M0 metric's `metric_value` rows in one DuckDB pass.
 
     `tables` holds whatever normalized tables this run has accumulated
     (`schema/README.md`): `contribution_event`, `review_event`, `issue`,
-    `identity_link`. A missing key is treated as an empty table of that
-    name's declared schema, so a caller (or a golden test) only needs to
-    pass the tables its scenario actually needs.
+    `identity_link`, `message` (issue #35). A missing key is treated as an
+    empty table of that name's declared schema, so a caller (or a golden
+    test) only needs to pass the tables its scenario actually needs.
+
+    `ponymail_watermarks` (issue #35) is `collectors/ponymail.py`'s per-list
+    `{"dev": "YYYY-MM"|None, "user": ...}` watermark mapping (the same shape
+    persisted at `state/watermarks.json`'s `ponymail` key) -- used only by
+    `time_to_first_reply_devlist`/`unanswered_thread_rate_devlist` to keep
+    their windows honest during a partial Pony Mail backfill (see those
+    metrics' section comment above). `None` (the default) falls back to
+    this project's normal dense-months-through-`as_of` behavior, which is
+    what every golden test that doesn't model backfill state gets.
 
     Per D3, every run recomputes from the *entire* accumulated input passed
     in `tables` -- this function never computes incrementally.
@@ -1610,6 +1975,8 @@ def compute_all(
         reliable_from = _reliable_from(config)
         threshold_days = _stale_threshold_days(config)
         github_company_lookback_months = _github_company_lookback_months(config)
+        automated_patterns = _devlist_automated_patterns(config)
+        dev_watermark_month = _parse_watermark_month((ponymail_watermarks or {}).get("dev"))
 
         rows: list[dict] = []
         rows.extend(_pmc_joins_quarterly(con, as_of, run_id, computed_at))
@@ -1632,6 +1999,16 @@ def compute_all(
             _single_org_share(con, as_of, run_id, computed_at, github_company_lookback_months)
         )
         rows.extend(_unknown_affiliation_rate(con, as_of, run_id, computed_at))
+        rows.extend(
+            _time_to_first_reply_devlist(
+                con, as_of, run_id, computed_at, automated_patterns, dev_watermark_month
+            )
+        )
+        rows.extend(
+            _unanswered_thread_rate_devlist(
+                con, as_of, run_id, computed_at, automated_patterns, dev_watermark_month
+            )
+        )
     finally:
         con.close()
 

@@ -41,6 +41,7 @@ def _metric_value_row(
     *,
     definition_version: str = "1.0",
     run_id: str = RUN_ID,
+    details_json: str | None = None,
 ) -> dict:
     return {
         "metric_id": metric_id,
@@ -52,7 +53,7 @@ def _metric_value_row(
         "flag": flag,
         "run_id": run_id,
         "computed_at": datetime(2026, 9, 25, 6, 30, tzinfo=UTC),
-        "details_json": None,
+        "details_json": details_json,
     }
 
 
@@ -1321,6 +1322,49 @@ def test_card_shows_formatted_value_and_month_label(tmp_path):
     # "as of <date>" is gone; the period is a plain month label.
     assert "as of" not in html_text
     assert html_text.count('<span class="value-period">Aug 2026</span>') == 6
+
+
+def test_community_card_shows_backfill_in_progress_note(tmp_path):
+    """Issue #79: a card whose most recent window's `details_json.
+    backfill_in_progress` is true shows the same badge--backfill-pending
+    note governance.html already uses (issue #69)."""
+    rows = [
+        _metric_value_row(
+            "time_to_first_response_jira",
+            date(2026, 8, 1),
+            date(2026, 8, 31),
+            None,
+            0,
+            "insufficient_data",
+            details_json=json.dumps({"backfill_in_progress": True}),
+        ),
+    ]
+    out_dir = _build_site(tmp_path, rows=rows)
+    html_text = _community_html(out_dir)
+
+    idx = html_text.index("Time to First Response (JIRA)")
+    card_html = html_text[idx : idx + 800]
+    assert 'class="badge badge--backfill-pending"' in card_html
+    assert "backfill in progress" in card_html
+
+
+def test_community_card_omits_backfill_note_when_not_flagged(tmp_path):
+    rows = [
+        _metric_value_row(
+            "time_to_first_response_jira",
+            date(2026, 8, 1),
+            date(2026, 8, 31),
+            3.5,
+            10,
+            "ok",
+        ),
+    ]
+    out_dir = _build_site(tmp_path, rows=rows)
+    html_text = _community_html(out_dir)
+
+    idx = html_text.index("Time to First Response (JIRA)")
+    card_html = html_text[idx : idx + 800]
+    assert "badge--backfill-pending" not in card_html
 
 
 def test_chart_tooltip_uses_metric_specific_format_and_title(tmp_path):

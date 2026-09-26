@@ -196,6 +196,33 @@ ISSUE_COMMENT = pa.schema(
     ]
 )
 
+# `COMMENT_BACKFILL_CHECKED` (issue #79): one row per issue whose comment
+# metadata has been fetched at least once -- via the ordinary incremental
+# `/search` fetch (`checked_via='incremental'`, `collectors/jira.py`) *or*
+# the dedicated historical backfill (`checked_via='backfill'`,
+# `pipeline._collect_jira_comment_backfill`) -- regardless of how many (if
+# any) `ISSUE_COMMENT` rows resulted. This is what lets "no comment rows
+# yet" (an issue with genuinely zero comments, already fully checked) be
+# told apart from "never checked" (a historical issue predating issue #54,
+# still pending the backfill): without an explicit checked marker, a
+# zero-comment issue would look identical to an unchecked one and get
+# endlessly re-fetched every run, the same false-zero problem
+# `GOVERNANCE_CI_EVIDENCE.found=False` rows solve for the CI-evidence
+# backlog above. `comment_count` is this check's own `ISSUE_COMMENT` row
+# count for the issue (capped at `collectors.jira.MAX_COMMENTS_PER_ISSUE_
+# STORED`), purely for observability -- eligibility only ever looks at
+# whether a row for `issue_key` exists here at all, never at this column.
+COMMENT_BACKFILL_CHECKED = pa.schema(
+    [
+        pa.field("issue_key", pa.string(), nullable=False),
+        pa.field("checked_at", TIMESTAMP_UTC, nullable=False),
+        pa.field("comment_count", pa.int64(), nullable=False),
+        # checked_via: 'incremental' | 'backfill'
+        pa.field("checked_via", pa.string(), nullable=False),
+        pa.field("source_snapshot_id", pa.string(), nullable=False),
+    ]
+)
+
 ROSTER_ENTRY = pa.schema(
     [
         pa.field("entry_id", pa.string(), nullable=False),
@@ -817,6 +844,7 @@ TABLE_SCHEMAS: dict[str, pa.Schema] = {
     "review_event": REVIEW_EVENT,
     "issue": ISSUE,
     "issue_comment": ISSUE_COMMENT,
+    "comment_backfill_checked": COMMENT_BACKFILL_CHECKED,
     "roster_entry": ROSTER_ENTRY,
     "message": MESSAGE,
     "message_thread": MESSAGE_THREAD,

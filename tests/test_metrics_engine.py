@@ -23,6 +23,7 @@ from project_health.normalize.identity import identity_id_for
 from project_health.schema import get_schema, validate
 from tests.fixtures.metrics.builders import (
     affiliation_periods,
+    comment_backfill_checked,
     contribution_events,
     file_change_events,
     identity_link_for,
@@ -2155,6 +2156,119 @@ def test_time_to_first_response_jira_assignee_who_is_the_reporter_is_excluded():
     # is about).
     assert jan["n"] == 1
     assert jan["flag"] == "insufficient_data"
+
+
+# --- issue #79: time_to_first_response_jira backfill_in_progress -----------
+
+
+def test_time_to_first_response_jira_flags_backfill_in_progress_for_uncovered_month():
+    """A month with at least one issue whose comments haven't been checked
+    yet (no `comment_backfill_checked` row) carries `details_json.
+    backfill_in_progress: true` -- distinguishing "the backfill hasn't
+    reached this month yet" from a genuine small sample or true zero."""
+    issue_rows = [
+        {
+            "issue_key": "CASSANDRA-4000",
+            "created_at": _ts(2024, 1, 1, hh=0),
+            "updated_at": _ts(2024, 1, 2, hh=0),
+            "reporter_raw": "reporter-a",
+        },
+        {
+            "issue_key": "CASSANDRA-4001",  # never checked -- pending backfill
+            "created_at": _ts(2024, 1, 5, hh=0),
+            "updated_at": _ts(2024, 1, 5, hh=0),
+            "reporter_raw": "reporter-a",
+        },
+    ]
+    comment_rows = [
+        {
+            "issue_key": "CASSANDRA-4000",
+            "author_raw_value": "responder-b",
+            "created_at": _ts(2024, 1, 2, hh=0),
+        },
+    ]
+    checked_rows = [{"issue_key": "CASSANDRA-4000"}]  # CASSANDRA-4001 not checked
+
+    result = compute_all(
+        {
+            "issue": issues(issue_rows),
+            "issue_comment": issue_comments(comment_rows),
+            "comment_backfill_checked": comment_backfill_checked(checked_rows),
+        },
+        as_of=AS_OF,
+        run_id=RUN_ID,
+        computed_at=COMPUTED_AT,
+        config=CONFIG,
+    )
+
+    rows = _rows_for(result, "time_to_first_response_jira")
+    jan = rows[0]
+    assert _details(jan).get("backfill_in_progress") is True
+    # n only counts the covered issue's real response -- never a fabricated
+    # zero for the uncovered one, and never a real zero either (raw_value
+    # stays None below the floor, it's never coerced to 0).
+    assert jan["n"] == 1
+
+
+def test_time_to_first_response_jira_no_backfill_flag_when_month_fully_covered():
+    issue_rows = [
+        {
+            "issue_key": "CASSANDRA-4100",
+            "created_at": _ts(2024, 1, 1, hh=0),
+            "updated_at": _ts(2024, 1, 2, hh=0),
+            "reporter_raw": "reporter-a",
+        },
+    ]
+    comment_rows = [
+        {
+            "issue_key": "CASSANDRA-4100",
+            "author_raw_value": "responder-b",
+            "created_at": _ts(2024, 1, 2, hh=0),
+        },
+    ]
+    checked_rows = [{"issue_key": "CASSANDRA-4100"}]
+
+    result = compute_all(
+        {
+            "issue": issues(issue_rows),
+            "issue_comment": issue_comments(comment_rows),
+            "comment_backfill_checked": comment_backfill_checked(checked_rows),
+        },
+        as_of=AS_OF,
+        run_id=RUN_ID,
+        computed_at=COMPUTED_AT,
+        config=CONFIG,
+    )
+
+    rows = _rows_for(result, "time_to_first_response_jira")
+    jan = rows[0]
+    assert "backfill_in_progress" not in _details(jan)
+
+
+def test_time_to_first_response_jira_empty_checked_table_never_flags_backfill():
+    """An entirely empty `comment_backfill_checked` table (e.g. every golden
+    test above this section, none of which model backfill state at all) is
+    treated as "not modeling backfill" and never flags any month -- mirrors
+    `_devlist_eligible_months`'s `watermark_month=None` fallback for the
+    same reason."""
+    issue_rows = [
+        {
+            "issue_key": "CASSANDRA-4200",
+            "created_at": _ts(2024, 1, 1, hh=0),
+            "updated_at": _ts(2024, 1, 2, hh=0),
+            "reporter_raw": "reporter-a",
+        },
+    ]
+    result = compute_all(
+        {"issue": issues(issue_rows)},
+        as_of=AS_OF,
+        run_id=RUN_ID,
+        computed_at=COMPUTED_AT,
+        config=CONFIG,
+    )
+    rows = _rows_for(result, "time_to_first_response_jira")
+    jan = rows[0]
+    assert "backfill_in_progress" not in _details(jan)
 
 
 # --- issue #54: stale_pr_rate ----------------------------------------------

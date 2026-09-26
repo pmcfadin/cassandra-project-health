@@ -1538,6 +1538,361 @@ class TestPonymailBackfillCap:
             "user": {"months_remaining": 2},
         }
         assert second_ponymail["partial"] is True
+
+
+# --- Historical `issue_comment` backfill (issue #79) -------------------------
+
+
+class _StubJiraCommentBackfill:
+    """Offline stand-in for `collectors.jira_comments.JiraCommentsCollector`'s
+    `fetch_comment_metadata` -- the interface `_collect_jira_comment_backfill`
+    calls, budgeted the same way `_StubJiraComments` budgets `fetch_ci_
+    evidence` for governance's CI-evidence backfill."""
+
+    def __init__(self, comments_by_issue: dict[str, list[dict]]):
+        self._comments = comments_by_issue
+        self.call_count = 0
+        self.fetched_keys: list[str] = []
+
+    def fetch_comment_metadata(self, issue_key: str) -> list[dict]:
+        self.call_count += 1
+        self.fetched_keys.append(issue_key)
+        return self._comments.get(issue_key, [])
+
+    def close(self) -> None:
+        pass
+
+
+class _FailingJiraCommentBackfill:
+    def __init__(self):
+        self.call_count = 0
+
+    def fetch_comment_metadata(self, issue_key: str) -> list[dict]:
+        self.call_count += 1
+        raise RuntimeError("synthetic JIRA API outage")
+
+    def close(self) -> None:
+        pass
+
+
+def _with_jira_comment_backfill(config, max_issues_per_run: int):
+    """`config`, with its `jira_comment_backfill:` block set to
+    `max_issues_per_run` -- `model_copy` since `ProjectConfig` is a pydantic
+    model (mirrors `_with_governance` above)."""
+    return config.model_copy(
+        update={"jira_comment_backfill": {"max_issues_per_run": max_issues_per_run}}
+    )
+
+
+def _seed_jira_issues(data_dir, run_id: str, created_at_by_key: dict[str, datetime]) -> None:
+    """Directly write a `raw/jira/issue` partition (bypassing the ordinary
+    collector) -- simulates issues collected long before issue #54 added
+    comment collection: present in `issue`, but with no `issue_comment` or
+    `comment_backfill_checked` rows at all, exactly the state the real
+    production backlog is in (issue #79)."""
+    rows = [
+        {
+            "issue_key": key,
+            "summary": f"synthetic {key}",
+            "status": "Open",
+            "status_category": "To Do",
+            "priority": "Normal",
+            "issue_type": "Bug",
+            "created_at": created_at,
+            "updated_at": created_at,
+            "resolved_at": None,
+            "reporter_identity_id": None,
+            "reporter_raw": "someuser",
+            "assignee_identity_id": None,
+            "assignee_raw": None,
+            "source_snapshot_id": "seed",
+        }
+        for key, created_at in created_at_by_key.items()
+    ]
+    table = pa.Table.from_pylist(rows, schema=get_schema("issue"))
+    storage.write_partition(data_dir, "jira", "issue", date(2019, 1, 1), run_id, table)
+
+
+def _comment_row(comment_id: str, issue_key: str, author: str, created_at: datetime) -> dict:
+    return {
+        "comment_id": comment_id,
+        "issue_key": issue_key,
+        "author_identity_id": None,
+        "author_raw_type": "jira_username",
+        "author_raw_value": author,
+        "created_at": created_at,
+    }
+
+
+class TestJiraCommentBackfill:
+    """Issue #79: budgeted, resumable historical backfill of `issue_comment`
+    metadata for `time_to_first_response_jira`."""
+
+    _CREATED_AT_BY_KEY = {
+        "CASSANDRA-1": datetime(2020, 1, 1, tzinfo=timezone.utc),
+        "CASSANDRA-2": datetime(2021, 1, 1, tzinfo=timezone.utc),
+        "CASSANDRA-3": datetime(2022, 1, 1, tzinfo=timezone.utc),
+        "CASSANDRA-4": datetime(2023, 1, 1, tzinfo=timezone.utc),
+        "CASSANDRA-5": datetime(2024, 1, 1, tzinfo=timezone.utc),
+    }
+
+    def _run(self, data_dir, config, workdir, budget, stub, now=NOW):
+        # Each call needs its own `now` (a fixed `now` + `code_sha` makes
+        # `make_run_id` deterministic, ARCHITECTURE.md §5) so a second run
+        # against the same `data_dir` doesn't collide with the first run's
+        # already-written `raw/jira/*` partitions (storage.write_partition's
+        # never-overwrite guarantee) -- same trick `TestPonymailBackfillCap`
+        # uses for its own two-run sequence above.
+        return run_pipeline(
+            config=_with_jira_comment_backfill(config, budget),
+            data_dir=data_dir,
+            workdir=workdir,
+            sources=["jira"],
+            jira_collector_factory=_jira_factory(_paginated_transport({0: EMPTY_PAGE})),
+            jira_comment_backfill_factory=lambda base_url: stub,
+            now=now,
+            code_sha="abc1234",
+        )
+
+    def test_budget_caps_issues_checked_per_run_newest_first(self, tmp_path, config):
+        data_dir = tmp_path / "data"
+        workdir = tmp_path / "workdir"
+        _seed_jira_issues(data_dir, "seed-run", self._CREATED_AT_BY_KEY)
+
+        stub = _StubJiraCommentBackfill({})
+        result = self._run(data_dir, config, workdir, budget=2, stub=stub)
+
+        backfill = result.manifest["sources"]["jira"]["backfill"]
+        assert backfill == {"checked": 2, "pending": 3, "calls_made": 2}
+        # Newest-created-first: CASSANDRA-5 (2024) then CASSANDRA-4 (2023).
+        assert stub.fetched_keys == ["CASSANDRA-5", "CASSANDRA-4"]
+
+    def test_resumable_cursor_never_refetches_already_checked_issues(self, tmp_path, config):
+        """A second run picks up where the first left off -- issues already
+        checked are never re-fetched, and `pending` shrinks."""
+        data_dir = tmp_path / "data"
+        workdir = tmp_path / "workdir"
+        _seed_jira_issues(data_dir, "seed-run", self._CREATED_AT_BY_KEY)
+
+        first_stub = _StubJiraCommentBackfill({})
+        first = self._run(data_dir, config, workdir, budget=2, stub=first_stub, now=NOW)
+        first_backfill = first.manifest["sources"]["jira"]["backfill"]
+        assert first_backfill == {"checked": 2, "pending": 3, "calls_made": 2}
+
+        second_stub = _StubJiraCommentBackfill({})
+        second = self._run(
+            data_dir, config, workdir, budget=2, stub=second_stub, now=NOW.replace(hour=7)
+        )
+        second_backfill = second.manifest["sources"]["jira"]["backfill"]
+        assert second_backfill == {"checked": 2, "pending": 1, "calls_made": 2}
+        # Resumes with the next-newest two, never re-fetching CASSANDRA-4/-5.
+        assert second_stub.fetched_keys == ["CASSANDRA-3", "CASSANDRA-2"]
+        assert set(second_stub.fetched_keys).isdisjoint(first_stub.fetched_keys)
+
+        third_stub = _StubJiraCommentBackfill({})
+        third = self._run(
+            data_dir, config, workdir, budget=2, stub=third_stub, now=NOW.replace(hour=8)
+        )
+        third_backfill = third.manifest["sources"]["jira"]["backfill"]
+        # Only one issue (CASSANDRA-1) remains -- backfill is now complete.
+        assert third_backfill == {"checked": 1, "pending": 0, "calls_made": 1}
+        assert third_stub.fetched_keys == ["CASSANDRA-1"]
+
+        # A fourth run has nothing left to do at all -- the stub is never
+        # even asked for a single issue.
+        fourth_stub = _StubJiraCommentBackfill({})
+        fourth = self._run(
+            data_dir, config, workdir, budget=2, stub=fourth_stub, now=NOW.replace(hour=9)
+        )
+        assert fourth.manifest["sources"]["jira"]["backfill"] == {
+            "checked": 0,
+            "pending": 0,
+            "calls_made": 0,
+        }
+        assert fourth_stub.fetched_keys == []
+
+    def test_backfilled_comments_are_written_and_metadata_only(self, tmp_path, config):
+        data_dir = tmp_path / "data"
+        workdir = tmp_path / "workdir"
+        _seed_jira_issues(data_dir, "seed-run", self._CREATED_AT_BY_KEY)
+
+        created = datetime(2020, 2, 1, tzinfo=timezone.utc)
+        stub = _StubJiraCommentBackfill(
+            {"CASSANDRA-5": [_comment_row("c1", "CASSANDRA-5", "alice", created)]}
+        )
+        self._run(data_dir, config, workdir, budget=1, stub=stub)
+
+        issue_comment = storage.read_table(data_dir, "jira", "issue_comment").to_pylist()
+        assert len(issue_comment) == 1
+        assert issue_comment[0]["comment_id"] == "c1"
+        assert issue_comment[0]["author_raw_value"] == "alice"
+        # Metadata only -- no column anywhere carries a body/text field
+        # (D1/D16).
+        assert "body" not in issue_comment[0]
+
+        checked = storage.read_table(data_dir, "jira", "comment_backfill_checked").to_pylist()
+        assert len(checked) == 1
+        assert checked[0]["issue_key"] == "CASSANDRA-5"
+        assert checked[0]["checked_via"] == "backfill"
+        assert checked[0]["comment_count"] == 1
+
+    def test_a_zero_comment_issue_is_checked_and_never_refetched(self, tmp_path, config):
+        """A genuinely zero-comment issue must be marked checked (not left
+        looking identical to "never checked") so it's never endlessly
+        re-fetched (this table's whole reason for existing over "no
+        issue_comment rows yet")."""
+        data_dir = tmp_path / "data"
+        workdir = tmp_path / "workdir"
+        _seed_jira_issues(
+            data_dir, "seed-run", {"CASSANDRA-1": datetime(2020, 1, 1, tzinfo=timezone.utc)}
+        )
+
+        stub = _StubJiraCommentBackfill({})  # CASSANDRA-1 has no comments
+        first = self._run(data_dir, config, workdir, budget=10, stub=stub, now=NOW)
+        assert first.manifest["sources"]["jira"]["backfill"] == {
+            "checked": 1,
+            "pending": 0,
+            "calls_made": 1,
+        }
+
+        second_stub = _StubJiraCommentBackfill({})
+        second = self._run(
+            data_dir, config, workdir, budget=10, stub=second_stub, now=NOW.replace(hour=7)
+        )
+        assert second.manifest["sources"]["jira"]["backfill"] == {
+            "checked": 0,
+            "pending": 0,
+            "calls_made": 0,
+        }
+        assert second_stub.fetched_keys == []
+
+    def test_default_budget_from_config(self, tmp_path, config):
+        """`projects/cassandra.yaml`'s own `jira_comment_backfill.max_issues_
+        per_run` (or the built-in default, if a caller doesn't set the
+        config block) governs the batch size with no test override."""
+        data_dir = tmp_path / "data"
+        workdir = tmp_path / "workdir"
+        _seed_jira_issues(data_dir, "seed-run", self._CREATED_AT_BY_KEY)
+
+        stub = _StubJiraCommentBackfill({})
+        result = run_pipeline(
+            config=config,
+            data_dir=data_dir,
+            workdir=workdir,
+            sources=["jira"],
+            jira_collector_factory=_jira_factory(_paginated_transport({0: EMPTY_PAGE})),
+            jira_comment_backfill_factory=lambda base_url: stub,
+            now=NOW,
+            code_sha="abc1234",
+        )
+        # projects/cassandra.yaml sets max_issues_per_run: 1000, well above
+        # the 5 seeded issues -- all of them get checked in one run.
+        assert result.manifest["sources"]["jira"]["backfill"] == {
+            "checked": 5,
+            "pending": 0,
+            "calls_made": 5,
+        }
+
+    def test_collector_outage_leaves_every_eligible_issue_pending(self, tmp_path, config):
+        """A JIRA outage while backfilling must never fail the `jira` source
+        or lose track of the backlog -- every eligible issue is simply
+        `pending` for a later run (§7.3-style outage handling, mirrors
+        governance's own CI-evidence outage test)."""
+        data_dir = tmp_path / "data"
+        workdir = tmp_path / "workdir"
+        _seed_jira_issues(data_dir, "seed-run", self._CREATED_AT_BY_KEY)
+
+        result = run_pipeline(
+            config=_with_jira_comment_backfill(config, 2),
+            data_dir=data_dir,
+            workdir=workdir,
+            sources=["jira"],
+            jira_collector_factory=_jira_factory(_paginated_transport({0: EMPTY_PAGE})),
+            jira_comment_backfill_factory=lambda base_url: _FailingJiraCommentBackfill(),
+            now=NOW,
+            code_sha="abc1234",
+        )
+        assert result.manifest["sources"]["jira"]["status"] == "ok"
+        backfill = result.manifest["sources"]["jira"]["backfill"]
+        assert backfill["checked"] == 0
+        assert backfill["pending"] == 5
+
+    def test_incremental_collection_marks_issues_checked_too(self, tmp_path, config):
+        """An issue fetched by the ordinary incremental `/search` path (with
+        or without real comments) is just as "covered" as one the backfill
+        explicitly checked -- it must never show up as still-pending."""
+        data_dir = tmp_path / "data"
+        workdir = tmp_path / "workdir"
+
+        stub = _StubJiraCommentBackfill({})
+        result = run_pipeline(
+            config=_with_jira_comment_backfill(config, 1000),
+            data_dir=data_dir,
+            workdir=workdir,
+            sources=["jira"],
+            jira_collector_factory=_jira_factory(
+                _paginated_transport({0: PAGE_1, 5: PAGE_2, 10: EMPTY_PAGE})
+            ),
+            jira_comment_backfill_factory=lambda base_url: stub,
+            now=NOW,
+            code_sha="abc1234",
+        )
+        # All 10 fixture issues were fetched by the ordinary incremental
+        # collect() this run -- none are eligible for the backfill.
+        assert result.manifest["sources"]["jira"]["backfill"] == {
+            "checked": 0,
+            "pending": 0,
+            "calls_made": 0,
+        }
+        assert stub.fetched_keys == []
+        checked = storage.read_table(data_dir, "jira", "comment_backfill_checked").to_pylist()
+        assert len(checked) == 10
+        assert all(row["checked_via"] == "incremental" for row in checked)
+
+
+class TestJiraCommentBackfillHelpers:
+    """Issue #79: golden tests for the pure budget/cursor helper functions,
+    isolated from the full `run_pipeline` machinery above."""
+
+    def test_budget_reads_config_block(self):
+        from project_health.pipeline import _jira_comment_backfill_budget
+
+        cfg = load_project("projects/cassandra.yaml")
+        cfg = cfg.model_copy(update={"jira_comment_backfill": {"max_issues_per_run": 42}})
+        assert _jira_comment_backfill_budget(cfg) == 42
+
+    def test_budget_defaults_when_config_block_absent(self):
+        from project_health.pipeline import (
+            DEFAULT_JIRA_COMMENT_BACKFILL_MAX_ISSUES_PER_RUN,
+            _jira_comment_backfill_budget,
+        )
+
+        cfg = load_project("projects/cassandra.yaml")
+        cfg = cfg.model_copy(update={"jira_comment_backfill": None})
+        assert (
+            _jira_comment_backfill_budget(cfg)
+            == DEFAULT_JIRA_COMMENT_BACKFILL_MAX_ISSUES_PER_RUN
+        )
+
+    def test_eligible_keys_excludes_checked_and_sorts_newest_first(self, tmp_path):
+        from project_health.pipeline import _jira_comment_backfill_eligible_keys_newest_first
+
+        data_dir = tmp_path / "data"
+        _seed_jira_issues(
+            data_dir,
+            "seed-run",
+            {
+                "CASSANDRA-OLD": datetime(2018, 1, 1, tzinfo=timezone.utc),
+                "CASSANDRA-MID": datetime(2020, 1, 1, tzinfo=timezone.utc),
+                "CASSANDRA-NEW": datetime(2022, 1, 1, tzinfo=timezone.utc),
+            },
+        )
+        eligible = _jira_comment_backfill_eligible_keys_newest_first(
+            data_dir, checked={"CASSANDRA-MID"}
+        )
+        assert eligible == ["CASSANDRA-NEW", "CASSANDRA-OLD"]
+
+
 # --- Governance compliance engine wiring (issue #36) -------------------------
 #
 # `sources` now includes `"governance"` (default: all of `ALL_SOURCES`), so

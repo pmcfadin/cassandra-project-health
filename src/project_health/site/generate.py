@@ -130,6 +130,12 @@ class MetricPoint:
     value: float | None
     n: int
     flag: str
+    # issue #79/#35: this window's own `details_json.backfill_in_progress`
+    # flag (`metrics/dev_metrics.py`'s `time_to_first_response_jira`,
+    # `metrics/engine.py`'s devlist metrics) -- `False` for every metric that
+    # doesn't set it, never inferred from `flag` alone (an `insufficient_data`
+    # window can be a genuine small sample with no backfill involved at all).
+    backfill_in_progress: bool = False
 
 
 @dataclass(frozen=True)
@@ -139,6 +145,19 @@ class MetricSeries:
     meta: MetricMeta
     definition_version: str | None
     points: list[MetricPoint]
+
+    @property
+    def backfill_in_progress(self) -> bool:
+        """True when this metric's chronologically most recent window is
+        still `backfill_in_progress` (issue #79) -- checked against the last
+        entry of `points` (sorted by `window_start` ascending, `_build_
+        series`), not `.latest` below (which only considers `flag == 'ok'`
+        points and so could miss a truly-latest window that's still
+        `insufficient_data` precisely because of the gap this flag
+        discloses)."""
+        if not self.points:
+            return False
+        return self.points[-1].backfill_in_progress
 
     @property
     def latest(self) -> MetricPoint | None:
@@ -244,6 +263,11 @@ def _build_series(table: pa.Table, metrics_map: dict[str, MetricMeta]) -> dict[s
                 value=r["value"] if r["flag"] == "ok" else None,
                 n=r["n"],
                 flag=r["flag"],
+                backfill_in_progress=bool(
+                    json.loads(r["details_json"]).get("backfill_in_progress", False)
+                    if r.get("details_json")
+                    else False
+                ),
             )
             for r in metric_rows
         ]
@@ -660,6 +684,10 @@ def _card_context(series: MetricSeries, base_prefix: str) -> dict[str, Any]:
         # window's end date collapses to a plain month label, e.g. "Aug
         # 2026", rather than the raw ISO end-of-window date.
         "latest_month_label": latest.window_end.strftime("%b %Y") if latest else None,
+        # issue #79/#35: a "backfill in progress" note (governance.html's
+        # existing badge--backfill-pending styling, issue #69) on a card
+        # whose most recent window is still gapped by a historical backfill.
+        "backfill_in_progress": series.backfill_in_progress,
         "vega_spec_json": json.dumps(_vega_lite_spec(series)),
         "json_href": f"{base_prefix}data/{series.meta.metric_id}.json",
         "csv_href": f"{base_prefix}data/{series.meta.metric_id}.csv",

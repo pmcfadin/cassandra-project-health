@@ -14,7 +14,7 @@ exercise the real #6 resolver a metric will see in production, not a stand-in.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 import pyarrow as pa
 
@@ -220,6 +220,27 @@ def issue_comments(rows: list[dict]) -> pa.Table:
     ]
     schema = get_schema("issue_comment")
     return validate("issue_comment", pa.Table.from_pylist(built, schema=schema))
+
+
+def comment_backfill_checked(rows: list[dict]) -> pa.Table:
+    """Build a `comment_backfill_checked` table (issue #79) --
+    `time_to_first_response_jira`'s per-month backfill-coverage check.
+
+    Required per row: `issue_key`. Optional: `checked_at`, `comment_count`,
+    `checked_via`, `source_snapshot_id`.
+    """
+    built = [
+        {
+            "issue_key": row["issue_key"],
+            "checked_at": row.get("checked_at", datetime(2026, 1, 1, tzinfo=timezone.utc)),
+            "comment_count": row.get("comment_count", 0),
+            "checked_via": row.get("checked_via", "incremental"),
+            "source_snapshot_id": row.get("source_snapshot_id", "snap-1"),
+        }
+        for row in rows
+    ]
+    schema = get_schema("comment_backfill_checked")
+    return validate("comment_backfill_checked", pa.Table.from_pylist(built, schema=schema))
 
 
 def roster_entries(rows: list[dict]) -> pa.Table:

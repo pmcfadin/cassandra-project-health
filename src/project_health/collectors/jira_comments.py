@@ -22,6 +22,22 @@ Politeness matches `collectors/jira.py`'s JIRA collector: ≤2 req/s
 class rather than an extension of `JiraCollector` — the two hit different
 endpoints (`/issue/{key}/comment` vs. `/search`) for different purposes and
 have no shared state.
+
+## `fetch_comment_metadata` (issue #79)
+
+A second, unrelated evidence need reuses this same class rather than
+duplicating its HTTP client/pacing/retry/`call_count` budget-tracking
+machinery: the historical `issue_comment` backfill
+(`pipeline._collect_jira_comment_backfill`) for `time_to_first_response_jira`
+(METRICS.md §4), which needs *every* comment's metadata for a caller-given
+issue key (not just the first CI-evidence match) so the metric can find each
+issue's first human, non-bot response. `fetch_comment_metadata` hits the same
+`/issue/{key}/comment` endpoint as `fetch_ci_evidence` but returns
+`issue_comment`-shaped metadata rows (author, timestamp — **never the
+body**, same D1/D16 discipline), capped at `collectors.jira.
+MAX_COMMENTS_PER_ISSUE_STORED` earliest comments, exactly matching what an
+ordinary `/search`-based fetch would have stored for the same issue
+(`collectors/jira.py`'s `_normalize_comments`).
 """
 
 from __future__ import annotations
@@ -33,6 +49,8 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 
 import httpx
+
+from project_health.collectors.jira import MAX_COMMENTS_PER_ISSUE_STORED, _parse_jira_timestamp
 
 # Per governance-policy.yaml `pre-commit-ci-evidence.check_method`
 # (`evidence_source: jira_comment_ci_mention`) — kept as a code constant
@@ -228,6 +246,57 @@ class JiraCommentsCollector:
             start_at += len(comments)
             if not comments or start_at >= total:
                 return None
+
+    def fetch_comment_metadata(self, issue_key: str) -> list[dict]:
+        """All comment *metadata* for `issue_key` (issue #79 backfill) --
+        author and timestamp only, the body is read only inside this
+        method's own `comment.get(...)` calls and never returned or stored
+        (D1/D16) -- capped at the earliest `MAX_COMMENTS_PER_ISSUE_STORED`
+        comments (JIRA's own default `/comment` order is creation order,
+        oldest first), matching `collectors/jira.py`'s `_normalize_comments`
+        cap/ordering exactly so a backfilled issue's stored comments are
+        indistinguishable from ones collected the ordinary `/search` way.
+
+        Returns `issue_comment`-shaped row dicts missing `source_snapshot_id`
+        (the caller stamps that in, since it knows which run/collection this
+        backfill call belongs to) -- `[]` if the issue has no comments, has
+        been deleted (404), or doesn't exist.
+        """
+        rows: list[dict] = []
+        start_at = 0
+        while len(rows) < MAX_COMMENTS_PER_ISSUE_STORED:
+            response = self._get_with_retry(
+                f"/rest/api/2/issue/{issue_key}/comment",
+                {"startAt": start_at, "maxResults": self._page_size},
+            )
+            if response.status_code == 404:
+                return rows
+
+            payload = response.json()
+            comments = payload.get("comments", [])
+            for comment in comments:
+                if len(rows) >= MAX_COMMENTS_PER_ISSUE_STORED:
+                    break
+                created = comment.get("created")
+                if not created:
+                    continue
+                author = comment.get("author") or {}
+                rows.append(
+                    {
+                        "comment_id": str(comment.get("id")),
+                        "issue_key": issue_key,
+                        "author_identity_id": None,
+                        "author_raw_type": "jira_username",
+                        "author_raw_value": author.get("name"),
+                        "created_at": _parse_jira_timestamp(created),
+                    }
+                )
+
+            total = payload.get("total", len(comments))
+            start_at += len(comments)
+            if not comments or start_at >= total:
+                return rows
+        return rows
 
     def fetch_ci_evidence_for_issues(
         self, issue_keys: Iterable[str]

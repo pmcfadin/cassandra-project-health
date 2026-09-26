@@ -97,6 +97,15 @@ _STATE_ORDER = ("pass", "fail", "unknown", "exempt")
 
 _X_DOMAIN_PAD_DAYS = 15
 
+# issue #69: a governance headline card gets a "backfill pending" tag when
+# the run manifest says this run's governance backfill is `partial` *and*
+# this check's own latest-month `unknown` share is at least this fraction of
+# its scored (pass+fail+unknown) denominator -- a small amount of ordinary
+# `unknown` (an evidence source's own documented false-negative rate) never
+# earns the tag; a headline that reads mostly `unknown` because backfill
+# hasn't caught up yet does.
+BACKFILL_PENDING_UNKNOWN_SHARE = 0.25
+
 
 def correction_url(sha: str, check_id: str | None = None) -> str:
     """A pre-filled "request a correction" GitHub issue-form link (D15:
@@ -474,6 +483,29 @@ def _trend_vega_spec(
     }
 
 
+def _latest_scored_shares(rows: list[dict[str, Any]]) -> dict[str, float] | None:
+    """The most recent `flag == 'ok'` month's pass/fail/unknown shares of
+    the *scored* (pass+fail+unknown) denominator -- the identical
+    denominator `governance/metrics.py`'s own `value` (the headline pass
+    rate) is computed over, never re-derived from a different total (issue
+    #69: show the unknown/fail shares beside the pass rate, without
+    changing what the pass rate itself means). `None` when there's no
+    `ok` month yet (mirrors `MetricSeries.latest`'s own "insufficient_data
+    is never a stand-in value" rule in `generate.py`)."""
+    ok_rows = [r for r in rows if r["flag"] == "ok"]
+    if not ok_rows:
+        return None
+    latest = max(ok_rows, key=lambda r: r["window_end"])
+    details = json.loads(latest["details_json"]) if latest["details_json"] else {}
+    n_pass = details.get("pass", 0)
+    n_fail = details.get("fail", 0)
+    n_unknown = details.get("unknown", 0)
+    scored = n_pass + n_fail + n_unknown
+    if not scored:
+        return None
+    return {"pass": n_pass / scored, "fail": n_fail / scored, "unknown": n_unknown / scored}
+
+
 def _compliance_trend_context(governance_metric_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """One multi-line (pass/fail/unknown/exempt rate) chart per scored
     check, from `governance_metric_value.parquet`'s `details_json` counts
@@ -505,6 +537,7 @@ def _compliance_trend_context(governance_metric_rows: list[dict[str, Any]]) -> l
                 "check_id": check_id,
                 "vega_spec_json": json.dumps(spec),
                 "has_data": bool(rows),
+                "latest_shares": _latest_scored_shares(rows),
             }
         )
     return charts
@@ -640,6 +673,15 @@ def build_governance_page_context(
     fails_truncated = len(all_fails) > MAX_FAILS_DISPLAYED
     fails_displayed = all_fails[:MAX_FAILS_DISPLAYED]
 
+    compliance_trends = _compliance_trend_context(governance_metric_rows)
+    for chart in compliance_trends:
+        shares = chart["latest_shares"]
+        chart["backfill_pending"] = bool(
+            backfill.is_partial
+            and shares is not None
+            and shares["unknown"] >= BACKFILL_PENDING_UNKNOWN_SHARE
+        )
+
     return GovernanceContext(
         has_data=True,
         policy=_policy_context(policy, overrides_count) if policy else None,
@@ -647,7 +689,7 @@ def build_governance_page_context(
         fails=fails_displayed,
         fails_total=len(all_fails),
         fails_truncated=fails_truncated,
-        compliance_trends=_compliance_trend_context(governance_metric_rows),
+        compliance_trends=compliance_trends,
         ninja_trend=_ninja_trend_context(compliance_rows),
         filter_options=_filter_options(commit_rows),
         scored_check_ids=list(SCORED_CHECK_IDS),

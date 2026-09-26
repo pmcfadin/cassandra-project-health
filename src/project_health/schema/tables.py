@@ -236,6 +236,82 @@ METRIC_VALUE = pa.schema(
     ]
 )
 
+# --- GitHub PR metadata (ARCHITECTURE.md §3; issue #51) ---------------------
+#
+# Metadata only, per D1/DECISIONS.md: PR/comment *bodies* are Phase 2a
+# (classification) territory. `pr.title_hash` carries a sha256 hex digest of
+# the PR title -- never the raw title string -- so a PR's subject line is
+# still joinable/diffable across snapshots without persisting text content.
+# `*_raw_type`/`*_raw_value` follow the same collectors-write-raw,
+# identity-resolution-fills-`*_identity_id`-later split as every other fact
+# table (see module docstring); GitHub's raw identifier type is always
+# `'github_login'` here. A `None` `*_raw_value` means GitHub returned a null
+# `author` (e.g. a deleted account), not a missing column.
+
+PR = pa.schema(
+    [
+        pa.field("repo", pa.string(), nullable=False),
+        pa.field("number", pa.int64(), nullable=False),
+        # state: 'OPEN' | 'CLOSED' | 'MERGED' (GitHub GraphQL PullRequestState)
+        pa.field("state", pa.string(), nullable=False),
+        pa.field("is_draft", pa.bool_(), nullable=False),
+        pa.field("merged", pa.bool_(), nullable=False),
+        # filled in by identity resolution (#6); null as written by collectors
+        pa.field("author_identity_id", pa.string(), nullable=True),
+        pa.field("author_raw_type", pa.string(), nullable=False),
+        pa.field("author_raw_value", pa.string(), nullable=True),
+        # sha256 hex digest of the PR title -- metadata only, never the raw title
+        pa.field("title_hash", pa.string(), nullable=False),
+        pa.field("created_at", TIMESTAMP_UTC, nullable=False),
+        pa.field("updated_at", TIMESTAMP_UTC, nullable=False),
+        pa.field("closed_at", TIMESTAMP_UTC, nullable=True),
+        pa.field("merged_at", TIMESTAMP_UTC, nullable=True),
+        pa.field("additions", pa.int64(), nullable=True),
+        pa.field("deletions", pa.int64(), nullable=True),
+        pa.field("changed_files", pa.int64(), nullable=True),
+        pa.field("source_snapshot_id", pa.string(), nullable=False),
+    ]
+)
+
+PR_REVIEW = pa.schema(
+    [
+        # GitHub GraphQL global node id of the PullRequestReview
+        pa.field("review_id", pa.string(), nullable=False),
+        pa.field("repo", pa.string(), nullable=False),
+        pa.field("pr_number", pa.int64(), nullable=False),
+        # filled in by identity resolution (#6); null as written by collectors
+        pa.field("reviewer_identity_id", pa.string(), nullable=True),
+        pa.field("reviewer_raw_type", pa.string(), nullable=False),
+        pa.field("reviewer_raw_value", pa.string(), nullable=True),
+        # state: 'PENDING' | 'COMMENTED' | 'APPROVED' | 'CHANGES_REQUESTED' | 'DISMISSED'
+        pa.field("state", pa.string(), nullable=False),
+        # null for a still-'PENDING' review that hasn't been submitted yet
+        pa.field("submitted_at", TIMESTAMP_UTC, nullable=True),
+        pa.field("source_snapshot_id", pa.string(), nullable=False),
+    ]
+)
+
+PR_COMMENT = pa.schema(
+    [
+        # GitHub GraphQL global node id of the IssueComment/PullRequestReviewComment
+        pa.field("comment_id", pa.string(), nullable=False),
+        pa.field("repo", pa.string(), nullable=False),
+        pa.field("pr_number", pa.int64(), nullable=False),
+        # FK to pr_review.review_id when comment_type='review_comment'; null for
+        # a general conversation ('issue_comment') comment
+        pa.field("review_id", pa.string(), nullable=True),
+        # comment_type: 'issue_comment' | 'review_comment'
+        pa.field("comment_type", pa.string(), nullable=False),
+        # filled in by identity resolution (#6); null as written by collectors
+        pa.field("author_identity_id", pa.string(), nullable=True),
+        pa.field("author_raw_type", pa.string(), nullable=False),
+        pa.field("author_raw_value", pa.string(), nullable=True),
+        pa.field("created_at", TIMESTAMP_UTC, nullable=False),
+        pa.field("source_snapshot_id", pa.string(), nullable=False),
+    ]
+)
+
+
 TABLE_SCHEMAS: dict[str, pa.Schema] = {
     "person_identity": PERSON_IDENTITY,
     "identity_link": IDENTITY_LINK,
@@ -248,4 +324,7 @@ TABLE_SCHEMAS: dict[str, pa.Schema] = {
     "run_manifest": RUN_MANIFEST,
     "metric_definition_version": METRIC_DEFINITION_VERSION,
     "metric_value": METRIC_VALUE,
+    "pr": PR,
+    "pr_review": PR_REVIEW,
+    "pr_comment": PR_COMMENT,
 }

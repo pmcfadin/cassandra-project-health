@@ -59,6 +59,13 @@
     <header class="card-header">
       <h2><a href="{{ card.href }}">{{ card.title }}</a></h2>
     </header>
+    {% if card.staleness_badges %}
+    <p class="card-staleness">
+      {% for b in card.staleness_badges %}
+      <span class="badge badge--{{ b.status }}" role="status">{{ b.text }}</span>
+      {% endfor %}
+    </p>
+    {% endif %}
     <p class="card-summary-blurb">{{ card.summary }}</p>
 
     {% if card.metrics %}

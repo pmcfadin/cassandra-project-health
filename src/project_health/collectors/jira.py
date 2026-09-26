@@ -62,7 +62,6 @@ exact where a tighter watermark heuristic would only be approximate.
 
 from __future__ import annotations
 
-import random
 import time
 import uuid
 from collections.abc import Callable, Iterator
@@ -72,6 +71,7 @@ from datetime import datetime, timedelta, timezone
 import httpx
 import pyarrow as pa
 
+from project_health.collectors.retry import exponential_backoff, is_transient_body_error
 from project_health.config import ProjectConfig
 from project_health.schema import get_schema, validate
 
@@ -83,8 +83,6 @@ DEFAULT_MAX_RETRIES = 5
 # parallel fan-out"); expressed as a minimum interval between request starts.
 DEFAULT_MIN_REQUEST_INTERVAL = 0.5
 DEFAULT_TIMEOUT = 30.0
-_BACKOFF_BASE = 0.5
-_BACKOFF_CAP = 20.0
 
 # See module docstring "Watermark strategy" above.
 WATERMARK_SAFETY_MARGIN = timedelta(minutes=2)
@@ -172,12 +170,6 @@ def build_jql(project_key: str, watermark: str | None) -> str:
         jql += f' AND updated >= "{safe.strftime(_JQL_DATETIME_FORMAT)}"'
     jql += " ORDER BY updated ASC"
     return jql
-
-
-def _exponential_backoff(attempt: int) -> float:
-    """Exponential backoff with jitter, capped at `_BACKOFF_CAP` seconds."""
-    exp = min(_BACKOFF_CAP, _BACKOFF_BASE * (2 ** (attempt - 1)))
-    return exp + random.uniform(0, exp * 0.25)
 
 
 # --- Row normalization --------------------------------------------------
@@ -423,7 +415,7 @@ class JiraCollector:
             except ValueError:
                 delay = None
         if delay is None:
-            delay = _exponential_backoff(attempt)
+            delay = exponential_backoff(attempt)
         self._sleep_fn(delay)
 
     def _get_with_retry(self, path: str, params: dict) -> httpx.Response:
@@ -458,6 +450,21 @@ class JiraCollector:
                 continue
 
             response.raise_for_status()
+            try:
+                response.json()
+            except Exception as exc:
+                if not is_transient_body_error(exc):
+                    raise
+                # issue #86: a truncated/undecodable JIRA response body
+                # (seen live: a GitHub GraphQL analog cut mid-string) is
+                # retried exactly like a 5xx rather than propagating.
+                if attempt >= self._max_retries:
+                    raise CollectionError(
+                        f"JIRA request to {path} returned an undecodable response body "
+                        f"after {attempt} attempt(s): {exc}"
+                    ) from exc
+                self._backoff(attempt, retry_after=None)
+                continue
             return response
 
     def fetch_issues(

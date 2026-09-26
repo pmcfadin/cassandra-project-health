@@ -597,6 +597,52 @@ class TestRetry:
 
         assert 3.0 in sleeps
 
+    def test_truncated_stats_json_body_retries_like_a_5xx_then_succeeds(self, config):
+        """issue #86: a truncated/undecodable `stats.lua` JSON body (a real
+        example seen live: GitHub's GraphQL body cut off mid-string) is
+        retried exactly like a 5xx, not raised straight through."""
+        call_count = {"n": 0}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path.endswith("stats.lua"):
+                call_count["n"] += 1
+                if call_count["n"] == 1:
+                    return httpx.Response(200, content=b'{"firstYear": 2009, "first')
+                return httpx.Response(200, content=TWO_MONTH_STATS)
+            return httpx.Response(200, content=EMPTY_MBOX)
+
+        transport = httpx.MockTransport(handler)
+        collector = PonyMailCollector(
+            _single_list_config(config),
+            transport=transport,
+            max_retries=5,
+            min_request_interval=0,
+            sleep_fn=lambda s: None,
+        )
+
+        result = collector.collect(watermarks=None, max_months_per_list=1)
+
+        assert call_count["n"] == 2
+        assert result.message_count == 0
+
+    def test_truncated_stats_json_body_exhausted_raises_collection_error(self, config):
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path.endswith("stats.lua"):
+                return httpx.Response(200, content=b'{"firstYear": 2009, "first')
+            return httpx.Response(200, content=EMPTY_MBOX)
+
+        transport = httpx.MockTransport(handler)
+        collector = PonyMailCollector(
+            _single_list_config(config),
+            transport=transport,
+            max_retries=3,
+            min_request_interval=0,
+            sleep_fn=lambda s: None,
+        )
+
+        with pytest.raises(CollectionError):
+            collector.collect(watermarks=None, max_months_per_list=1)
+
 
 class TestNoNetworkAccess:
     def test_default_transport_is_not_used_when_mock_supplied(self, config):

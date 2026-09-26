@@ -42,7 +42,6 @@ ordinary `/search`-based fetch would have stored for the same issue
 
 from __future__ import annotations
 
-import random
 import re
 import time
 from collections.abc import Callable, Iterable
@@ -51,6 +50,7 @@ from dataclasses import dataclass
 import httpx
 
 from project_health.collectors.jira import MAX_COMMENTS_PER_ISSUE_STORED, _parse_jira_timestamp
+from project_health.collectors.retry import exponential_backoff, is_transient_body_error
 
 # Per governance-policy.yaml `pre-commit-ci-evidence.check_method`
 # (`evidence_source: jira_comment_ci_mention`) — kept as a code constant
@@ -73,8 +73,6 @@ DEFAULT_MAX_RETRIES = 5
 # ≤2 req/s politeness cap (issue #36 scope, same bound as collectors/jira.py).
 DEFAULT_MIN_REQUEST_INTERVAL = 0.5
 DEFAULT_TIMEOUT = 30.0
-_BACKOFF_BASE = 0.5
-_BACKOFF_CAP = 20.0
 
 _URL_RE = re.compile(r"https?://\S+")
 
@@ -176,8 +174,7 @@ class JiraCommentsCollector:
             except ValueError:
                 delay = None
         if delay is None:
-            exp = min(_BACKOFF_CAP, _BACKOFF_BASE * (2 ** (attempt - 1)))
-            delay = exp + random.uniform(0, exp * 0.25)
+            delay = exponential_backoff(attempt)
         self._sleep_fn(delay)
 
     def _get_with_retry(self, path: str, params: dict) -> httpx.Response:
@@ -208,6 +205,20 @@ class JiraCommentsCollector:
                 continue
 
             response.raise_for_status()
+            try:
+                response.json()
+            except Exception as exc:
+                if not is_transient_body_error(exc):
+                    raise
+                # issue #86: a truncated/undecodable comments body is
+                # retried exactly like a 5xx.
+                if attempt >= self._max_retries:
+                    raise CollectionError(
+                        f"JIRA comments request to {path} returned an undecodable "
+                        f"response body after {attempt} attempt(s): {exc}"
+                    ) from exc
+                self._backoff(attempt, retry_after=None)
+                continue
             return response
 
     def fetch_ci_evidence(self, issue_key: str) -> CommentCIEvidence | None:

@@ -261,6 +261,20 @@ main {
   margin-left: 0.4rem;
 }
 
+/* Per-card staleness badge (issue #86, ARCHITECTURE.md §7.3) -- reuses the
+   header pill's badge--ok/--stale/--failed color scale so a card's own
+   badge reads consistently with the site-wide source pills above it. */
+.card-staleness {
+  margin: 0 0 0.5rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+.card-staleness .badge {
+  white-space: normal;
+  text-align: left;
+}
+
 .card-status {
   font-size: 0.8rem;
   color: var(--fg-muted);

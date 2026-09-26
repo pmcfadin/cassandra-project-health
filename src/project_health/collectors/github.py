@@ -83,7 +83,6 @@ from __future__ import annotations
 
 import hashlib
 import os
-import random
 import subprocess
 import time
 import uuid
@@ -94,6 +93,7 @@ from datetime import datetime, timezone
 import httpx
 import pyarrow as pa
 
+from project_health.collectors.retry import exponential_backoff, is_transient_body_error
 from project_health.config import BotPattern, ProjectConfig
 from project_health.schema import get_schema, validate
 
@@ -107,8 +107,6 @@ DEFAULT_TIMEOUT = 30.0
 # across several collectors/repos in one nightly run (ARCHITECTURE.md §7.4)
 # -- stop well short of exhausting it outright.
 DEFAULT_RATE_LIMIT_FLOOR = 500
-_BACKOFF_BASE = 0.5
-_BACKOFF_CAP = 20.0
 
 # See module docstring "Known limitation: nested pagination is single-page".
 REVIEWS_PAGE_SIZE = 100
@@ -227,11 +225,6 @@ def _parse_gh_timestamp(value: str) -> datetime:
 def _hash_title(title: str) -> str:
     """sha256 hex digest of a PR title -- metadata only, per module docstring."""
     return hashlib.sha256(title.encode("utf-8")).hexdigest()
-
-
-def _exponential_backoff(attempt: int) -> float:
-    exp = min(_BACKOFF_CAP, _BACKOFF_BASE * (2 ** (attempt - 1)))
-    return exp + random.uniform(0, exp * 0.25)
 
 
 # --- Bot filtering (issue #51) -----------------------------------------------
@@ -448,7 +441,7 @@ class GitHubCollector:
             except ValueError:
                 delay = None
         if delay is None:
-            delay = _exponential_backoff(attempt)
+            delay = exponential_backoff(attempt)
         self._sleep_fn(delay)
 
     def _post_with_retry(self, payload: dict) -> dict:
@@ -493,7 +486,21 @@ class GitHubCollector:
                 continue
 
             response.raise_for_status()
-            body = response.json()
+            try:
+                body = response.json()
+            except Exception as exc:
+                if not is_transient_body_error(exc):
+                    raise
+                # issue #86: a truncated/undecodable GraphQL body (seen live:
+                # `json.JSONDecodeError` mid-string) is retried exactly like
+                # a 5xx rather than propagating straight through.
+                if attempt >= self._max_retries:
+                    raise CollectionError(
+                        f"GitHub GraphQL request returned an undecodable response body "
+                        f"after {attempt} attempt(s): {exc}"
+                    ) from exc
+                self._backoff(attempt, retry_after=None)
+                continue
             errors = body.get("errors")
             if errors:
                 error_types = {e.get("type") for e in errors if isinstance(e, dict)}

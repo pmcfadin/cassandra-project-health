@@ -98,7 +98,6 @@ from __future__ import annotations
 
 import hashlib
 import mailbox
-import random
 import re
 import tempfile
 import time
@@ -113,6 +112,7 @@ from pathlib import Path
 import httpx
 import pyarrow as pa
 
+from project_health.collectors.retry import exponential_backoff, is_transient_body_error
 from project_health.config import ProjectConfig
 from project_health.schema import get_schema, validate
 
@@ -123,8 +123,6 @@ DEFAULT_MAX_RETRIES = 5
 # fan-out"; issue #33: "Retry/backoff + ≤2 req/s like the JIRA collector").
 DEFAULT_MIN_REQUEST_INTERVAL = 0.5
 DEFAULT_TIMEOUT = 30.0
-_BACKOFF_BASE = 0.5
-_BACKOFF_CAP = 20.0
 
 DEFAULT_BASE_URL = "https://lists.apache.org"
 
@@ -259,11 +257,6 @@ def next_watermark_for(
 
 
 # --- Backoff (mirrors collectors/jira.py) -----------------------------------
-
-
-def _exponential_backoff(attempt: int) -> float:
-    exp = min(_BACKOFF_CAP, _BACKOFF_BASE * (2 ** (attempt - 1)))
-    return exp + random.uniform(0, exp * 0.25)
 
 
 # --- Message parsing (D1/D16: headers only, body/subject text never kept) --
@@ -512,10 +505,17 @@ class PonyMailCollector:
             except ValueError:
                 delay = None
         if delay is None:
-            delay = _exponential_backoff(attempt)
+            delay = exponential_backoff(attempt)
         self._sleep_fn(delay)
 
-    def _get_with_retry(self, path: str, params: dict) -> httpx.Response:
+    def _get_with_retry(
+        self, path: str, params: dict, *, expect_json: bool = False
+    ) -> httpx.Response:
+        """GET `path`, retrying timeouts/transport errors/429/5xx with
+        backoff. `expect_json=True` (issue #86, `fetch_stats`'s JSON body --
+        `fetch_month_mbox`'s raw mbox bytes never pass this) also retries a
+        truncated/undecodable body exactly like a 5xx, since a truncated
+        JSON response is exactly as transient as one."""
         attempt = 0
         while True:
             attempt += 1
@@ -549,13 +549,26 @@ class PonyMailCollector:
                 continue
 
             response.raise_for_status()
+            if expect_json:
+                try:
+                    response.json()
+                except Exception as exc:
+                    if not is_transient_body_error(exc):
+                        raise
+                    if attempt >= self._max_retries:
+                        raise CollectionError(
+                            f"Pony Mail request to {path} returned an undecodable "
+                            f"response body after {attempt} attempt(s): {exc}"
+                        ) from exc
+                    self._backoff(attempt, retry_after=None)
+                    continue
             return response
 
     def fetch_stats(self, list_name: str) -> dict:
         """Raw `stats.lua` JSON for `list_name` (used only for its
         `firstYear`/`firstMonth`/`lastYear`/`lastMonth` month-range)."""
         response = self._get_with_retry(
-            "/api/stats.lua", {"list": list_name, "domain": self._domain}
+            "/api/stats.lua", {"list": list_name, "domain": self._domain}, expect_json=True
         )
         return response.json()
 

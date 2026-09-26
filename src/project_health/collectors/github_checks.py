@@ -21,13 +21,13 @@ more tightly (60 req/hr vs. 5,000 authenticated).
 from __future__ import annotations
 
 import os
-import random
 import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 
 import httpx
 
+from project_health.collectors.retry import exponential_backoff, is_transient_body_error
 from project_health.governance.checks import CheckstyleEvidence
 
 GITHUB_API_BASE = "https://api.github.com"
@@ -40,8 +40,6 @@ DEFAULT_PAGE_SIZE = 100
 DEFAULT_MAX_RETRIES = 5
 DEFAULT_MIN_REQUEST_INTERVAL = 0.25
 DEFAULT_TIMEOUT = 30.0
-_BACKOFF_BASE = 0.5
-_BACKOFF_CAP = 20.0
 
 
 class CollectionError(Exception):
@@ -133,8 +131,7 @@ class GitHubChecksCollector:
             except ValueError:
                 delay = None
         if delay is None:
-            exp = min(_BACKOFF_CAP, _BACKOFF_BASE * (2 ** (attempt - 1)))
-            delay = exp + random.uniform(0, exp * 0.25)
+            delay = exponential_backoff(attempt)
         self._sleep_fn(delay)
 
     def _get_with_retry(self, path: str, params: dict) -> httpx.Response:
@@ -178,6 +175,20 @@ class GitHubChecksCollector:
                 continue
 
             response.raise_for_status()
+            try:
+                response.json()
+            except Exception as exc:
+                if not is_transient_body_error(exc):
+                    raise
+                # issue #86: a truncated/undecodable check-runs body is
+                # retried exactly like a 5xx.
+                if attempt >= self._max_retries:
+                    raise CollectionError(
+                        f"GitHub check-runs request to {path} returned an undecodable "
+                        f"response body after {attempt} attempt(s): {exc}"
+                    ) from exc
+                self._backoff(attempt, retry_after=None)
+                continue
             return response
 
     def fetch_check_runs(self, sha: str) -> tuple[CheckRun, ...]:

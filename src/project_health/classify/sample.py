@@ -1126,6 +1126,31 @@ def build_corpus(
     return items
 
 
+def shuffle_presentation_order(seed: int, items: Sequence[CorpusItem]) -> list[CorpusItem]:
+    """Reorder `items` into the corpus file's final presentation order --
+    what `project_health.label.store.load_corpus` preserves and what the
+    labeling tool serves items in.
+
+    `build_corpus` above returns every prevalence item followed by every
+    enrichment item, since that is the natural order to assemble them in.
+    Writing the file in that same order would leak the one thing the
+    labeling tool's blind design (D18) is built to hide: `server.py`'s
+    `blind_item_view` never sends `stratum` to the rater, but a rater who
+    notices the last 42 of 192 items are consistently the "interesting"
+    ones (sarcasm, personal attacks, ...) has effectively been told which
+    items were pre-filtered as suspicious anyway -- issue #44 fix round 3.
+
+    Sorted by a stable per-item hash under a `presentation_order` namespace
+    -- the same `_stable_rank` mechanism `deterministic_sample` uses for
+    selection, but a namespace no selection step ever hashes under, so
+    shuffling the file never entangles with (or leaks anything about) which
+    stratum/year/label cell chose a given item. Deterministic for a given
+    `seed`: re-running the sampler regenerates byte-identical presentation
+    order, not just the same item set.
+    """
+    return sorted(items, key=lambda item: _stable_rank(seed, "presentation_order", item.item_id))
+
+
 def write_corpus_jsonl(items: Sequence[CorpusItem], path: str | Path) -> str:
     """Write `items` as JSONL to `path` -- the caller's own private storage
     (D18: "the pilot corpus and its labels stay private"). This module
@@ -1406,6 +1431,7 @@ def run_pilot_sample(
         jira_text_by_id,
         jira_parent_by_id,
     )
+    items = shuffle_presentation_order(seed, items)
 
     corpus_path = Path(corpus_output_path)
     corpus_checksum = write_corpus_jsonl(items, corpus_path)

@@ -23,6 +23,7 @@ import polars as pl
 import pytest
 
 from project_health.classify.sample import (
+    SOURCE_MAILING_LIST,
     JiraScanStats,
     _PacedJiraScanClient,
     allocate_with_capacity,
@@ -40,6 +41,7 @@ from project_health.classify.sample import (
     scan_jira_candidates,
     select_enrichment,
     select_prevalence,
+    shuffle_presentation_order,
     write_corpus_jsonl,
 )
 from project_health.classify.text_fetch import PonyMailTextFetcher
@@ -914,6 +916,74 @@ class TestCorpusAssembly:
         assert jira_item.parent_text == "Synthetic parent comment text."
         assert jira_item.source == "jira_comment"
         assert jira_item.checksum is not None
+
+
+class TestShufflePresentationOrder:
+    """Issue #44 fix round 3: `build_corpus` returns every prevalence item
+    followed by every enrichment item; writing the corpus file in that order
+    would let an attentive rater infer which items were pre-filtered as
+    "suspicious" purely from their position in the file, breaking the
+    labeling tool's blind design (D18) even though `server.py` never sends
+    `stratum` itself to the rater."""
+
+    def _many_items(self):
+        dev_meta = {}
+        dev_text = {}
+        dev_parent = {}
+        prevalence_ids = []
+        for i in range(20):
+            message_id = f"m{i}"
+            dev_meta[message_id] = _dev_candidate(message_id, 2020)
+            dev_text[message_id] = f"Synthetic prevalence dev message number {i} with words."
+            dev_parent[message_id] = None
+            prevalence_ids.append(message_id)
+        enrichment_selected = []
+        for i in range(10):
+            message_id = f"e{i}"
+            dev_meta[message_id] = _dev_candidate(message_id, 2020)
+            dev_text[message_id] = f"Synthetic enrichment dev message number {i} with words."
+            dev_parent[message_id] = None
+            enrichment_selected.append((SOURCE_MAILING_LIST, message_id, "sarcasm"))
+        return build_corpus(
+            prevalence_ids, [], enrichment_selected, dev_meta, {}, dev_text, dev_parent, {}, {}
+        )
+
+    def test_enrichment_items_are_not_left_as_one_contiguous_block(self):
+        items = self._many_items()
+        assert [i.stratum for i in items[:20]] == ["prevalence"] * 20  # sanity: unshuffled input
+        shuffled = shuffle_presentation_order(44, items)
+        longest_run = 0
+        current_run = 0
+        for item in shuffled:
+            if item.stratum == "enrichment":
+                current_run += 1
+                longest_run = max(longest_run, current_run)
+            else:
+                current_run = 0
+        # All 10 enrichment items landing in one unbroken run is exactly the
+        # "last N items are the suspicious ones" leak this fix prevents.
+        assert longest_run < 10
+        # And it isn't simply reversed (all enrichment first) either.
+        assert [i.stratum for i in shuffled[:10]] != ["enrichment"] * 10
+
+    def test_deterministic_for_a_given_seed_independent_of_input_order(self):
+        items = self._many_items()
+        order_a = [item.item_id for item in shuffle_presentation_order(44, items)]
+        order_b = [item.item_id for item in shuffle_presentation_order(44, list(reversed(items)))]
+        assert order_a == order_b
+
+    def test_different_seeds_can_produce_different_orders(self):
+        items = self._many_items()
+        order_a = [item.item_id for item in shuffle_presentation_order(1, items)]
+        order_b = [item.item_id for item in shuffle_presentation_order(2, items)]
+        assert order_a != order_b
+
+    def test_preserves_the_exact_item_set_and_per_item_content(self):
+        items = self._many_items()
+        by_id_before = {item.item_id: item.checksum for item in items}
+        shuffled = shuffle_presentation_order(44, items)
+        by_id_after = {item.item_id: item.checksum for item in shuffled}
+        assert by_id_before == by_id_after
 
 
 # --- run_pilot_sample end-to-end smoke test ----------------------------------

@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block title %}Governance — Cassandra Project Health{% endblock %}
+{% block content %}
+<p class="page-intro">Per-commit compliance against an owner-approved policy — deterministic checks on public commits, not classified judgments.</p>
+
+<section class="empty-state" aria-labelledby="governance-empty-heading">
+  <h2 id="governance-empty-heading">Governance compliance is not published yet</h2>
+  <p>
+    This page will list individual commits alongside author, committer and reviewer names and each
+    check's pass/fail/unknown result (D15). It stays empty until the compliance engine ships.
+  </p>
+</section>
+
+<section class="whats-coming" aria-labelledby="governance-coming-heading">
+  <h2 id="governance-coming-heading">What's coming</h2>
+
+  <article class="phase-card">
+    <h3>Per-commit minimums (D14)</h3>
+    <p>
+      The minimums every commit must meet — review, testing, CI — are defined in a versioned
+      <code>governance-policy.yaml</code>. Each rule cites its source (Cassandra's commit
+      documentation, a CEP, or a dev@ decision), carries an effective-from date, and states exactly
+      how it is checked. An agent drafts the policy from Cassandra's documented rules, and the
+      project owner approves it before any compliance result is published. See
+      <a href="{{ decisions_url }}#{{ decisions_d14_anchor }}">DECISIONS.md — D14</a>.
+    </p>
+  </article>
+
+  <article class="phase-card">
+    <h3>Full per-commit transparency (D15)</h3>
+    <p>
+      Each commit's checks are judged against the policy in force on its commit date, and each
+      result shows the evidence it is based on (trailer text, JIRA field, CI link, or test paths) so
+      a reader can verify it. <code>unknown</code> is always shown as unknown, never counted as a
+      fail, and every row links to a corrections process. See
+      <a href="{{ decisions_url }}#{{ decisions_d15_anchor }}">DECISIONS.md — D15</a>.
+    </p>
+  </article>
+</section>
+{% endblock %}

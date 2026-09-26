@@ -1,17 +1,31 @@
-"""Static site generator (ARCHITECTURE.md §7.5, §8; D8; task #8).
+"""Static site generator (ARCHITECTURE.md §7.5, §8; D8, D13; task #8, #34).
 
 `generate(data_dir, run_id, out_dir)` reads that run's computed metrics
 (`snapshots/<run_id>/metrics.parquet`, the `metric_value` output contract —
 `schema/README.md`) and its manifest (`manifests/<run_id>.json`, via
-`project_health.site.manifest.load_manifest`) and writes a fully static
-home page: one dimension-grouped card per M0 metric (contributor
-sustainability, reviewer capacity, responsiveness), each with a tier badge,
-a Vega-Lite history chart, and downloadable `data/<metric_id>.json` /
-`.csv` siblings carrying the chart's provenance (ARCHITECTURE.md §5's
-per-chart download contract).
+`project_health.site.manifest.load_manifest`) and writes a fully static,
+multi-page site (D13):
 
-Everything the generated HTML references is a *relative* URL
-(`data/...`, `static/...`) so the site works unmodified under the
+- `/` (`index.html`) — a home page with one summary card per top-level
+  page: its headline metrics (latest value, month) and a link.
+- `/community/` — one dimension-grouped card per M0 metric (contributor
+  sustainability, reviewer capacity, responsiveness), each with a tier
+  badge, a Vega-Lite history chart, and downloadable
+  `data/<metric_id>.json` / `.csv` siblings carrying the chart's
+  provenance (ARCHITECTURE.md §5's per-chart download contract).
+- `/conversations/` — an honest empty state plus a "what's coming"
+  section, until #35 lands mailing-list metrics (D16).
+- `/governance/` — a placeholder explaining what's coming (D14, D15).
+
+Every page shares one Jinja base template (`templates/base.html`) with a
+tab-style nav (current page marked via `aria-current="page"`) and the same
+freshness banner / per-source badges. Which page a metric's card renders
+on is declared once, in `metrics_meta.MetricMeta.page` — this module never
+hard-codes a metric_id to page-id mapping.
+
+Everything the generated HTML references is a *relative* URL (`data/...`,
+`static/...`, and `../data/...`, `../static/...` from a page in a
+subdirectory) so the site works unmodified under the
 `/cassandra-project-health/` GitHub Pages subpath (ARCHITECTURE.md §8).
 
 `insufficient_data` points are written as JSON `null` / an empty CSV cell,
@@ -39,7 +53,13 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from project_health.schema import validate
 from project_health.site.manifest import RunManifest, load_manifest
-from project_health.site.metrics_meta import M0_METRICS, MetricMeta
+from project_health.site.metrics_meta import (
+    HOME_CARD_METRIC_LIMIT,
+    M0_METRICS,
+    PAGES,
+    MetricMeta,
+    PageMeta,
+)
 
 # Pinned CDN versions (cdn.jsdelivr.net) — issue #8: pinned, not `@latest`,
 # so a chart never silently changes rendering behavior underneath a
@@ -57,6 +77,23 @@ TEMPLATES_DIR = _PACKAGE_DIR / "templates"
 STATIC_DIR = _PACKAGE_DIR / "static"
 
 METHODOLOGY_URL = "https://github.com/pmcfadin/cassandra-project-health/tree/main/docs/spec"
+DECISIONS_URL = "https://github.com/pmcfadin/cassandra-project-health/blob/main/docs/spec/DECISIONS.md"
+COMMUNITY_HEALTH_SPEC_URL = (
+    "https://github.com/pmcfadin/cassandra-project-health/blob/main/docs/spec/COMMUNITY-HEALTH.md"
+)
+# GitHub's auto-generated heading anchors for DECISIONS.md's D14/D15
+# sections (governance.html deep-links straight to them).
+DECISIONS_D14_ANCHOR = (
+    "d14-governance-per-commit-minimums-from-a-versioned-owner-approved-policy"
+)
+DECISIONS_D15_ANCHOR = "d15-governance-transparency-full-per-commit-detail-including-names"
+
+# The site root is `index.html`; every other page lives one directory down
+# (`community/index.html`, etc.), so its relative links to `static/` and
+# `data/` need one extra `../` (D13, issue #34). `base_prefix` is prepended
+# to every such link in `templates/base.html` and this module.
+HOME_BASE_PREFIX = "./"
+SUBPAGE_BASE_PREFIX = "../"
 
 
 def _version_key(version: str) -> tuple[int, ...]:
@@ -131,7 +168,7 @@ def generate(
         _write_csv(data_out / f"{metric_id}.csv", series, manifest)
 
     _copy_static(out_dir)
-    _render_index(out_dir, series_by_id, manifest, build_time)
+    _render_pages(out_dir, series_by_id, manifest, build_time)
 
 
 def _read_metrics(data_dir: Path, run_id: str) -> pa.Table:
@@ -396,11 +433,12 @@ def _is_stale(manifest: RunManifest, build_time: datetime) -> bool:
 
 
 def _group_by_dimension(
-    series_by_id: dict[str, MetricSeries],
+    series_list: list[MetricSeries],
 ) -> list[tuple[str, list[MetricSeries]]]:
+    """Group a page's metrics by `dimension`, preserving first-seen order."""
     order: list[str] = []
     groups: dict[str, list[MetricSeries]] = {}
-    for series in series_by_id.values():
+    for series in series_list:
         dimension = series.meta.dimension
         if dimension not in groups:
             groups[dimension] = []
@@ -409,7 +447,27 @@ def _group_by_dimension(
     return [(dimension, groups[dimension]) for dimension in order]
 
 
-def _card_context(series: MetricSeries) -> dict[str, Any]:
+def _group_by_page(
+    series_by_id: dict[str, MetricSeries],
+) -> dict[str, list[MetricSeries]]:
+    """Group all metrics by `MetricMeta.page` (D13), preserving
+    `series_by_id`'s insertion order within each page's list. A metric
+    whose `page` isn't a key in `PAGES` is a metadata bug (metrics_meta.py
+    declares an unknown page), so this fails loudly rather than silently
+    dropping the metric from every page."""
+    groups: dict[str, list[MetricSeries]] = {page_id: [] for page_id in PAGES}
+    for series in series_by_id.values():
+        page_id = series.meta.page
+        if page_id not in groups:
+            raise ValueError(
+                f"metric {series.meta.metric_id!r} declares unknown page {page_id!r}; "
+                f"add it to project_health.site.metrics_meta.PAGES"
+            )
+        groups[page_id].append(series)
+    return groups
+
+
+def _card_context(series: MetricSeries, base_prefix: str) -> dict[str, Any]:
     latest = series.latest
     return {
         "metric_id": series.meta.metric_id,
@@ -422,27 +480,44 @@ def _card_context(series: MetricSeries) -> dict[str, Any]:
         # 2026", rather than the raw ISO end-of-window date.
         "latest_month_label": latest.window_end.strftime("%b %Y") if latest else None,
         "vega_spec_json": json.dumps(_vega_lite_spec(series)),
-        "json_href": f"data/{series.meta.metric_id}.json",
-        "csv_href": f"data/{series.meta.metric_id}.csv",
+        "json_href": f"{base_prefix}data/{series.meta.metric_id}.json",
+        "csv_href": f"{base_prefix}data/{series.meta.metric_id}.csv",
     }
 
 
-def _render_index(
-    out_dir: Path,
-    series_by_id: dict[str, MetricSeries],
-    manifest: RunManifest,
-    build_time: datetime,
-) -> None:
-    env = Environment(
-        loader=FileSystemLoader(str(TEMPLATES_DIR)),
-        autoescape=select_autoescape(["html"]),
-    )
-    template = env.get_template("index.html")
+def _headline_metric_context(series: MetricSeries) -> dict[str, Any]:
+    """A metric's home-page summary-card row: name, latest value, month —
+    no chart, no tier badge (D13: "headline metrics (latest value, month)
+    and a link")."""
+    latest = series.latest
+    return {
+        "name": series.meta.name,
+        "value_display": series.meta.format_value(latest.value) if latest else None,
+        "month_label": latest.window_end.strftime("%b %Y") if latest else None,
+    }
 
-    dimensions = [
-        {"dimension": dimension, "metrics": [_card_context(s) for s in series_list]}
-        for dimension, series_list in _group_by_dimension(series_by_id)
-    ]
+
+def _summary_card_context(page: PageMeta, page_series: list[MetricSeries]) -> dict[str, Any]:
+    """A home-page summary card. Summary cards only ever render on the home
+    page (`/`), so their link is relative to the site *root*, not to a
+    subpage — `HOME_BASE_PREFIX + page.path` (e.g. `"./community/"`), never
+    `SUBPAGE_BASE_PREFIX`."""
+    headline = page_series[:HOME_CARD_METRIC_LIMIT]
+    return {
+        "page_id": page.page_id,
+        "title": page.title,
+        "summary": page.summary,
+        "href": HOME_BASE_PREFIX + page.path,
+        "metrics": [_headline_metric_context(s) for s in headline],
+        "metric_count": len(page_series),
+        "empty_message": page.empty_message,
+    }
+
+
+def _common_page_context(manifest: RunManifest, build_time: datetime) -> dict[str, Any]:
+    """Context shared by every page's template render: the freshness
+    banner, per-source badges, footer attribution, and pinned asset
+    versions (ARCHITECTURE.md §7.1 mitigation 2, §7.3, §8)."""
     source_badges = [
         {
             "source": name,
@@ -451,21 +526,91 @@ def _render_index(
         }
         for name, status in sorted(manifest.sources.items())
     ]
+    return {
+        "is_stale": _is_stale(manifest, build_time),
+        "completed_at": manifest.completed_at.isoformat() if manifest.completed_at else None,
+        "source_badges": source_badges,
+        "run_id": manifest.run_id,
+        "pipeline_code_sha": manifest.pipeline_code_sha,
+        "short_sha": manifest.pipeline_code_sha[:7],
+        "methodology_url": METHODOLOGY_URL,
+        "decisions_url": DECISIONS_URL,
+        "community_health_spec_url": COMMUNITY_HEALTH_SPEC_URL,
+        "decisions_d14_anchor": DECISIONS_D14_ANCHOR,
+        "decisions_d15_anchor": DECISIONS_D15_ANCHOR,
+        "vega_version": VEGA_VERSION,
+        "vega_lite_version": VEGA_LITE_VERSION,
+        "vega_embed_version": VEGA_EMBED_VERSION,
+    }
 
-    html = template.render(
-        dimensions=dimensions,
-        is_stale=_is_stale(manifest, build_time),
-        completed_at=manifest.completed_at.isoformat() if manifest.completed_at else None,
-        source_badges=source_badges,
-        run_id=manifest.run_id,
-        pipeline_code_sha=manifest.pipeline_code_sha,
-        short_sha=manifest.pipeline_code_sha[:7],
-        methodology_url=METHODOLOGY_URL,
-        vega_version=VEGA_VERSION,
-        vega_lite_version=VEGA_LITE_VERSION,
-        vega_embed_version=VEGA_EMBED_VERSION,
+
+def _render_pages(
+    out_dir: Path,
+    series_by_id: dict[str, MetricSeries],
+    manifest: RunManifest,
+    build_time: datetime,
+) -> None:
+    """Render all four top-level pages (D13): `/`, `/community/`,
+    `/conversations/`, `/governance/`, sharing `templates/base.html`'s nav
+    and freshness/source-badge chrome."""
+    env = Environment(
+        loader=FileSystemLoader(str(TEMPLATES_DIR)),
+        autoescape=select_autoescape(["html"]),
     )
-    (out_dir / "index.html").write_text(html)
+    common_ctx = _common_page_context(manifest, build_time)
+    series_by_page = _group_by_page(series_by_id)
+
+    # Home (`/`).
+    summary_cards = [
+        _summary_card_context(page, series_by_page[page_id])
+        for page_id, page in PAGES.items()
+    ]
+    home_html = env.get_template("home.html").render(
+        current_page="home",
+        base_prefix=HOME_BASE_PREFIX,
+        summary_cards=summary_cards,
+        **common_ctx,
+    )
+    (out_dir / "index.html").write_text(home_html)
+
+    # Community (`/community/`).
+    community_dimensions = [
+        {
+            "dimension": dimension,
+            "metrics": [_card_context(s, SUBPAGE_BASE_PREFIX) for s in series_list],
+        }
+        for dimension, series_list in _group_by_dimension(series_by_page["community"])
+    ]
+    community_html = env.get_template("community.html").render(
+        current_page="community",
+        base_prefix=SUBPAGE_BASE_PREFIX,
+        dimensions=community_dimensions,
+        **common_ctx,
+    )
+    _write_subpage(out_dir, "community", community_html)
+
+    # Conversations (`/conversations/`) — no metrics until #35 lands (D16).
+    conversations_html = env.get_template("conversations.html").render(
+        current_page="conversations",
+        base_prefix=SUBPAGE_BASE_PREFIX,
+        **common_ctx,
+    )
+    _write_subpage(out_dir, "conversations", conversations_html)
+
+    # Governance (`/governance/`) — placeholder until the compliance engine
+    # ships (D14, D15).
+    governance_html = env.get_template("governance.html").render(
+        current_page="governance",
+        base_prefix=SUBPAGE_BASE_PREFIX,
+        **common_ctx,
+    )
+    _write_subpage(out_dir, "governance", governance_html)
+
+
+def _write_subpage(out_dir: Path, dirname: str, html: str) -> None:
+    page_dir = out_dir / dirname
+    page_dir.mkdir(parents=True, exist_ok=True)
+    (page_dir / "index.html").write_text(html)
 
 
 def _copy_static(out_dir: Path) -> None:

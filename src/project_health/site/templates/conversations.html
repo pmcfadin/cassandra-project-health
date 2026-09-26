@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block title %}Conversations — Cassandra Project Health{% endblock %}
+{% block content %}
+<p class="page-intro">Mailing-list metrics, computed from metadata only — sender, timestamp and thread structure — never message content.</p>
+
+<section class="empty-state" aria-labelledby="conversations-empty-heading">
+  <h2 id="conversations-empty-heading">No conversation metrics yet</h2>
+  <p>
+    This page is reserved for dev@ and user@ mailing-list metrics (D16), but none are published
+    yet: the Pony Mail collector that reads list metadata is still being built. Nothing is broken —
+    there is simply no data to show here yet.
+  </p>
+</section>
+
+<section class="whats-coming" aria-labelledby="conversations-coming-heading">
+  <h2 id="conversations-coming-heading">What's coming</h2>
+
+  <article class="phase-card">
+    <h3>Phase 1 — mailing-list metadata</h3>
+    <p>
+      Metrics such as time to first reply on dev@ and the unanswered-thread rate, computed from
+      sender, timestamp and thread structure only — never message bodies (D16). These ship as soon
+      as the mailing-list collector lands.
+    </p>
+  </article>
+
+  <article class="phase-card">
+    <h3>Phase 2a — interaction health</h3>
+    <p>
+      Classified metrics over dev@, user@, JIRA comments and GitHub PR comments, gated on a
+      human-labeled benchmark corpus and the classifier clearing agreement/precision thresholds
+      against it (D1). See
+      <a href="{{ community_health_spec_url }}">docs/spec/COMMUNITY-HEALTH.md</a> for the full spec.
+    </p>
+    <p>
+      These measure <strong>interaction health, not raw sentiment</strong> — a heated technical
+      disagreement is not, by itself, unhealthy. The classifier looks at how disagreements are
+      conducted (do threads reach resolution, do people engage in good faith), not at emotional
+      tone.
+    </p>
+  </article>
+
+  <article class="phase-card">
+    <h3>Phase 2b — ASF Slack</h3>
+    <p>
+      Aggregate-only metrics from ASF Slack, gated on PMC consensus on dev@ and ASF Infra approval
+      of a read-only bot on public channels (D1). Raw Slack text is never committed to this repo or
+      published; only aggregate counts persist, with no quotes, no links and no individual
+      attribution.
+    </p>
+  </article>
+</section>
+{% endblock %}

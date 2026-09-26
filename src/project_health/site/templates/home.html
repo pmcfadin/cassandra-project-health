@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="summary-grid" aria-label="Page summaries">
+  {% for card in summary_cards %}
+  <article class="card card--summary">
+    <header class="card-header">
+      <h2><a href="{{ card.href }}">{{ card.title }}</a></h2>
+    </header>
+    <p class="card-summary-blurb">{{ card.summary }}</p>
+
+    {% if card.metrics %}
+    <ul class="headline-metrics">
+      {% for m in card.metrics %}
+      <li>
+        <span class="headline-metric-name">{{ m.name }}</span>
+        {% if m.value_display is not none %}
+        <span class="headline-metric-value">{{ m.value_display }}</span>
+        <span class="headline-metric-period">{{ m.month_label }}</span>
+        {% else %}
+        <span class="headline-metric-value headline-metric-value--insufficient">insufficient data</span>
+        {% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+    {% if card.metric_count > card.metrics | length %}
+    <p class="card-more">+{{ card.metric_count - (card.metrics | length) }} more metric{{ "s" if card.metric_count - (card.metrics | length) != 1 else "" }}</p>
+    {% endif %}
+    {% else %}
+    <p class="card-empty-state">{{ card.empty_message }}</p>
+    {% endif %}
+
+    <p class="card-links">
+      <a href="{{ card.href }}">View {{ card.title }} &rarr;</a>
+    </p>
+  </article>
+  {% endfor %}
+</section>
+{% endblock %}

@@ -21,7 +21,9 @@ import pytest
 
 from project_health.schema import validate
 from project_health.site.generate import generate
-from project_health.site.metrics_meta import M0_METRICS
+from project_health.site.metrics_meta import M0_METRICS, PAGES
+
+SITE_PAGES = ["", "community/", "conversations/", "governance/"]
 
 RUN_ID = "2026-09-25-abc123"
 CODE_SHA = "abc123def4567890abc123def4567890abc1234"
@@ -141,6 +143,17 @@ def _build_site(tmp_path: Path, rows: list[dict] | None = None, **manifest_kwarg
     return out_dir
 
 
+def _page_html(out_dir: Path, page: str) -> str:
+    """Read a rendered page's HTML. `page` is `""` for home or one of
+    `"community/"`, `"conversations/"`, `"governance/"` for a subpage
+    (D13: every page other than home lives at `<page>/index.html`)."""
+    return (out_dir / page / "index.html").read_text()
+
+
+def _community_html(out_dir: Path) -> str:
+    return _page_html(out_dir, "community/")
+
+
 def _extract_vega_spec(html_text: str, aria_label: str) -> dict:
     """Pull one card's embedded Vega-Lite spec out of the rendered HTML.
 
@@ -168,6 +181,98 @@ def test_generate_writes_index_and_per_metric_downloads(tmp_path):
         assert (out_dir / "data" / f"{metric_id}.csv").is_file()
     assert (out_dir / "static" / "style.css").is_file()
     assert (out_dir / "static" / "app.js").is_file()
+
+
+# --- Multi-page site (D13, issue #34) ---------------------------------------
+
+
+def test_all_four_pages_are_generated(tmp_path):
+    out_dir = _build_site(tmp_path)
+    for page in SITE_PAGES:
+        assert (out_dir / page / "index.html").is_file(), page
+
+
+def test_nav_present_on_every_page_with_current_page_marked(tmp_path):
+    out_dir = _build_site(tmp_path)
+    page_to_label = {
+        "": "Home",
+        "community/": "Community",
+        "conversations/": "Conversations",
+        "governance/": "Governance",
+    }
+    for page, label in page_to_label.items():
+        html_text = _page_html(out_dir, page)
+        assert '<nav class="site-nav"' in html_text
+        # All four nav labels are present as links on every page...
+        for other_label in page_to_label.values():
+            assert f">{other_label}</a>" in html_text
+        # ...but only the current page's link is marked aria-current, and
+        # it's the anchor whose text is this page's own nav label.
+        assert html_text.count('aria-current="page"') == 1
+        nav_start = html_text.index('<nav class="site-nav"')
+        nav_end = html_text.index("</nav>", nav_start)
+        nav_html = html_text[nav_start:nav_end]
+        assert f'aria-current="page">{label}</a>' in nav_html
+
+
+def test_home_summary_card_shows_community_headline_metrics(tmp_path):
+    out_dir = _build_site(tmp_path)
+    html_text = _page_html(out_dir, "")
+
+    assert 'href="./community/"' in html_text
+    assert 'href="./conversations/"' in html_text
+    assert 'href="./governance/"' in html_text
+    # A headline metric's value and month are shown on the home page.
+    assert "Aug 2026" in html_text
+
+
+def test_home_summary_card_is_honest_when_a_page_has_no_metrics(tmp_path):
+    out_dir = _build_site(tmp_path)
+    html_text = _page_html(out_dir, "")
+
+    assert PAGES["conversations"].empty_message in html_text
+    assert PAGES["governance"].empty_message in html_text
+
+
+def test_conversations_page_explains_whats_coming(tmp_path):
+    out_dir = _build_site(tmp_path)
+    html_text = _page_html(out_dir, "conversations/")
+
+    assert "No conversation metrics yet" in html_text
+    assert "Phase 2a" in html_text
+    assert "Phase 2b" in html_text
+    assert "interaction health, not raw sentiment" in html_text.replace("\n", " ")
+    assert "COMMUNITY-HEALTH.md" in html_text
+
+
+def test_governance_page_is_a_placeholder_linking_to_decisions(tmp_path):
+    out_dir = _build_site(tmp_path)
+    html_text = _page_html(out_dir, "governance/")
+
+    assert "not published yet" in html_text
+    assert "DECISIONS.md" in html_text
+    assert "D14" in html_text
+    assert "D15" in html_text
+
+
+def test_community_page_has_the_metric_cards_and_charts(tmp_path):
+    out_dir = _build_site(tmp_path)
+    html_text = _community_html(out_dir)
+
+    for meta in M0_METRICS.values():
+        assert meta.name in html_text
+    assert 'data-vega-spec=' in html_text
+
+
+def test_relative_data_and_static_links_from_a_subpage(tmp_path):
+    out_dir = _build_site(tmp_path)
+    html_text = _community_html(out_dir)
+
+    assert '../static/style.css' in html_text
+    assert '../static/app.js' in html_text
+    metric_id = next(iter(M0_METRICS))
+    assert f'../data/{metric_id}.json' in html_text
+    assert f'../data/{metric_id}.csv' in html_text
 
 
 def test_json_output_matches_input_rows(tmp_path):
@@ -288,7 +393,7 @@ def test_insufficient_data_serializes_as_null_not_zero(tmp_path):
     assert csv_rows[1]["value"] == ""
 
     # and the chart spec embedded in the HTML must carry null too, not 0
-    html_text = (out_dir / "index.html").read_text()
+    html_text = _community_html(out_dir)
     idx = html_text.index('aria-label="History chart for Reviewer Concentration (HHI)"')
     card_start = html_text.rfind("<div class=\"chart\"", 0, idx)
     spec_start = html_text.index("data-vega-spec='", card_start) + len("data-vega-spec='")
@@ -346,12 +451,14 @@ def test_per_source_staleness_badge_from_manifest(tmp_path):
 
 def test_no_absolute_root_urls_in_html(tmp_path):
     out_dir = _build_site(tmp_path)
-    html_text = (out_dir / "index.html").read_text()
 
     # href="/..." or src="/..." (a single leading slash, not "//" which is
     # protocol-relative and not part of this HTML anyway) would break the
-    # site once it's served under the /cassandra-project-health/ subpath.
-    assert not re.search(r'(?:href|src)="/(?!/)', html_text)
+    # site once it's served under the /cassandra-project-health/ subpath —
+    # on every page, not just home (D13, issue #34).
+    for page in SITE_PAGES:
+        html_text = _page_html(out_dir, page)
+        assert not re.search(r'(?:href|src)="/(?!/)', html_text), page
 
 
 def test_no_absolute_root_urls_in_css(tmp_path):
@@ -371,6 +478,38 @@ def test_metric_meta_format_value_by_kind():
     assert M0_METRICS["reviewer_hhi"].format_value(0.35) == "0.350"
     assert M0_METRICS["stale_jira_rate"].format_value(0.123) == "12.3%"
     assert M0_METRICS["median_resolution_latency_jira"].format_value(14.2) == "14.2 days"
+
+
+def test_all_m0_metrics_declare_the_community_page():
+    """D13/issue #34: which page a metric renders on is declared once, in
+    `MetricMeta.page`. All six M0 metrics are community (code/contributor)
+    metrics."""
+    for meta in M0_METRICS.values():
+        assert meta.page == "community"
+        assert meta.page in PAGES
+
+
+def test_group_by_page_rejects_a_metric_with_an_unknown_page(tmp_path):
+    """A metric whose `page` isn't one of `PAGES`' keys is a metadata bug
+    (metrics_meta.py declares an unknown page) and must fail loudly, not
+    silently vanish from every page."""
+    from project_health.site.generate import MetricSeries, _group_by_page
+    from project_health.site.metrics_meta import MetricMeta
+
+    bad_meta = MetricMeta(
+        metric_id="bogus_metric",
+        name="Bogus",
+        dimension="nowhere",
+        tier="experimental",
+        direction_of_good="none",
+        value_kind="count",
+        page="nonexistent_page",
+    )
+    series_by_id = {
+        "bogus_metric": MetricSeries(meta=bad_meta, definition_version=None, points=[]),
+    }
+    with pytest.raises(ValueError, match="unknown page"):
+        _group_by_page(series_by_id)
 
 
 def test_card_shows_formatted_value_and_month_label(tmp_path):
@@ -395,7 +534,7 @@ def test_card_shows_formatted_value_and_month_label(tmp_path):
         ),
     ]
     out_dir = _build_site(tmp_path, rows=rows)
-    html_text = (out_dir / "index.html").read_text()
+    html_text = _community_html(out_dir)
 
     # Counts render as bare integers, not floats.
     assert '<span class="value">12</span>' in html_text
@@ -412,7 +551,7 @@ def test_card_shows_formatted_value_and_month_label(tmp_path):
 
 def test_chart_tooltip_uses_metric_specific_format_and_title(tmp_path):
     out_dir = _build_site(tmp_path)
-    html_text = (out_dir / "index.html").read_text()
+    html_text = _community_html(out_dir)
 
     idx = html_text.index('aria-label="History chart for Reviewer Concentration (HHI)"')
     card_start = html_text.rfind('<div class="chart"', 0, idx)
@@ -442,7 +581,7 @@ def test_single_point_series_uses_month_axis_with_padded_domain(tmp_path):
         rows.append(_metric_value_row(other_id, date(2026, 5, 1), date(2026, 5, 31), 1.0, 6, "ok"))
 
     out_dir = _build_site(tmp_path, rows=rows)
-    html_text = (out_dir / "index.html").read_text()
+    html_text = _community_html(out_dir)
     spec = _extract_vega_spec(html_text, "History chart for Stale JIRA Issue Rate")
 
     x_enc = spec["encoding"]["x"]
@@ -461,7 +600,7 @@ def test_multi_point_series_domain_extends_past_last_point(tmp_path):
     points extend past the plot's right edge").
     """
     out_dir = _build_site(tmp_path)  # _default_rows(): points through 2026-09-24
-    html_text = (out_dir / "index.html").read_text()
+    html_text = _community_html(out_dir)
     spec = _extract_vega_spec(html_text, "History chart for Reviewer Concentration (HHI)")
 
     x_enc = spec["encoding"]["x"]
@@ -482,7 +621,7 @@ def test_y_axis_format_matches_metric_value_kind(tmp_path):
     bare 0-1 fraction, e.g. "0.4", instead of "40%").
     """
     out_dir = _build_site(tmp_path)
-    html_text = (out_dir / "index.html").read_text()
+    html_text = _community_html(out_dir)
 
     def y_axis(aria_label: str) -> dict:
         return _extract_vega_spec(html_text, aria_label)["encoding"]["y"]["axis"]

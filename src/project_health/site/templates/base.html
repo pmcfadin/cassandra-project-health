@@ -3,9 +3,9 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Cassandra Project Health</title>
+<title>{% block title %}Cassandra Project Health{% endblock %}</title>
 <meta name="description" content="Automated, reproducible health metrics for the Apache Cassandra project.">
-<link rel="stylesheet" href="static/style.css">
+<link rel="stylesheet" href="{{ base_prefix }}static/style.css">
 <script src="https://cdn.jsdelivr.net/npm/vega@{{ vega_version }}"></script>
 <script src="https://cdn.jsdelivr.net/npm/vega-lite@{{ vega_lite_version }}"></script>
 <script src="https://cdn.jsdelivr.net/npm/vega-embed@{{ vega_embed_version }}"></script>
@@ -14,9 +14,16 @@
 <a class="skip-link" href="#main">Skip to content</a>
 
 <header class="site-header">
-  <h1>Cassandra Project Health</h1>
+  <h1><a class="site-title-link" href="{{ base_prefix }}index.html">Cassandra Project Health</a></h1>
   <p class="tagline">Automated, reproducible metrics for the Apache Cassandra project — no composite score, no individual scores.</p>
 </header>
+
+<nav class="site-nav" aria-label="Primary">
+  <a href="{{ base_prefix }}index.html"{% if current_page == 'home' %} aria-current="page"{% endif %}>Home</a>
+  <a href="{{ base_prefix }}community/"{% if current_page == 'community' %} aria-current="page"{% endif %}>Community</a>
+  <a href="{{ base_prefix }}conversations/"{% if current_page == 'conversations' %} aria-current="page"{% endif %}>Conversations</a>
+  <a href="{{ base_prefix }}governance/"{% if current_page == 'governance' %} aria-current="page"{% endif %}>Governance</a>
+</nav>
 
 {% if is_stale %}
 <div class="banner banner--stale" role="status">
@@ -40,40 +47,7 @@
 {% endif %}
 
 <main id="main">
-{% for group in dimensions %}
-  <section class="dimension" aria-labelledby="dim-{{ loop.index }}">
-    <h2 id="dim-{{ loop.index }}">{{ group.dimension | title }}</h2>
-    <div class="card-grid">
-      {% for m in group.metrics %}
-      <article class="card">
-        <header class="card-header">
-          <h3>{{ m.name }}</h3>
-          <span class="badge badge--tier badge--tier-{{ m.tier }}">{{ m.tier }}</span>
-        </header>
-
-        <p class="card-value">
-          {% if m.latest_value_display is not none %}
-            <span class="value">{{ m.latest_value_display }}</span>
-            <span class="value-period">{{ m.latest_month_label }}</span>
-          {% else %}
-            <span class="value value--insufficient">insufficient data</span>
-          {% endif %}
-        </p>
-
-        <p class="card-status">Status: baseline scoring arrives in M3.</p>
-
-        <div class="chart" data-vega-spec='{{ m.vega_spec_json }}' role="img" aria-label="History chart for {{ m.name }}">
-          <noscript>Enable JavaScript to see the {{ m.name }} history chart, or use the data links below.</noscript>
-        </div>
-
-        <p class="card-links">
-          <a href="{{ m.json_href }}">JSON</a> &middot; <a href="{{ m.csv_href }}">CSV</a>
-        </p>
-      </article>
-      {% endfor %}
-    </div>
-  </section>
-{% endfor %}
+{% block content %}{% endblock %}
 </main>
 
 <footer class="site-footer">
@@ -81,6 +55,6 @@
   <p>Run <code>{{ run_id }}</code> &middot; code <code title="{{ pipeline_code_sha }}">{{ short_sha }}</code></p>
 </footer>
 
-<script src="static/app.js"></script>
+<script src="{{ base_prefix }}static/app.js"></script>
 </body>
 </html>

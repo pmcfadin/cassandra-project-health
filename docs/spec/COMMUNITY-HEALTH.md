@@ -116,10 +116,12 @@ than allowing the model to determine the final project score directly"):
    (auditable, gated) message-level labels feeding into an unchanged function — isolating
    what actually moved.
 3. **Context economy.** Message-level labeling can be done per-message with a bounded
-   context window (the message plus immediate parent), which is what makes the Message
-   Batches API (§4.4) cost-effective. Thread-level judgments would require re-reading
-   entire threads per classification, with no corresponding accuracy benefit once
-   message-level labels are reliable.
+   context window (the message plus immediate parent), which is what keeps each
+   classifier call's state small and cheap to run concurrently (§4.4). Thread-level
+   judgments would require re-reading entire threads per classification, with no
+   corresponding accuracy benefit once message-level labels are reliable — and a
+   full-thread context window would run directly into the documented weakness that
+   unrelated or oversized context degrades a classifier's answers (§4.4).
 
 ### 1.4 Worked examples
 
@@ -369,7 +371,7 @@ immutable normalized conversation store
    (Parquet, off-`main`, per D3 — mailing list / JIRA / GitHub PR text; for Slack, Phase 2b
     holds NO raw text here at all — see §4.6 and §7.4)
       ↓
-versioned classifier  (pinned model_id + prompt_schema_version; §4.2–4.5)
+versioned classifier  (pinned model_id + question_set_version; §4.2–4.5)
       ↓
 structured classification records  (§4.3, one per message, with full provenance)
       ↓
@@ -385,7 +387,9 @@ structured_labels`. It never receives author identity, role, organization, or pr
 history — that information lives only in the deterministic layers before and after
 classification, so it cannot leak into (or bias) the labeling of message content itself.
 It also never receives, and never emits, a numeric health/toxicity score — only the
-discrete labels in §1.2, each with a present/absent flag and a confidence.
+discrete labels in §1.2, each with a raw probability in [0,1] (§4.4/§4.5); present/absent
+is a code-side decision applied downstream via the per-label thresholds in §6.4, never
+returned by the classifier itself.
 
 ### 4.2 Provider-agnostic classifier interface
 
@@ -395,21 +399,25 @@ pipeline:
 
 ```
 interface CommunityHealthClassifier:
-    classifier_version: str          # semver for the (prompt + schema + post-processing) bundle
-    prompt_schema_version: str       # version of the label schema/instructions specifically
-    model_id: str                    # pinned provider model identifier
+    classifier_version: str          # semver for the (question set + schema + post-processing) bundle
+    question_set_version: str        # version of the versioned question-set file specifically (§4.4)
+    model_id: str                    # pinned provider model id requested; overwritten per-record with
+                                      # whatever model id the provider's response actually reports (§4.4)
 
     def classify(message: NormalizedMessage,
                  context: ParentContext) -> ClassificationRecord
 ```
 
 `ClassificationRecord` (§4.3) is the interface's only output type and is provider-neutral
-JSON. Any implementation — Anthropic, a different vendor, or a future fine-tuned
-open-weight model — plugs in behind this interface as long as it emits that schema.
-`classifier_version` is bumped on *any* change that could change output: a new model, a
-new prompt, a new schema field, a new post-processing rule (like the intensity map in
-§2.2, though that is versioned separately since it operates downstream of the classifier
-on already-published labels).
+JSON. Any implementation — TypeSafe, a different vendor, or a future fine-tuned
+open-weight model — plugs in behind this interface as long as it emits that schema. This
+interface did not change when the provider changed from the originally-assumed Anthropic
+API to TypeSafe Jev (D17) — only §4.4's implementation behind it did, which is the point
+of specifying it as an interface at all. `classifier_version` is bumped on *any* change
+that could change output: a new model, a new or edited question in the question set, a
+new schema field, a new post-processing rule (like the intensity map in §2.2, though that
+is versioned separately since it operates downstream of the classifier on already-
+published labels).
 
 ### 4.3 Classification record schema
 
@@ -421,20 +429,29 @@ on already-published labels).
   "additionalProperties": false,
   "required": [
     "record_id", "message_id", "thread_id", "source",
-    "classifier_version", "model_id", "prompt_schema_version",
-    "input_hash", "classified_at", "labels"
+    "classifier_version", "question_set_version", "model_id",
+    "input_hash", "classified_at", "labels", "usage"
   ],
   "properties": {
-    "record_id":            { "type": "string", "format": "uuid" },
-    "message_id":            { "type": "string" },
-    "thread_id":              { "type": "string" },
+    "record_id":              { "type": "string", "format": "uuid" },
+    "message_id":              { "type": "string" },
+    "thread_id":                { "type": "string" },
     "source": { "enum": ["mailing_list", "jira_comment", "github_pr_comment", "slack"] },
-    "classifier_version":     { "type": "string" },
-    "model_id":               { "type": "string", "description": "Pinned provider model id, e.g. claude-sonnet-5" },
-    "prompt_schema_version":  { "type": "string" },
-    "input_hash":             { "type": "string", "description": "sha256 of the exact normalized text + context window sent to the model" },
-    "classified_at":          { "type": "string", "format": "date-time" },
-    "batch_id":               { "type": "string", "description": "Provider batch job id, e.g. an Anthropic Message Batches API batch id, for run-level provenance/debugging. Optional." },
+    "classifier_version":       { "type": "string" },
+    "question_set_version":     { "type": "string", "description": "Version of the versioned question-set file (e.g. `questions_v1.yaml`'s `version: 1`) used for this call. D17." },
+    "model_id":                 { "type": "string", "description": "The `model` field from the provider's response for this call (e.g. `jev-1.13.0`), not just the pinned value requested -- so a provider-side model change is auditable even under a fixed request." },
+    "input_hash":               { "type": "string", "description": "sha256 of the exact normalized text + context window sent to the model" },
+    "classified_at":            { "type": "string", "format": "date-time" },
+    "usage": {
+      "type": "object",
+      "description": "Token accounting from the provider's response, tracked against D10's owner-funded monthly cost cap.",
+      "additionalProperties": false,
+      "required": ["input_tokens", "output_tokens"],
+      "properties": {
+        "input_tokens":  { "type": "integer", "minimum": 0 },
+        "output_tokens": { "type": "integer", "minimum": 0 }
+      }
+    },
     "labels": {
       "type": "object",
       "additionalProperties": false,
@@ -453,6 +470,16 @@ on already-published labels).
         "resolution_marker":            { "$ref": "#/$defs/label" }
       }
     },
+    "tone_intensity": {
+      "type": "object",
+      "description": "Descriptive-only Score output (questions_v1.yaml's `tone_intensity`). Never a health or toxicity judgment and never feeds a published gate or metric on its own (§5.1's no-composite-score rule) -- the intensity tiers actually used downstream (escalation/de-escalation/pile-on/resolution, §2.2/§2.3) are computed deterministically in code from `labels`, not from this field.",
+      "additionalProperties": false,
+      "properties": {
+        "score":         { "type": "number", "description": "Probability-weighted position across the tone_intensity levels; may land between levels." },
+        "confidence":    { "type": "number", "minimum": 0, "maximum": 1 },
+        "probabilities": { "type": "object", "description": "Per-level probability distribution, keyed by level index as a string." }
+      }
+    },
     "sentiment_polarity": {
       "type": "object",
       "description": "Optional, observability-only. Never used in any gate or published metric.",
@@ -469,10 +496,9 @@ on already-published labels).
     "label": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["present", "confidence"],
+      "required": ["probability"],
       "properties": {
-        "present":    { "type": "boolean" },
-        "confidence": { "type": "number", "minimum": 0, "maximum": 1 }
+        "probability": { "type": "number", "minimum": 0, "maximum": 1, "description": "Raw Noul probability from the classifier, stored as-is. Thresholds (per label, per §6.4's gate groups) are applied in code, never baked into this record -- D17: re-thresholding after calibration against the benchmark (issue #47) therefore never requires re-inference." }
       }
     }
   }
@@ -485,6 +511,12 @@ Notes:
   free-text project judgment, no numeric health/toxicity score, no recommendation. This
   directly implements the research brief's instruction to "prefer structured
   classification over asking an LLM to produce arbitrary numerical toxicity scores."
+- `labels.<name>` is a single `probability` in [0,1], not a `{present, confidence}` pair.
+  This is a direct consequence of D17: each message-level label is asked as a Noul, whose
+  single returned number "is the answer and the certainty in one" (TypeSafe's own framing
+  of the primitive) — there is no separate confidence to carry alongside it. `present`/
+  `absent` is a code-side decision made by applying the label's threshold (§6.4, currently
+  `null` pending calibration in #47), not a field this record stores.
 - `input_hash`, not the raw text, is what gets committed to the data cache for
   provenance. For mailing list / JIRA / GitHub PR sources, the raw text is separately
   cached under D3's normal rules (it's already public, archived data). For Slack, no raw
@@ -495,47 +527,92 @@ Notes:
   `human_reviewed: true` and a `superseded_by` back-reference on the original — nothing is
   ever deleted or edited in place, matching D2.6/D3's "nothing changes silently" rule.
 
-### 4.4 Claude-specific implementation notes (one concrete implementation behind the interface)
+### 4.4 Jev-specific implementation notes (one concrete implementation behind the interface)
 
-The reference implementation targets the Anthropic API, but everything in this subsection
-is implementation detail behind the interface in §4.2 — swapping providers changes only
-this subsection.
+The reference implementation targets TypeSafe's Jev System One model via the
+`typesafe-sdk` Python package (D17), replacing the Anthropic-based design this
+subsection previously described. Everything below is implementation detail behind the
+interface in §4.2 — swapping providers again would change only this subsection.
 
-- **Pinned model IDs.** `model_id` in every classification record is a full, pinned
-  model identifier (e.g., `claude-haiku-4-5` or `claude-sonnet-5`), never a moving alias.
-  A model choice (cost/quality tradeoff between a smaller and larger pinned model) is
-  itself decided empirically during benchmark validation (§6.6) — this document does not
-  prescribe one over the other in advance.
-- **Structured output.** The classifier calls the Messages API with a JSON schema
-  matching §4.3's `labels` object (via structured outputs / schema-constrained tool use),
-  not free-text parsing, so malformed output is a hard API-level error rather than a
-  silent misparse.
-- **Message Batches API for cost.** Nightly (and initial backfill) classification runs
-  submit messages as batch jobs rather than synchronous calls — batch processing runs
-  asynchronously at a substantial cost discount over synchronous requests, and nightly
-  classification has no latency requirement, making it a direct fit. Each batch's
-  provider-assigned batch id is recorded in `batch_id` for run-level debugging; results
-  are correlated back to records by `custom_id` (set to `message_id`), never by response
-  order, since batch results can return in any order.
-- **Context window per call.** Each call receives one message plus, where useful for
-  disambiguating pronouns/references, its immediate parent message — not the full thread
-  — keeping per-call cost bounded and the classifier's job narrow (per-message labeling,
-  not thread-level judgment, per §1.3).
-- **No author identity in the prompt.** As in §4.1, the model never sees who wrote a
-  message, their role, or their history.
+- **Pinned model, response-reported model recorded.** Requests pin a versioned model id
+  (`jev-1.13.0`), never `jev-latest`. The `model` field TypeSafe's response actually
+  reports is what gets stored as `model_id` on every classification record (§4.3) — so a
+  provider-side model change is auditable even though the request asked for a fixed
+  version. A model change is a `classifier_version` bump, validated against the frozen
+  benchmark before use (D2.6, §6.6).
+- **One `system_one` call per message, all questions together.** Each call's state is the
+  narrow, named-field object §4.1 already requires (`message.text`, `parent.text`,
+  `message.source` — see `questions_v1.yaml`'s `state_schema`), and the *questions* are
+  the full versioned set from `src/project_health/classify/questions_v1.yaml`: one Noul
+  per §1.2 message-level label, plus one `tone_intensity` Score. All 13 are asked in a
+  single request per message, not one request per question, per TypeSafe's own guidance
+  that independent questions over the same state "run in parallel and cannot see one
+  another's answers," and that asking related Nouls together in one request is the
+  documented pattern for checklist-style evaluations (`primitives/noul`,
+  `concepts/how-to-build-with-system-one`).
+- **Structured output by construction, not by prompting.** Noul and Score are typed
+  primitives with a fixed response shape (`{"noul": <probability>}` /
+  `{"score", "probabilities", "confidence"}`) — there is no free-text parsing step and no
+  risk of a malformed label object, which is what §4.3's schema-constrained design has
+  always required; TypeSafe's primitives satisfy it structurally rather than via a
+  provider-specific JSON-schema/tool-use flag.
+- **No documented provider batch-job API (unlike the prior Anthropic design).**
+  TypeSafe's documented interface is a synchronous `system_one` request over one state;
+  as of the docs read for this design there is no message-batching endpoint comparable to
+  the Anthropic Message Batches API the previous version of this section relied on.
+  Nightly/backfill runs instead achieve throughput with many concurrent `system_one`
+  calls via the SDK's async client, bounded by a concurrency limit and the same
+  retry/backoff policy as the other collectors (`ARCHITECTURE.md` §7.2). There is
+  therefore no `batch_id` field in §4.3's schema; if TypeSafe later documents a batch
+  endpoint, this subsection and §4.3 should be revisited together.
+- **Context window per call, unchanged in spirit.** Each call's state still carries one
+  message plus, where useful for disambiguating pronouns/references, its immediate
+  parent message — never the full thread — keeping per-call state small and the
+  classifier's job narrow (per-message labeling, not thread-level judgment, per §1.3).
+  This is now doubly motivated: it was already this document's design (bias avoidance,
+  cost) and it is also TypeSafe's own documented mitigation for large-irrelevant-context
+  jaggedness in Jev (`model-jaggedness/jev-1.13`: "unrelated detail acts as a distractor,
+  and a large state makes it harder to tell which part of the input produced a wrong
+  answer... [f]ilter data before passing it to the model").
+- **No author identity in state.** As in §4.1, the classifier never sees who wrote a
+  message, their role, or their history — the same field-narrowing that avoids bias also
+  removes a distractor field per the jaggedness guidance just cited.
+- **Adversarial-text mitigation is the question design itself.** TypeSafe documents that
+  Jev "doesn't treat data as potentially hostile by default" and recommends "explicit
+  criteria and thoroughly test[ing] your integration" (`model-jaggedness/jev-1.13`) as the
+  mitigation. `questions_v1.yaml` follows this directly: every label's `criteria.false`
+  spells out the boundary against its nearest confusable sibling (e.g.
+  `dismissiveness` vs. a terse-but-reasoned "no"; `personal_attack` vs. blunt criticism of
+  code; `hostility` vs. firm disagreement) rather than leaving the model to infer intent
+  from tone alone, and §6's benchmark/gate process is what actually tests it before any
+  label publishes.
 
-### 4.5 Confidence and abstention
+### 4.5 Confidence, probability, and abstention
 
-Every label carries a `confidence` in [0,1]. The classifier is instructed that
-`present: false` with low confidence is preferable to a forced guess — labels are not
-mutually exclusive and "none of the above are clearly present" is a valid, expected
-outcome for the large majority of ordinary technical messages. Aggregation (§5) treats
-`present: true` at any confidence as the raw count for prevalence purposes, but §6's
-precision/recall gates are what actually bound how much a low-confidence true positive can
-be trusted — confidence is not currently proposed as a per-record filtering threshold on
-the public dashboard, because a self-serve confidence cutoff would itself be an unaudited,
-un-versioned parameter; if a confidence threshold is adopted later it becomes part of
-`classifier_version` like everything else.
+Noul and Score report uncertainty differently, and this document's design leans on both:
+
+- **Each message-level label (a Noul) returns one probability**, not a separate
+  `{present, confidence}` pair. As TypeSafe's own documentation puts it, the returned
+  number "is the answer and the certainty in one" — a value near 0.5 means the model
+  found the label about as likely present as absent, not "medium intensity." The
+  question set is written so that genuinely ambiguous cases (§1.4's borderline examples —
+  a bare "Noted.", an authority mention that also carries an argument) are instructed to
+  land near 0.5 rather than being forced toward a confident 0 or 1.
+- **`present`/`absent` is a code-side decision**, made by applying each label's threshold
+  from §6.4's gate groups to the stored `probability` — never baked into the
+  classification record itself. Every label's threshold is `null` in `questions_v1.yaml`
+  v1 pending calibration against the frozen benchmark (issue #47); re-thresholding after
+  calibration is therefore a pure code change, never a re-inference.
+- **`tone_intensity` (a Score) additionally reports a `confidence`** derived from how
+  concentrated its level-probability distribution is — concentrated means confident,
+  spread out means uncertain (`confidence`) — but per §4.4/this field's own schema note
+  (§4.3), it is descriptive only and is never used as a per-record filtering threshold on
+  the public dashboard, for the same "an unaudited, un-versioned cutoff" reason the
+  original design gave: if a confidence threshold is adopted later for any field, it
+  becomes part of `classifier_version` like everything else.
+- Aggregation (§5) treats a label whose thresholded decision is "present" as the raw
+  count for prevalence purposes; §6's precision/recall gates are what actually bound how
+  much a given threshold's true positives can be trusted.
 
 ### 4.6 Slack (Phase 2b) pipeline variant
 
@@ -675,11 +752,15 @@ Evaluated on a held-out split of the frozen benchmark that the classifier prompt
 tuned against (a train/tune split is kept separate from the gating split, refreshed each
 time the benchmark corpus version changes).
 
-| Label group | Precision floor | Recall floor | F1 floor | Rationale |
-|---|---|---|---|---|
-| `personal_attack`, `hostility`, `gatekeeping` | **≥ 0.85** | ≥ 0.60 | ≥ 0.70 | These are the labels most capable of causing reputational harm in aggregate if over-triggered; precision is weighted above recall — an undercount that misses some real instances is a smaller harm than a label pattern that manufactures false ones. |
-| `dismissiveness`, `sarcasm`, `status_authority_invocation` | ≥ 0.80 | ≥ 0.60 | ≥ 0.70 | Same asymmetric reasoning, slightly relaxed since these are lower-stakes than a direct attack/hostility/gatekeeping call. |
-| `technical_disagreement`, `constructive_counterargument`, `evidence_based_argument`, `compromise_offer`, `acknowledgment`, `resolution_marker` | ≥ 0.75 | ≥ 0.75 | ≥ 0.75 | Positive/neutral labels: balanced gate, no asymmetric penalty needed since false positives here aren't reputationally loaded. |
+| `label_group` id (`questions_v1.yaml`) | Label group | Precision floor | Recall floor | F1 floor | Rationale |
+|---|---|---|---|---|---|
+| `reputational_harm` | `personal_attack`, `hostility`, `gatekeeping` | **≥ 0.85** | ≥ 0.60 | ≥ 0.70 | These are the labels most capable of causing reputational harm in aggregate if over-triggered; precision is weighted above recall — an undercount that misses some real instances is a smaller harm than a label pattern that manufactures false ones. |
+| `friction` | `dismissiveness`, `sarcasm`, `status_authority_invocation` | ≥ 0.80 | ≥ 0.60 | ≥ 0.70 | Same asymmetric reasoning, slightly relaxed since these are lower-stakes than a direct attack/hostility/gatekeeping call. |
+| `argument` | `technical_disagreement`, `constructive_counterargument`, `evidence_based_argument`, `compromise_offer`, `acknowledgment`, `resolution_marker` | ≥ 0.75 | ≥ 0.75 | ≥ 0.75 | Positive/neutral labels: balanced gate, no asymmetric penalty needed since false positives here aren't reputationally loaded. |
+
+Each message-level label's `label_group` in `src/project_health/classify/questions_v1.yaml`
+(D17, issue #42) is one of these three ids, so the calibration work in #47 can join the
+YAML directly back to the gate it must clear.
 
 A label that fails its gate does not publish, full stop — it is not published "with a
 caveat" or at reduced confidence. §4's structured-output design and §6.1's frozen

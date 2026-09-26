@@ -1,0 +1,421 @@
+# Phase 2a Jev question set — v1 (D17, D18; issue #42).
+#
+# One Noul per message-level label from COMMUNITY-HEALTH.md §1.2 (table rows 1-12), plus
+# one Score for descriptive tone intensity. Thread-level labels (rows 13-18: escalation,
+# de-escalation, pile-on, resolution, thread_abandonment, newcomer_treatment) are NEVER
+# listed here — COMMUNITY-HEALTH.md §1.3/§2.3 derive them deterministically in code from
+# these message-level answers plus the reply graph and timestamps. This file is loaded
+# and validated by `src/project_health/classify/questions.py`, which enforces that
+# invariant (see tests/test_questions.py).
+#
+# TypeSafe guidance this file follows (docs.typesafe.ai, read live for issue #42):
+#   - "Ask independent questions over the same state together... They run in parallel
+#     and cannot see one another's answers" (concepts/how-to-build-with-system-one) —
+#     every question below is written to be answerable on its own, with contrasts and
+#     exclusions against sibling labels spelled out inline rather than assumed from
+#     context another question might supply.
+#   - "Contrasts and Exclusions: Each option includes what it covers and explicitly what
+#     it doesn't... lets the model decide independently" (primitives/advanced) — applied
+#     throughout via each Noul's `criteria.false` and the Score's per-level descriptions.
+#   - "Describe situations, not degrees" and "numbers in the descriptions... don't help"
+#     (primitives/score) — tone_intensity's levels are concrete situational descriptions,
+#     not "mildly/moderately/very" adjectives.
+#   - "Unrelated detail acts as a distractor, and a large state makes it harder to tell
+#     which part of the input produced a wrong answer" (model-jaggedness/jev-1.13) — the
+#     state schema below is deliberately narrow; see each field's `description` for why
+#     it is (or, for thread.subject_topic, is not) included.
+#   - COMMUNITY-HEALTH.md §4.1 independently requires the same narrow, identity-free
+#     context ("one message plus immediate parent... never receives author identity,
+#     role, or history"), so the jaggedness mitigation and the bias-avoidance design
+#     principle point at the same state shape.
+
+version: 1
+id: community_health_message_labels
+model: jev-1.13.0
+
+description: >-
+  Phase 2a message-level classification question set for TypeSafe Jev
+  (DECISIONS.md D17, D18). Every message-level label in COMMUNITY-HEALTH.md §1.2
+  is asked exactly once, as a Noul. Tone intensity is asked once, as a descriptive-only
+  Score. Thresholds are null in v1; they are calibrated against the frozen benchmark
+  in a later change (issue #47) and applied in code, per label, never baked into this
+  file or into a re-inference step.
+
+# The full state shape a classification call may draw on. Not every field is
+# referenced by every question — each question's `state_refs` lists exactly what it
+# uses, per the "point questions at specific values... to eliminate ambiguity and
+# reduce distractions" guidance (concepts/how-to-build-with-system-one).
+state_schema:
+  message.text:
+    type: string
+    nullable: false
+    description: >-
+      The message being classified, preprocessed per COMMUNITY-HEALTH.md §4.1: quoted
+      reply text, code blocks, and signatures/footers stripped. Every question in this
+      file references this field — it is the only field every label's §1.2 definition
+      is actually written against. Keeping it as the sole always-required field bounds
+      state to what each question needs, per the documented Jev weakness that
+      "unrelated detail acts as a distractor, and a large state makes it harder to tell
+      which part of the input produced a wrong answer" (model-jaggedness/jev-1.13).
+  parent.text:
+    type: string
+    nullable: true
+    description: >-
+      The immediate parent message's preprocessed text, or null when `message` is a
+      thread root. Included, and bounded to exactly one message rather than the full
+      thread, because several labels (constructive_counterargument,
+      technical_disagreement, dismissiveness, acknowledgment, resolution_marker) are
+      defined relative to what a prior message claimed. COMMUNITY-HEALTH.md §4.1/§4.4
+      already scope classifier context to "one message plus immediate parent," never
+      the whole thread, for the identical large-irrelevant-context reason documented
+      for Jev — a thread-length state would both violate that existing design rule and
+      reintroduce the distractor risk the narrow state is built to avoid.
+  message.source:
+    type: string
+    enum: [mailing_list, jira_comment, github_pr_comment]
+    nullable: false
+    description: >-
+      Where the message originated. Included because register conventions differ
+      enough by venue (a JIRA "LGTM"/status-transition comment vs. a mailing-list
+      sign-off vs. PR review-comment shorthand like "nit:") that resolution_marker and
+      dismissiveness benefit from knowing which venue's conventions to expect. This is
+      deterministic enum metadata set by the collector, not free text, so unlike an
+      extra prose field it adds negligible distractor surface per the jaggedness
+      concern above.
+  thread.subject_topic:
+    type: string
+    nullable: true
+    used_by: []
+    description: >-
+      Subject line / issue title / PR title (COMMUNITY-HEALTH.md §2.1's `topic_hint`).
+      Defined here for completeness but referenced by NO question in this v1 set: every
+      §1.2 message-level label is defined by what the message *does* relative to its
+      immediate parent (disputes, dismisses, attacks, closes), not by what topic it
+      discusses, so adding topic prose to every call would be exactly the "unrelated
+      detail" the jaggedness doc warns distracts Jev without changing any question's
+      answer (model-jaggedness/jev-1.13: "Filter data before passing it to the model.
+      Send only fields relevant to the specific question."). Add it to a question's
+      `state_refs` only if a future revision demonstrates a specific label needs it,
+      and bump `version` when that happens.
+
+# One Noul per COMMUNITY-HEALTH.md §1.2 message-level label (table rows 1-12).
+# `label_group` matches the §6.4 precision/recall/F1 gate groups (added there as a
+# `label_group` id column by this same change) so the calibration work in #47 can join
+# straight back to this file. `threshold: null` throughout — see `description` above.
+labels:
+  - id: technical_disagreement
+    unit: message
+    primitive: noul
+    label_group: argument
+    threshold: null
+    state_refs: [message.text, parent.text]
+    instructions: >-
+      Does `message.text` dispute a technical claim, approach, or decision on its
+      merits — a competing design, a correctness concern, a performance claim, or a
+      different reading of a spec — using `parent.text` (if present) only to identify
+      what claim is being disputed?
+    criteria:
+      "true": >-
+        message.text raises a substantive technical dispute about a claim, design,
+        approach, or decision, e.g. "I don't think a single global lock is going to
+        hold up under the write pattern we see in production; the compaction path
+        needs its own lock."
+      "false": >-
+        message.text raises no technical dispute — it agrees, asks a clarifying
+        question with no counter-claim, or is unrelated, e.g. "Thanks, this patch
+        looks reasonable to me." This question only detects whether a dispute exists,
+        not how it is expressed: a calm, evidence-based disagreement and a hostile one
+        both score true here — tone is captured separately by the other labels and by
+        `tone_intensity`, never by this question.
+
+  - id: constructive_counterargument
+    unit: message
+    primitive: noul
+    label_group: argument
+    threshold: null
+    state_refs: [message.text, parent.text]
+    instructions: >-
+      Does `message.text` disagree with `parent.text` by directly engaging its
+      specific claim — responding to the point made, offering a reason, or proposing
+      an alternative — rather than rejecting it wholesale with no engagement?
+    criteria:
+      "true": >-
+        message.text names or restates the specific claim in parent.text and responds
+        to it with a reason, counter-evidence, or an alternative, e.g. "The benchmark
+        you linked used a single node; under a 3-node RF=3 setup the tail latency more
+        than doubles, so I don't think the conclusion generalizes — can we re-run with
+        that topology?"
+      "false": >-
+        message.text rejects parent.text's point with no engagement of its substance,
+        e.g. "That's wrong." — this is dismissiveness, not a constructive
+        counterargument, even though both involve disagreement. Also false if
+        parent.text is null (a thread root has no prior claim to engage) or if
+        message.text does not disagree with parent.text at all.
+
+  - id: evidence_based_argument
+    unit: message
+    primitive: noul
+    label_group: argument
+    threshold: null
+    state_refs: [message.text]
+    instructions: >-
+      Does `message.text` ground a claim in something checkable — a benchmark number,
+      a reproduction case, a spec citation, a code reference, a linked prior
+      discussion, or test results — rather than only asserting a claim?
+    criteria:
+      "true": >-
+        message.text cites or includes a checkable artifact backing its claim, e.g.
+        "Here's a flame graph from a 500-node soak test showing 40% of time in this
+        codepath (link); the proposed change removes that allocation entirely."
+      "false": >-
+        message.text asserts a claim with nothing checkable offered, e.g. "I'm pretty
+        sure this will be faster." This is distinct from constructive_counterargument:
+        engaging with a prior point is not enough on its own to score true here — a
+        citable/checkable artifact specifically must be present.
+
+  - id: compromise_offer
+    unit: message
+    primitive: noul
+    label_group: argument
+    threshold: null
+    state_refs: [message.text]
+    instructions: >-
+      Does `message.text` propose a middle position, a scoped-down version of a prior
+      proposal, a conditional acceptance, or explicitly cede one point while holding
+      another?
+    criteria:
+      "true": >-
+        message.text offers a negotiated middle ground while still holding a position
+        of its own, e.g. "I'll drop the API rename if we keep the internal
+        restructuring — that's the part that actually matters for CASSANDRA-XXXXX."
+      "false": >-
+        message.text either takes no position to negotiate from, or fully concedes
+        with nothing held, e.g. "Fine, whatever, do it your way." — a concession
+        without a held position is closer to dismissiveness of one's own point than a
+        negotiated compromise, so it scores false here.
+
+  - id: acknowledgment
+    unit: message
+    primitive: noul
+    label_group: argument
+    threshold: null
+    state_refs: [message.text, parent.text]
+    instructions: >-
+      Does `message.text` recognize `parent.text`'s point, correction, effort, or
+      contribution, independent of whether it agrees with the underlying position?
+    criteria:
+      "true": >-
+        message.text explicitly credits something specific in parent.text, e.g. "Good
+        catch — I missed that this path is also hit during streaming, not just
+        compaction."
+      "false": >-
+        message.text contains no recognition of parent.text's contribution, or
+        parent.text is null. A bare acknowledgment token ("Noted.") with no other
+        content, in a context where a substantive reply was expected, is a genuine
+        boundary case per COMMUNITY-HEALTH.md §1.4 — score it near 0.5 rather than a
+        confident true or false, since a Noul's single number is both the answer and
+        the certainty in one; forcing a confident call here would misrepresent how
+        little the bare token actually tells us.
+
+  - id: personal_attack
+    unit: message
+    primitive: noul
+    label_group: reputational_harm
+    threshold: null
+    state_refs: [message.text]
+    instructions: >-
+      Does `message.text` target a participant's competence, character, intelligence,
+      or worth as a person — rather than their argument, code, or a technical
+      decision?
+    criteria:
+      "true": >-
+        message.text attacks the person, including name-calling or insults, e.g. "You
+        clearly have no idea how the storage engine works — maybe read the code before
+        commenting."
+      "false": >-
+        message.text criticizes the code, argument, or decision without
+        characterizing the person, e.g. "This patch has a correctness bug in the flush
+        path." Criticism of work product, however blunt, is not a personal attack
+        unless it explicitly targets the person's competence or character — that
+        distinction is the entire boundary this question tests.
+
+  - id: hostility
+    unit: message
+    primitive: noul
+    label_group: reputational_harm
+    threshold: null
+    state_refs: [message.text]
+    instructions: >-
+      Does `message.text` express anger, contempt, or aggression toward a participant
+      or the discussion itself — via tone, shouting, or threats to escalate socially —
+      without necessarily naming a personal deficiency of anyone?
+    criteria:
+      "true": >-
+        message.text is angry or aggressive in tone, e.g. "I am done explaining this
+        basic point over and over. This is a waste of everyone's time." This can
+        co-occur with personal_attack but does not require it: hostility can be
+        directed at an idea or situation, where personal_attack is specifically about
+        the person — that is the exact distinction to apply, independent of how
+        `personal_attack` itself is answered.
+      "false": >-
+        message.text disagrees firmly but without anger or aggression, e.g. "I
+        disagree, and here's why: ..."
+
+  - id: dismissiveness
+    unit: message
+    primitive: noul
+    label_group: friction
+    threshold: null
+    state_refs: [message.text, parent.text]
+    instructions: >-
+      Does `message.text` decline to engage with `parent.text`'s substance while
+      signaling the point isn't worth engaging with — a bare rejection, "this has been
+      discussed, move on" with no reasoning, or repeatedly ignoring a direct question —
+      rather than a terse response that still gives a reason?
+    criteria:
+      "true": >-
+        message.text rejects the point with no reasoning given, e.g. "No. Not doing
+        this." in response to a substantive technical question.
+      "false": >-
+        message.text gives a reason or a pointer even if terse, or the answer is "no"
+        but backed by one, e.g. "No — this was already rejected in CASSANDRA-YYYYY for
+        the reasons discussed there; see that thread for the tradeoffs." A terse "no"
+        with a reason or reference is not dismissiveness, even though it is short —
+        length and terseness are not the test; the presence of a reason is.
+
+  - id: sarcasm
+    unit: message
+    primitive: noul
+    label_group: friction
+    threshold: null
+    state_refs: [message.text]
+    instructions: >-
+      Does `message.text` use irony or a mocking tone where the literal words and the
+      intended meaning diverge, typically to belittle a point or person — rather than
+      stating the same skepticism or criticism directly?
+    criteria:
+      "true": >-
+        message.text's literal meaning is not its intended meaning, used to mock, e.g.
+        "Oh great, another rewrite of the same subsystem. That's *definitely* going to
+        be the one that sticks."
+      "false": >-
+        message.text states skepticism or criticism directly, with literal and
+        intended meaning matching, e.g. "I'm skeptical this rewrite will hold up
+        better than the last one — what's different this time?" Directness, not the
+        presence of skepticism, is what makes this false.
+
+  - id: gatekeeping
+    unit: message
+    primitive: noul
+    label_group: reputational_harm
+    threshold: null
+    state_refs: [message.text]
+    instructions: >-
+      Does `message.text` assert that a participant lacks standing to contribute,
+      comment, or be taken seriously, based on their tenure, role, or prior
+      contributions — rather than the content of what they said?
+    criteria:
+      "true": >-
+        message.text denies another participant's standing to speak on the topic,
+        e.g. "This isn't really a call for someone who hasn't worked on the storage
+        engine before," or "you need to have committed here before you get an opinion
+        on this."
+      "false": >-
+        message.text routes a review or decision by expertise without denying anyone's
+        standing to have spoken, e.g. "This touches the storage engine pretty deeply —
+        pulling in [committer] for a review before we merge." Routing by expertise is
+        false; denying standing to speak at all is true — that is the boundary, not
+        whether expertise is mentioned.
+
+  - id: status_authority_invocation
+    unit: message
+    primitive: noul
+    label_group: friction
+    threshold: null
+    state_refs: [message.text]
+    instructions: >-
+      Does `message.text` settle or attempt to settle a point by reference to the
+      speaker's own role, seniority, or position, offered as all or most of the
+      justification — rather than by an argument on the merits? This is about the
+      speaker's own standing, distinct from gatekeeping, which is about denying
+      another participant's standing.
+    criteria:
+      "true": >-
+        message.text's entire justification is the speaker's own authority, e.g. "I
+        designed this subsystem. It stays as-is."
+      "false": >-
+        message.text mentions the speaker's role or experience but also gives a
+        substantive reason, e.g. "I designed this subsystem, and the reason it's
+        structured this way is X — happy to be argued out of it." Score this case near
+        0.5 rather than a confident false: the label can legitimately co-occur at
+        low-to-moderate probability alongside an argument, and COMMUNITY-HEALTH.md §2
+        combines it with the argument labels in code rather than forcing an
+        either/or here.
+
+  - id: resolution_marker
+    unit: message
+    primitive: noul
+    label_group: argument
+    threshold: null
+    state_refs: [message.text]
+    instructions: >-
+      Does `message.text` explicitly close a disagreement or discussion — an agreement
+      reached, a decision announced, an approval such as "LGTM" or "+1, committing
+      this," or an explicit "let's go with your approach"?
+    criteria:
+      "true": >-
+        message.text explicitly closes the matter, e.g. "Agreed — going with your
+        approach, committing this today."
+      "false": >-
+        message.text does not close anything, even if positive in tone, e.g. "I'll
+        think about it."
+
+# One descriptive-only Score. Never a health measure: it is recorded for observability
+# alongside the labels above (comparable in spirit to the non-gating `sentiment_polarity`
+# field in COMMUNITY-HEALTH.md §1.2/§4.3) and never feeds a published gate or metric on
+# its own. The deterministic intensity tiers actually used downstream (escalation,
+# de-escalation, pile-on, resolution — §2.2/§2.3) are computed in code from the Noul
+# labels above, not from this Score.
+score:
+  id: tone_intensity
+  unit: message
+  primitive: score
+  state_refs: [message.text]
+  instructions: >-
+    Rate the tone of `message.text` alone — how emotionally charged its wording is —
+    independent of whether its content is technically correct and independent of every
+    other question in this set. This is a descriptive reading of tone only: it is never
+    used as a health or toxicity judgment on its own, and it is never merged into any
+    published metric by itself (COMMUNITY-HEALTH.md §5.1's no-composite-score rule). The
+    intensity tiers actually used to derive escalation/de-escalation/pile-on/resolution
+    (§2.2) are computed deterministically in code from the labels above, not from this
+    score.
+  levels:
+    - level: 0
+      name: neutral_or_technical
+      description: >-
+        Plain statement of fact, question, or technical claim with no charge of
+        emotion detectable in the wording itself, e.g. "The compaction path needs its
+        own lock."
+    - level: 1
+      name: firm_but_even
+      description: >-
+        States disagreement or a firm position plainly, without emotional language,
+        sarcasm, or aggression, e.g. "I disagree, and here's why: ..."
+    - level: 2
+      name: sharp_or_curt
+      description: >-
+        Terse, clipped, or pointed phrasing that signals irritation or impatience,
+        without insults or anger words, e.g. "No. Not doing this."
+    - level: 3
+      name: heated
+      description: >-
+        Visible anger, exasperation, or mocking language; capitalization or
+        punctuation used for emphasis, or sarcasm aimed at belittling, e.g. "I am done
+        explaining this basic point over and over. This is a waste of everyone's
+        time."
+    - level: 4
+      name: aggressive_or_contemptuous
+      description: >-
+        Language attacking or demeaning a person, or explicit hostility or threats,
+        e.g. "You clearly have no idea how the storage engine works."

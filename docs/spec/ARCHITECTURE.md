@@ -469,34 +469,64 @@ This manifest is itself committed to the `data` branch (`manifests/<run_id>.json
 Taxonomy detail (the specific categories, thread-trajectory model, and validation methodology) is
 `COMMUNITY-HEALTH.md`'s job; this section is only the system-level plumbing the classifier plugs into.
 
+Provider note (D17): this section originally described an Anthropic-based implementation. The project owner
+decided (2026-09-25) to build Phase 2a classification on TypeSafe's Jev System One model instead, via the
+`typesafe-sdk` Python package. The provider-agnostic interface below is unchanged by that decision — only the
+implementation behind it is — which is the point of specifying it as an interface in the first place.
+
 - **Provider-agnostic interface**: `Classifier` Protocol —
   `classify(thread: NormalizedThread, schema_version: str) -> list[ClassificationResult]`. The pipeline calls
   this interface, not a vendor SDK directly, so the classifier backend can change without touching metric
   code.
-- **Anthropic Message Batches API implementation** (phase 2a default): batches accept up to 100,000 requests
-  or 256 MB of payload per batch, whichever is hit first, and normally complete well under the 24-hour hard
-  SLA (Anthropic states most batches finish in under an hour), at a 50% discount vs. the synchronous Messages
-  API; requests that time out at 24h are not billed **[verified]** ([Anthropic Docs: Batch
-  processing](https://docs.anthropic.com/en/docs/build-with-claude/batch-processing)). The nightly/monthly
-  run submits one batch per list/tracker of not-yet-classified-or-changed threads, then either polls
-  synchronously within the job's timeout budget or — more robustly, given the 24h SLA can exceed a single
-  job's budget — submits in one run and collects results in a subsequent run, tracking in-flight batch IDs in
-  the run manifest so a slow batch doesn't block that night's metric recompute for unrelated dimensions.
-- **Input-hash caching**: `input_hash = sha256(normalized_thread_text + prompt_schema_version + model_id)`.
-  Before submitting a thread for classification, the pipeline checks `classification` for an existing row
-  with the same `input_hash`; if found, it's skipped (not resubmitted, not rebilled). This is why the raw
-  thread text itself does not need to be persisted anywhere durable — only the hash needs to be
-  reproducible from the source on demand, and Pony Mail / JIRA / GitHub are themselves the durable, public,
-  re-fetchable archive.
+- **TypeSafe Jev implementation** (phase 2a default, per D17): the pipeline calls TypeSafe's `system_one` API
+  through the `typesafe-sdk` Python package, one call per message. State is the small named-field object
+  `COMMUNITY-HEALTH.md` §4.1/§4.4 requires — `message.text`, `parent.text` (nullable), `message.source` — built
+  by the normalization step above, never the full thread and never author identity. Questions are the
+  versioned set in `src/project_health/classify/questions_v1.yaml` (COMMUNITY-HEALTH.md §4.2/§4.4, issue #42):
+  one Noul per message-level label (§1.2) plus one descriptive `tone_intensity` Score, all thirteen asked
+  together in a single `system_one` call per message — TypeSafe's documented model runs independent questions
+  over one state in parallel with no visibility into each other's answers
+  (`concepts/how-to-build-with-system-one`), which is also why this design costs one call per message, not
+  thirteen.
+- **No provider batch-job API (unlike the prior Anthropic-based design)**: TypeSafe's documented interface
+  (`api.md`, `sdk/python.md`) is a synchronous request over one state; there is no documented message-batching
+  endpoint as of this writing, unlike the Anthropic Message Batches API this section previously specified. The
+  nightly/backfill run instead achieves throughput with many concurrent `system_one` calls via the SDK's async
+  client (`AsyncTypeSafeClient`), bounded by a concurrency limit and the same retry/backoff policy as the
+  other collectors (§7.2). This is a cost/throughput optimization, not a correctness requirement, so it should
+  be revisited if TypeSafe later documents a batch endpoint.
+- **Pinned model, response-reported model recorded**: requests pin `model: jev-1.13.0` (never a `-latest`
+  alias, D17); the `model` field the response actually reports is what gets stored as `model_id` on every
+  classification record, so a provider-side model change is auditable even though the request asked for a
+  fixed version.
+- **Input-hash caching, unchanged in spirit**: `input_hash = sha256(normalized_message_text +
+  normalized_parent_text + question_set_version + model_id)`. Before submitting a message for classification,
+  the pipeline checks `classification` for an existing row with the same `input_hash`; if found, it's skipped
+  (not resubmitted, not rebilled). This is why the raw message text itself does not need to be persisted
+  anywhere durable beyond the normal off-`main` cache — only the hash needs to be reproducible from the
+  source on demand, and Pony Mail / JIRA / GitHub are themselves the durable, public, re-fetchable archive.
 - **Classification storage with full provenance**: one row per message, in the exact shape
   `COMMUNITY-HEALTH.md` §4.3 defines — `classification(record_id, message_id, thread_id, source,
-  classifier_version, model_id, prompt_schema_version, input_hash, classified_at, labels, batch_id,
-  human_reviewed, human_label_id, superseded_by)`, where `labels` is the per-label `{present, confidence}`
-  object from that schema, not a single scalar confidence or an opaque `taxonomy_json` blob — this document
-  defers to `COMMUNITY-HEALTH.md` as the schema's source of truth rather than restating a divergent one.
-  `classifier_version` is a version the project controls (prompt/schema changes bump it, same
-  recompute-on-bump discipline as metric definitions, D2 rule 6); `model_id` is the pinned provider model
+  classifier_version, question_set_version, model_id, input_hash, classified_at, labels, tone_intensity,
+  usage, human_reviewed, human_label_id, superseded_by)`, where `labels` is the per-label `{probability}`
+  object from that schema — a raw Noul value, not a `{present, confidence}` pair, since D17 moves thresholding
+  into code per label (re-thresholding after calibration against the benchmark, issue #47, never requires
+  re-inference) — `tone_intensity` is the `{score, confidence, probabilities}` Score output (descriptive only,
+  never a gate input per §5.1's no-composite-score rule), and `usage` is the `{input_tokens, output_tokens}`
+  object from the response, tracked against D10's monthly cost cap. This document defers to
+  `COMMUNITY-HEALTH.md` as the schema's source of truth rather than restating a divergent one.
+  `classifier_version` is a version the project controls (question-set/schema/post-processing changes bump
+  it, same recompute-on-bump discipline as metric definitions, D2 rule 6); `question_set_version` tracks
+  `questions_v1.yaml` specifically; `model_id` is the pinned-and-response-confirmed provider model
   identifier, recorded for auditability but not itself the versioning axis.
+- **Large-irrelevant-context mitigation is architectural, not just a prompting choice.** TypeSafe documents
+  that "unrelated detail acts as a distractor" for Jev and that a large state makes it harder to isolate which
+  part of the input produced a wrong answer (`model-jaggedness/jev-1.13`). This is why classifier state is
+  built from exactly `message.text`/`parent.text`/`message.source` — `COMMUNITY-HEALTH.md` §4.1's existing
+  "one message plus immediate parent, never the full thread" rule already matches this — and why author
+  identity/role/history is excluded at the normalization step, before the classifier ever runs. The exclusion
+  `COMMUNITY-HEALTH.md` §4.1 already required for bias-avoidance reasons turns out to double as jaggedness
+  mitigation under the new provider.
 - **Slack path (phase 2b) never persists raw text**, per D1: the Slack collector reads public-channel
   messages in-run, passes them directly to the classifier in-process, and writes only
   `slack_aggregate_metric(metric_id, window, channel_bucket, count)` rows — there is no

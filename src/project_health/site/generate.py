@@ -60,6 +60,7 @@ from project_health.site.manifest import RunManifest, load_manifest
 from project_health.site.governance_page import build_governance_page_context
 from project_health.site.leaderboard_page import build_leaderboard_page_context
 from project_health.site.scoring_page import build_scoring_page_context
+from project_health.site.staleness import source_staleness_badges
 from project_health.site.metrics_meta import (
     GOVERNANCE_METRICS,
     HOME_CARD_METRIC_LIMIT,
@@ -564,6 +565,21 @@ def _is_stale(manifest: RunManifest, build_time: datetime) -> bool:
     return age.total_seconds() > FRESHNESS_WARNING_HOURS * 3600
 
 
+# --- Per-card staleness badges (issue #86, ARCHITECTURE.md §7.3) -----------
+#
+# The header's `source_badges` (`_common_page_context` below) already show
+# every source's status once, site-wide. `site.staleness` is the *per-card*
+# badge ARCHITECTURE.md §7.3 actually specifies: "the site renders an
+# explicit staleness badge on every card/metric that depends on that
+# source" -- so a reader looking at one specific card sees, right there,
+# which of *that card's own* sources is stale and since when, rather than
+# having to cross-reference the header pill against `MetricMeta.sources`
+# themselves. Factored into its own module (not defined here) since
+# `leaderboard_page.py` needs the same logic for its metric-id-less
+# leaderboard section without importing back into this module.
+_source_staleness_badges = source_staleness_badges
+
+
 # --- Governance / Security section (issue #55, D21 item 3) -----------------
 #
 # Deliberately separate from the `metric_value` machinery above: OpenSSF
@@ -738,13 +754,19 @@ def _group_by_page(
 
 
 def _card_context(
-    series: MetricSeries, base_prefix: str, last_completed_month: date
+    series: MetricSeries, base_prefix: str, last_completed_month: date, manifest: RunManifest
 ) -> dict[str, Any]:
     latest = series.latest
     return {
         "metric_id": series.meta.metric_id,
         "name": series.meta.name,
         "tier": series.meta.tier,
+        # issue #86, ARCHITECTURE.md §7.3: this card's own per-source
+        # staleness badge(s) -- distinct from the site-wide header pills
+        # (`_common_page_context`'s `source_badges`) and from the
+        # 'partial'/backfill-pending badge above, which is a different,
+        # honest-progress signal, not a collection failure.
+        "staleness_badges": _source_staleness_badges(series.meta.sources, manifest),
         "direction_of_good": series.meta.direction_of_good,
         "latest_value_display": series.meta.format_value(latest.value) if latest else None,
         # All six M0 metrics have a monthly window (METRICS.md §1), so the
@@ -798,19 +820,32 @@ def _headline_metric_context(series: MetricSeries, last_completed_month: date) -
 
 
 def _summary_card_context(
-    page: PageMeta, page_series: list[MetricSeries], last_completed_month: date
+    page: PageMeta,
+    page_series: list[MetricSeries],
+    last_completed_month: date,
+    manifest: RunManifest,
 ) -> dict[str, Any]:
     """A home-page summary card. Summary cards only ever render on the home
     page (`/`), so their link is relative to the site *root*, not to a
     subpage — `HOME_BASE_PREFIX + page.path` (e.g. `"./community/"`), never
     `SUBPAGE_BASE_PREFIX`."""
     headline = page_series[:HOME_CARD_METRIC_LIMIT]
+    # issue #86: the home summary card represents the *whole* page, so its
+    # staleness badge(s) are the union across every metric on that page
+    # (`page_series`), not just the (at most `HOME_CARD_METRIC_LIMIT`)
+    # headline metrics actually listed on the card.
+    page_sources: list[str] = []
+    for s in page_series:
+        for source in s.meta.sources:
+            if source not in page_sources:
+                page_sources.append(source)
     return {
         "page_id": page.page_id,
         "title": page.title,
         "summary": page.summary,
         "href": HOME_BASE_PREFIX + page.path,
         "metrics": [_headline_metric_context(s, last_completed_month) for s in headline],
+        "staleness_badges": _source_staleness_badges(tuple(page_sources), manifest),
         "metric_count": len(page_series),
         "empty_message": page.empty_message,
     }
@@ -874,7 +909,7 @@ def _render_pages(
 
     # Home (`/`).
     summary_cards = [
-        _summary_card_context(page, series_by_page[page_id], last_completed_month)
+        _summary_card_context(page, series_by_page[page_id], last_completed_month, manifest)
         for page_id, page in PAGES.items()
     ]
     # Composite health score + dimension breakdown (D20, issue #57) — a
@@ -898,7 +933,8 @@ def _render_pages(
         {
             "dimension": dimension,
             "metrics": [
-                _card_context(s, SUBPAGE_BASE_PREFIX, last_completed_month) for s in series_list
+                _card_context(s, SUBPAGE_BASE_PREFIX, last_completed_month, manifest)
+                for s in series_list
             ],
         }
         for dimension, series_list in _group_by_dimension(series_by_page["community"])
@@ -909,7 +945,7 @@ def _render_pages(
     # additive call here rather than threading leaderboard concerns through
     # this function's other logic.
     leaderboard_context = build_leaderboard_page_context(
-        data_dir, run_id, out_dir, base_prefix=SUBPAGE_BASE_PREFIX
+        data_dir, run_id, out_dir, base_prefix=SUBPAGE_BASE_PREFIX, manifest=manifest
     )
     community_html = env.get_template("community.html").render(
         current_page="community",
@@ -928,7 +964,8 @@ def _render_pages(
         {
             "dimension": dimension,
             "metrics": [
-                _card_context(s, SUBPAGE_BASE_PREFIX, last_completed_month) for s in series_list
+                _card_context(s, SUBPAGE_BASE_PREFIX, last_completed_month, manifest)
+                for s in series_list
             ],
         }
         for dimension, series_list in _group_by_dimension(series_by_page["conversations"])
@@ -960,7 +997,7 @@ def _render_pages(
     # informative (D15: "every result showing its evidence" extends to the
     # aggregate view never hiding fail/unknown/exempt behind a bare rate).
     governance_cards_by_metric = {
-        s.meta.metric_id: _card_context(s, SUBPAGE_BASE_PREFIX, last_completed_month)
+        s.meta.metric_id: _card_context(s, SUBPAGE_BASE_PREFIX, last_completed_month, manifest)
         for s in series_by_page["governance"]
     }
     governance_trend_cards = []
@@ -985,6 +1022,10 @@ def _render_pages(
                 ),
                 "latest_fail_share_display": _format_share(shares["fail"]) if shares else None,
                 "backfill_pending": chart["backfill_pending"],
+                # issue #86: the check's own card already computed its
+                # staleness badge(s) from `MetricMeta.sources` -- reuse it
+                # rather than recomputing.
+                "staleness_badges": card["staleness_badges"] if card else [],
                 "json_href": card["json_href"] if card else None,
                 "csv_href": card["csv_href"] if card else None,
                 "vega_spec_json": chart["vega_spec_json"],

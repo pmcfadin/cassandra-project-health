@@ -8,7 +8,7 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from project_health.collectors.github_checks import GitHubChecksCollector
+from project_health.collectors.github_checks import CollectionError, GitHubChecksCollector
 
 
 def _check_runs_response(runs: list[dict]) -> dict:
@@ -126,3 +126,41 @@ class TestGitHubChecksCollector:
         with collector:
             assert collector.fetch_check_runs("a" * 40) == ()
         assert attempts["count"] == 2
+
+    def test_truncated_json_body_retries_like_a_5xx_then_succeeds(self):
+        """issue #86: a body that fails to decode as JSON (truncated
+        mid-stream) is retried exactly like a 5xx, not raised straight
+        through."""
+        attempts = {"count": 0}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            attempts["count"] += 1
+            if attempts["count"] == 1:
+                return httpx.Response(200, content=b'{"check_runs": [')
+            return httpx.Response(200, json=_check_runs_response([]))
+
+        collector = GitHubChecksCollector(
+            "apache",
+            "cassandra",
+            transport=httpx.MockTransport(handler),
+            min_request_interval=0,
+            sleep_fn=lambda _seconds: None,
+        )
+        with collector:
+            assert collector.fetch_check_runs("a" * 40) == ()
+        assert attempts["count"] == 2
+
+    def test_truncated_json_body_exhausted_raises_collection_error(self):
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, content=b'{"check_runs": [')
+
+        collector = GitHubChecksCollector(
+            "apache",
+            "cassandra",
+            transport=httpx.MockTransport(handler),
+            min_request_interval=0,
+            sleep_fn=lambda _seconds: None,
+            max_retries=3,
+        )
+        with collector, pytest.raises(CollectionError):
+            collector.fetch_check_runs("a" * 40)

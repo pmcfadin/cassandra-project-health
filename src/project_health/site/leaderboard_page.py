@@ -34,6 +34,9 @@ import pyarrow.parquet as pq
 
 from project_health.leaderboard import ACTIVITY_LABELS, ACTIVITY_TYPES, IDENTITY_LIMITATIONS_NOTE
 from project_health.schema import get_schema, validate
+from project_health.site.manifest import RunManifest
+from project_health.site.metrics_meta import LEADERBOARD_SOURCES
+from project_health.site.staleness import source_staleness_badges
 
 REPO_URL = "https://github.com/pmcfadin/cassandra-project-health"
 IDENTITY_OVERRIDES_FILE_URL = f"{REPO_URL}/blob/main/identity_overrides.yaml"
@@ -89,6 +92,11 @@ class LeaderboardPageContext:
     json_href: str
     csv_href: str
     window_label: str | None
+    # issue #86, ARCHITECTURE.md §7.3: the leaderboard has no `metric_id` of
+    # its own (it's a ranked table, not a `metric_value` series), so its
+    # staleness badge(s) are computed straight from `LEADERBOARD_SOURCES`
+    # rather than a `MetricMeta.sources` lookup.
+    staleness_badges: list[dict[str, Any]]
 
 
 def _rows_for(table_rows: list[dict[str, Any]], activity_type: str) -> list[dict[str, Any]]:
@@ -157,6 +165,7 @@ def build_leaderboard_page_context(
     out_dir: Path,
     *,
     base_prefix: str,
+    manifest: RunManifest,
 ) -> LeaderboardPageContext:
     """Build the Community page's leaderboard section context, and write its
     downloadable `data/leaderboard.json` / `.csv` files into `out_dir`."""
@@ -198,4 +207,5 @@ def build_leaderboard_page_context(
         json_href=json_href,
         csv_href=csv_href,
         window_label=window_label,
+        staleness_badges=source_staleness_badges(LEADERBOARD_SOURCES, manifest),
     )

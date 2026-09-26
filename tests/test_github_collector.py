@@ -448,6 +448,38 @@ class TestRetry:
 
         assert 2.0 in sleeps
 
+    def test_truncated_json_body_retries_like_a_5xx_then_succeeds(self, single_repo_config):
+        """issue #86: a truncated/undecodable GraphQL body (a real example
+        seen live: 'Unterminated string ... char 219262') is retried
+        exactly like a 5xx, not raised straight through with no retry."""
+        call_count = {"n": 0}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                return httpx.Response(200, content=b'{"data": {"repository": {"pull')
+            return httpx.Response(200, json=EMPTY_PAGE)
+
+        transport = httpx.MockTransport(handler)
+        collector = _offline_collector(single_repo_config, transport, max_retries=5)
+
+        result = collector.collect()
+
+        assert call_count["n"] == 2
+        assert result.repos["synthtest/repo-a"].status == "ok"
+
+    def test_truncated_json_body_exhausted_marks_repo_failed(self, single_repo_config):
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, content=b'{"data": {"repository": {"pull')
+
+        transport = httpx.MockTransport(handler)
+        collector = _offline_collector(single_repo_config, transport, max_retries=3)
+
+        result = collector.collect()  # must not raise
+
+        assert result.repos["synthtest/repo-a"].status == "failed"
+        assert result.status == "failed"
+
 
 class TestTokenResolution:
     def test_gh_pat_takes_priority(self):

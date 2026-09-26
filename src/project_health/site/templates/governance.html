@@ -186,6 +186,13 @@
         <h3>{{ chart.name }}</h3>
         {% if chart.tier %}<span class="badge badge--tier badge--tier-{{ chart.tier }}">{{ chart.tier }}</span>{% endif %}
       </header>
+      {% if chart.staleness_badges %}
+      <p class="card-staleness">
+        {% for b in chart.staleness_badges %}
+        <span class="badge badge--{{ b.status }}" role="status">{{ b.text }}</span>
+        {% endfor %}
+      </p>
+      {% endif %}
       <p class="card-value">
         {% if chart.latest_value_display is not none %}
           <span class="value gov-headline">

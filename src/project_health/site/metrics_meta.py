@@ -89,6 +89,34 @@ def format_days(value: float) -> str:
     return f"{value:.1f} days"
 
 
+# Human-readable labels for a manifest `sources.<key>` entry (issue #86's
+# per-card staleness badge, ARCHITECTURE.md §7.3: "JIRA data last refreshed
+# ..."), keyed by the exact source key `pipeline.py` writes into the run
+# manifest (`pipeline.py`'s `active_sources` handling) -- never a metric_id
+# or a collector's own `source_id` attribute, which don't always match (e.g.
+# `collectors/github.py`'s `source_id` is `"github_pr"`, but the manifest
+# key it's written under is `"github"`).
+SOURCE_LABELS: dict[str, str] = {
+    "git": "Git",
+    "jira": "JIRA",
+    "github": "GitHub",
+    "github_commit_authors": "GitHub commit authors",
+    "github_profile": "GitHub profiles",
+    "ponymail": "Pony Mail",
+    "asf_roster": "ASF roster",
+    "security": "Security",
+}
+
+# The contributor leaderboard section (D19, issue #56) has no `metric_id` of
+# its own -- it's a ranked-table section, not a `metric_value` series -- so
+# its source dependency is declared here rather than as a `MetricMeta.sources`
+# entry. Mirrors `leaderboard.ACTIVITY_TYPES`'s three activity types
+# (commits -> git, jira_issues_resolved -> jira, reviews -> git commit
+# trailers + JIRA reviewer fields + GitHub PR reviews, METRICS.md
+# `unique_reviewers_monthly`'s "Required data / source").
+LEADERBOARD_SOURCES: tuple[str, ...] = ("git", "jira", "github")
+
+
 @dataclass(frozen=True)
 class MetricMeta:
     metric_id: str
@@ -107,6 +135,16 @@ class MetricMeta:
     # page: which site page (D13) renders this metric's card —
     # 'community' | 'conversations' | 'governance'.
     page: str
+    # sources: which manifest `sources.<key>` entries this metric's value is
+    # computed from (METRICS.md's own "Required data / source" prose per
+    # metric, translated into the same keys `SOURCE_LABELS` above and the run
+    # manifest use) -- issue #86's per-card staleness badge (ARCHITECTURE.md
+    # §7.3) looks a metric's card up by this tuple to decide whether to show
+    # "<source> data last refreshed <date>; collection failed on <date>".
+    # `affiliations.yaml` (elephant_factor/organizational_hhi/single_org_share/
+    # unknown_affiliation_rate) is a curated, PR-reviewed static file, not a
+    # collected source with its own manifest status, so it's never listed here.
+    sources: tuple[str, ...] = ()
 
     def format_value(self, value: float) -> str:
         """Format `value` for display (the card's big number)."""
@@ -173,6 +211,7 @@ M0_METRICS: dict[str, MetricMeta] = {
         direction_of_good="higher",
         value_kind="count",
         page="community",
+        sources=("git",),
     ),
     "new_contributors_monthly": MetricMeta(
         metric_id="new_contributors_monthly",
@@ -182,6 +221,7 @@ M0_METRICS: dict[str, MetricMeta] = {
         direction_of_good="higher",
         value_kind="count",
         page="community",
+        sources=("git",),
     ),
     "unique_reviewers_monthly": MetricMeta(
         metric_id="unique_reviewers_monthly",
@@ -191,6 +231,7 @@ M0_METRICS: dict[str, MetricMeta] = {
         direction_of_good="higher",
         value_kind="count",
         page="community",
+        sources=("git", "jira", "github"),
     ),
     "reviewer_hhi": MetricMeta(
         metric_id="reviewer_hhi",
@@ -200,6 +241,7 @@ M0_METRICS: dict[str, MetricMeta] = {
         direction_of_good="lower",
         value_kind="ratio",
         page="community",
+        sources=("git", "jira", "github"),
     ),
     "median_resolution_latency_jira": MetricMeta(
         metric_id="median_resolution_latency_jira",
@@ -209,6 +251,7 @@ M0_METRICS: dict[str, MetricMeta] = {
         direction_of_good="lower",
         value_kind="days",
         page="community",
+        sources=("jira",),
     ),
     "stale_jira_rate": MetricMeta(
         metric_id="stale_jira_rate",
@@ -218,6 +261,7 @@ M0_METRICS: dict[str, MetricMeta] = {
         direction_of_good="lower",
         value_kind="percent",
         page="community",
+        sources=("jira",),
     ),
     # issue #53
     "truck_factor": MetricMeta(
@@ -228,6 +272,7 @@ M0_METRICS: dict[str, MetricMeta] = {
         direction_of_good="higher",
         value_kind="count",
         page="community",
+        sources=("git",),
     ),
     "contributor_absence_factor": MetricMeta(
         metric_id="contributor_absence_factor",
@@ -237,6 +282,7 @@ M0_METRICS: dict[str, MetricMeta] = {
         direction_of_good="higher",
         value_kind="count",
         page="community",
+        sources=("git",),
     ),
     "contributor_hhi": MetricMeta(
         metric_id="contributor_hhi",
@@ -246,6 +292,7 @@ M0_METRICS: dict[str, MetricMeta] = {
         direction_of_good="lower",
         value_kind="ratio",
         page="community",
+        sources=("git",),
     ),
     # issue #52 (D6 organizational-diversity metrics, METRICS.md §5)
     "elephant_factor": MetricMeta(
@@ -256,6 +303,7 @@ M0_METRICS: dict[str, MetricMeta] = {
         direction_of_good="higher",
         value_kind="count",
         page="community",
+        sources=("git",),
     ),
     "organizational_hhi": MetricMeta(
         metric_id="organizational_hhi",
@@ -265,6 +313,7 @@ M0_METRICS: dict[str, MetricMeta] = {
         direction_of_good="lower",
         value_kind="ratio",
         page="community",
+        sources=("git",),
     ),
     "single_org_share": MetricMeta(
         metric_id="single_org_share",
@@ -274,6 +323,7 @@ M0_METRICS: dict[str, MetricMeta] = {
         direction_of_good="lower",
         value_kind="percent",
         page="community",
+        sources=("git",),
     ),
     "unknown_affiliation_rate": MetricMeta(
         metric_id="unknown_affiliation_rate",
@@ -283,6 +333,7 @@ M0_METRICS: dict[str, MetricMeta] = {
         direction_of_good="none",
         value_kind="percent",
         page="community",
+        sources=("git",),
     ),
     # issue #35: dev@ mailing-list responsiveness (D16), metadata only.
     "time_to_first_reply_devlist": MetricMeta(
@@ -293,6 +344,7 @@ M0_METRICS: dict[str, MetricMeta] = {
         direction_of_good="lower",
         value_kind="days",
         page="conversations",
+        sources=("ponymail",),
     ),
     "unanswered_thread_rate_devlist": MetricMeta(
         metric_id="unanswered_thread_rate_devlist",
@@ -302,6 +354,7 @@ M0_METRICS: dict[str, MetricMeta] = {
         direction_of_good="lower",
         value_kind="percent",
         page="conversations",
+        sources=("ponymail",),
     ),
     # issue #54: GitHub-PR development metrics + JIRA responsiveness
     "pr_merge_lead_time": MetricMeta(
@@ -312,6 +365,7 @@ M0_METRICS: dict[str, MetricMeta] = {
         direction_of_good="lower",
         value_kind="days",
         page="community",
+        sources=("github",),
     ),
     "pr_time_to_first_review": MetricMeta(
         metric_id="pr_time_to_first_review",
@@ -321,6 +375,7 @@ M0_METRICS: dict[str, MetricMeta] = {
         direction_of_good="lower",
         value_kind="days",
         page="community",
+        sources=("github",),
     ),
     "pr_time_to_close": MetricMeta(
         metric_id="pr_time_to_close",
@@ -330,6 +385,7 @@ M0_METRICS: dict[str, MetricMeta] = {
         direction_of_good="lower",
         value_kind="days",
         page="community",
+        sources=("github",),
     ),
     "pr_review_engagement": MetricMeta(
         metric_id="pr_review_engagement",
@@ -339,6 +395,7 @@ M0_METRICS: dict[str, MetricMeta] = {
         direction_of_good="none",
         value_kind="avg",
         page="community",
+        sources=("github",),
     ),
     "time_to_first_response_jira": MetricMeta(
         metric_id="time_to_first_response_jira",
@@ -348,6 +405,7 @@ M0_METRICS: dict[str, MetricMeta] = {
         direction_of_good="lower",
         value_kind="days",
         page="community",
+        sources=("jira",),
     ),
     "stale_pr_rate": MetricMeta(
         metric_id="stale_pr_rate",
@@ -357,6 +415,7 @@ M0_METRICS: dict[str, MetricMeta] = {
         direction_of_good="lower",
         value_kind="percent",
         page="community",
+        sources=("github",),
     ),
 }
 
@@ -378,6 +437,7 @@ GOVERNANCE_METRICS: dict[str, MetricMeta] = {
         direction_of_good="higher",
         value_kind="percent",
         page="governance",
+        sources=("git", "jira"),
     ),
     "governance_jira_ticket_referenced_pass_rate": MetricMeta(
         metric_id="governance_jira_ticket_referenced_pass_rate",
@@ -387,6 +447,7 @@ GOVERNANCE_METRICS: dict[str, MetricMeta] = {
         direction_of_good="higher",
         value_kind="percent",
         page="governance",
+        sources=("git", "jira"),
     ),
     "governance_pre_commit_ci_evidence_pass_rate": MetricMeta(
         metric_id="governance_pre_commit_ci_evidence_pass_rate",
@@ -396,6 +457,7 @@ GOVERNANCE_METRICS: dict[str, MetricMeta] = {
         direction_of_good="higher",
         value_kind="percent",
         page="governance",
+        sources=("jira",),
     ),
     "governance_code_style_checkstyle_pass_rate": MetricMeta(
         metric_id="governance_code_style_checkstyle_pass_rate",
@@ -405,6 +467,7 @@ GOVERNANCE_METRICS: dict[str, MetricMeta] = {
         direction_of_good="higher",
         value_kind="percent",
         page="governance",
+        sources=("github",),
     ),
 }
 

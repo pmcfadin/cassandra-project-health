@@ -27,7 +27,6 @@ other GitHub-facing collection (the nightly run) already assumes.
 
 from __future__ import annotations
 
-import random
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -36,6 +35,7 @@ from datetime import datetime, timezone
 import httpx
 import pyarrow as pa
 
+from project_health.collectors.retry import exponential_backoff, is_transient_body_error
 from project_health.schema import get_schema, validate
 
 DEFAULT_MAX_RETRIES = 5
@@ -43,8 +43,6 @@ DEFAULT_MAX_RETRIES = 5
 # requests a bit more conservatively than jira.py's collector by default.
 DEFAULT_MIN_REQUEST_INTERVAL = 0.25
 DEFAULT_TIMEOUT = 15.0
-_BACKOFF_BASE = 0.5
-_BACKOFF_CAP = 20.0
 
 
 class CollectionError(Exception):
@@ -61,11 +59,6 @@ class GitHubProfileCollectionResult:
     # fetched -- the run should stop cleanly, not raise (this project's
     # "API use must ... stop cleanly with a partial state" rule).
     rate_limited: bool
-
-
-def _exponential_backoff(attempt: int) -> float:
-    exp = min(_BACKOFF_CAP, _BACKOFF_BASE * (2 ** (attempt - 1)))
-    return exp + random.uniform(0, exp * 0.25)
 
 
 class GitHubProfileCollector:
@@ -125,7 +118,7 @@ class GitHubProfileCollector:
             except ValueError:
                 delay = None
         if delay is None:
-            delay = _exponential_backoff(attempt)
+            delay = exponential_backoff(attempt)
         self._sleep_fn(delay)
 
     @staticmethod
@@ -197,7 +190,20 @@ class GitHubProfileCollector:
                     continue
 
                 response.raise_for_status()
-                payload = response.json()
+                try:
+                    payload = response.json()
+                except Exception as exc:
+                    if not is_transient_body_error(exc):
+                        raise
+                    # issue #86: a truncated/undecodable profile body is
+                    # retried exactly like a 5xx.
+                    if attempt >= self._max_retries:
+                        raise CollectionError(
+                            f"GitHub profile request for {login!r} returned an "
+                            f"undecodable response body after {attempt} attempt(s): {exc}"
+                        ) from exc
+                    self._backoff(attempt, retry_after=None)
+                    continue
                 rows.append(
                     {
                         "login": login,

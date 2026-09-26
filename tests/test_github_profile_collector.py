@@ -138,3 +138,30 @@ def test_collect_raises_collection_error_after_exhausting_retries_on_server_erro
     with _collector(_transport(handler)) as collector:
         with pytest.raises(CollectionError):
             collector.collect(["flaky-login"], snapshot_id="snap-1", now_fn=lambda: NOW)
+
+
+def test_truncated_json_body_retries_like_a_5xx_then_succeeds():
+    """issue #86: a truncated/undecodable profile body is retried exactly
+    like a 5xx, not raised straight through."""
+    attempts = {"count": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        attempts["count"] += 1
+        if attempts["count"] == 1:
+            return httpx.Response(200, content=b'{"company": "Ac')
+        return httpx.Response(200, json=_load("user_with_company.json"))
+
+    with _collector(_transport(handler)) as collector:
+        result = collector.collect(["a"], snapshot_id="snap-1", now_fn=lambda: NOW)
+
+    assert attempts["count"] == 2
+    assert result.profiles_collected == 1
+
+
+def test_truncated_json_body_exhausted_raises_collection_error():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b'{"company": "Ac')
+
+    with _collector(_transport(handler)) as collector:
+        with pytest.raises(CollectionError):
+            collector.collect(["flaky-login"], snapshot_id="snap-1", now_fn=lambda: NOW)

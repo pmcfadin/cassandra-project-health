@@ -14,10 +14,18 @@ from project_health.site.leaderboard_page import (
     build_leaderboard_page_context,
     identity_correction_url,
 )
+from project_health.site.manifest import RunManifest
 
 RUN_ID = "2026-09-25-abc123"
 WINDOW_START = date(2025, 9, 1)
 WINDOW_END = date(2026, 8, 31)
+
+# A minimal, all-'ok' manifest -- these tests aren't about staleness badges
+# (see test_site.py / TestLeaderboardStalenessBadge for those), so no
+# source here should ever produce one (issue #86).
+MANIFEST = RunManifest.model_validate(
+    {"run_id": RUN_ID, "pipeline_code_sha": "abc1234", "sources": {}}
+)
 
 
 def _leaderboard_row(**overrides) -> dict:
@@ -54,7 +62,9 @@ def test_no_snapshot_yields_honest_empty_context(tmp_path):
     data_dir.mkdir()
     out_dir.mkdir()
 
-    ctx = build_leaderboard_page_context(data_dir, RUN_ID, out_dir, base_prefix="../")
+    ctx = build_leaderboard_page_context(
+        data_dir, RUN_ID, out_dir, base_prefix="../", manifest=MANIFEST
+    )
 
     assert ctx.has_data is False
     assert ctx.window_label is None
@@ -80,7 +90,9 @@ def test_snapshot_rows_group_by_activity_type_and_rank_ascending(tmp_path):
         ],
     )
 
-    ctx = build_leaderboard_page_context(data_dir, RUN_ID, out_dir, base_prefix="../")
+    ctx = build_leaderboard_page_context(
+        data_dir, RUN_ID, out_dir, base_prefix="../", manifest=MANIFEST
+    )
 
     assert ctx.has_data is True
     assert ctx.window_label == "2025-09-01 to 2026-08-31"
@@ -99,7 +111,9 @@ def test_falls_back_to_identity_id_when_display_name_missing(tmp_path):
         data_dir, RUN_ID, [_leaderboard_row(display_name=None, identity_id="abcdef0123456789")]
     )
 
-    ctx = build_leaderboard_page_context(data_dir, RUN_ID, out_dir, base_prefix="../")
+    ctx = build_leaderboard_page_context(
+        data_dir, RUN_ID, out_dir, base_prefix="../", manifest=MANIFEST
+    )
 
     commits_list = next(lst for lst in ctx.lists if lst.activity_type == "commits")
     assert commits_list.rows[0]["display_name"] == "abcdef0123456789"[:12]
@@ -110,7 +124,9 @@ def test_every_row_carries_a_correction_link(tmp_path):
     out_dir = tmp_path / "out"
     _write_leaderboard_snapshot(data_dir, RUN_ID, [_leaderboard_row()])
 
-    ctx = build_leaderboard_page_context(data_dir, RUN_ID, out_dir, base_prefix="../")
+    ctx = build_leaderboard_page_context(
+        data_dir, RUN_ID, out_dir, base_prefix="../", manifest=MANIFEST
+    )
 
     commits_list = next(lst for lst in ctx.lists if lst.activity_type == "commits")
     correction_url = commits_list.rows[0]["correction_url"]
@@ -125,7 +141,9 @@ def test_page_level_corrections_url_and_note_present(tmp_path):
     out_dir = tmp_path / "out"
     _write_leaderboard_snapshot(data_dir, RUN_ID, [_leaderboard_row()])
 
-    ctx = build_leaderboard_page_context(data_dir, RUN_ID, out_dir, base_prefix="../")
+    ctx = build_leaderboard_page_context(
+        data_dir, RUN_ID, out_dir, base_prefix="../", manifest=MANIFEST
+    )
 
     assert ctx.corrections_url.startswith(
         "https://github.com/pmcfadin/cassandra-project-health/issues/new?"
@@ -142,7 +160,7 @@ def test_json_and_csv_downloads_contain_all_rows(tmp_path):
     ]
     _write_leaderboard_snapshot(data_dir, RUN_ID, rows)
 
-    build_leaderboard_page_context(data_dir, RUN_ID, out_dir, base_prefix="../")
+    build_leaderboard_page_context(data_dir, RUN_ID, out_dir, base_prefix="../", manifest=MANIFEST)
 
     payload = json.loads((out_dir / "data" / "leaderboard.json").read_text())
     assert payload["row_count"] == 2

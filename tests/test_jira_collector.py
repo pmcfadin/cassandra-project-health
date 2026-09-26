@@ -278,6 +278,49 @@ class TestRetry:
 
         assert 3.0 in sleeps
 
+    def test_truncated_json_body_retries_like_a_5xx_then_succeeds(self, config):
+        """issue #86: a truncated/undecodable `/search` JSON body is
+        retried exactly like a 5xx, not raised straight through."""
+        call_count = {"n": 0}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                return httpx.Response(200, content=b'{"issues": [')
+            return httpx.Response(200, json=EMPTY_PAGE)
+
+        transport = httpx.MockTransport(handler)
+        collector = JiraCollector(
+            config,
+            transport=transport,
+            page_size=5,
+            max_retries=5,
+            min_request_interval=0,
+            sleep_fn=lambda s: None,
+        )
+
+        result = collector.collect()
+
+        assert call_count["n"] == 2
+        assert result.issue_count == 0
+
+    def test_truncated_json_body_exhausted_raises_collection_error(self, config):
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, content=b'{"issues": [')
+
+        transport = httpx.MockTransport(handler)
+        collector = JiraCollector(
+            config,
+            transport=transport,
+            page_size=5,
+            max_retries=3,
+            min_request_interval=0,
+            sleep_fn=lambda s: None,
+        )
+
+        with pytest.raises(CollectionError):
+            collector.collect()
+
 
 class TestWatermark:
     def test_first_run_omits_updated_clause(self):

@@ -18,6 +18,14 @@
           <span class="badge badge--tier badge--tier-{{ m.tier }}">{{ m.tier }}</span>
         </header>
 
+        {% if m.staleness_badges %}
+        <p class="card-staleness">
+          {% for b in m.staleness_badges %}
+          <span class="badge badge--{{ b.status }}" role="status">{{ b.text }}</span>
+          {% endfor %}
+        </p>
+        {% endif %}
+
         <p class="card-value">
           {% if m.latest_value_display is not none %}
             <span class="value">{{ m.latest_value_display }}</span>

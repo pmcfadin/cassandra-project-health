@@ -132,6 +132,38 @@ def test_collect_marks_failed_after_exhausting_retries_on_server_error():
     assert result.associations.num_rows == 0
 
 
+def test_truncated_graphql_body_retries_like_a_5xx_then_succeeds():
+    """issue #86: a truncated/undecodable GraphQL body (a real example seen
+    live: 'Unterminated string ... char 219262') is retried exactly like a
+    5xx, not raised straight through with no retry."""
+    attempts = {"count": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        attempts["count"] += 1
+        if attempts["count"] == 1:
+            return httpx.Response(200, content=b'{"data": {"repository": {"ref": ')
+        # A terminal page (`hasNextPage: false`) so a fixed, single retry
+        # ends the test's pagination instead of looping forever.
+        return httpx.Response(200, json=_load("history_page2.json"))
+
+    with _collector(httpx.MockTransport(handler)) as collector:
+        result = collector.collect(watermark=None, snapshot_id="snap-1")
+
+    assert attempts["count"] == 2
+    assert result.outcome.status == "ok"
+
+
+def test_truncated_graphql_body_exhausted_marks_failed():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b'{"data": {"repository": {"ref": ')
+
+    with _collector(httpx.MockTransport(handler)) as collector:
+        result = collector.collect(watermark=None, snapshot_id="snap-1")
+
+    assert result.outcome.status == "failed"
+    assert result.outcome.error is not None
+
+
 def test_collector_requires_a_configured_repo():
     config = CONFIG.model_copy(update={"repos": []})
     with pytest.raises(ValueError, match="config.repos"):

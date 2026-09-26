@@ -1216,6 +1216,116 @@ def test_per_source_staleness_badge_from_manifest(tmp_path):
     assert "git: ok" in html_text
 
 
+# --- Per-card staleness badge (issue #86, ARCHITECTURE.md §7.3) ------------
+#
+# Distinct from the header pill above: every card/metric that *depends* on
+# a failed/stale source shows its own badge naming that source, its last
+# good refresh date, and when collection failed -- not just a once-per-page
+# header pill a reader has to cross-reference against `MetricMeta.sources`
+# themselves.
+
+
+def _failed_jira_sources() -> dict:
+    return {
+        "git": {"status": "ok", "watermark": "sha:aaa", "records_collected": 10},
+        "jira": {
+            "status": "failed",
+            "reason": "Unterminated string starting at: line 1 column 219263",
+            "last_good_snapshot": "2026-09-24T074929Z-371daf4",
+        },
+    }
+
+
+def test_community_card_for_a_jira_sourced_metric_shows_staleness_badge(tmp_path):
+    out_dir = _build_site(
+        tmp_path, completed_at=BUILD_TIME - timedelta(hours=1), sources=_failed_jira_sources()
+    )
+    html_text = _page_html(out_dir, "community/")
+    # median_resolution_latency_jira declares sources=("jira",) in metrics_meta.py.
+    assert "JIRA data last refreshed 2026-09-24" in html_text
+    assert "collection failed on" in html_text
+
+
+def test_community_card_for_a_git_only_metric_omits_jira_staleness_badge(tmp_path):
+    out_dir = _build_site(
+        tmp_path, completed_at=BUILD_TIME - timedelta(hours=1), sources=_failed_jira_sources()
+    )
+    html_text = _page_html(out_dir, "community/")
+    # active_contributors_monthly declares sources=("git",) only -- git is
+    # 'ok' in this manifest, so this metric's own card must not show a
+    # staleness badge even though the page as a whole has one failed source.
+    dom = html_text
+    card_start = dom.index("Active Contributors")
+    card_html = dom[card_start : card_start + 800]
+    assert "JIRA data last refreshed" not in card_html
+
+
+def test_home_summary_card_shows_staleness_badge_when_a_page_source_failed(tmp_path):
+    out_dir = _build_site(
+        tmp_path, completed_at=BUILD_TIME - timedelta(hours=1), sources=_failed_jira_sources()
+    )
+    html_text = (out_dir / "index.html").read_text()
+    assert "JIRA data last refreshed 2026-09-24" in html_text
+
+
+def test_staleness_badge_not_shown_for_partial_status(tmp_path):
+    """'partial' is budgeted backfill-in-progress, which already has its own
+    'backfill pending' badge -- issue #86 acceptance criterion: never a
+    staleness badge for it."""
+    out_dir = _build_site(
+        tmp_path,
+        completed_at=BUILD_TIME - timedelta(hours=1),
+        sources={
+            "git": {"status": "ok", "watermark": "sha:aaa", "records_collected": 10},
+            "jira": {
+                "status": "partial",
+                "watermark": "2026-09-25T00:00:00Z",
+                "records_collected": 3,
+            },
+        },
+    )
+    html_text = _page_html(out_dir, "community/")
+    assert "JIRA data last refreshed" not in html_text
+    assert "collection failed on" not in html_text
+
+
+def test_governance_card_for_a_github_sourced_check_shows_staleness_badge(tmp_path):
+    out_dir, _ = _build_site_with_governance(
+        tmp_path,
+        sources={
+            "git": {"status": "ok", "watermark": "sha:aaa", "records_collected": 10},
+            "jira": {"status": "ok", "watermark": "2026-09-25T00:00:00Z", "records_collected": 3},
+            "github": {
+                "status": "failed",
+                "reason": "Unterminated string starting at: line 1 column 219263",
+                "last_good_snapshot": "2026-09-24T074929Z-371daf4",
+            },
+        },
+    )
+    html_text = _page_html(out_dir, "governance/")
+    # code-style-checkstyle declares sources=("github",) in metrics_meta.py.
+    assert "GitHub data last refreshed 2026-09-24" in html_text
+
+
+def test_leaderboard_section_shows_staleness_badge_when_git_failed(tmp_path):
+    out_dir = _build_site(
+        tmp_path,
+        completed_at=BUILD_TIME - timedelta(hours=1),
+        sources={
+            "git": {
+                "status": "failed",
+                "reason": "git fetch failed",
+                "last_good_snapshot": "2026-09-24T074929Z-371daf4",
+            },
+            "jira": {"status": "ok", "watermark": "2026-09-25T00:00:00Z", "records_collected": 3},
+        },
+    )
+    html_text = _page_html(out_dir, "community/")
+    leaderboard_start = html_text.index('id="leaderboard-heading"')
+    leaderboard_html = html_text[leaderboard_start:]
+    assert "Git data last refreshed 2026-09-24" in leaderboard_html
+
+
 # --- No absolute root URLs (site must work under /cassandra-project-health/) -
 
 

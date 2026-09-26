@@ -6,14 +6,24 @@ Registered as a `console_scripts`-style entry point in `pyproject.toml`
     project-health run --project projects/cassandra.yaml \\
         --data-dir <path> --workdir <path> \\
         [--sources git,jira,ponymail] [--site-out <dir>]
+
+    project-health label --corpus <benchmark-checkout>/corpus/v0.jsonl \\
+        --labels <benchmark-checkout>/labels/<rater>.jsonl \\
+        --rater <name> [--port 8765] [--no-browser]
 """
 
 from __future__ import annotations
 
 import argparse
 import sys
+import webbrowser
 
 from project_health.config import load_project
+from project_health.label.label_set import LabelSetError
+from project_health.label.question_set import QuestionSetReadError
+from project_health.label.safety import UnsafePathError, assert_outside_repo, find_public_repo_root
+from project_health.label.server import LabelQuestionMismatchError, make_server
+from project_health.label.store import CorpusError
 from project_health.pipeline import ALL_SOURCES, run_pipeline
 
 
@@ -90,7 +100,74 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    label_parser = subparsers.add_parser(
+        "label",
+        help="Serve the local, 127.0.0.1-only labeling page for the Phase 2a Jev pilot "
+        "(DECISIONS.md D18, D22)",
+    )
+    label_parser.add_argument(
+        "--corpus",
+        required=True,
+        help="Path to the pilot corpus JSONL (private benchmark checkout)",
+    )
+    label_parser.add_argument(
+        "--labels",
+        required=True,
+        help="Path to this rater's append-only label JSONL (created if it doesn't exist)",
+    )
+    label_parser.add_argument("--rater", required=True, help="Rater name recorded on every label")
+    label_parser.add_argument(
+        "--port", type=int, default=8765, help="Port to bind on 127.0.0.1 (default: 8765)"
+    )
+    label_parser.add_argument(
+        "--no-browser", action="store_true", help="Don't open a browser tab automatically"
+    )
+
     return parser
+
+
+def _cmd_label(args: argparse.Namespace) -> int:
+    rater = args.rater.strip()
+    if not rater:
+        print("error: --rater must not be empty", file=sys.stderr)
+        return 2
+
+    repo_root = find_public_repo_root()
+    try:
+        corpus_path = assert_outside_repo(args.corpus, repo_root, label="corpus")
+        labels_path = assert_outside_repo(args.labels, repo_root, label="labels")
+    except UnsafePathError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+
+    try:
+        httpd = make_server(
+            corpus_path=corpus_path, labels_path=labels_path, rater=rater, port=args.port
+        )
+    except (
+        CorpusError,
+        LabelSetError,
+        QuestionSetReadError,
+        LabelQuestionMismatchError,
+        OSError,
+    ) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+
+    host, bound_port = httpd.server_address[0], httpd.server_address[1]
+    url = f"http://{host}:{bound_port}/"
+    app = httpd.RequestHandlerClass.app  # type: ignore[attr-defined]
+    print(f"Serving the labeling page at {url}")
+    print(f"Rater: {rater}  Items: {len(app.items)}  Labeled so far: {len(app.records)}")
+    if not args.no_browser:
+        webbrowser.open(url)
+    try:
+        httpd.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        httpd.server_close()
+    return 0
 
 
 def _cmd_run(args: argparse.Namespace) -> int:
@@ -118,6 +195,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.command == "run":
         return _cmd_run(args)
+    if args.command == "label":
+        return _cmd_label(args)
     parser.error(f"unknown command {args.command!r}")
     return 2
 

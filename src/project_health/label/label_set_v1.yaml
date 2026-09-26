@@ -1,0 +1,96 @@
+# GENERATED from docs/spec/COMMUNITY-HEALTH.md §1.2 by
+# label_set.parse_label_table -- do not hand-edit; regenerate if the spec
+# table changes (and bump `version` + create label_set_v2.yaml if the change
+# is not purely textual, per DECISIONS.md D18/D22).
+version: 1
+labels:
+- number: 1
+  id: technical_disagreement
+  unit: message
+  origin: LLM-classified
+  definition: The message disputes a technical claim, approach, or decision on its merits — a competing design, a correctness concern, a performance claim, a different reading of a spec. Presence of disagreement alone says nothing about health; see §3.
+- number: 2
+  id: constructive_counterargument
+  unit: message
+  origin: LLM-classified
+  definition: 'The message disagrees (co-occurs with #1 in most but not all cases) while directly engaging the prior argument''s substance: it responds to the specific claim, offers a reason, or proposes an alternative, rather than dismissing the person or the topic wholesale.'
+- number: 3
+  id: evidence_based_argument
+  unit: message
+  origin: LLM-classified
+  definition: 'The message grounds its claim in something checkable: a benchmark number, a reproduction case, a spec citation, a code reference, a linked prior discussion, test results. Distinguished from #2 by the presence of a citable/checkable artifact, not just engagement.'
+- number: 4
+  id: compromise_offer
+  unit: message
+  origin: LLM-classified
+  definition: The message proposes a middle position, a scoped-down version of a prior proposal, a conditional acceptance ("I'll agree to X if we also do Y"), or explicitly cedes a point while holding another.
+- number: 5
+  id: acknowledgment
+  unit: message
+  origin: LLM-classified
+  definition: The message recognizes another participant's point, correction, effort, or contribution without necessarily agreeing with the underlying position ("Good catch, I hadn't considered that" / "Thanks for digging into this").
+- number: 6
+  id: personal_attack
+  unit: message
+  origin: LLM-classified
+  definition: The message targets a participant's competence, character, intelligence, or worth as a person rather than their argument or code ("you clearly don't understand how this works", name-calling, insults). This is the most reputationally loaded label; see the precision floor in §6.4.
+- number: 7
+  id: hostility
+  unit: message
+  origin: LLM-classified
+  definition: 'The message expresses anger, contempt, or aggression toward a participant or the discussion itself, without necessarily naming a personal deficiency (shouting via caps/punctuation, "this is absurd, stop wasting everyone''s time," threats to escalate socially rather than technically). Distinguished from #6: hostility can be directed at an idea or situation; a personal attack is specifically about the person.'
+- number: 8
+  id: dismissiveness
+  unit: message
+  origin: LLM-classified
+  definition: 'The message declines to engage with a point''s substance while signaling it isn''t worth engaging with — "no," "not going to happen," "this has been discussed, move on" with no reasoning given, ignoring a direct question repeatedly. Distinguished from disagreement: dismissiveness is disagreement *without* argument.'
+- number: 9
+  id: sarcasm
+  unit: message
+  origin: LLM-classified
+  definition: The message uses irony or a mocking tone where literal and intended meaning diverge, typically to belittle a point or person ("Oh sure, because that's worked so well every other time").
+- number: 10
+  id: gatekeeping
+  unit: message
+  origin: LLM-classified
+  definition: The message asserts that a participant lacks standing to contribute, comment, or be taken seriously — based on tenure, role, prior contributions, or "who they are" rather than the content of what they said ("this isn't a decision for people who haven't touched the storage engine," "you need to have committed here before you get an opinion on this").
+- number: 11
+  id: status_authority_invocation
+  unit: message
+  origin: LLM-classified
+  definition: 'The message settles or attempts to settle a point by reference to the speaker''s own role, seniority, or position ("as the person who wrote this originally, I''m saying no") rather than by argument. Distinguished from gatekeeping: authority invocation is about the *speaker''s* standing; gatekeeping is about denying the *other party''s* standing. Both can be present in the same message.'
+- number: 12
+  id: resolution_marker
+  unit: message
+  origin: LLM-classified
+  definition: The message explicitly closes the disagreement — an agreement reached, a decision announced, a "LGTM"/"+1, committing this," a "let's go with your approach."
+- number: 13
+  id: escalation
+  unit: thread
+  origin: derived (§2.3)
+  definition: 'A trajectory pattern: message-level intensity (§2.2) increases over the course of the thread, reaching a high-intensity label.'
+- number: 14
+  id: de-escalation
+  unit: thread
+  origin: derived (§2.3)
+  definition: 'A trajectory pattern: after an escalation, intensity returns to low/neutral or a positive label appears, and does not re-escalate before the thread ends.'
+- number: 15
+  id: pile-on
+  unit: thread
+  origin: derived (§2.3)
+  definition: Three or more distinct participants each direct a high-intensity message at the same target participant within the same thread.
+- number: 16
+  id: resolution
+  unit: thread
+  origin: derived (§2.3)
+  definition: The thread's terminal state contains a resolution marker or a compromise-then-acknowledgment pair, with no high-intensity message afterward.
+- number: 17
+  id: thread_abandonment
+  unit: thread
+  origin: derived (§2.3)
+  definition: The thread ends without resolution, and the participant on the receiving end of the thread's last high-intensity message does not post again in the thread nor return to the project within a configured window.
+- number: 18
+  id: newcomer_treatment
+  unit: thread/rollup
+  origin: derived (§2.3, joined against Phase-1 identity data)
+  definition: 'Not a single label but a distribution: for messages directed at a participant classified as a newcomer at message time (Phase 1 role data), the rates of constructive vs. dismissive/hostile responses they receive.'

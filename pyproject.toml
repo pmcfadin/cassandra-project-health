@@ -37,6 +37,7 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 "project_health.site" = ["templates/*.html", "static/*"]
+"project_health.label" = ["static/*", "*.yaml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

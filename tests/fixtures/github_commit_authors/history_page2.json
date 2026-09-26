@@ -1,0 +1,30 @@
+{
+  "data": {
+    "rateLimit": {
+      "remaining": 4883,
+      "resetAt": "2026-09-26T03:38:07Z",
+      "cost": 1
+    },
+    "repository": {
+      "ref": {
+        "target": {
+          "history": {
+            "pageInfo": {
+              "hasNextPage": false,
+              "endCursor": "cccccccccccccccccccccccccccccccccccccccc 3"
+            },
+            "nodes": [
+              {
+                "oid": "cccccccccccccccccccccccccccccccccccccccc",
+                "author": {
+                  "email": "no-github-account@example.org",
+                  "user": null
+                }
+              }
+            ]
+          }
+        }
+      }
+    }
+  }
+}

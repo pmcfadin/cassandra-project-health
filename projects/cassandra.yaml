@@ -68,6 +68,13 @@ security:
   cpe_match_string: "cpe:2.3:a:apache:cassandra:*:*:*:*:*:*:*:*"
 
 affiliations_file: affiliations.yaml   # D6: curated, PR-reviewed, dated ranges
+org_domains_file: org_domains.yaml     # D6: reviewed email-domain -> organization map (issue #52)
+org_aliases_file: org_aliases.yaml     # D6: reviewed GitHub company-field alias map (issue #52 fixup 1)
+# D6, issue #52 fixup cycle 2: a GitHub profile's `company` field is a
+# current-employer signal, not a historical one -- bound each github_company
+# affiliation_period row to the trailing N months before that profile was
+# fetched (normalize/affiliation.py's DEFAULT_GITHUB_COMPANY_LOOKBACK_MONTHS).
+github_company_lookback_months: 24
 
 # Applied by identity resolution before any metric counts a contributor.
 # Placeholder set — data-probe.md found zero bot commits in git history for this repo,

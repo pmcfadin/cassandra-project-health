@@ -209,6 +209,56 @@ MESSAGE = pa.schema(
     ]
 )
 
+# --- Affiliation (D6, issue #52) ---------------------------------------
+
+AFFILIATION_PERIOD = pa.schema(
+    [
+        pa.field("entry_id", pa.string(), nullable=False),
+        pa.field("identity_id", pa.string(), nullable=False),
+        # organization: a curated/heuristic org name, or "unknown"
+        # (normalize.affiliation.UNKNOWN_ORG) when unresolved -- D6 never
+        # guesses, so "unknown" is an explicit, first-class value here, not
+        # the absence of a row.
+        pa.field("organization", pa.string(), nullable=False),
+        # dated range (D6: "like CNCF gitdm"); null effective_from/effective_to
+        # means "since always"/"still ongoing" -- only `source = 'curated'`
+        # rows (from affiliations.yaml) are expected to carry real dates in
+        # M0; the email_domain/github_company heuristics are undated (a
+        # domain or a GitHub profile's `company` field says nothing about
+        # *when* that affiliation started or ended), so they cover all time
+        # unless a curated row for the same identity/date wins first
+        # (normalize/affiliation.py's source-priority join).
+        pa.field("effective_from", pa.date32(), nullable=True),
+        pa.field("effective_to", pa.date32(), nullable=True),
+        # source: 'curated' (affiliations.yaml, PR-reviewed, wins over
+        # heuristics) | 'email_domain' (org_domains.yaml, a reviewed
+        # domain->org map) | 'github_company' (a GitHub profile's public
+        # `company` field, the least-reviewed of the three -- D6).
+        pa.field("source", pa.string(), nullable=False),
+        pa.field("evidence", pa.string(), nullable=True),
+    ]
+)
+
+# --- GitHub commit-author association cache (D6, issue #52 fixup cycle 1) --
+
+GITHUB_COMMIT_AUTHOR = pa.schema(
+    [
+        # git commit sha this association was observed on (evidence, D2.3).
+        pa.field("sha", pa.string(), nullable=False),
+        # commit author email exactly as GitHub's GraphQL API reports it
+        # (case as GitHub returns it; normalize/affiliation.py lowercases
+        # when joining against git_email identities).
+        pa.field("email", pa.string(), nullable=False),
+        # GitHub login GitHub itself asserts as this email's account owner
+        # (`author.user.login`) -- an EXACT, platform-asserted fact, not a
+        # guess. Only rows where GitHub found a linked account are written;
+        # a commit whose author has no linked GitHub account has nothing to
+        # cache.
+        pa.field("login", pa.string(), nullable=False),
+        pa.field("source_snapshot_id", pa.string(), nullable=False),
+    ]
+)
+
 MESSAGE_THREAD = pa.schema(
     [
         pa.field("thread_id", pa.string(), nullable=False),
@@ -278,6 +328,21 @@ SECURITY_ADVISORY = pa.schema(
         pa.field("source", pa.string(), nullable=False),
         pa.field("source_snapshot_id", pa.string(), nullable=False),
         pa.field("collected_at", TIMESTAMP_UTC, nullable=False),
+    ]
+)
+
+# --- GitHub profile cache (D6, issue #52) -------------------------------
+
+GITHUB_PROFILE = pa.schema(
+    [
+        # GitHub login (case-sensitive as GitHub returns it).
+        pa.field("login", pa.string(), nullable=False),
+        # The profile's public `company` field, verbatim, or null if unset --
+        # never inferred/guessed (D6). Free text, not itself a validated
+        # organization name.
+        pa.field("company", pa.string(), nullable=True),
+        pa.field("fetched_at", TIMESTAMP_UTC, nullable=False),
+        pa.field("source_snapshot_id", pa.string(), nullable=False),
     ]
 )
 
@@ -680,6 +745,9 @@ TABLE_SCHEMAS: dict[str, pa.Schema] = {
     "message_thread": MESSAGE_THREAD,
     "scorecard_check": SCORECARD_CHECK,
     "security_advisory": SECURITY_ADVISORY,
+    "affiliation_period": AFFILIATION_PERIOD,
+    "github_commit_author": GITHUB_COMMIT_AUTHOR,
+    "github_profile": GITHUB_PROFILE,
     "source_snapshot": SOURCE_SNAPSHOT,
     "run_manifest": RUN_MANIFEST,
     "metric_definition_version": METRIC_DEFINITION_VERSION,

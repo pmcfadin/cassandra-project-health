@@ -1,0 +1,96 @@
+# Reviewed email-domain -> organization map (D6).
+#
+# Seeds `affiliation_period` rows (normalize/affiliation.py) for the
+# organizational-diversity metrics (elephant_factor, organizational_hhi,
+# single_org_share, unknown_affiliation_rate -- METRICS.md §5). Only a
+# domain a human has reviewed and confirmed belongs to a real employer goes
+# here; anything not listed resolves to "unknown" (D6 -- never guessed).
+#
+# Freemail providers (gmail.com, yahoo.com, ...) and apache.org are
+# deliberately NOT organizations under D6 -- an ASF address says only "has
+# an ASF account," not who employs someone, and a freemail address says
+# nothing about employer at all. normalize/affiliation.py's loader raises
+# if either kind of domain is ever added here, so a future edit can't
+# silently reintroduce that shortcut.
+#
+# Format: `domain: OrgName` for a domain that has always belonged to the
+# same organization, or `domain: [{org: X, end: "YYYY-MM-DD"}, {org: Y,
+# start: "YYYY-MM-DD"}]` (a dated list, `start`/`end` optional -- omitted
+# means "since always"/"still ongoing") for a domain whose organization
+# changed, e.g. an acquisition.
+#
+# Method (issue #52 fixup cycle 1, 2026-09-26): domains below were selected
+# from the top commit-email domains over the last 3 years of
+# `apache/cassandra` trunk history (`git log --since=3.years --no-merges
+# --format='%ae' trunk`, counted by domain), keeping only domains that are
+# unambiguously a real corporation's own domain (matches the company's
+# published/trademarked name, not a personal or ambiguous domain).
+# Ambiguous candidates seen in that same list are deliberately left out --
+# see "Owner-to-review" at the bottom of this file.
+
+apple.com: Apple                    # 100 commits/3y -- also confirmed via LFX Insights' own top-org list
+datastax.com:                       # 57 commits/3y -- DataStax, acquired by IBM
+  - org: DataStax
+    end: "2025-04-22"                # approximate; IBM's own 8-K (filed 2025-07-24, "2Q25 Earnings
+                                      # Prepared Remarks", EX-99.1) confirms "We closed the acquisition
+                                      # of DataStax this quarter" (2Q25 = 2025-04-01..2025-06-30) but
+                                      # does not give the exact day in that filing -- 2025-04-22 is the
+                                      # widely reported close date; OWNER TO REVIEW the exact day
+                                      # against a primary source (e.g. an 8-K item 2.01) if one exists.
+  - org: IBM
+    start: "2025-04-22"
+ksolves.com: Ksolves                # 27 commits/3y -- Ksolves India Pvt. Ltd., an IT services company
+netcracker.com: NetCracker          # 10 commits/3y
+bloomberg.net: Bloomberg            # 10 commits/3y
+uber.com: Uber                      # 5 commits/3y
+netflix.com: Netflix                # 4 commits/3y
+amazon.com: Amazon                  # 4 commits/3y
+palantir.com: Palantir Technologies # 3 commits/3y
+instaclustr.com:                    # 3 commits/3y -- Instaclustr, acquired by NetApp
+  - org: Instaclustr
+    end: "2022-05-20"                # NetApp's own SEC 8-K (filed 2022-06-01, EX-99.1, Q4 FY22
+                                      # business highlights): "The Instaclustr acquisition closed on
+                                      # May 20, 2022." -- verified primary source.
+  - org: NetApp
+    start: "2022-05-20"
+jpmchase.com: JPMorgan Chase        # 3 commits/3y
+jpmorgan.com: JPMorgan Chase        # 1 commit/3y -- same organization as jpmchase.com, different domain
+aiven.io: Aiven                     # 2 commits/3y
+pega.com: Pegasystems               # 2 commits/3y
+intel.com: Intel                    # 2 commits/3y
+ibm.com: IBM                        # 2 commits/3y (plus datastax.com from 2025-04-22, above)
+ericsson.com: Ericsson              # 2 commits/3y
+netapp.com: NetApp                  # 1 commit/3y (plus instaclustr.com from 2022-05-20, above)
+amd.com: AMD                        # 1 commit/3y
+scylladb.com: ScyllaDB              # 1 commit/3y
+axonops.com: AxonOps                # 1 commit/3y
+wolt.com: Wolt                      # 1 commit/3y
+sandboxaq.com: SandboxAQ            # 1 commit/3y
+thelastpickle.com: The Last Pickle  # historical Cassandra consultancy; 0 commits/3y but kept from the
+                                     # original seed list
+pythian.com: Pythian                # historical Cassandra consultancy; 0 commits/3y but kept from the
+                                     # original seed list
+
+# --- Owner-to-review ---------------------------------------------------
+#
+# Seen in the same top-50-domain pull but NOT added above -- ambiguous
+# enough (personal-looking domain, unclear/uncertain current entity, or an
+# academic institution rather than a corporate employer) that this review
+# left them out rather than guess. Counts are commits/3y from the same
+# `git log` pull as above.
+#
+#   aber.io (10), ultrablake.com (24)   -- domain doesn't resolve to a
+#     publicly identifiable company; may be personal.
+#   computer.org (1)                    -- IEEE Computer Society: a
+#     membership organization, not an employer in the sense this map is
+#     for; ambiguous fit.
+#   richrelevance.com (1)               -- RichRelevance was acquired by
+#     Manthan in 2020; current entity/domain status uncertain from a single
+#     data point.
+#   gatech.edu, snu.ac.kr, iith.ac.in, nitsri.ac.in (1 each) -- academic
+#     institutions, not corporate employers; whether a university counts as
+#     an "organization" for corporate-capture-risk purposes (elephant_factor's
+#     whole point) is itself a judgment call this review didn't want to make
+#     unilaterally.
+#   est.tech, stsoft.ru (1 each)        -- could not identify with
+#     confidence.

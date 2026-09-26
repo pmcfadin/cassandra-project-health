@@ -1,0 +1,53 @@
+# Reviewed GitHub-profile `company`-field alias map (D6, issue #52 fixup
+# cycle 1).
+#
+# A GitHub profile's public `company` field is free text a contributor
+# typed themselves (often "@some-github-org", a legal entity name, a
+# nickname, or nothing at all) -- unlike `org_domains.yaml`'s reviewed
+# domain map, it is not independently verifiable, so it is normalized
+# (leading "@" stripped, casefolded -- normalize.affiliation.
+# _normalize_company_text) and looked up here as an EXACT match only.
+# Company text with no entry here resolves to "unknown", never
+# fuzzy-matched (D6) -- this file only ever narrows a known, reviewed
+# string to the same canonical organization name `org_domains.yaml` and
+# `affiliations.yaml` use, never guesses at an unfamiliar one.
+#
+# Keys are shown here in their natural-looking form for readability; the
+# loader (normalize/affiliation.py:load_org_aliases) applies the same
+# normalization to both the key and any observed `company` value before
+# comparing, so "@Apple", "apple", and " Apple " all match the "apple" key
+# below.
+#
+# Format: alias: canonical organization name (must match the organization
+# name used for that company in org_domains.yaml/affiliations.yaml).
+
+apple: Apple
+instaclustr: Instaclustr
+netapp: NetApp
+datastax: DataStax
+ibm: IBM
+netcracker: NetCracker
+bloomberg: Bloomberg
+amazon: Amazon
+aws: Amazon
+pythian: Pythian
+thelastpickle: The Last Pickle
+the last pickle: The Last Pickle
+ksolves: Ksolves
+uber: Uber
+netflix: Netflix
+palantir: Palantir Technologies
+jpmorgan chase: JPMorgan Chase
+jpmorganchase: JPMorgan Chase
+jpmorgan: JPMorgan Chase
+jpmc: JPMorgan Chase
+aiven: Aiven
+pega: Pegasystems
+pegasystems: Pegasystems
+intel: Intel
+ericsson: Ericsson
+amd: AMD
+scylladb: ScyllaDB
+axonops: AxonOps
+wolt: Wolt
+sandboxaq: SandboxAQ

@@ -192,6 +192,76 @@ def _ponymail_factory(mbox_content: bytes = b""):
     return factory
 
 
+def _empty_github_history_transport() -> httpx.MockTransport:
+    """A GraphQL commit-history response with zero commits and no next
+    page -- offline stand-in for `collectors/github_commit_authors.py`'s
+    default (real) collector, matching this module's "nothing here hits
+    the network" invariant (module docstring)."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "data": {
+                    "rateLimit": {"remaining": 4999, "resetAt": "2026-09-25T00:00:00Z", "cost": 1},
+                    "repository": {
+                        "ref": {
+                            "target": {
+                                "history": {
+                                    "pageInfo": {"hasNextPage": False, "endCursor": None},
+                                    "nodes": [],
+                                }
+                            }
+                        }
+                    },
+                }
+            },
+        )
+
+    return httpx.MockTransport(handler)
+
+
+def _github_commit_author_factory(transport: httpx.MockTransport | None = None):
+    """Create a factory for offline GitHub commit-author collection."""
+    from project_health.collectors.github_commit_authors import GitHubCommitAuthorCollector
+
+    transport = transport or _empty_github_history_transport()
+
+    def factory(config):
+        return GitHubCommitAuthorCollector(
+            config,
+            token="test-token",
+            transport=transport,
+            min_request_interval=0,
+            sleep_fn=lambda s: None,
+        )
+
+    return factory
+
+
+def _github_profile_factory():
+    """Create a factory for offline GitHub profile collection. The
+    transport's handler is never actually invoked in this module's tests
+    (no test here seeds a `github_login` for it to fetch), but an explicit
+    token/transport avoids `resolve_github_token()` shelling out to `gh auth
+    token` -- matching this module's "nothing here hits the network"
+    invariant."""
+    from project_health.collectors.github_profile import GitHubProfileCollector
+
+    def unexpected(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("no GitHub profile fetch expected in this test")
+
+    def factory():
+        return GitHubProfileCollector(
+            token="test-token",
+            transport=httpx.MockTransport(unexpected),
+            min_request_interval=0,
+            sleep_fn=lambda s: None,
+        )
+
+    return factory
+
+
 @pytest.fixture
 def config():
     return load_project("projects/cassandra.yaml")
@@ -238,6 +308,8 @@ class TestEndToEnd:
             jira_collector_factory=_jira_factory(transport),
             asf_roster_collector_factory=_roster_factory(),
             ponymail_collector_factory=_ponymail_factory(),
+            github_commit_author_collector_factory=_github_commit_author_factory(),
+            github_profile_collector_factory=_github_profile_factory(),
         )
 
         # exit_code is 0 (ok) because all metrics are now computable with roster data
@@ -350,6 +422,8 @@ class TestEndToEnd:
             jira_collector_factory=_jira_factory(transport),
             asf_roster_collector_factory=_roster_factory(),
             ponymail_collector_factory=_ponymail_factory(),
+            github_commit_author_collector_factory=_github_commit_author_factory(),
+            github_profile_collector_factory=_github_profile_factory(),
         )
 
         assert result.manifest["sources"]["git"]["placeholder_reviewer_commits"] == 1
@@ -372,6 +446,8 @@ class TestEndToEnd:
             jira_collector_factory=_jira_factory(transport),
             asf_roster_collector_factory=_roster_factory(),
             ponymail_collector_factory=_ponymail_factory(),
+            github_commit_author_collector_factory=_github_commit_author_factory(),
+            github_profile_collector_factory=_github_profile_factory(),
         )
 
         assert result.run_id == "2026-09-25T060000Z-abc1234"
@@ -411,6 +487,8 @@ class TestReproducibility:
             jira_collector_factory=_jira_factory(transport_1),
             asf_roster_collector_factory=_roster_factory(),
             ponymail_collector_factory=_ponymail_factory(),
+            github_commit_author_collector_factory=_github_commit_author_factory(),
+            github_profile_collector_factory=_github_profile_factory(),
         )
         # Exit code is 0 (ok) because all metrics are computable with roster data
         assert first.exit_code == 0
@@ -439,6 +517,8 @@ class TestReproducibility:
             jira_collector_factory=_jira_factory(transport_2),
             asf_roster_collector_factory=_roster_factory(),
             ponymail_collector_factory=_ponymail_factory(),
+            github_commit_author_collector_factory=_github_commit_author_factory(),
+            github_profile_collector_factory=_github_profile_factory(),
         )
         # Exit code is 0 (ok) because all metrics are computable with roster data
         assert second.exit_code == 0
@@ -507,6 +587,8 @@ class TestPartialFailure:
             jira_collector_factory=_jira_factory(good_transport),
             asf_roster_collector_factory=_roster_factory(),
             ponymail_collector_factory=_ponymail_factory(),
+            github_commit_author_collector_factory=_github_commit_author_factory(),
+            github_profile_collector_factory=_github_profile_factory(),
         )
         assert first.manifest["sources"]["jira"]["status"] == "ok"
 
@@ -525,6 +607,8 @@ class TestPartialFailure:
             jira_collector_factory=_jira_factory(broken_transport, max_retries=2),
             asf_roster_collector_factory=_roster_factory(),
             ponymail_collector_factory=_ponymail_factory(),
+            github_commit_author_collector_factory=_github_commit_author_factory(),
+            github_profile_collector_factory=_github_profile_factory(),
         )
 
         # A JIRA source outage still produces valid metrics via prior JIRA data
@@ -580,6 +664,8 @@ class TestFileChangeEventBackfillGap:
             code_sha="abc1234",
             jira_collector_factory=_jira_factory(transport),
             asf_roster_collector_factory=_roster_factory(),
+            github_commit_author_collector_factory=_github_commit_author_factory(),
+            github_profile_collector_factory=_github_profile_factory(),
         )
         assert first.exit_code == 0
         assert first.manifest["metrics_missing"] == []
@@ -612,6 +698,8 @@ class TestFileChangeEventBackfillGap:
             code_sha="abc1234",
             jira_collector_factory=_jira_factory(_paginated_transport({0: EMPTY_PAGE})),
             asf_roster_collector_factory=_roster_factory(),
+            github_commit_author_collector_factory=_github_commit_author_factory(),
+            github_profile_collector_factory=_github_profile_factory(),
         )
 
         assert second.exit_code == 0
@@ -664,6 +752,8 @@ class TestMetricsFailure:
             jira_collector_factory=_jira_factory(transport),
             asf_roster_collector_factory=_roster_factory(),
             ponymail_collector_factory=_ponymail_factory(),
+            github_commit_author_collector_factory=_github_commit_author_factory(),
+            github_profile_collector_factory=_github_profile_factory(),
         )
 
         assert result.exit_code == 1
@@ -724,6 +814,8 @@ class TestDegradedMetrics:
             jira_collector_factory=_jira_factory(transport),
             asf_roster_collector_factory=_roster_factory(),
             ponymail_collector_factory=_ponymail_factory(),
+            github_commit_author_collector_factory=_github_commit_author_factory(),
+            github_profile_collector_factory=_github_profile_factory(),
         )
 
         assert result.exit_code != 0

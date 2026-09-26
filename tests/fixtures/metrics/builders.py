@@ -187,6 +187,35 @@ def affiliation_periods(rows: list[dict]) -> pa.Table:
     return validate("affiliation_period", pa.Table.from_pylist(built, schema=schema))
 
 
+def messages(rows: list[dict]) -> pa.Table:
+    """Build a `message` table (issue #35, dev@/user@ metadata).
+
+    Required per row: `thread_id`, `sender_raw_value`, `occurred_at`.
+    Optional: `list` (default `"dev"`), `message_id`, `in_reply_to`,
+    `references`, `sender_display_name`, `subject_hash`,
+    `source_snapshot_id`.
+    """
+    built = [
+        {
+            "message_id": row.get("message_id", f"<msg-{i}@example.org>"),
+            "list": row.get("list", "dev"),
+            "sender_identity_id": None,
+            "sender_raw_type": "mailing_list_address",
+            "sender_raw_value": row["sender_raw_value"],
+            "sender_display_name": row.get("sender_display_name"),
+            "occurred_at": row["occurred_at"],
+            "subject_hash": row.get("subject_hash", f"hash-{i}"),
+            "in_reply_to": row.get("in_reply_to"),
+            "references": row.get("references"),
+            "thread_id": row["thread_id"],
+            "source_snapshot_id": row.get("source_snapshot_id", "snap-1"),
+        }
+        for i, row in enumerate(rows)
+    ]
+    schema = get_schema("message")
+    return validate("message", pa.Table.from_pylist(built, schema=schema))
+
+
 def identity_link_for(
     *,
     contribution_events: pa.Table | None = None,

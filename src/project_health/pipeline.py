@@ -344,6 +344,32 @@ def _dedupe_security_advisories(table: pa.Table) -> pa.Table:
     return pa.Table.from_pylist(kept, schema=table.schema)
 
 
+def _dedupe_message_rows(table: pa.Table) -> pa.Table:
+    """Keep the latest `source_snapshot_id` row per `message_id` (issue #35).
+
+    `collectors/ponymail.py`'s watermark strategy always re-fetches the
+    list's current month in full on every run (ARCHITECTURE.md §4.3), so the
+    same `message_id` can land in more than one run's raw partition before
+    that month completes. `source_snapshot_id` is `f"{run_id}:ponymail"`
+    (collectors/ponymail.py), and `run_id`s sort lexicographically by
+    collection time (same convention `_dedupe_roster_entries` relies on), so
+    "latest `source_snapshot_id`" is "latest run that saw this message" --
+    content for a given `message_id` never actually changes between runs
+    (it's an immutable archived email), so this is a pure dedupe, not a
+    "pick the freshest fact" resolution the way `_dedupe_issue_rows` is.
+    """
+    if table.num_rows == 0:
+        return table
+    best: dict[str, dict[str, Any]] = {}
+    for row in table.to_pylist():
+        message_id = row["message_id"]
+        current = best.get(message_id)
+        if current is None or row["source_snapshot_id"] > current["source_snapshot_id"]:
+            best[message_id] = row
+    kept = sorted(best.values(), key=lambda r: r["message_id"])
+    return pa.Table.from_pylist(kept, schema=table.schema)
+
+
 # --- Per-source collection -----------------------------------------------
 
 
@@ -1700,6 +1726,14 @@ def run_pipeline(
     issue = _dedupe_issue_rows(storage.read_table(data_dir, "jira", "issue"))
     roster_raw = storage.read_table(data_dir, "asf_roster", "roster_entry")
     roster_entry = _dedupe_roster_entries(roster_raw)
+    # issue #35: dev@/user@ message metadata (D3 -- always recomputed from
+    # the entire accumulated raw cache, regardless of whether "ponymail" was
+    # an active source this run).
+    message = _dedupe_message_rows(storage.read_table(data_dir, "ponymail", "message"))
+    ponymail_raw_watermark = storage.read_watermark(data_dir, "ponymail")
+    ponymail_watermarks: dict[str, str | None] = (
+        json.loads(ponymail_raw_watermark) if ponymail_raw_watermark else {}
+    )
 
     overrides = []
     if identity_overrides_path is not None and Path(identity_overrides_path).is_file():
@@ -1766,11 +1800,13 @@ def run_pipeline(
                 "identity_link": identity_link,
                 "roster_entry": roster_entry,
                 "affiliation_period": affiliation_period,
+                "message": message,
             },
             as_of=started_at.date(),
             run_id=run_id,
             computed_at=started_at,
             config=config,
+            ponymail_watermarks=ponymail_watermarks,
         )
     except Exception as exc:  # noqa: BLE001 - deliberately broad: any metrics
         # failure must exit non-zero and skip the site (§7.3), never

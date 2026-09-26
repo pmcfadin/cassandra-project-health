@@ -3,26 +3,43 @@
 {% block content %}
 <p class="page-intro">Mailing-list metrics, computed from metadata only — sender, timestamp and thread structure — never message content.</p>
 
-<section class="empty-state" aria-labelledby="conversations-empty-heading">
-  <h2 id="conversations-empty-heading">No conversation metrics yet</h2>
-  <p>
-    This page is reserved for dev@ and user@ mailing-list metrics (D16), but none are published
-    yet: the Pony Mail collector that reads list metadata is still being built. Nothing is broken —
-    there is simply no data to show here yet.
-  </p>
-</section>
+{% for group in dimensions %}
+  <section class="dimension" aria-labelledby="conv-dim-{{ loop.index }}">
+    <h2 id="conv-dim-{{ loop.index }}">{{ group.dimension | title }}</h2>
+    <div class="card-grid">
+      {% for m in group.metrics %}
+      <article class="card">
+        <header class="card-header">
+          <h3>{{ m.name }}</h3>
+          <span class="badge badge--tier badge--tier-{{ m.tier }}">{{ m.tier }}</span>
+        </header>
+
+        <p class="card-value">
+          {% if m.latest_value_display is not none %}
+            <span class="value">{{ m.latest_value_display }}</span>
+            <span class="value-period">{{ m.latest_month_label }}</span>
+          {% else %}
+            <span class="value value--insufficient">insufficient data</span>
+          {% endif %}
+        </p>
+
+        <p class="card-status">Status: baseline scoring arrives in M3.</p>
+
+        <div class="chart" data-vega-spec='{{ m.vega_spec_json }}' role="img" aria-label="History chart for {{ m.name }}">
+          <noscript>Enable JavaScript to see the {{ m.name }} history chart, or use the data links below.</noscript>
+        </div>
+
+        <p class="card-links">
+          <a href="{{ m.json_href }}">JSON</a> &middot; <a href="{{ m.csv_href }}">CSV</a>
+        </p>
+      </article>
+      {% endfor %}
+    </div>
+  </section>
+{% endfor %}
 
 <section class="whats-coming" aria-labelledby="conversations-coming-heading">
   <h2 id="conversations-coming-heading">What's coming</h2>
-
-  <article class="phase-card">
-    <h3>Phase 1 — mailing-list metadata</h3>
-    <p>
-      Metrics such as time to first reply on dev@ and the unanswered-thread rate, computed from
-      sender, timestamp and thread structure only — never message bodies (D16). These ship as soon
-      as the mailing-list collector lands.
-    </p>
-  </article>
 
   <article class="phase-card">
     <h3>Phase 2a — interaction health</h3>

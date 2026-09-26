@@ -490,27 +490,67 @@ def test_home_summary_card_is_honest_when_a_page_has_no_metrics(tmp_path):
     out_dir = _build_site(tmp_path)
     html_text = _page_html(out_dir, "")
 
-    # Conversations has no registered metrics at all yet (D16) -- its
-    # summary card falls back to the page-level empty message.
-    assert PAGES["conversations"].empty_message in html_text
-    # Governance's GOVERNANCE_METRICS (issue #36) ARE registered, so once
-    # issue #37 wires them into series building, a run with no governance
-    # snapshot shows real headline metrics honestly flagged
-    # "insufficient data" -- never the page-level empty message, which
-    # would incorrectly imply nothing is registered there at all.
+    # Conversations now always has two registered metrics (issue #35), and
+    # Governance's GOVERNANCE_METRICS (issue #36) are wired into series
+    # building (issue #37) -- both summary cards render real headline
+    # metrics (Governance's honestly flagged "insufficient data" since this
+    # run has no governance snapshot) instead of falling back to the
+    # page-level empty message, which would incorrectly imply nothing is
+    # registered there at all.
+    assert PAGES["conversations"].empty_message not in html_text
     assert PAGES["governance"].empty_message not in html_text
     assert "insufficient data" in html_text
+
+
+def test_home_summary_card_shows_conversations_headline_metrics(tmp_path):
+    """Issue #35: the home page's Conversations summary card shows the two
+    dev@ metrics' headline values now that they're registered, the same way
+    it already does for Community."""
+    out_dir = _build_site(tmp_path)
+    html_text = _page_html(out_dir, "")
+
+    assert "Time to First Reply" in html_text
+    assert "Unanswered Thread Rate" in html_text
+
+
+def test_conversations_page_shows_devlist_metric_cards(tmp_path):
+    """Issue #35: the Conversations page renders the two dev@ metrics as
+    cards (replacing the old empty state) once they're registered."""
+    out_dir = _build_site(tmp_path)
+    html_text = _page_html(out_dir, "conversations/")
+
+    assert "Time to First Reply — dev@" in html_text
+    assert "Unanswered Thread Rate — dev@" in html_text
+    assert "Aug 2026" in html_text
 
 
 def test_conversations_page_explains_whats_coming(tmp_path):
     out_dir = _build_site(tmp_path)
     html_text = _page_html(out_dir, "conversations/")
 
-    assert "No conversation metrics yet" in html_text
     assert "Phase 2a" in html_text
     assert "Phase 2b" in html_text
     assert "interaction health, not raw sentiment" in html_text.replace("\n", " ")
     assert "COMMUNITY-HEALTH.md" in html_text
+
+
+def test_conversations_page_is_honest_when_metrics_have_no_data_yet(tmp_path):
+    """A snapshot with rows for every *other* M0 metric but none for the two
+    dev@ metrics (e.g. a run before Pony Mail has collected anything) still
+    renders their cards -- as "insufficient data", the same convention
+    `/community/` already uses for a metric with no data yet -- rather than
+    a card silently going missing."""
+    rows = [
+        row
+        for row in _default_rows()
+        if row["metric_id"] not in ("time_to_first_reply_devlist", "unanswered_thread_rate_devlist")
+    ]
+    out_dir = _build_site(tmp_path, rows=rows)
+    html_text = _page_html(out_dir, "conversations/")
+
+    assert "Time to First Reply — dev@" in html_text
+    assert "Unanswered Thread Rate — dev@" in html_text
+    assert html_text.count("insufficient data") >= 2
 
 
 def test_governance_page_is_a_placeholder_linking_to_decisions(tmp_path):
@@ -987,6 +1027,8 @@ def test_community_page_has_the_metric_cards_and_charts(tmp_path):
     html_text = _community_html(out_dir)
 
     for meta in M0_METRICS.values():
+        if meta.page != "community":
+            continue
         assert meta.name in html_text
     assert 'data-vega-spec=' in html_text
 
@@ -1207,12 +1249,17 @@ def test_metric_meta_format_value_by_kind():
     assert M0_METRICS["median_resolution_latency_jira"].format_value(14.2) == "14.2 days"
 
 
-def test_all_m0_metrics_declare_the_community_page():
+def test_all_m0_metrics_declare_a_known_page():
     """D13/issue #34: which page a metric renders on is declared once, in
-    `MetricMeta.page`. All six M0 metrics are community (code/contributor)
-    metrics."""
-    for meta in M0_METRICS.values():
-        assert meta.page == "community"
+    `MetricMeta.page`. The original six M0 metrics (plus issue #53's three)
+    are community (code/contributor) metrics; issue #35 added the first two
+    conversations (dev@ mailing-list) metrics."""
+    expected_pages = {
+        "time_to_first_reply_devlist": "conversations",
+        "unanswered_thread_rate_devlist": "conversations",
+    }
+    for metric_id, meta in M0_METRICS.items():
+        assert meta.page == expected_pages.get(metric_id, "community")
         assert meta.page in PAGES
 
 

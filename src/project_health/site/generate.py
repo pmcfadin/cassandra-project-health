@@ -13,8 +13,9 @@ multi-page site (D13):
   badge, a Vega-Lite history chart, and downloadable
   `data/<metric_id>.json` / `.csv` siblings carrying the chart's
   provenance (ARCHITECTURE.md §5's per-chart download contract).
-- `/conversations/` — an honest empty state plus a "what's coming"
-  section, until #35 lands mailing-list metrics (D16).
+- `/conversations/` — dev@ mailing-list responsiveness metrics (issue #35,
+  D16), rendered the same dimension-grouped-card way as `/community/`, plus
+  a "what's coming" section for the still-gated Phase 2a/2b metrics.
 - `/governance/` — a placeholder explaining what's coming (D14, D15).
 
 Every page shares one Jinja base template (`templates/base.html`) with a
@@ -770,10 +771,21 @@ def _render_pages(
     )
     _write_subpage(out_dir, "community", community_html)
 
-    # Conversations (`/conversations/`) — no metrics until #35 lands (D16).
+    # Conversations (`/conversations/`) — dev@ mailing-list metadata metrics
+    # (issue #35, D16): cards render the same dimension-grouped shape as
+    # `/community/` when metrics exist, replacing the page's honest empty
+    # state; the "what's coming" section (Phase 2a/2b) always renders too.
+    conversations_dimensions = [
+        {
+            "dimension": dimension,
+            "metrics": [_card_context(s, SUBPAGE_BASE_PREFIX) for s in series_list],
+        }
+        for dimension, series_list in _group_by_dimension(series_by_page["conversations"])
+    ]
     conversations_html = env.get_template("conversations.html").render(
         current_page="conversations",
         base_prefix=SUBPAGE_BASE_PREFIX,
+        dimensions=conversations_dimensions,
         **common_ctx,
     )
     _write_subpage(out_dir, "conversations", conversations_html)

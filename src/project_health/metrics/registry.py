@@ -42,6 +42,9 @@ _VERSIONS: dict[str, str] = {
     "organizational_hhi": "1.0",
     "single_org_share": "1.0",
     "unknown_affiliation_rate": "1.0",
+    # issue #35
+    "time_to_first_reply_devlist": "1.0",
+    "unanswered_thread_rate_devlist": "1.0",
 }
 
 _INITIAL_M0_CHANGELOG_NOTE = "Initial M0 implementation (issue #7)."
@@ -58,6 +61,7 @@ _HEADCOUNT_FLOOR_CHANGELOG_NOTE = (
 # metric_id -> changelog_note for its current version.
 _INITIAL_ISSUE_53_CHANGELOG_NOTE = "Initial implementation (issue #53)."
 _INITIAL_ISSUE_52_CHANGELOG_NOTE = "Initial implementation (issue #52, D6)."
+_INITIAL_ISSUE_35_CHANGELOG_NOTE = "Initial implementation (issue #35)."
 
 _CHANGELOG_NOTES: dict[str, str] = {
     "active_contributors_monthly": _HEADCOUNT_FLOOR_CHANGELOG_NOTE,
@@ -74,6 +78,8 @@ _CHANGELOG_NOTES: dict[str, str] = {
     "organizational_hhi": _INITIAL_ISSUE_52_CHANGELOG_NOTE,
     "single_org_share": _INITIAL_ISSUE_52_CHANGELOG_NOTE,
     "unknown_affiliation_rate": _INITIAL_ISSUE_52_CHANGELOG_NOTE,
+    "time_to_first_reply_devlist": _INITIAL_ISSUE_35_CHANGELOG_NOTE,
+    "unanswered_thread_rate_devlist": _INITIAL_ISSUE_35_CHANGELOG_NOTE,
 }
 
 # metric_id -> description, condensed from METRICS.md's own "## <id>" sections.
@@ -294,6 +300,36 @@ _DESCRIPTIONS: dict[str, str] = {
         "rate/ratio floor), not a count of known organizations. Dimension: organizational "
         "diversity. Role: supporting. Direction of good: none. Window: trailing-12m, one row "
         "per completed month. METRICS.md §5."
+    ),
+    "time_to_first_reply_devlist": (
+        "Median days from a dev@ thread's first message to the first *qualifying* reply -- "
+        "from a different sender than the root, excluding automated senders "
+        "(projects/<id>.yaml mailing_lists.automated_senders) -- for threads started in each "
+        "completed calendar month; details_json carries p90_days, n and threads_started (total "
+        "threads started that month, which can exceed n while some of the month's threads "
+        "haven't been answered yet). Threads whose root message itself came from an automated "
+        "sender are excluded entirely. Metadata only (D1/D16): sender address, timestamp and "
+        "thread structure derived from Message-ID/In-Reply-To/References -- no message body or "
+        "subject text. KNOWN LIMITATION: unlike every other M0 metric, this metric's monthly "
+        "rows are NOT dense across the whole span of history -- collectors/ponymail.py's "
+        "oldest-first, per-run-capped Pony Mail backfill means a not-yet-collected month must "
+        "never be reported as a false zero, so rows are emitted only through the dev@ list's "
+        "backfill watermark plus the run's latest completed month, with details_json."
+        "backfill_in_progress=true while a gap remains. Tier: established. Dimension: "
+        "responsiveness. Role: key. Direction of good: lower. Window: monthly. METRICS.md §4."
+    ),
+    "unanswered_thread_rate_devlist": (
+        "Share of dev@ threads started in a completed calendar month that receive zero "
+        "qualifying replies (different sender than the root, non-automated) within 30 days of "
+        "the thread's first message; details_json carries n_total, n_unanswered and "
+        "followup_days. A month is only reported once every one of its threads has had its "
+        "full 30-day follow-up window elapse (D5-style completed-period rule) -- so the most "
+        "recent 1-2 completed months are typically not yet reportable. Threads whose root "
+        "message came from an automated sender are excluded entirely. Metadata only (D1/D16). "
+        "Shares the same not-dense-during-backfill caveat and details_json.backfill_in_progress "
+        "flag as time_to_first_reply_devlist (collectors/ponymail.py's capped backfill). Tier: "
+        "established. Dimension: responsiveness. Role: supporting. Direction of good: lower. "
+        "Window: monthly. METRICS.md §4."
     ),
 }
 

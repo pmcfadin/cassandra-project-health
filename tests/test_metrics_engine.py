@@ -26,6 +26,7 @@ from tests.fixtures.metrics.builders import (
     file_change_events,
     identity_link_for,
     issues,
+    messages,
     review_events,
     roster_entries,
 )
@@ -1583,3 +1584,180 @@ def test_output_contains_no_raw_per_person_identifiers():
         "computed_at",
         "details_json",
     }
+
+
+# --- time_to_first_reply_devlist / unanswered_thread_rate_devlist (issue #35) --
+
+
+def test_devlist_metrics_golden_self_reply_bot_exclusion_dense_months_and_floors():
+    """One scenario covering every acceptance criterion at once:
+    - a floor-clearing month (5 real replies -> "ok")
+    - self-reply exclusion (t6: root replies to itself -> never an answer)
+    - automated-sender-reply exclusion (t7: only reply is from
+      `jenkins@builds.apache.org`, matched by projects/cassandra.yaml's
+      `mailing_lists.automated_senders` -> never an answer)
+    - automated-sender-*root* exclusion (t8: thread started by
+      `jenkins@builds.apache.org` -> excluded from the population entirely, on both
+      metrics)
+    - dense months (Feb/Mar 2024 have zero dev@ threads but still get a row)
+    - `unanswered_thread_rate_devlist`'s 30-day completed-period gate (as of
+      2024-04-05, January's 30-day follow-up has elapsed but March's hasn't)
+    """
+    rows = []
+
+    def add(thread_id: str, sender: str, when: datetime) -> None:
+        rows.append({"thread_id": thread_id, "sender_raw_value": sender, "occurred_at": when})
+
+    # t1..t5: root always "alice@a.org", a real reply from a distinct
+    # sender 1..5 days later -- five qualifying, answered threads.
+    for i, delay_days in enumerate((1, 2, 3, 4, 5), start=1):
+        tid = f"t{i}"
+        add(tid, "alice@a.org", _ts(2024, 1, 2))
+        add(tid, f"replier{i}@a.org", _ts(2024, 1, 2 + delay_days))
+
+    # t6: self-reply only -- never counts as an answer.
+    add("t6", "alice@a.org", _ts(2024, 1, 8))
+    add("t6", "alice@a.org", _ts(2024, 1, 9))
+
+    # t7: automated-sender reply only -- never counts as an answer.
+    add("t7", "alice@a.org", _ts(2024, 1, 10))
+    add("t7", "jenkins@builds.apache.org", _ts(2024, 1, 11))
+
+    # t8: automated-sender *root* -- excluded from the population entirely,
+    # even though it has a real, fast human reply.
+    add("t8", "jenkins@builds.apache.org", _ts(2024, 1, 12))
+    add("t8", "bob@a.org", _ts(2024, 1, 13))
+
+    message_table = messages(rows)
+    as_of = date(2024, 4, 5)  # Jan/Feb/Mar 2024 completed.
+
+    result = compute_all(
+        {"message": message_table},
+        as_of=as_of,
+        run_id=RUN_ID,
+        computed_at=COMPUTED_AT,
+        config=CONFIG,
+    )
+
+    reply_rows = _rows_for(result, "time_to_first_reply_devlist")
+    assert [r["window_start"] for r in reply_rows] == [
+        date(2024, 1, 1),
+        date(2024, 2, 1),
+        date(2024, 3, 1),
+    ]
+
+    jan = reply_rows[0]
+    assert jan["n"] == 5  # t1..t5 only -- t6/t7 (no qualifying reply) excluded, t8 dropped
+    assert jan["flag"] == "ok"
+    assert jan["value"] == pytest.approx(3.0)  # median of [1, 2, 3, 4, 5] days
+    jan_details = _details(jan)
+    assert jan_details["threads_started"] == 7  # t1..t7 (t8's automated root excludes it)
+    assert jan_details["p90_days"] == pytest.approx(4.6)
+    assert "backfill_in_progress" not in jan_details
+
+    for gap_row in reply_rows[1:]:  # Feb, Mar: dense, zero dev@ threads at all
+        assert gap_row["n"] == 0
+        assert gap_row["value"] is None
+        assert gap_row["flag"] == "insufficient_data"
+        assert _details(gap_row)["threads_started"] == 0
+
+    unanswered_rows = _rows_for(result, "unanswered_thread_rate_devlist")
+    # March's own 30-day follow-up window (ending 2024-04-30) hasn't elapsed
+    # as of 2024-04-05, so only January and February are reportable.
+    assert [r["window_start"] for r in unanswered_rows] == [date(2024, 1, 1), date(2024, 2, 1)]
+
+    jan_u = unanswered_rows[0]
+    assert jan_u["n"] == 7
+    assert jan_u["flag"] == "ok"
+    assert jan_u["value"] == pytest.approx(2 / 7)  # t6, t7 unanswered out of 7 qualifying threads
+    jan_u_details = _details(jan_u)
+    assert jan_u_details["n_total"] == 7
+    assert jan_u_details["n_unanswered"] == 2
+    assert jan_u_details["followup_days"] == 30
+
+    feb_u = unanswered_rows[1]
+    assert feb_u["n"] == 0
+    assert feb_u["value"] is None
+    assert feb_u["flag"] == "insufficient_data"
+
+
+def test_devlist_metrics_watermark_caps_backfill_gap_and_flags_it():
+    """Issue #33's oldest-first, per-run-capped Pony Mail backfill: a
+    watermark far behind `as_of` must not make the uncollected gap in
+    between look like a run of genuinely-zero months. Only the backfilled
+    prefix (through the watermark) plus the always-refetched latest
+    completed month get a row; the multi-year gap between them is skipped
+    entirely, and every emitted row is flagged `backfill_in_progress`."""
+    rows = [
+        {"thread_id": "old1", "sender_raw_value": "alice@a.org", "occurred_at": _ts(2020, 1, 5)},
+        {"thread_id": "old1", "sender_raw_value": "bob@a.org", "occurred_at": _ts(2020, 1, 6)},
+        {"thread_id": "new1", "sender_raw_value": "carol@a.org", "occurred_at": _ts(2024, 8, 1)},
+        {"thread_id": "new1", "sender_raw_value": "dave@a.org", "occurred_at": _ts(2024, 8, 2)},
+    ]
+    message_table = messages(rows)
+
+    result = compute_all(
+        {"message": message_table},
+        as_of=date(2024, 9, 10),
+        run_id=RUN_ID,
+        computed_at=COMPUTED_AT,
+        config=CONFIG,
+        ponymail_watermarks={"dev": "2020-03"},
+    )
+
+    reply_rows = _rows_for(result, "time_to_first_reply_devlist")
+    # Backfilled prefix (Jan-Mar 2020, through the watermark) + the latest
+    # completed month (Aug 2024, always freshly fetched) -- never the huge
+    # gap in between.
+    assert [r["window_start"] for r in reply_rows] == [
+        date(2020, 1, 1),
+        date(2020, 2, 1),
+        date(2020, 3, 1),
+        date(2024, 8, 1),
+    ]
+    for row in reply_rows:
+        assert _details(row)["backfill_in_progress"] is True
+
+    jan_2020 = reply_rows[0]
+    assert jan_2020["n"] == 1
+    assert jan_2020["flag"] == "insufficient_data"  # below the latency floor (5)
+
+    aug_2024 = reply_rows[3]
+    assert aug_2024["n"] == 1
+    assert aug_2024["flag"] == "insufficient_data"
+
+    unanswered_rows = _rows_for(result, "unanswered_thread_rate_devlist")
+    # Aug 2024's own 30-day follow-up hasn't elapsed as of 2024-09-10, so
+    # only the backfilled 2020 prefix is reportable here.
+    assert [r["window_start"] for r in unanswered_rows] == [
+        date(2020, 1, 1),
+        date(2020, 2, 1),
+        date(2020, 3, 1),
+    ]
+    for row in unanswered_rows:
+        assert _details(row)["backfill_in_progress"] is True
+
+
+def test_devlist_metrics_never_missing_when_no_messages_collected_yet():
+    """A registered metric must never come back with zero rows (pipeline.py's
+    `metrics_missing` check, issue #24) -- even before Pony Mail has
+    collected any dev@ history at all."""
+    result = compute_all(
+        {},
+        as_of=AS_OF,
+        run_id=RUN_ID,
+        computed_at=COMPUTED_AT,
+        config=CONFIG,
+    )
+
+    reply_rows = _rows_for(result, "time_to_first_reply_devlist")
+    assert len(reply_rows) == 1
+    assert reply_rows[0]["n"] == 0
+    assert reply_rows[0]["value"] is None
+    assert reply_rows[0]["flag"] == "insufficient_data"
+
+    unanswered_rows = _rows_for(result, "unanswered_thread_rate_devlist")
+    assert len(unanswered_rows) == 1
+    assert unanswered_rows[0]["n"] == 0
+    assert unanswered_rows[0]["value"] is None
+    assert unanswered_rows[0]["flag"] == "insufficient_data"

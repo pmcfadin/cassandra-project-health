@@ -1,0 +1,143 @@
+From MAILER-DAEMON Fri Feb 20 08:37:50 2009
+Return-Path: <cassandra-dev-return-2-apmail-incubator-cassandra-dev-archive=incubator.apache.org@incubator.apache.org>
+Delivered-To: apmail-incubator-cassandra-dev-archive@minotaur.apache.org
+Received: (qmail 92064 invoked from network); 20 Feb 2009 08:37:50 -0000
+Received: from hermes.apache.org (HELO mail.apache.org) (140.211.11.2)
+  by minotaur.apache.org with SMTP; 20 Feb 2009 08:37:50 -0000
+Received: (qmail 90565 invoked by uid 500); 20 Feb 2009 08:37:50 -0000
+Delivered-To: apmail-incubator-cassandra-dev-archive@incubator.apache.org
+Received: (qmail 90554 invoked by uid 500); 20 Feb 2009 08:37:50 -0000
+Mailing-List: contact cassandra-dev-help@incubator.apache.org; run by ezmlm
+Precedence: bulk
+List-Help: <mailto:cassandra-dev-help@incubator.apache.org>
+List-Unsubscribe: <mailto:cassandra-dev-unsubscribe@incubator.apache.org>
+List-Post: <mailto:cassandra-dev@incubator.apache.org>
+List-Id: <cassandra-dev.incubator.apache.org>
+Reply-To: cassandra-dev@incubator.apache.org
+Delivered-To: mailing list cassandra-dev@incubator.apache.org
+Received: (qmail 90543 invoked by uid 99); 20 Feb 2009 08:37:50 -0000
+Received: from athena.apache.org (HELO athena.apache.org) (140.211.11.136)
+    by apache.org (qpsmtpd/0.29) with ESMTP; Fri, 20 Feb 2009 00:37:50 -0800
+X-ASF-Spam-Status: No, hits=1.2 required=10.0
+	tests=SPF_NEUTRAL
+X-Spam-Check-By: apache.org
+Received-SPF: neutral (athena.apache.org: local policy)
+Received: from [209.85.217.166] (HELO mail-gx0-f166.google.com)
+ (209.85.217.166)
+    by apache.org (qpsmtpd/0.29) with ESMTP; Fri, 20 Feb 2009 08:37:44 +0000
+Received: by gxk10 with SMTP id 10so2075690gxk.12
+        for <cassandra-dev@incubator.apache.org>;
+ Fri, 20 Feb 2009 00:37:21 -0800 (PST)
+MIME-Version: 1.0
+Sender: tcurdt@vafer.org
+Received: by 10.150.189.2 with SMTP id m2mr1850072ybf.103.1235119041347; Fri,
+	20 Feb 2009 00:37:21 -0800 (PST)
+Date: Fri, 20 Feb 2009 09:37:21 +0100
+X-Google-Sender-Auth: ee29e52a33231446
+Message-ID: <6c59d89a0902200037t78cf4413o1b1ea473111aace0@mail.gmail.com>
+Subject: anyone here?
+From: Torsten Curdt <tcurdt@apache.org>
+To: cassandra-dev@incubator.apache.org
+Content-Type: text/plain; charset=ISO-8859-1
+X-Virus-Checked: Checked by ClamAV on apache.org
+
+[body stripped for fixture -- D1/D16 metadata-only]
+
+From MAILER-DAEMON Fri Feb 20 10:27:42 2009
+Return-Path: <cassandra-dev-return-3-apmail-incubator-cassandra-dev-archive=incubator.apache.org@incubator.apache.org>
+Delivered-To: apmail-incubator-cassandra-dev-archive@minotaur.apache.org
+Received: (qmail 58599 invoked from network); 20 Feb 2009 10:27:42 -0000
+Received: from hermes.apache.org (HELO mail.apache.org) (140.211.11.2)
+  by minotaur.apache.org with SMTP; 20 Feb 2009 10:27:42 -0000
+Received: (qmail 46812 invoked by uid 500); 20 Feb 2009 10:27:41 -0000
+Delivered-To: apmail-incubator-cassandra-dev-archive@incubator.apache.org
+Received: (qmail 46804 invoked by uid 500); 20 Feb 2009 10:27:41 -0000
+Mailing-List: contact cassandra-dev-help@incubator.apache.org; run by ezmlm
+Precedence: bulk
+List-Help: <mailto:cassandra-dev-help@incubator.apache.org>
+List-Unsubscribe: <mailto:cassandra-dev-unsubscribe@incubator.apache.org>
+List-Post: <mailto:cassandra-dev@incubator.apache.org>
+List-Id: <cassandra-dev.incubator.apache.org>
+Reply-To: cassandra-dev@incubator.apache.org
+Delivered-To: mailing list cassandra-dev@incubator.apache.org
+Received: (qmail 46790 invoked by uid 99); 20 Feb 2009 10:27:41 -0000
+Received: from nike.apache.org (HELO nike.apache.org) (192.87.106.230)
+    by apache.org (qpsmtpd/0.29) with ESMTP; Fri, 20 Feb 2009 02:27:41 -0800
+X-ASF-Spam-Status: No, hits=1.2 required=10.0
+	tests=SPF_NEUTRAL
+X-Spam-Check-By: apache.org
+Received-SPF: neutral (nike.apache.org: local policy)
+Received: from [209.85.219.12] (HELO mail-ew0-f12.google.com) (209.85.219.12)
+    by apache.org (qpsmtpd/0.29) with ESMTP; Fri, 20 Feb 2009 10:27:32 +0000
+Received: by ewy5 with SMTP id 5so277079ewy.12
+        for <cassandra-dev@incubator.apache.org>;
+ Fri, 20 Feb 2009 02:27:11 -0800 (PST)
+Received: by 10.210.18.8 with SMTP id 8mr505992ebr.183.1235125630875;
+        Fri, 20 Feb 2009 02:27:10 -0800 (PST)
+Received: from ?10.180.255.165? (hq.last.fm [195.24.233.122])
+        by mx.google.com with ESMTPS id p10sm6280914gvf.25.2009.02.20.02.27.09
+        (version=TLSv1/SSLv3 cipher=RC4-MD5);
+        Fri, 20 Feb 2009 02:27:10 -0800 (PST)
+Message-ID: <499E857D.9060200@oskarsson.nu>
+Date: Fri, 20 Feb 2009 10:27:09 +0000
+From: Johan Oskarsson <johan@oskarsson.nu>
+User-Agent: Thunderbird 2.0.0.19 (X11/20090105)
+MIME-Version: 1.0
+To: cassandra-dev@incubator.apache.org
+Subject: Re: anyone here?
+References: <6c59d89a0902200037t78cf4413o1b1ea473111aace0@mail.gmail.com>
+In-Reply-To: <6c59d89a0902200037t78cf4413o1b1ea473111aace0@mail.gmail.com>
+X-Enigmail-Version: 0.95.7
+Content-Type: text/plain; charset=ISO-8859-1
+X-Virus-Checked: Checked by ClamAV on apache.org
+
+[body stripped for fixture -- D1/D16 metadata-only]
+
+From MAILER-DAEMON Fri Feb 20 10:35:09 2009
+Return-Path: <cassandra-dev-return-4-apmail-incubator-cassandra-dev-archive=incubator.apache.org@incubator.apache.org>
+Delivered-To: apmail-incubator-cassandra-dev-archive@minotaur.apache.org
+Received: (qmail 61469 invoked from network); 20 Feb 2009 10:35:09 -0000
+Received: from hermes.apache.org (HELO mail.apache.org) (140.211.11.2)
+  by minotaur.apache.org with SMTP; 20 Feb 2009 10:35:09 -0000
+Received: (qmail 53004 invoked by uid 500); 20 Feb 2009 10:35:09 -0000
+Delivered-To: apmail-incubator-cassandra-dev-archive@incubator.apache.org
+Received: (qmail 52990 invoked by uid 500); 20 Feb 2009 10:35:09 -0000
+Mailing-List: contact cassandra-dev-help@incubator.apache.org; run by ezmlm
+Precedence: bulk
+List-Help: <mailto:cassandra-dev-help@incubator.apache.org>
+List-Unsubscribe: <mailto:cassandra-dev-unsubscribe@incubator.apache.org>
+List-Post: <mailto:cassandra-dev@incubator.apache.org>
+List-Id: <cassandra-dev.incubator.apache.org>
+Reply-To: cassandra-dev@incubator.apache.org
+Delivered-To: mailing list cassandra-dev@incubator.apache.org
+Received: (qmail 52979 invoked by uid 99); 20 Feb 2009 10:35:09 -0000
+Received: from nike.apache.org (HELO nike.apache.org) (192.87.106.230)
+    by apache.org (qpsmtpd/0.29) with ESMTP; Fri, 20 Feb 2009 02:35:09 -0800
+X-ASF-Spam-Status: No, hits=1.2 required=10.0
+	tests=SPF_NEUTRAL
+X-Spam-Check-By: apache.org
+Received-SPF: neutral (nike.apache.org: local policy)
+Received: from [209.85.217.166] (HELO mail-gx0-f166.google.com)
+ (209.85.217.166)
+    by apache.org (qpsmtpd/0.29) with ESMTP; Fri, 20 Feb 2009 10:35:01 +0000
+Received: by gxk10 with SMTP id 10so2121353gxk.12
+        for <cassandra-dev@incubator.apache.org>;
+ Fri, 20 Feb 2009 02:34:40 -0800 (PST)
+MIME-Version: 1.0
+Sender: tcurdt@vafer.org
+Received: by 10.150.57.5 with SMTP id f5mr1904664yba.200.1235126080000; Fri,
+	20 Feb 2009 02:34:40 -0800 (PST)
+In-Reply-To: <499E857D.9060200@oskarsson.nu>
+References: <6c59d89a0902200037t78cf4413o1b1ea473111aace0@mail.gmail.com>
+	 <499E857D.9060200@oskarsson.nu>
+Date: Fri, 20 Feb 2009 11:34:39 +0100
+X-Google-Sender-Auth: 5750f1efedf5bd70
+Message-ID: <6c59d89a0902200234y449f3ba2v185b1d4b2b85d772@mail.gmail.com>
+Subject: Re: anyone here?
+From: Torsten Curdt <tcurdt@apache.org>
+To: cassandra-dev@incubator.apache.org
+Content-Type: text/plain; charset=ISO-8859-1
+X-Virus-Checked: Checked by ClamAV on apache.org
+
+[body stripped for fixture -- D1/D16 metadata-only]
+

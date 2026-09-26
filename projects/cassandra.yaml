@@ -27,10 +27,12 @@ pull_requests:
   repos: [apache/cassandra]        # part of review activity per DECISIONS.md — JIRA is primary for Cassandra
 
 mailing_lists:
-  type: ponymail                   # selects core/adapters/ponymail.py
+  type: ponymail                   # selects collectors/ponymail.py
   domain: cassandra.apache.org
-  lists: [dev, user, commits]
+  lists: [dev, user]               # not commits@ — auto-generated commit-notification traffic, not discussion (issue #33)
   metadata_only: true              # Phase 1 (D1): sender, timestamp, thread structure — no body
+  max_months_per_run: 36           # nightly time budget (issue #33 fixup): ~5 min/list at the ≤2 req/s pacing
+                                    # cap; backfills oldest-first across runs until each list is caught up
 
 roster:
   type: asf_whimsy                 # selects core/adapters/asf_roster.py

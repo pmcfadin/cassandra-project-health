@@ -26,6 +26,7 @@ import pytest
 from project_health import storage
 from project_health.collectors.asf_roster import AsfRosterCollector
 from project_health.collectors.jira import JiraCollector
+from project_health.collectors.ponymail import PonyMailCollector
 from project_health.config import load_project
 from project_health.pipeline import (
     _dedupe_issue_rows,
@@ -120,6 +121,38 @@ def _roster_factory(transport: httpx.MockTransport | None = None):
     return factory
 
 
+# A minimal, single-month stats.lua fixture -- keeps the ponymail collector's
+# offline "no new data" path in every pipeline test fast and deterministic
+# (issue #33's collector has its own dedicated fixture-based tests in
+# tests/test_ponymail_collector.py; here it's only wired in so run_pipeline's
+# default `ALL_SOURCES` -- now including "ponymail" -- never touches the
+# network in this file's tests).
+PONYMAIL_STATS = {"firstYear": 2026, "firstMonth": 9, "lastYear": 2026, "lastMonth": 9}
+
+
+def _ponymail_transport(mbox_content: bytes = b"") -> httpx.MockTransport:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("stats.lua"):
+            return httpx.Response(200, json=PONYMAIL_STATS)
+        return httpx.Response(200, content=mbox_content)
+
+    return httpx.MockTransport(handler)
+
+
+def _ponymail_factory(mbox_content: bytes = b""):
+    transport = _ponymail_transport(mbox_content)
+
+    def factory(config):
+        return PonyMailCollector(
+            config,
+            transport=transport,
+            min_request_interval=0,
+            sleep_fn=lambda s: None,
+        )
+
+    return factory
+
+
 @pytest.fixture
 def config():
     return load_project("projects/cassandra.yaml")
@@ -160,6 +193,7 @@ class TestEndToEnd:
             code_sha="abc1234",
             jira_collector_factory=_jira_factory(transport),
             asf_roster_collector_factory=_roster_factory(),
+            ponymail_collector_factory=_ponymail_factory(),
         )
 
         # exit_code is 0 (ok) because all metrics are now computable with roster data
@@ -169,6 +203,14 @@ class TestEndToEnd:
         assert result.manifest["sources"]["git"]["status"] == "ok"
         assert result.manifest["sources"]["jira"]["status"] == "ok"
         assert result.manifest["sources"]["asf_roster"]["status"] == "ok"
+        # issue #33: ponymail is a fourth first-class source in the manifest.
+        assert result.manifest["sources"]["ponymail"]["status"] == "ok"
+        assert result.manifest["sources"]["ponymail"]["records_collected"] == 0
+        # issue #33 is collector-only: it registers no metrics of its own
+        # (those come in a later issue), so every *currently* registered
+        # metric (git/jira/roster-derived) must still compute cleanly --
+        # adding the ponymail collector/tables must never make an unrelated,
+        # already-registered metric go missing.
         # 15 non-merge commits in the #3 fixture repo, 1 of them a bot
         # (github-actions[bot], excluded by projects/cassandra.yaml's
         # bot_patterns) -> 14 real contributions.
@@ -188,6 +230,10 @@ class TestEndToEnd:
         assert list((data_dir / "raw" / "jira" / "review_event").glob("date=*/part-*.parquet"))
         roster_raw_dir = data_dir / "raw" / "asf_roster" / "roster_entry"
         assert list(roster_raw_dir.glob("date=*/part-*.parquet"))
+        assert list((data_dir / "raw" / "ponymail" / "message").glob("date=*/part-*.parquet"))
+        assert list(
+            (data_dir / "raw" / "ponymail" / "message_thread").glob("date=*/part-*.parquet")
+        )
 
         # snapshot
         snapshot_path = data_dir / "snapshots" / result.run_id / "metrics.parquet"
@@ -203,6 +249,7 @@ class TestEndToEnd:
         assert loaded.sources["git"].status == "ok"
         assert loaded.sources["jira"].status == "ok"
         assert loaded.sources["asf_roster"].status == "ok"
+        assert loaded.sources["ponymail"].status == "ok"
 
         # site
         assert (site_out / "index.html").is_file()
@@ -253,6 +300,7 @@ class TestEndToEnd:
             code_sha="abc1234",
             jira_collector_factory=_jira_factory(transport),
             asf_roster_collector_factory=_roster_factory(),
+            ponymail_collector_factory=_ponymail_factory(),
         )
 
         assert result.manifest["sources"]["git"]["placeholder_reviewer_commits"] == 1
@@ -269,6 +317,7 @@ class TestEndToEnd:
             code_sha="abc1234567",
             jira_collector_factory=_jira_factory(transport),
             asf_roster_collector_factory=_roster_factory(),
+            ponymail_collector_factory=_ponymail_factory(),
         )
 
         assert result.run_id == "2026-09-25T060000Z-abc1234"
@@ -281,6 +330,7 @@ class TestEndToEnd:
         ).stdout.strip()
         assert storage.read_watermark(data_dir, "git") == head_sha
         assert storage.read_watermark(data_dir, "jira") is not None
+        assert storage.read_watermark(data_dir, "ponymail") is not None
 
 
 # --- Reproducibility ---------------------------------------------------------
@@ -301,6 +351,7 @@ class TestReproducibility:
             code_sha="abc1234",
             jira_collector_factory=_jira_factory(transport_1),
             asf_roster_collector_factory=_roster_factory(),
+            ponymail_collector_factory=_ponymail_factory(),
         )
         # Exit code is 0 (ok) because all metrics are computable with roster data
         assert first.exit_code == 0
@@ -323,6 +374,7 @@ class TestReproducibility:
             code_sha="abc1234",
             jira_collector_factory=_jira_factory(transport_2),
             asf_roster_collector_factory=_roster_factory(),
+            ponymail_collector_factory=_ponymail_factory(),
         )
         # Exit code is 0 (ok) because all metrics are computable with roster data
         assert second.exit_code == 0
@@ -385,6 +437,7 @@ class TestPartialFailure:
             code_sha="abc1234",
             jira_collector_factory=_jira_factory(good_transport),
             asf_roster_collector_factory=_roster_factory(),
+            ponymail_collector_factory=_ponymail_factory(),
         )
         assert first.manifest["sources"]["jira"]["status"] == "ok"
 
@@ -397,6 +450,7 @@ class TestPartialFailure:
             code_sha="abc1234",
             jira_collector_factory=_jira_factory(broken_transport, max_retries=2),
             asf_roster_collector_factory=_roster_factory(),
+            ponymail_collector_factory=_ponymail_factory(),
         )
 
         # A JIRA source outage still produces valid metrics via prior JIRA data
@@ -525,6 +579,7 @@ class TestMetricsFailure:
             code_sha="abc1234",
             jira_collector_factory=_jira_factory(transport),
             asf_roster_collector_factory=_roster_factory(),
+            ponymail_collector_factory=_ponymail_factory(),
         )
 
         assert result.exit_code == 1
@@ -579,6 +634,7 @@ class TestDegradedMetrics:
             code_sha="abc1234",
             jira_collector_factory=_jira_factory(transport),
             asf_roster_collector_factory=_roster_factory(),
+            ponymail_collector_factory=_ponymail_factory(),
         )
 
         assert result.exit_code != 0
@@ -741,3 +797,145 @@ class TestDedupe:
         assert _dedupe_issue_rows(get_schema("issue").empty_table()).num_rows == 0
         assert _dedupe_jira_review_events(get_schema("review_event").empty_table()).num_rows == 0
         assert _dedupe_roster_entries(get_schema("roster_entry").empty_table()).num_rows == 0
+
+
+# --- Ponymail backfill cap (issue #33 fixup) ---------------------------------
+
+
+def _ponymail_factory_with_stats(stats_json: bytes, mbox_by_date: dict[str, bytes] | None = None):
+    """A ponymail collector factory serving a custom `stats.lua` payload
+    (rather than `PONYMAIL_STATS`'s single-month default) so backfill-cap
+    behavior against a longer month range can be exercised without a live
+    fetch."""
+    mbox_by_date = mbox_by_date or {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("stats.lua"):
+            return httpx.Response(200, content=stats_json)
+        query = parse_qs(request.url.query.decode())
+        date = query["date"][0]
+        return httpx.Response(200, content=mbox_by_date.get(date, b""))
+
+    transport = httpx.MockTransport(handler)
+
+    def factory(config):
+        return PonyMailCollector(
+            config,
+            transport=transport,
+            min_request_interval=0,
+            sleep_fn=lambda s: None,
+        )
+
+    return factory
+
+
+# 40 months (2023-01..2026-04) -- longer than the config default
+# `mailing_lists.max_months_per_run: 36` (projects/cassandra.yaml), so a
+# default (uncapped-by-CLI) run must still cap itself and report backlog.
+FORTY_MONTH_STATS = json.dumps(
+    {"firstYear": 2023, "firstMonth": 1, "lastYear": 2026, "lastMonth": 4}
+).encode()
+
+
+class TestPonymailBackfillCap:
+    def test_default_cap_from_config_used_when_cli_flag_not_given(self, tmp_path, config):
+        data_dir = tmp_path / "data"
+
+        result = run_pipeline(
+            config=config,
+            data_dir=data_dir,
+            workdir=tmp_path / "workdir",
+            sources=["ponymail"],
+            now=NOW,
+            code_sha="abc1234",
+            ponymail_collector_factory=_ponymail_factory_with_stats(FORTY_MONTH_STATS),
+        )
+
+        ponymail = result.manifest["sources"]["ponymail"]
+        # projects/cassandra.yaml's mailing_lists.max_months_per_run is 36;
+        # 40 months total - 1 current month - 35 oldest completed months
+        # fetched = 4 months still outstanding, for each of dev/user.
+        assert ponymail["backfill"] == {
+            "dev": {"months_remaining": 4},
+            "user": {"months_remaining": 4},
+        }
+        assert ponymail["partial"] is True
+
+    def test_explicit_cli_cap_overrides_config_default(self, tmp_path, config):
+        data_dir = tmp_path / "data"
+
+        result = run_pipeline(
+            config=config,
+            data_dir=data_dir,
+            workdir=tmp_path / "workdir",
+            sources=["ponymail"],
+            max_ponymail_months=5,
+            now=NOW,
+            code_sha="abc1234",
+            ponymail_collector_factory=_ponymail_factory_with_stats(FORTY_MONTH_STATS),
+        )
+
+        ponymail = result.manifest["sources"]["ponymail"]
+        # cap=5 -> 4 oldest completed months + the current month; 39
+        # completed months total - 4 fetched = 35 still outstanding. This
+        # differs from the config-default-cap case above (4 remaining),
+        # proving the explicit CLI value -- not the config default -- was
+        # actually used.
+        assert ponymail["backfill"] == {
+            "dev": {"months_remaining": 35},
+            "user": {"months_remaining": 35},
+        }
+        assert ponymail["partial"] is True
+
+    def test_second_capped_run_advances_watermark_until_caught_up(self, tmp_path, config):
+        """A small synthetic 5-month range, capped to 2 months/run: the
+        first run backfills the 2 oldest months (partial=True), the second
+        run resumes from the advanced watermark and finishes the backlog
+        (partial=False) -- demonstrating a capped run always advances the
+        per-list watermark run over run, per ARCHITECTURE.md §4.3."""
+        five_month_stats = json.dumps(
+            {"firstYear": 2026, "firstMonth": 1, "lastYear": 2026, "lastMonth": 5}
+        ).encode()
+        data_dir = tmp_path / "data"
+
+        first = run_pipeline(
+            config=config,
+            data_dir=data_dir,
+            workdir=tmp_path / "workdir",
+            sources=["ponymail"],
+            max_ponymail_months=2,
+            now=NOW,
+            code_sha="abc1234",
+            ponymail_collector_factory=_ponymail_factory_with_stats(five_month_stats),
+        )
+        first_ponymail = first.manifest["sources"]["ponymail"]
+        # cap=2 -> 1 oldest completed month ("2026-01") + current month
+        # ("2026-05") fetched; 4 completed months total - 1 fetched = 3
+        # remaining.
+        assert first_ponymail["watermark"] == {"dev": "2026-01", "user": "2026-01"}
+        assert first_ponymail["backfill"] == {
+            "dev": {"months_remaining": 3},
+            "user": {"months_remaining": 3},
+        }
+        assert first_ponymail["partial"] is True
+
+        second = run_pipeline(
+            config=config,
+            data_dir=data_dir,
+            workdir=tmp_path / "workdir",
+            sources=["ponymail"],
+            max_ponymail_months=2,
+            now=NOW.replace(hour=7),
+            code_sha="abc1234",
+            ponymail_collector_factory=_ponymail_factory_with_stats(five_month_stats),
+        )
+        second_ponymail = second.manifest["sources"]["ponymail"]
+        # Resumes after "2026-01": needed = ["2026-02".."2026-05"] (4
+        # months), still > cap=2 -> 1 more oldest completed month
+        # ("2026-02") + current month fetched; watermark advances again.
+        assert second_ponymail["watermark"] == {"dev": "2026-02", "user": "2026-02"}
+        assert second_ponymail["backfill"] == {
+            "dev": {"months_remaining": 2},
+            "user": {"months_remaining": 2},
+        }
+        assert second_ponymail["partial"] is True

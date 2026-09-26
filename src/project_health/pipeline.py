@@ -83,6 +83,7 @@ from project_health import storage
 from project_health.collectors.asf_roster import AsfRosterCollector
 from project_health.collectors.git import GitCollector, clone_or_fetch, github_clone_url
 from project_health.collectors.jira import JiraCollector
+from project_health.collectors.ponymail import PonyMailCollector
 from project_health.config import ProjectConfig
 from project_health.metrics import METRIC_IDS, compute_all
 from project_health.normalize.identity import (
@@ -98,7 +99,7 @@ from project_health.provenance import (
 from project_health.site.generate import generate as generate_site
 from project_health.site.manifest import manifest_path
 
-ALL_SOURCES: tuple[str, ...] = ("git", "jira", "asf_roster")
+ALL_SOURCES: tuple[str, ...] = ("git", "jira", "asf_roster", "ponymail")
 
 
 def _log(event: str, **fields: Any) -> None:
@@ -408,6 +409,91 @@ def _collect_asf_roster(
             "records_collected": 0,
             "reason": str(exc),
         }
+
+
+def _collect_ponymail(
+    config: ProjectConfig,
+    data_dir: Path,
+    run_id: str,
+    started_at: datetime,
+    max_months_per_list: int | None,
+    collector_factory: Callable[[ProjectConfig], PonyMailCollector] | None,
+) -> dict[str, Any]:
+    """Per-list watermarks (ARCHITECTURE.md §4.3) are stored as one JSON
+    object under the `ponymail` source key in `state/watermarks.json` --
+    `storage.write_watermark`'s value is an opaque string per source, so a
+    `{"dev": "2026-08", "user": "2026-08"}`-shaped blob is what's read back
+    and re-serialized here, the same read-modify-write contract every other
+    source's single-string watermark uses.
+
+    `max_months_per_list=None` (the CLI's `--max-ponymail-months` wasn't
+    given) resolves to `config.mailing_lists.max_months_per_run` (issue #33
+    fixup: a nightly run must not attempt an unbounded backfill of a
+    long-lived list within `timeout-minutes: 60` alongside git/JIRA/roster)
+    -- an explicit CLI value always wins over the config default.
+    """
+    raw_watermark = storage.read_watermark(data_dir, "ponymail")
+    watermarks: dict[str, str | None] = json.loads(raw_watermark) if raw_watermark else {}
+    snapshot_id = f"{run_id}:ponymail"
+
+    effective_cap = max_months_per_list
+    if effective_cap is None and config.mailing_lists is not None:
+        effective_cap = getattr(config.mailing_lists, "max_months_per_run", None)
+
+    _log(
+        "source_collect_started",
+        source="ponymail",
+        watermark=watermarks,
+        max_months_per_list=effective_cap,
+    )
+    collector = (collector_factory or PonyMailCollector)(config)
+    try:
+        result = collector.collect(
+            watermarks=watermarks,
+            snapshot_id=snapshot_id,
+            max_months_per_list=effective_cap,
+        )
+        partition_date = started_at.date()
+        storage.write_partition(
+            data_dir, "ponymail", "message", partition_date, run_id, result.messages
+        )
+        storage.write_partition(
+            data_dir, "ponymail", "message_thread", partition_date, run_id, result.message_threads
+        )
+        storage.write_watermark(
+            data_dir, "ponymail", json.dumps(result.next_watermarks, sort_keys=True)
+        )
+        record_last_good_snapshot(data_dir, "ponymail", run_id)
+        _log(
+            "source_collect_succeeded",
+            source="ponymail",
+            records_collected=result.message_count,
+            thread_count=result.thread_count,
+            skipped_count=result.skipped_count,
+            next_watermark=result.next_watermarks,
+            backfill=result.backfill,
+            partial=result.partial,
+        )
+        return {
+            "status": "ok",
+            "watermark": result.next_watermarks,
+            "records_collected": result.message_count,
+            "thread_count": result.thread_count,
+            "skipped_count": result.skipped_count,
+            # issue #33 fixup: lets the site/runbook tell "still backfilling"
+            # (partial=True, per-list months_remaining > 0) from "done".
+            "backfill": result.backfill,
+            "partial": result.partial,
+        }
+    except Exception as exc:  # noqa: BLE001 - a source outage must never abort the run (§7.3)
+        _log("source_collect_failed", source="ponymail", error=str(exc))
+        return {
+            "status": "failed",
+            "watermark": watermarks,
+            "records_collected": 0,
+            "last_good_snapshot": read_last_good_snapshot(data_dir, "ponymail"),
+            "reason": str(exc),
+        }
     finally:
         collector.close()
 
@@ -431,12 +517,14 @@ def run_pipeline(
     sources: Sequence[str] | None = None,
     site_out: str | Path | None = None,
     max_jira_issues: int | None = None,
+    max_ponymail_months: int | None = None,
     now: datetime | None = None,
     code_sha: str | None = None,
     identity_overrides_path: str | Path | None = None,
     trigger: str = "manual",
     jira_collector_factory: Callable[[ProjectConfig], JiraCollector] | None = None,
     asf_roster_collector_factory: Callable[[ProjectConfig], AsfRosterCollector] | None = None,
+    ponymail_collector_factory: Callable[[ProjectConfig], PonyMailCollector] | None = None,
 ) -> RunResult:
     """Run one collect -> identity -> metrics -> manifest (-> site) pass.
 
@@ -444,11 +532,12 @@ def run_pipeline(
     rev-parse` internally) so tests can make a run fully deterministic;
     production callers (the CLI) leave both `None`.
 
-    `jira_collector_factory`, given, replaces the default
-    `JiraCollector(config)` construction — this is how tests inject a
-    `JiraCollector` wired to an offline `httpx.MockTransport` (and a
-    sleep-free retry loop) without `run_pipeline` needing to know about
-    every one of `JiraCollector`'s tuning knobs.
+    `jira_collector_factory` / `ponymail_collector_factory`, given, replace
+    the default `JiraCollector(config)` / `PonyMailCollector(config)`
+    construction — this is how tests inject a collector wired to an offline
+    `httpx.MockTransport` (and a sleep-free retry loop) without
+    `run_pipeline` needing to know about every one of the collector's tuning
+    knobs.
 
     `asf_roster_collector_factory`, given, replaces the default
     `AsfRosterCollector(config)` construction — this is how tests inject an
@@ -485,6 +574,15 @@ def run_pipeline(
     if "asf_roster" in active_sources:
         source_results["asf_roster"] = _collect_asf_roster(
             config, data_dir, run_id, started_at, asf_roster_collector_factory
+        )
+    if "ponymail" in active_sources:
+        source_results["ponymail"] = _collect_ponymail(
+            config,
+            data_dir,
+            run_id,
+            started_at,
+            max_ponymail_months,
+            ponymail_collector_factory,
         )
 
     # D3: identity resolution and metrics always recompute from the ENTIRE

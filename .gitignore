@@ -60,3 +60,7 @@ Thumbs.db
 
 # Agent worktrees
 .claude/worktrees/
+
+# Secrets
+.env
+.env.*

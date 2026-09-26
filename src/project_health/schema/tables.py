@@ -562,6 +562,112 @@ GOVERNANCE_CHECK_RUN = pa.schema(
     ]
 )
 
+# --- Phase 2a classification (issue #45, COMMUNITY-HEALTH.md §4.3, D17) -----
+#
+# One row per classified message, in the exact shape COMMUNITY-HEALTH.md §4.3
+# defines. Unlike every table above, this one is genuinely nested JSON by the
+# spec's own design (`labels`, `usage`, `tone_intensity`, `sentiment_polarity`
+# are all objects) -- rather than flattening those into opaque `_json` string
+# columns (the `metric_value.details_json` pattern used elsewhere in this
+# file), this table uses pyarrow struct/map types directly, so `validate()`
+# actually checks the nested shape column-by-column instead of trusting an
+# unstructured blob. `labels` carries exactly the 12 message-level labels
+# from COMMUNITY-HEALTH.md §1.2 (`CLASSIFICATION_LABEL_NAMES` below); each is
+# nullable at the struct-field level because not every label needs to be
+# present on the label object that produced this row (v1 always asks all 12,
+# but the schema shouldn't hard-fail if a future revision doesn't).
+#
+# `src/project_health/classify/classifier.py`'s `ClassificationRecord`
+# (pydantic) is the runtime-validated version of this same schema -- this
+# module has no import dependency on `classify/` (schema/ stays a leaf
+# package), so `CLASSIFICATION_LABEL_NAMES` below is a plain tuple literal
+# kept in sync with `classify.questions.MESSAGE_LEVEL_LABELS` by hand (both
+# are enforced against COMMUNITY-HEALTH.md §1.2 by their own tests).
+
+CLASSIFICATION_LABEL_NAMES: tuple[str, ...] = (
+    "technical_disagreement",
+    "constructive_counterargument",
+    "evidence_based_argument",
+    "compromise_offer",
+    "acknowledgment",
+    "personal_attack",
+    "hostility",
+    "dismissiveness",
+    "sarcasm",
+    "gatekeeping",
+    "status_authority_invocation",
+    "resolution_marker",
+)
+
+_CLASSIFICATION_LABEL = pa.struct([pa.field("probability", pa.float64(), nullable=False)])
+
+_CLASSIFICATION_USAGE = pa.struct(
+    [
+        pa.field("input_tokens", pa.int64(), nullable=False),
+        pa.field("output_tokens", pa.int64(), nullable=False),
+    ]
+)
+
+_CLASSIFICATION_TONE_INTENSITY = pa.struct(
+    [
+        pa.field("score", pa.float64(), nullable=True),
+        pa.field("confidence", pa.float64(), nullable=True),
+        # Per-level probability distribution, keyed by level index as a string
+        # (COMMUNITY-HEALTH.md §4.3).
+        pa.field("probabilities", pa.map_(pa.string(), pa.float64()), nullable=True),
+    ]
+)
+
+_CLASSIFICATION_SENTIMENT_POLARITY = pa.struct(
+    [
+        # value: 'negative' | 'neutral' | 'positive' | 'mixed'
+        pa.field("value", pa.string(), nullable=True),
+        pa.field("confidence", pa.float64(), nullable=True),
+    ]
+)
+
+CLASSIFICATION = pa.schema(
+    [
+        pa.field("record_id", pa.string(), nullable=False),
+        pa.field("message_id", pa.string(), nullable=False),
+        pa.field("thread_id", pa.string(), nullable=False),
+        # source: 'mailing_list' | 'jira_comment' | 'github_pr_comment' | 'slack'
+        pa.field("source", pa.string(), nullable=False),
+        pa.field("classifier_version", pa.string(), nullable=False),
+        # Version of questions_v1.yaml specifically (D17), distinct from
+        # classifier_version's broader (question set + schema + post-processing)
+        # bundle versioning (COMMUNITY-HEALTH.md §4.2).
+        pa.field("question_set_version", pa.string(), nullable=False),
+        # The `model` field the provider's response actually reported, e.g.
+        # 'jev-1.13.0' -- not just the pinned value requested (D17/§4.4).
+        pa.field("model_id", pa.string(), nullable=False),
+        # sha256 of the exact normalized text + context window sent to the
+        # model (§4.3) -- what the input-hash cache
+        # (classify/classifier.py::ClassificationCache) keys on.
+        pa.field("input_hash", pa.string(), nullable=False),
+        pa.field("classified_at", TIMESTAMP_UTC, nullable=False),
+        # Tracked against D10's owner-funded monthly cost cap.
+        pa.field("usage", _CLASSIFICATION_USAGE, nullable=False),
+        pa.field(
+            "labels",
+            pa.struct(
+                [
+                    pa.field(name, _CLASSIFICATION_LABEL, nullable=True)
+                    for name in CLASSIFICATION_LABEL_NAMES
+                ]
+            ),
+            nullable=True,
+        ),
+        pa.field("tone_intensity", _CLASSIFICATION_TONE_INTENSITY, nullable=True),
+        pa.field("sentiment_polarity", _CLASSIFICATION_SENTIMENT_POLARITY, nullable=True),
+        pa.field("human_reviewed", pa.bool_(), nullable=False),
+        pa.field("human_label_id", pa.string(), nullable=True),
+        # record_id of a correction, if any (§7.6) -- the original record is
+        # never deleted (D2 rule 6 / §4.3 "Notes").
+        pa.field("superseded_by", pa.string(), nullable=True),
+    ]
+)
+
 TABLE_SCHEMAS: dict[str, pa.Schema] = {
     "person_identity": PERSON_IDENTITY,
     "identity_link": IDENTITY_LINK,
@@ -593,4 +699,5 @@ TABLE_SCHEMAS: dict[str, pa.Schema] = {
     "commit_record": GOVERNANCE_COMMIT_RECORD,
     "ci_evidence": GOVERNANCE_CI_EVIDENCE,
     "check_run": GOVERNANCE_CHECK_RUN,
+    "classification": CLASSIFICATION,
 }

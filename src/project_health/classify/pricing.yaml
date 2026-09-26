@@ -1,0 +1,16 @@
+# TypeSafe Jev pricing (DECISIONS.md D10, issue #45).
+#
+# Kept out of classifier.py on purpose -- D10's owner-funded monthly cost cap
+# depends on the provider's published per-token price, and a price change
+# (TypeSafe repricing, or a future model swap with a different price) should
+# never require a code edit, only this file. `classifier.CostCap` reads
+# `price_usd_per_million_input_tokens` from here by default
+# (`load_pricing_config()`); a caller may point at a different file (e.g. to
+# pin a historical price for reproducing an old run's cost estimate).
+#
+# Source: https://typesafe.ai (published pricing page, read 2026-09-25).
+# Only input-token price is tracked here because D10's cap counts input
+# tokens specifically ("count input tokens against a configurable monthly
+# cap", issue #45) -- Jev's output token volume per call is small and fixed
+# by the question set's structured-answer shape, not by the input text.
+price_usd_per_million_input_tokens: 0.042

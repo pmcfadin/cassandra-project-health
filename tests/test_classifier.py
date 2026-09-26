@@ -25,6 +25,7 @@ from project_health.classify.classifier import (
     ClassificationCache,
     ClassificationRecord,
     CostCap,
+    CostCapExceededError,
     JevClassifier,
     Label,
     NormalizedMessage,
@@ -485,6 +486,68 @@ class TestJevClassifierClassify:
                 cache=ClassificationCache(tmp_path / "cache.jsonl"),
                 concurrency=0,
             )
+
+    def test_second_classify_call_is_a_cache_hit_with_zero_transport_calls(
+        self, tmp_path: Path
+    ):
+        """D22: a repeated `classify()` call for the same message must never
+        re-send it -- `classify()` is not exempt from the input-hash cache
+        just because it's the single-message path."""
+        call_log: list[dict] = []
+        answers = {"model": EXPECTED_MODEL, "usage": _usage(), "answers": _full_answers(0.6)}
+        transport = _mock_transport(fixed_response=answers, call_log=call_log)
+        classifier = _classifier(tmp_path, transport=transport)
+        message = NormalizedMessage("m1", "t1", "mailing_list", "same text every time")
+
+        first = classifier.classify(message, ParentContext())
+        assert len(call_log) == 1
+
+        second = classifier.classify(message, ParentContext())
+        assert len(call_log) == 1  # no new transport call
+        assert second == first
+        assert second.labels["technical_disagreement"].probability == pytest.approx(0.6)
+
+    def test_classify_rejects_invalid_source_with_zero_transport_calls(self, tmp_path: Path):
+        call_log: list[dict] = []
+        answers = {"model": EXPECTED_MODEL, "usage": _usage(), "answers": _full_answers()}
+        transport = _mock_transport(fixed_response=answers, call_log=call_log)
+        classifier = _classifier(tmp_path, transport=transport)
+        # `NormalizedMessage.source`'s `Literal` type hint isn't runtime-checked
+        # by a plain dataclass, so an invalid value can reach `classify()`.
+        bad_message = NormalizedMessage("m1", "t1", "carrier_pigeon", "text")
+
+        with pytest.raises(ValueError, match="carrier_pigeon"):
+            classifier.classify(bad_message, ParentContext())
+
+        assert call_log == []  # never paid for the call
+
+    def test_classify_raises_cost_cap_exceeded_when_uncached_and_cap_hit(self, tmp_path: Path):
+        transport = _mock_transport(
+            fixed_response={"model": EXPECTED_MODEL, "usage": _usage(), "answers": _full_answers()}
+        )
+        cost_cap = CostCap(monthly_cap_usd=0.0, price_usd_per_million_input_tokens=0.042)
+        classifier = _classifier(tmp_path, transport=transport, cost_cap=cost_cap)
+        message = NormalizedMessage("m1", "t1", "mailing_list", "text")
+
+        with pytest.raises(CostCapExceededError):
+            classifier.classify(message, ParentContext())
+
+    def test_classify_use_cache_false_bypasses_cache_and_cost_cap(self, tmp_path: Path):
+        call_log: list[dict] = []
+        answers = {"model": EXPECTED_MODEL, "usage": _usage(), "answers": _full_answers()}
+        transport = _mock_transport(fixed_response=answers, call_log=call_log)
+        # A cap that's already exceeded would normally block an uncached call,
+        # but use_cache=False is an explicit, deliberate bypass of both.
+        cost_cap = CostCap(monthly_cap_usd=0.0, price_usd_per_million_input_tokens=0.042)
+        classifier = _classifier(tmp_path, transport=transport, cost_cap=cost_cap)
+        message = NormalizedMessage("m1", "t1", "mailing_list", "text")
+
+        record = classifier.classify(message, ParentContext(), use_cache=False)
+
+        assert len(call_log) == 1
+        assert len(classifier._cache) == 0  # never written to the cache
+        assert cost_cap.spent_usd == 0.0  # never recorded against the cap
+        assert record.message_id == "m1"
 
 
 # --- JevClassifier.run: cache + cost cap + concurrency -------------------------------

@@ -96,6 +96,36 @@ class NormalizedMessage:
     text: str
 
 
+def _validate_normalized_message(message: "NormalizedMessage") -> None:
+    """Cheap, pre-call validation of the one `NormalizedMessage` field a plain
+    `@dataclass` doesn't enforce at construction time (`source`'s `Literal` type
+    hint is not runtime-checked): `ClassificationRecord` would otherwise reject
+    an invalid `source` too, but only *after* a paid `system_one` call has
+    already been made and billed. Called first -- before any cache lookup,
+    hashing, or network call -- by both `JevClassifier.classify()` and
+    `run_async`'s per-message worker.
+    """
+    if message.source not in RECORD_SOURCES:
+        raise ValueError(
+            f"message.source must be one of {sorted(RECORD_SOURCES)}, got {message.source!r}"
+        )
+
+
+class CostCapExceededError(RuntimeError):
+    """Raised by `JevClassifier.classify(..., use_cache=True)` (the default) when
+    D10's monthly cost cap is already exceeded and no cached record exists for
+    this message, so the call cannot proceed without exceeding it further.
+
+    `run`/`run_async` never raise this -- a batch pauses cleanly and returns
+    whatever was already classified (`RunResult.status ==
+    "paused_cost_cap"`), per D10's "the rest of the pipeline keeps running."
+    A single `classify()` call has no partial-results shape to fall back to
+    (its return type is `ClassificationRecord`, not `ClassificationRecord |
+    None`), so it raises instead -- the caller decides what "partial" means
+    for its own use of a single classification.
+    """
+
+
 @dataclass(frozen=True)
 class ParentContext:
     """The immediate parent message's context, or `text=None` for a thread root
@@ -576,21 +606,58 @@ class JevClassifier:
 
     # -- Protocol conformance: one message, synchronous -----------------------------
 
-    def classify(self, message: NormalizedMessage, context: ParentContext) -> ClassificationRecord:
-        """Classify one message. Does *not* consult the input-hash cache or the
-        cost cap -- those are applied by `run`/`run_async`, which is the path every
-        real caller (the pipeline, the pilot script) should use; this method exists
-        to satisfy the `Classifier` Protocol for a caller that genuinely wants a
-        single uncached call."""
+    def classify(
+        self, message: NormalizedMessage, context: ParentContext, *, use_cache: bool = True
+    ) -> ClassificationRecord:
+        """Classify one message.
+
+        Consults the input-hash cache and D10's cost cap by default (D22: Jev's
+        "outputs are cached by input hash... so re-rendering never calls the
+        model again") -- a second `classify()` call for the same message never
+        re-sends it, and never spends anything if the cache already has an
+        answer. `message.source` is validated *before* touching the cache or
+        the network, so an invalid message never costs a call either.
+
+        Pass `use_cache=False` for an explicit, deliberate bypass of both the
+        cache and the cost cap (still with the same up-front validation) --
+        e.g. forcing one fresh call regardless of what's cached. There is
+        normally no reason to do this; every real caller (the pipeline, the
+        pilot script) should use the default.
+
+        Raises:
+            ValueError: `message.source` isn't a valid record source.
+            CostCapExceededError: `use_cache=True`, no cached record exists for
+                this message, and D10's cost cap is already exceeded.
+        """
+        _validate_normalized_message(message)
         state = build_state(message.text, message.source, context.text)
+        input_hash = compute_input_hash(state, self.question_set_version, self.model_id)
+
+        if use_cache:
+            cached = self._cache.get(input_hash)
+            if cached is not None:
+                return cached
+            if self._cost_cap is not None and self._cost_cap.exceeded:
+                raise CostCapExceededError(
+                    f"D10 monthly cost cap (${self._cost_cap.monthly_cap_usd}) already "
+                    f"exceeded (spent ${self._cost_cap.spent_usd}); message {message.message_id!r} "
+                    "has no cached record"
+                )
+
         with TypeSafeClient(
             api_key=self._api_key, retry=self._retry, transport=self._transport
         ) as client:
             response = client.system_one(
                 state=state, questions=self._questions, model=self.model_id
             )
-        input_hash = compute_input_hash(state, self.question_set_version, self.model_id)
-        return self._record_from_response(message, input_hash, response)
+        record = self._record_from_response(message, input_hash, response)
+
+        if use_cache:
+            self._cache.append(record)
+            if self._cost_cap is not None:
+                self._cost_cap.record(record.usage.input_tokens)
+
+        return record
 
     # -- Batch path: cache + cost cap + bounded concurrency --------------------------
 
@@ -623,6 +690,7 @@ class JevClassifier:
                 async with semaphore:
                     if paused:
                         return
+                    _validate_normalized_message(message)
                     state = build_state(message.text, message.source, context.text)
                     input_hash = compute_input_hash(state, self.question_set_version, self.model_id)
                     cached = self._cache.get(input_hash)

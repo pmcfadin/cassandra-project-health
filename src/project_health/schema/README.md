@@ -89,3 +89,21 @@ rule: a metric task computes `n` for its window, and if `n` is below that
 metric's floor, it writes `flag = 'insufficient_data'` and `value = null`
 rather than a number — the site must never render a value whose row has
 `flag != 'ok'`.
+
+## Phase 2a classification (issue #45)
+
+`classification` is one row per classified message, in the exact nested shape
+`docs/spec/COMMUNITY-HEALTH.md` §4.3 defines (D17: TypeSafe Jev). Unlike every
+other table in this file, its `labels`, `usage`, `tone_intensity` and
+`sentiment_polarity` columns are pyarrow structs/maps rather than flattened
+scalars or a `details_json` blob — the spec's schema is genuinely nested, and
+keeping the nesting means `validate()` checks it column-by-column instead of
+trusting an opaque string. `labels` is a struct with one nullable
+`{probability}` field per `CLASSIFICATION_LABEL_NAMES` (the 12 message-level
+labels from COMMUNITY-HEALTH.md §1.2) — a raw Noul probability, never a
+`{present, confidence}` pair, since thresholding happens in code later
+(issue #47). `input_hash` is what
+`src/project_health/classify/classifier.py`'s `ClassificationCache` keys its
+input-hash dedup on (ARCHITECTURE.md §6: a message whose hash already has a
+row here is never re-sent). See `classifier.py`'s module docstring for the
+runtime-validated (pydantic) version of this same schema, `ClassificationRecord`.

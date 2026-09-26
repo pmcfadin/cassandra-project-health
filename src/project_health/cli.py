@@ -17,7 +17,14 @@ from __future__ import annotations
 import argparse
 import sys
 import webbrowser
+from pathlib import Path
 
+from project_health.classify.sample import (
+    DEFAULT_JIRA_BLOCK_SIZE,
+    DEFAULT_JIRA_ISSUE_BLOCKS,
+    DEFAULT_JIRA_MAX_CALLS,
+    run_pilot_sample,
+)
 from project_health.config import load_project
 from project_health.label.label_set import LabelSetError
 from project_health.label.question_set import QuestionSetReadError
@@ -123,6 +130,50 @@ def _build_parser() -> argparse.ArgumentParser:
         "--no-browser", action="store_true", help="Don't open a browser tab automatically"
     )
 
+    pilot_parser = subparsers.add_parser(
+        "pilot-sample",
+        help=(
+            "Build the Phase 2a Jev pilot corpus v0 (issue #44; DECISIONS.md D18): a "
+            "150-message prevalence stratum + 100-message rare-label enrichment stratum "
+            "from dev@ + JIRA comments, 2017-2026. Writes a JSONL corpus + manifest to "
+            "--corpus-out/--manifest-out (point these at a private repo clone -- this "
+            "command has no opinion about where they live) and prints the public "
+            "manifest markdown (docs/pilot/corpus-v0-manifest.md's content) to stdout."
+        ),
+    )
+    pilot_parser.add_argument("--project", required=True, help="Path to a projects/<id>.yaml file")
+    pilot_parser.add_argument(
+        "--data-dir",
+        required=True,
+        help="Root of the raw/snapshots/manifests/state data layout (dev@ Phase 1 metadata cache)",
+    )
+    pilot_parser.add_argument(
+        "--seed", type=int, required=True, help="Sampler seed (deterministic, reproducible)"
+    )
+    pilot_parser.add_argument(
+        "--corpus-out",
+        required=True,
+        help="Output path for the corpus v0 JSONL (private repo clone)",
+    )
+    pilot_parser.add_argument(
+        "--manifest-out",
+        required=True,
+        help="Output path for the full run manifest JSON (private repo clone)",
+    )
+    pilot_parser.add_argument(
+        "--public-manifest-out",
+        default=None,
+        help="If set, also write the public manifest markdown here (docs/pilot/corpus-v0-manifest)",
+    )
+    pilot_parser.add_argument(
+        "--enrichment-filters",
+        default=None,
+        help="Path to the enrichment pre-filter YAML (default: classify/enrichment_filters_v1)",
+    )
+    pilot_parser.add_argument("--jira-issue-blocks", type=int, default=DEFAULT_JIRA_ISSUE_BLOCKS)
+    pilot_parser.add_argument("--jira-block-size", type=int, default=DEFAULT_JIRA_BLOCK_SIZE)
+    pilot_parser.add_argument("--jira-max-calls", type=int, default=DEFAULT_JIRA_MAX_CALLS)
+
     return parser
 
 
@@ -190,6 +241,52 @@ def _cmd_run(args: argparse.Namespace) -> int:
     return result.exit_code
 
 
+def _cmd_pilot_sample(args: argparse.Namespace) -> int:
+    config = load_project(args.project)
+    mailing_lists = config.mailing_lists
+    issue_tracker = config.issue_tracker
+    if mailing_lists is None or issue_tracker is None:
+        print(
+            "pilot-sample requires mailing_lists and issue_tracker in the project config",
+            file=sys.stderr,
+        )
+        return 2
+
+    enrichment_filters = args.enrichment_filters or str(
+        Path(__file__).resolve().parent / "classify" / "enrichment_filters_v1.yaml"
+    )
+
+    result = run_pilot_sample(
+        data_dir=args.data_dir,
+        seed=args.seed,
+        domain=mailing_lists.domain,
+        list_name="dev",
+        jira_base_url=issue_tracker.base_url,
+        jira_project_key=issue_tracker.project_key,
+        automated_sender_patterns=config.automated_senders,
+        enrichment_filters_path=enrichment_filters,
+        corpus_output_path=args.corpus_out,
+        manifest_output_path=args.manifest_out,
+        jira_issue_blocks=args.jira_issue_blocks,
+        jira_block_size=args.jira_block_size,
+        jira_max_calls=args.jira_max_calls,
+    )
+
+    if args.public_manifest_out:
+        public_path = Path(args.public_manifest_out)
+        public_path.parent.mkdir(parents=True, exist_ok=True)
+        public_path.write_text(result.public_manifest_markdown, encoding="utf-8")
+    else:
+        print(result.public_manifest_markdown)
+
+    print(
+        f"corpus v0: {len(result.items)} items written to {result.corpus_path} "
+        f"(checksum {result.manifest['corpus_checksum_sha256']})",
+        file=sys.stderr,
+    )
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
@@ -197,6 +294,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_run(args)
     if args.command == "label":
         return _cmd_label(args)
+    if args.command == "pilot-sample":
+        return _cmd_pilot_sample(args)
     parser.error(f"unknown command {args.command!r}")
     return 2
 

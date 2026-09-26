@@ -105,3 +105,16 @@ slack:                       # phase 2b only; absent/null until PMC + Infra gate
   enabled: false
   workspace: null
   channels: []
+
+# Governance compliance engine (issue #36, fixup cycle 1): per-run API budget
+# for the two evidence collectors that hit external rate-limited services
+# (collectors/jira_comments.py, collectors/github_checks.py). A nightly GitHub
+# Actions run has a 60-minute timeout and its GITHUB_TOKEN a shared ~1,000
+# req/hr allowance; these caps keep one governance run's share of that well
+# inside both. `pipeline.py`'s `_collect_governance` stops cleanly (never a
+# hard rate-limit error) once a cap is hit and records `status: "partial"` on
+# the run manifest — a full backfill across historical issues/commits may
+# take several nightly runs to catch up, by design.
+governance:
+  max_github_calls_per_run: 500
+  max_jira_calls_per_run: 300

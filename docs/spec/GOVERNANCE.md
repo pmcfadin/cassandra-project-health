@@ -439,3 +439,46 @@ A descriptive **ninja-count trend** (ninja-exempt commits per month/quarter) is 
 
 Both remain scored as their v1 proxy only (`reviewer-present`: "a reviewer is named, by either evidence
 source") until a future research task locates a usable committer roster.
+
+---
+
+## 10. Issue #36 live findings — `ci-cassandra.apache.org` Jenkins JSON API (informational; no policy change)
+
+`pre-commit-ci-evidence.v2_upgrade_condition` tasked issue #36 with live-testing the
+`ci-cassandra.apache.org` post-commit Jenkins JSON API before this rule could gain `fail_allowed: true`
+or a new evidence source. Live-tested 2026-09-25 against `https://ci-cassandra.apache.org`
+(`project_health.governance.jenkins_probe.probe_job`, not committed as a scored evidence source — this
+section reports findings only, `governance-policy.yaml` is unchanged):
+
+- **Availability**: live and responsive. `GET /api/json?tree=jobs[name,url]` returned 190 jobs,
+  including per-branch post-commit jobs (`Cassandra-trunk`, `Cassandra-5.0`, `Cassandra-4.1`, ...),
+  triggered by `hudson.triggers.SCMTrigger$SCMTriggerCause` (SCM-poll, i.e. post-commit, matching the
+  policy's `ci_cassandra_jenkins_api` description).
+- **SHA joinability**: **yes, and verified against real history.** Every build carries a
+  `hudson.plugins.git.util.BuildData` action per configured git remote; the one for
+  `https://github.com/apache/cassandra` (`lastBuiltRevision.SHA1`) is the exact commit built. Sampled
+  10 recent builds across `Cassandra-trunk` and `Cassandra-5.0`: **10/10** had a resolvable
+  `apache/cassandra` SHA, and one (`074a3f5605ef8cb3fa9c433980d4d59768b103d3`, `Cassandra-trunk` build
+  2615) was independently confirmed to exist in this project's own bare clone
+  (`git cat-file -t` / `git log -1`) as a real `cassandra-6.0` → `trunk` merge commit. Build results
+  also carry a `result` field (`SUCCESS`/`UNSTABLE`/`FAILURE`/`ABORTED`), a real fail signal if this
+  were ever scored.
+- **History depth: shallow, and inconsistent per job — this is the blocker for a v2 upgrade.**
+  `Cassandra-trunk` retains only its **30** most recent builds (`firstBuild` 2578 → `lastBuild` 2615;
+  build 2577 and gaps like 2612/2613 all 404), spanning **2026-08-29 to 2026-09-25** (about 27 days) —
+  a high-traffic job's window is a matter of weeks. `Cassandra-5.0` also retains only 31 builds, but
+  because that branch builds far less often, those 31 span **2025-01-27 to 2026-09-25** (~20 months) —
+  retention is a **build-count limit, not a time limit**, so the usable historical depth for any given
+  branch depends entirely on that branch's own commit/build frequency, not a fixed calendar window.
+  There is also no server-side "find the build for this SHA" query: joining a specific historical commit
+  requires enumerating a job's retained build list and matching client-side, which only works at all for
+  commits still within that job's shrinking retention window.
+
+**Conclusion for a future v2**: the API is reliable and technically joinable to a commit SHA where a
+build still exists, satisfying D15's "verifiable evidence" bar for *recent* commits. It cannot support
+backfilling `pre-commit-ci-evidence` (or a hypothetical CI-*result* rule) over historical commits —
+the vast majority of this project's scored history predates every sampled job's retention window
+entirely. A v2 upgrade using this source would only be honest as a **forward-looking** addition (e.g.
+"this commit, if made in roughly the last N weeks on its branch, has a joinable Jenkins result"),
+never as a way to fill in `unknown` rows for older commits — and even then, `N` varies by branch and
+would need to be re-measured periodically as retention rolls forward, not hard-coded once.

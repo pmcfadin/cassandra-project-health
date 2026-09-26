@@ -75,6 +75,17 @@ def build_manifest(
     metric is never entirely skipped for that reason, so
     `metrics_skipped_insufficient_data` is always `[]` here; it's still
     written for schema parity with §5's example shape.
+
+    The governance compliance engine (issue #36) is deliberately **not**
+    part of `metrics_missing`/`METRIC_IDS`/`status` at all: `pipeline.py`'s
+    `_collect_governance` adds its own `manifest["governance"]` key directly
+    (not through this function), with its own `status` (`'ok'` | `'partial'`
+    | `'failed'` | `'skipped'`) reporting whether that run's JIRA/GitHub
+    evidence backlog was fully cleared. A governance backlog run
+    (`'partial'`, e.g. a per-run API budget cap was hit — `governance/
+    metrics.py`'s module docstring) or outage (`'failed'`) never marks *this*
+    manifest's top-level `status` `degraded`/`failed` and never appears in
+    `metrics_missing` — the two completeness signals are read independently.
     """
     manifest: dict[str, Any] = {
         "run_id": run_id,

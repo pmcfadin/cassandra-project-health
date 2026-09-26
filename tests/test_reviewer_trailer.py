@@ -280,6 +280,62 @@ class TestUnparsedButContainsReviewedByIsDetectable:
         assert looks_like_reviewer_trailer(message) is True
 
 
+class TestGovernanceParserExtension:
+    """Issue #36: the two real trunk regressions that made the governance
+    engine add a `review_wording_check` guard (governance-policy.yaml
+    `reviewer-present.review_wording_check.regression_examples`,
+    docs/spec/GOVERNANCE.md §8) must now parse as real `pass` results
+    instead of falling through to "review text present but unparsed".
+    """
+
+    def setup_method(self):
+        self.extractor = ReviewerExtractor()
+
+    def test_reviewed_name_without_by(self):
+        # sha 208d87513f658f6fbf82cabcbb04142e7319fa55
+        message = "patch by Mick Semb Wever; reviewed Štefan Miklošovič for CASSANDRA-21489"
+        attribution = self.extractor.extract(message)
+        assert attribution is not None
+        assert attribution.patch_by == "Mick Semb Wever"
+        assert attribution.reviewers == ("Štefan Miklošovič",)
+        assert attribution.issue_keys == ("CASSANDRA-21489",)
+
+    def test_authored_by_then_reviewed_by(self):
+        # sha 05186d786974f3caf0491d5373b648c97c718c4a
+        message = (
+            "Authored by Lorina Poland (polandll); Reviewed by Branimir Lambov "
+            "(blambov) for CASSANDRA-18236"
+        )
+        attribution = self.extractor.extract(message)
+        assert attribution is not None
+        assert attribution.patch_by == "Lorina Poland (polandll)"
+        assert attribution.reviewers == ("Branimir Lambov (blambov)",)
+        assert attribution.issue_keys == ("CASSANDRA-18236",)
+
+    def test_does_not_match_lowercase_filler_word_as_a_name(self):
+        # Guards against "reviewed a fix for X" being read as reviewer "a fix".
+        message = "Reviewed a fix for CASSANDRA-100"
+        assert self.extractor.extract(message) is None
+
+    def test_extended_form_requires_for_clause(self):
+        # No "for <issue>" clause at all -- must not synthesize a match.
+        message = "reviewed Alice Author"
+        assert self.extractor.extract(message) is None
+
+
+class TestExtractIssueKeysPublicHelper:
+    def test_finds_keys_independent_of_trailer(self):
+        from project_health.collectors.reviewer_trailer import extract_issue_keys
+
+        message = "Some commit about CASSANDRA-100 and CASSANDRA-101, no trailer here"
+        assert extract_issue_keys(message) == ("CASSANDRA-100", "CASSANDRA-101")
+
+    def test_empty_when_no_keys(self):
+        from project_health.collectors.reviewer_trailer import extract_issue_keys
+
+        assert extract_issue_keys("no ticket reference here") == ()
+
+
 class TestPlaceholderReviewerFiltering:
     """Real apache/cassandra trailers with placeholder reviewer names (issue #18).
 

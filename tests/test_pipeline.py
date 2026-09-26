@@ -14,7 +14,7 @@ import json
 import os
 import shutil
 import subprocess
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import parse_qs
 
@@ -188,6 +188,11 @@ class TestEndToEnd:
             config=config,
             data_dir=data_dir,
             workdir=git_workdir,
+            # issue #36: these tests exercise git/jira collection specifically;
+            # governance compliance scoring gets its own dedicated coverage in
+            # TestGovernanceIntegration below rather than every call site here
+            # needing an offline governance evidence-source stub.
+            sources=["git", "jira", "asf_roster", "ponymail"],
             site_out=site_out,
             now=NOW,
             code_sha="abc1234",
@@ -296,6 +301,11 @@ class TestEndToEnd:
             config=config,
             data_dir=data_dir,
             workdir=git_workdir,
+            # issue #36: these tests exercise git/jira collection specifically;
+            # governance compliance scoring gets its own dedicated coverage in
+            # TestGovernanceIntegration below rather than every call site here
+            # needing an offline governance evidence-source stub.
+            sources=["git", "jira", "asf_roster"],
             now=NOW,
             code_sha="abc1234",
             jira_collector_factory=_jira_factory(transport),
@@ -313,6 +323,11 @@ class TestEndToEnd:
             config=config,
             data_dir=data_dir,
             workdir=git_workdir,
+            # issue #36: these tests exercise git/jira collection specifically;
+            # governance compliance scoring gets its own dedicated coverage in
+            # TestGovernanceIntegration below rather than every call site here
+            # needing an offline governance evidence-source stub.
+            sources=["git", "jira", "asf_roster", "ponymail"],
             now=NOW,
             code_sha="abc1234567",
             jira_collector_factory=_jira_factory(transport),
@@ -347,6 +362,11 @@ class TestReproducibility:
             config=config,
             data_dir=data_dir,
             workdir=git_workdir,
+            # issue #36: these tests exercise git/jira collection specifically;
+            # governance compliance scoring gets its own dedicated coverage in
+            # TestGovernanceIntegration below rather than every call site here
+            # needing an offline governance evidence-source stub.
+            sources=["git", "jira", "asf_roster"],
             now=NOW,
             code_sha="abc1234",
             jira_collector_factory=_jira_factory(transport_1),
@@ -370,6 +390,11 @@ class TestReproducibility:
             config=config,
             data_dir=data_dir,
             workdir=git_workdir,
+            # issue #36: these tests exercise git/jira collection specifically;
+            # governance compliance scoring gets its own dedicated coverage in
+            # TestGovernanceIntegration below rather than every call site here
+            # needing an offline governance evidence-source stub.
+            sources=["git", "jira", "asf_roster"],
             now=NOW.replace(hour=7),
             code_sha="abc1234",
             jira_collector_factory=_jira_factory(transport_2),
@@ -433,6 +458,11 @@ class TestPartialFailure:
             config=config,
             data_dir=data_dir,
             workdir=git_workdir,
+            # issue #36: these tests exercise git/jira collection specifically;
+            # governance compliance scoring gets its own dedicated coverage in
+            # TestGovernanceIntegration below rather than every call site here
+            # needing an offline governance evidence-source stub.
+            sources=["git", "jira", "asf_roster"],
             now=NOW,
             code_sha="abc1234",
             jira_collector_factory=_jira_factory(good_transport),
@@ -446,6 +476,11 @@ class TestPartialFailure:
             config=config,
             data_dir=data_dir,
             workdir=git_workdir,
+            # issue #36: these tests exercise git/jira collection specifically;
+            # governance compliance scoring gets its own dedicated coverage in
+            # TestGovernanceIntegration below rather than every call site here
+            # needing an offline governance evidence-source stub.
+            sources=["git", "jira", "asf_roster"],
             now=NOW.replace(hour=7),
             code_sha="abc1234",
             jira_collector_factory=_jira_factory(broken_transport, max_retries=2),
@@ -498,6 +533,10 @@ class TestFileChangeEventBackfillGap:
             config=config,
             data_dir=data_dir,
             workdir=git_workdir,
+            # issue #36: this test exercises the file_change_event watermark
+            # fix specifically; governance's own coverage lives in
+            # TestGovernanceIntegration below.
+            sources=["git", "jira", "asf_roster"],
             now=NOW,
             code_sha="abc1234",
             jira_collector_factory=_jira_factory(transport),
@@ -529,6 +568,7 @@ class TestFileChangeEventBackfillGap:
             config=config,
             data_dir=data_dir,
             workdir=git_workdir,
+            sources=["git", "jira", "asf_roster"],
             now=NOW.replace(hour=7),
             code_sha="abc1234",
             jira_collector_factory=_jira_factory(_paginated_transport({0: EMPTY_PAGE})),
@@ -574,6 +614,11 @@ class TestMetricsFailure:
             config=config,
             data_dir=data_dir,
             workdir=git_workdir,
+            # issue #36: these tests exercise git/jira collection specifically;
+            # governance compliance scoring gets its own dedicated coverage in
+            # TestGovernanceIntegration below rather than every call site here
+            # needing an offline governance evidence-source stub.
+            sources=["git", "jira", "asf_roster"],
             site_out=site_out,
             now=NOW,
             code_sha="abc1234",
@@ -629,6 +674,11 @@ class TestDegradedMetrics:
             config=config,
             data_dir=data_dir,
             workdir=git_workdir,
+            # issue #36: these tests exercise git/jira collection specifically;
+            # governance compliance scoring gets its own dedicated coverage in
+            # TestGovernanceIntegration below rather than every call site here
+            # needing an offline governance evidence-source stub.
+            sources=["git", "jira", "asf_roster"],
             site_out=site_out,
             now=NOW,
             code_sha="abc1234",
@@ -939,3 +989,543 @@ class TestPonymailBackfillCap:
             "user": {"months_remaining": 2},
         }
         assert second_ponymail["partial"] is True
+# --- Governance compliance engine wiring (issue #36) -------------------------
+#
+# `sources` now includes `"governance"` (default: all of `ALL_SOURCES`), so
+# every test above opts back out to `sources=["git", "jira", "asf_roster"]`
+# (everything except governance -- `asf_roster` stays in so `pmc_joins_
+# quarterly`, a registered M0 metric since issue #50, still gets real data
+# and a clean `status: "ok"`) to keep testing exactly what it always tested,
+# offline, with no governance evidence-source stub needed. Governance's own
+# end-to-end wiring gets its coverage here instead, using fixture data (the
+# #3 git fixture repo's real reviewer trailers/issue keys, plus a couple of
+# stub evidence-source collectors) — never the real JIRA-comments or
+# GitHub-checks APIs.
+
+
+class _StubJiraComments:
+    """Offline stand-in for `collectors.jira_comments.JiraCommentsCollector`
+    (issue #36 fixup cycle 1: `_collect_governance` now calls the *singular*
+    `fetch_ci_evidence`/`call_count`-budgeted interface, not the old batch
+    `fetch_ci_evidence_for_issues`)."""
+
+    def __init__(self, evidence_by_issue: dict):
+        self._evidence = evidence_by_issue
+        self.call_count = 0
+
+    def fetch_ci_evidence(self, issue_key):
+        self.call_count += 1
+        return self._evidence.get(issue_key)
+
+    def close(self):
+        pass
+
+
+class _StubGitHubChecks:
+    """Offline stand-in for `collectors.github_checks.GitHubChecksCollector`
+    (issue #36 fixup cycle 1: singular `fetch_checkstyle_evidence`/
+    `call_count`, matching the real collector's budgeted interface)."""
+
+    def __init__(self, runs_by_sha: dict):
+        self._runs = runs_by_sha
+        self.call_count = 0
+
+    def fetch_checkstyle_evidence(self, sha):
+        self.call_count += 1
+        return self._runs.get(sha, ())
+
+    def close(self):
+        pass
+
+
+class _FailingGitHubChecks:
+    """Simulates a GitHub API outage -- must not take down governance scoring."""
+
+    def __init__(self):
+        self.call_count = 0
+
+    def fetch_checkstyle_evidence(self, sha):
+        self.call_count += 1
+        raise RuntimeError("synthetic GitHub API outage")
+
+    def close(self):
+        pass
+
+
+def _latest_non_merge_sha(repo_path) -> str:
+    """A real non-merge commit sha on trunk -- merge commits are excluded
+    from `code-style-checkstyle` scoring (`_collect_governance`'s
+    `checkstyle_shas` filter), so a test targeting that check needs a
+    non-merge sha, not `trunk`'s HEAD (which is a merge commit in the #3
+    fixture repo)."""
+    return subprocess.run(
+        ["git", "-C", str(repo_path), "log", "--no-merges", "-1", "--format=%H", "trunk"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+
+# The #3 fixture repo's commits are pinned to 2024 dates (deterministic,
+# never regenerated), but `NOW` here is 2026-09-25 -- well past
+# `DEFAULT_GOVERNANCE_CHECKSTYLE_RETENTION_DAYS` (400 days, issue #36 fixup
+# cycle 2). Tests exercising *checkstyle fetch behavior* specifically (not
+# the retention cutoff itself, which gets its own dedicated test) need a
+# much larger retention window so the fixture's fixed 2024 dates don't fall
+# outside it purely because of how much real time has passed since the
+# fixture was authored.
+_LARGE_TEST_RETENTION_DAYS = 3650
+
+
+def _with_governance(config, **overrides):
+    """`config`, with its `governance:` block replaced by `overrides`
+    (defaulting `checkstyle_retention_days` to a large value so fixture-repo
+    commits from 2024 never fall outside it just because real time has
+    moved on) -- `model_copy` since `ProjectConfig` is a pydantic model."""
+    governance = {"checkstyle_retention_days": _LARGE_TEST_RETENTION_DAYS, **overrides}
+    return config.model_copy(update={"governance": governance})
+
+
+class TestGovernanceIntegration:
+    def test_governance_produces_commit_compliance_and_metric_rows(
+        self, tmp_path, config, git_workdir
+    ):
+        from project_health.collectors.github_checks import CheckstyleEvidence
+        from project_health.collectors.jira_comments import CommentCIEvidence
+
+        data_dir = tmp_path / "data"
+        sha = _latest_non_merge_sha(git_workdir)
+
+        jira_stub = _StubJiraComments(
+            {
+                "CASSANDRA-112": CommentCIEvidence(
+                    issue_key="CASSANDRA-112",
+                    comment_id="1",
+                    comment_author="alice",
+                    comment_created_at="2024-07-08T00:00:00.000+0000",
+                    matched_term="jenkins",
+                    matched_url="https://ci-cassandra.apache.org/job/x/1",
+                )
+            }
+        )
+        github_stub = _StubGitHubChecks(
+            {
+                sha: (
+                    CheckstyleEvidence(
+                        sha=sha, check_run_name="ant-check-jdk11", conclusion="success"
+                    ),
+                )
+            }
+        )
+
+        result = run_pipeline(
+            config=_with_governance(config),
+            data_dir=data_dir,
+            workdir=git_workdir,
+            sources=["git", "jira", "asf_roster", "governance"],
+            jira_collector_factory=_jira_factory(
+                _paginated_transport({0: PAGE_1, 5: PAGE_2, 10: EMPTY_PAGE})
+            ),
+            asf_roster_collector_factory=_roster_factory(),
+            now=NOW,
+            code_sha="abc1234",
+            governance_jira_comments_factory=lambda base_url: jira_stub,
+            governance_github_checks_factory=lambda owner, repo: github_stub,
+        )
+
+        assert result.exit_code == 0
+        governance = result.manifest["governance"]
+        assert governance["status"] == "ok"
+        assert governance["commits_scored"] > 0
+        assert governance["compliance_rows"] > 0
+
+        compliance = pq.read_table(
+            data_dir / "snapshots" / result.run_id / "governance_commit_compliance.parquet"
+        )
+        assert compliance.num_rows == governance["compliance_rows"]
+        rows = compliance.to_pylist()
+
+        checkstyle_row = next(
+            r for r in rows if r["sha"] == sha and r["check_id"] == "code-style-checkstyle"
+        )
+        assert checkstyle_row["result"] == "pass"
+
+        metrics = pq.read_table(
+            data_dir / "snapshots" / result.run_id / "governance_metric_value.parquet"
+        )
+        assert metrics.num_rows > 0
+        assert {r["metric_id"] for r in metrics.to_pylist()} <= {
+            "governance_reviewer_present_pass_rate",
+            "governance_jira_ticket_referenced_pass_rate",
+            "governance_pre_commit_ci_evidence_pass_rate",
+            "governance_code_style_checkstyle_pass_rate",
+        }
+
+    def test_github_checks_outage_still_scores_other_checks_with_unknown(
+        self, tmp_path, config, git_workdir
+    ):
+        """A GitHub API outage must never zero out governance's output --
+        `reviewer-present`/`jira-ticket-referenced` still score from git
+        alone, and `code-style-checkstyle` falls back to its documented
+        `unknown` (never a missing row). The run's overall `status` is
+        `'partial'` (issue #36 fixup cycle 1: the checkstyle backlog wasn't
+        cleared this run, same as a budget cutoff) -- never `'failed'`, and
+        the M0 pipeline is unaffected either way (governance metrics are
+        outside `metrics.registry.METRIC_IDS`)."""
+        data_dir = tmp_path / "data"
+
+        result = run_pipeline(
+            config=_with_governance(config),
+            data_dir=data_dir,
+            workdir=git_workdir,
+            sources=["governance"],
+            now=NOW,
+            code_sha="abc1234",
+            governance_jira_comments_factory=lambda base_url: _StubJiraComments({}),
+            governance_github_checks_factory=lambda owner, repo: _FailingGitHubChecks(),
+        )
+
+        governance = result.manifest["governance"]
+        assert governance["status"] == "partial"
+        assert governance["commits_scored"] > 0
+
+        rows = pq.read_table(
+            data_dir / "snapshots" / result.run_id / "governance_commit_compliance.parquet"
+        ).to_pylist()
+        assert any(r["check_id"] == "reviewer-present" and r["result"] == "pass" for r in rows)
+        checkstyle_rows = [r for r in rows if r["check_id"] == "code-style-checkstyle"]
+        assert checkstyle_rows
+        assert all(r["result"] == "unknown" for r in checkstyle_rows)
+
+    def test_governance_never_registered_in_metric_ids_so_never_marks_run_degraded(
+        self, tmp_path, config, git_workdir
+    ):
+        """Governance metrics are intentionally never added to
+        `metrics.registry.METRIC_IDS` (see `governance/metrics.py`'s module
+        docstring) -- this proves a governance-only run with zero JIRA/
+        GitHub evidence still exits 0 / `status: ok`, never `degraded`,
+        which is exactly the failure mode issue #24 guards the *M0* metrics
+        against and which governance must never trip by accident.
+        """
+        data_dir = tmp_path / "data"
+
+        result = run_pipeline(
+            config=config,
+            data_dir=data_dir,
+            workdir=git_workdir,
+            sources=["git", "jira", "asf_roster", "governance"],
+            jira_collector_factory=_jira_factory(
+                _paginated_transport({0: PAGE_1, 5: PAGE_2, 10: EMPTY_PAGE})
+            ),
+            asf_roster_collector_factory=_roster_factory(),
+            now=NOW,
+            code_sha="abc1234",
+            governance_jira_comments_factory=lambda base_url: _StubJiraComments({}),
+            governance_github_checks_factory=lambda owner, repo: _StubGitHubChecks({}),
+        )
+
+        assert result.exit_code == 0
+        assert result.manifest["status"] == "ok"
+        assert result.manifest["metrics_missing"] == []
+
+
+class TestCiEligibleIssueKeys:
+    """Issue #36 fixup cycle 2: `_ci_eligible_issue_keys_newest_first`."""
+
+    def test_excludes_issue_only_referenced_before_effective_from(self):
+        from project_health.pipeline import _ci_eligible_issue_keys_newest_first
+        from project_health.governance.checks import CommitFacts
+        from project_health.governance.policy import DEFAULT_POLICY_PATH, load_policy
+
+        policy = load_policy(DEFAULT_POLICY_PATH)
+        ci_rule = policy.rule("pre-commit-ci-evidence")
+
+        before = CommitFacts(
+            sha="a" * 40,
+            branch="trunk",
+            commit_date=datetime(2019, 1, 1, tzinfo=timezone.utc),
+            message="patch by X; reviewed by Y for CASSANDRA-1",
+            author="X",
+            committer="X",
+            is_merge=False,
+            issue_keys=("CASSANDRA-1",),
+        )
+        after = CommitFacts(
+            sha="b" * 40,
+            branch="trunk",
+            commit_date=datetime(2024, 1, 1, tzinfo=timezone.utc),
+            message="patch by X; reviewed by Y for CASSANDRA-2",
+            author="X",
+            committer="X",
+            is_merge=False,
+            issue_keys=("CASSANDRA-2",),
+        )
+        result = _ci_eligible_issue_keys_newest_first([before, after], ci_rule)
+        assert result == ["CASSANDRA-2"]
+
+    def test_orders_newest_referencing_commit_first(self):
+        from project_health.pipeline import _ci_eligible_issue_keys_newest_first
+        from project_health.governance.checks import CommitFacts
+        from project_health.governance.policy import DEFAULT_POLICY_PATH, load_policy
+
+        policy = load_policy(DEFAULT_POLICY_PATH)
+        ci_rule = policy.rule("pre-commit-ci-evidence")
+
+        older = CommitFacts(
+            sha="a" * 40,
+            branch="trunk",
+            commit_date=datetime(2022, 1, 1, tzinfo=timezone.utc),
+            message="patch by X; reviewed by Y for CASSANDRA-1",
+            author="X",
+            committer="X",
+            is_merge=False,
+            issue_keys=("CASSANDRA-1",),
+        )
+        newer = CommitFacts(
+            sha="b" * 40,
+            branch="trunk",
+            commit_date=datetime(2024, 1, 1, tzinfo=timezone.utc),
+            message="patch by X; reviewed by Y for CASSANDRA-2",
+            author="X",
+            committer="X",
+            is_merge=False,
+            issue_keys=("CASSANDRA-2",),
+        )
+        result = _ci_eligible_issue_keys_newest_first([older, newer], ci_rule)
+        assert result == ["CASSANDRA-2", "CASSANDRA-1"]
+
+    def test_still_included_if_also_referenced_by_an_in_force_commit(self):
+        """The same issue key referenced by both a before- and
+        after-effective_from commit must still be fetched -- excluding it
+        would wrongly cost the in-force commit its evidence too."""
+        from project_health.pipeline import _ci_eligible_issue_keys_newest_first
+        from project_health.governance.checks import CommitFacts
+        from project_health.governance.policy import DEFAULT_POLICY_PATH, load_policy
+
+        policy = load_policy(DEFAULT_POLICY_PATH)
+        ci_rule = policy.rule("pre-commit-ci-evidence")
+
+        before = CommitFacts(
+            sha="a" * 40,
+            branch="trunk",
+            commit_date=datetime(2019, 1, 1, tzinfo=timezone.utc),
+            message="patch by X; reviewed by Y for CASSANDRA-1",
+            author="X",
+            committer="X",
+            is_merge=False,
+            issue_keys=("CASSANDRA-1",),
+        )
+        after = CommitFacts(
+            sha="b" * 40,
+            branch="trunk",
+            commit_date=datetime(2024, 1, 1, tzinfo=timezone.utc),
+            message="follow-up for CASSANDRA-1",
+            author="X",
+            committer="X",
+            is_merge=False,
+            issue_keys=("CASSANDRA-1",),
+        )
+        result = _ci_eligible_issue_keys_newest_first([before, after], ci_rule)
+        assert result == ["CASSANDRA-1"]
+
+
+class TestGovernanceIncrementalCollection:
+    """Issue #36 fixup cycle 1: evidence collection must be incremental --
+    a second run must not re-walk already-collected commits or re-fetch
+    already-resolved JIRA/GitHub evidence."""
+
+    def _run(
+        self, config, data_dir, git_workdir, *, now, jira_stub=None, github_stub=None, **governance
+    ):
+        return run_pipeline(
+            config=_with_governance(config, **governance),
+            data_dir=data_dir,
+            workdir=git_workdir,
+            sources=["governance"],
+            now=now,
+            code_sha="abc1234",
+            governance_jira_comments_factory=lambda base_url: (jira_stub or _StubJiraComments({})),
+            governance_github_checks_factory=lambda owner, repo: (
+                github_stub or _StubGitHubChecks({})
+            ),
+        )
+
+    def test_second_run_walks_zero_new_commits(self, tmp_path, config, git_workdir):
+        data_dir = tmp_path / "data"
+        first = self._run(config, data_dir, git_workdir, now=NOW)
+        assert first.manifest["governance"]["git_records_collected"] > 0
+
+        second = self._run(config, data_dir, git_workdir, now=NOW.replace(hour=7))
+        assert second.manifest["governance"]["git_records_collected"] == 0
+        # Full accumulated commit set is unchanged in size across both runs.
+        assert second.manifest["governance"]["commits_scored"] == (
+            first.manifest["governance"]["commits_scored"]
+        )
+
+    def test_ci_evidence_not_size_free_but_rechecked_only_when_issue_updated(
+        self, tmp_path, config, git_workdir
+    ):
+        """An issue checked once (found or not) is never re-fetched on a
+        later run unless its `updated_at` (from the already-collected
+        `raw/jira/issue` table) has moved forward since."""
+        data_dir = tmp_path / "data"
+        jira_stub = _StubJiraComments({})  # never finds anything
+        first = self._run(config, data_dir, git_workdir, now=NOW, jira_stub=jira_stub)
+        first_checked = first.manifest["governance"]["ci_evidence"]["checked"]
+        assert first_checked > 0  # the fixture repo's commits reference real issue keys
+        assert first.manifest["governance"]["ci_evidence"]["pending"] == 0
+
+        # Second run, brand-new stub instance (so `call_count` starts at 0
+        # again) -- with no `raw/jira/issue` data at all in this data_dir,
+        # every previously-checked issue key has no known `updated_at`, so
+        # none of them should be considered "changed since last check".
+        second_stub = _StubJiraComments({})
+        second = self._run(
+            config, data_dir, git_workdir, now=NOW.replace(hour=7), jira_stub=second_stub
+        )
+        assert second.manifest["governance"]["ci_evidence"]["checked"] == 0
+        assert second_stub.call_count == 0
+        assert second.manifest["governance"]["ci_evidence"]["skipped_up_to_date"] == first_checked
+
+    def test_check_run_success_is_never_refetched(self, tmp_path, config, git_workdir):
+        from project_health.collectors.github_checks import CheckstyleEvidence
+
+        data_dir = tmp_path / "data"
+        sha = _latest_non_merge_sha(git_workdir)
+        github_stub = _StubGitHubChecks(
+            {
+                sha: (
+                    CheckstyleEvidence(
+                        sha=sha, check_run_name="ant-check-jdk11", conclusion="success"
+                    ),
+                )
+            }
+        )
+        first = self._run(config, data_dir, git_workdir, now=NOW, github_stub=github_stub)
+        assert first.manifest["governance"]["check_runs"]["checked"] > 0
+
+        second_stub = _StubGitHubChecks({})
+        second = self._run(
+            config, data_dir, git_workdir, now=NOW.replace(hour=7), github_stub=second_stub
+        )
+        # The one sha with a recorded `success` conclusion is resolved and
+        # skipped; nothing else in the tiny fixture repo needs checking a
+        # second time either, since `_StubGitHubChecks({})` "found nothing"
+        # on the first run already marked every other sha checked too.
+        assert second.manifest["governance"]["check_runs"]["checked"] == 0
+        assert second_stub.call_count == 0
+        assert second.manifest["governance"]["check_runs"]["skipped_resolved"] >= 1
+
+    def test_check_run_pending_old_commit_is_not_retried(self, tmp_path, config, git_workdir):
+        """A sha whose only known result is "no run found" and whose commit
+        is older than the 30-day retry window (but still within the much
+        larger retention horizon) must not be retried forever."""
+        from project_health.pipeline import _collect_governance_check_runs
+        from project_health.governance.checks import CommitFacts
+
+        data_dir = tmp_path / "data"
+        old_commit = CommitFacts(
+            sha="a" * 40,
+            branch="trunk",
+            commit_date=NOW - timedelta(days=400),
+            message="patch by X; reviewed by Y for CASSANDRA-1",
+            author="X",
+            committer="X",
+            is_merge=False,
+        )
+        # Older than the 30-day re-fetch window, but within retention (a
+        # separate, much larger cutoff, issue #36 fixup cycle 2) -- this
+        # test is specifically about the retry window, not retention.
+        retention_cutoff = NOW - timedelta(days=1000)
+        first_stub = _StubGitHubChecks({})  # "no run found" for every sha
+        first_stats = _collect_governance_check_runs(
+            data_dir,
+            "run-1",
+            NOW,
+            [old_commit],
+            500,
+            "apache",
+            "cassandra",
+            lambda o, r: first_stub,
+            retention_cutoff=retention_cutoff,
+        )
+        assert first_stats["checked"] == 1
+        assert first_stub.call_count == 1
+
+        second_stub = _StubGitHubChecks({})
+        second_stats = _collect_governance_check_runs(
+            data_dir,
+            "run-2",
+            NOW,
+            [old_commit],
+            500,
+            "apache",
+            "cassandra",
+            lambda o, r: second_stub,
+            retention_cutoff=retention_cutoff,
+        )
+        assert second_stats["checked"] == 0
+        assert second_stats["skipped_too_old"] == 1
+        assert second_stub.call_count == 0
+
+    def test_check_run_outside_retention_is_never_fetched(self, tmp_path, config, git_workdir):
+        """A commit older than the retention horizon is never fetched at
+        all -- not even once -- and is never counted as `pending` backlog
+        (issue #36 fixup cycle 2)."""
+        from project_health.pipeline import _collect_governance_check_runs
+        from project_health.governance.checks import CommitFacts
+
+        data_dir = tmp_path / "data"
+        ancient_commit = CommitFacts(
+            sha="b" * 40,
+            branch="trunk",
+            commit_date=NOW - timedelta(days=500),
+            message="patch by X; reviewed by Y for CASSANDRA-2",
+            author="X",
+            committer="X",
+            is_merge=False,
+        )
+        stub = _StubGitHubChecks({})
+        stats = _collect_governance_check_runs(
+            data_dir,
+            "run-1",
+            NOW,
+            [ancient_commit],
+            500,
+            "apache",
+            "cassandra",
+            lambda o, r: stub,
+            retention_cutoff=NOW - timedelta(days=400),
+        )
+        assert stats["checked"] == 0
+        assert stats["skipped_outside_retention"] == 1
+        assert stats["pending"] == 0
+        assert stub.call_count == 0
+
+    def test_budget_exhaustion_marks_run_partial(self, tmp_path, config, git_workdir):
+        """A near-zero per-run budget must stop cleanly (not raise) and
+        report `status: 'partial'` with a nonzero `pending` count, rather
+        than silently claiming `'ok'` with an incomplete backlog."""
+        data_dir = tmp_path / "data"
+        result = self._run(
+            config,
+            data_dir,
+            git_workdir,
+            now=NOW,
+            max_github_calls_per_run=0,
+            max_jira_calls_per_run=0,
+        )
+
+        governance = result.manifest["governance"]
+        assert governance["status"] == "partial"
+        assert governance["ci_evidence"]["pending"] > 0
+        assert governance["check_runs"]["pending"] > 0
+        # The commits themselves are still fully walked and scored (the git
+        # walk has no budget -- only the two external evidence fetches do);
+        # every check still produces a row, just with `unknown` results for
+        # the two evidence-dependent checks.
+        assert governance["commits_scored"] > 0
+        rows = pq.read_table(
+            data_dir / "snapshots" / result.run_id / "governance_commit_compliance.parquet"
+        ).to_pylist()
+        assert any(r["check_id"] == "pre-commit-ci-evidence" for r in rows)

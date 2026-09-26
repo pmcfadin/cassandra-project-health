@@ -215,6 +215,54 @@ M0_METRICS: dict[str, MetricMeta] = {
     ),
 }
 
+# Governance compliance engine (issue #36, D14/D15): one monthly pass-rate
+# card per scored governance-policy.yaml check
+# (`governance/metrics.py::compute_monthly_check_metrics`,
+# `governance/registry.py` registers these at definition_version "1.0").
+# Presentation metadata only, registered here per the issue's acceptance
+# criterion ("registered at v1.0 on the Governance page, page='governance'
+# in metrics_meta") — building the `/governance/` page itself (reading these
+# out of a snapshot, rendering the per-commit table) is issue #37's scope,
+# not this one's.
+GOVERNANCE_METRICS: dict[str, MetricMeta] = {
+    "governance_reviewer_present_pass_rate": MetricMeta(
+        metric_id="governance_reviewer_present_pass_rate",
+        name="Reviewer Present — Pass Rate",
+        dimension="governance",
+        tier="established",
+        direction_of_good="higher",
+        value_kind="percent",
+        page="governance",
+    ),
+    "governance_jira_ticket_referenced_pass_rate": MetricMeta(
+        metric_id="governance_jira_ticket_referenced_pass_rate",
+        name="JIRA Ticket Referenced — Pass Rate",
+        dimension="governance",
+        tier="established",
+        direction_of_good="higher",
+        value_kind="percent",
+        page="governance",
+    ),
+    "governance_pre_commit_ci_evidence_pass_rate": MetricMeta(
+        metric_id="governance_pre_commit_ci_evidence_pass_rate",
+        name="Pre-Commit CI Evidence — Pass Rate",
+        dimension="governance",
+        tier="proxy",
+        direction_of_good="higher",
+        value_kind="percent",
+        page="governance",
+    ),
+    "governance_code_style_checkstyle_pass_rate": MetricMeta(
+        metric_id="governance_code_style_checkstyle_pass_rate",
+        name="Checkstyle — Pass Rate",
+        dimension="governance",
+        tier="established",
+        direction_of_good="higher",
+        value_kind="percent",
+        page="governance",
+    ),
+}
+
 
 @dataclass(frozen=True)
 class PageMeta:

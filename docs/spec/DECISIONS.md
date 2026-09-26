@@ -85,3 +85,11 @@ Owner decision (2026-09-25): the governance page lists individual commits with a
 
 ## D16. Conversations page ships now with metadata-only metrics
 Before the Phase 2 gates clear (D1), `/conversations/` shows mailing-list metrics computed from metadata only: sender, timestamp and thread structure, never message bodies. Examples are time to first reply on dev@ and the unanswered-thread rate. The page explains that interaction-health metrics arrive after classifier validation (Phase 2a) and that Slack arrives after PMC and ASF Infra approval (Phase 2b).
+
+## D17. Classifier provider: TypeSafe Jev
+Owner decision (2026-09-25): all communication classification (Phase 2a mailing lists, JIRA comments and PR comments; later Phase 2b Slack) uses TypeSafe's Jev System One model through the `typesafe-sdk` Python SDK. This replaces the Anthropic-based classifier assumed in `COMMUNITY-HEALTH.md` §4 and `ARCHITECTURE.md` §6. The provider-agnostic classifier interface stays.
+- **Pinned model.** Requests pin a versioned id (e.g. `jev-1.13.0`), never `jev-latest`, and the answering version from the response's `model` field is stored with every observation. A model change is a classifier version bump, validated against the frozen benchmark before it is used (D2 rule 6).
+- **Labels as probabilities.** Each message-level label is a Noul question (multi-label), and intensity is a Score. Raw probabilities are stored, and thresholds are applied in code, per label, calibrated against the human-labeled benchmark. Re-thresholding therefore never needs re-inference.
+- **Thread-level outcomes stay deterministic.** Escalation, pile-on, resolution and abandonment are derived in code from message-level observations (`COMMUNITY-HEALTH.md` §2). Jev never judges a whole thread, and counting is never delegated to the model.
+- **Secret.** `TYPESAFE_API_KEY` is set locally from `.env`, which is gitignored, and as a GitHub Actions repo secret for scheduled runs. D10's owner-funded monthly cap now applies to TypeSafe usage.
+- **Phase 2 gates are unchanged.** Nothing classified is published until the benchmark and agreement gates in `COMMUNITY-HEALTH.md` §6 pass. Slack text is sent to TypeSafe only after PMC and ASF Infra approval (D1), and that approval request names TypeSafe as a third-party processor.

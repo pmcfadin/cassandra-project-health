@@ -57,6 +57,7 @@ from project_health.governance.metrics import metric_id_for_check
 from project_health.schema import get_schema, validate
 from project_health.site.manifest import RunManifest, load_manifest
 from project_health.site.governance_page import build_governance_page_context
+from project_health.site.leaderboard_page import build_leaderboard_page_context
 from project_health.site.metrics_meta import (
     GOVERNANCE_METRICS,
     HOME_CARD_METRIC_LIMIT,
@@ -101,6 +102,9 @@ DECISIONS_D14_ANCHOR = (
     "d14-governance-per-commit-minimums-from-a-versioned-owner-approved-policy"
 )
 DECISIONS_D15_ANCHOR = "d15-governance-transparency-full-per-commit-detail-including-names"
+# GitHub's auto-generated heading anchor for DECISIONS.md's D19 section
+# (issue #56's contributor leaderboard) — community.html deep-links to it.
+DECISIONS_D19_ANCHOR = "d19-contributor-leaderboard-amends-d2-rule-7"
 
 # The site root is `index.html`; every other page lives one directory down
 # (`community/index.html`, etc.), so its relative links to `static/` and
@@ -716,6 +720,7 @@ def _common_page_context(manifest: RunManifest, build_time: datetime) -> dict[st
         "community_health_spec_url": COMMUNITY_HEALTH_SPEC_URL,
         "decisions_d14_anchor": DECISIONS_D14_ANCHOR,
         "decisions_d15_anchor": DECISIONS_D15_ANCHOR,
+        "decisions_d19_anchor": DECISIONS_D19_ANCHOR,
         "governance_spec_url": GOVERNANCE_SPEC_URL,
         "governance_security_anchor": GOVERNANCE_SECURITY_ANCHOR,
         "vega_version": VEGA_VERSION,
@@ -763,10 +768,19 @@ def _render_pages(
         }
         for dimension, series_list in _group_by_dimension(series_by_page["community"])
     ]
+    # Contributor leaderboard (D19, issue #56) — a ranked top-N table, kept
+    # entirely out of the `metric_value`/M0 machinery above; see
+    # `leaderboard_page.py`'s module docstring for why this stays a small,
+    # additive call here rather than threading leaderboard concerns through
+    # this function's other logic.
+    leaderboard_context = build_leaderboard_page_context(
+        data_dir, run_id, out_dir, base_prefix=SUBPAGE_BASE_PREFIX
+    )
     community_html = env.get_template("community.html").render(
         current_page="community",
         base_prefix=SUBPAGE_BASE_PREFIX,
         dimensions=community_dimensions,
+        leaderboard=leaderboard_context,
         **common_ctx,
     )
     _write_subpage(out_dir, "community", community_html)

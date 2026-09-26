@@ -81,6 +81,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from project_health import storage
+from project_health.leaderboard import build_leaderboards
 from project_health.collectors.asf_roster import AsfRosterCollector
 from project_health.collectors.git import GitCollector, clone_or_fetch, github_clone_url
 from project_health.collectors.github import resolve_github_token
@@ -1583,6 +1584,18 @@ def _write_metrics_snapshot(data_dir: Path, run_id: str, metrics_table: pa.Table
     return path
 
 
+def _write_leaderboard_snapshot(data_dir: Path, run_id: str, leaderboard_table: pa.Table) -> Path:
+    """`snapshots/<run_id>/leaderboard.parquet` (D19, issue #56) — a sibling
+    file to `metrics.parquet`, deliberately not merged into it: the
+    `contributor_leaderboard` table has its own schema (`schema/tables.py`)
+    and is read by `site/leaderboard_page.py`, never by `metrics.registry`."""
+    snapshot_dir = Path(data_dir) / "snapshots" / run_id
+    snapshot_dir.mkdir(parents=True, exist_ok=True)
+    path = snapshot_dir / "leaderboard.parquet"
+    pq.write_table(leaderboard_table, path)
+    return path
+
+
 # --- Orchestration ----------------------------------------------------------
 
 
@@ -1883,6 +1896,50 @@ def run_pipeline(
             github_checks_factory=governance_github_checks_factory,
             jira_comments_factory=governance_jira_comments_factory,
         )
+
+    # --- Contributor leaderboard (D19, issue #56) ----------------------------
+    # A ranked top-N *table*, not a registered metric (leaderboard.py's own
+    # module docstring explains why it's deliberately kept out of
+    # metrics.registry.METRIC_IDS) -- so, like governance above, it never
+    # gates the M0 run's exit code or `status`: a run whose leaderboard
+    # computation fails, or that has no qualifying activity yet, still
+    # reports `status: ok`/`degraded` purely on the M0 metrics above. This is
+    # a deliberate choice (mirrors governance's own "never gates" contract):
+    # the leaderboard is an optional, additive presentation of data the M0
+    # metrics already require to be present for their own status, so a gap
+    # here would only ever be a duplicate signal of a gap already visible
+    # elsewhere (e.g. `metrics_missing` for a genuinely broken collector),
+    # never new information worth failing the run over.
+    if metrics_table is not None:
+        try:
+            leaderboard_result = build_leaderboards(
+                {
+                    "contribution_event": contribution_event,
+                    "review_event": review_event,
+                    "issue": issue,
+                    "identity_link": identity_link,
+                    "person_identity": resolution.person_identity,
+                    "affiliation_period": affiliation_period,
+                },
+                as_of=started_at.date(),
+                run_id=run_id,
+                computed_at=started_at,
+                config=config,
+            )
+            _write_leaderboard_snapshot(data_dir, run_id, leaderboard_result.table)
+            manifest["leaderboard"] = {
+                "status": "ok",
+                "rows": leaderboard_result.table.num_rows,
+                "activity_types": sorted(leaderboard_result.lists),
+            }
+            _log(
+                "leaderboard_computed",
+                run_id=run_id,
+                rows=leaderboard_result.table.num_rows,
+            )
+        except Exception as exc:  # noqa: BLE001 - never gate the M0 run on this (see above)
+            _log("leaderboard_failed", run_id=run_id, error=str(exc))
+            manifest["leaderboard"] = {"status": "failed", "reason": str(exc)}
 
     out_path = manifest_path(data_dir, run_id)
     out_path.parent.mkdir(parents=True, exist_ok=True)

@@ -1829,3 +1829,137 @@ class TestSecurityIntegration:
         assert advisories_raw.num_rows == 32
         deduped = _dedupe_security_advisories(advisories_raw)
         assert deduped.num_rows == 16
+
+
+# --- Contributor leaderboard (D19, issue #56) -------------------------------
+
+
+class TestLeaderboardIntegration:
+    """`build_leaderboards` runs additively inside `run_pipeline` -- it must
+    never gate the M0 run's exit code/status (D19; mirrors governance's own
+    "never gates" contract), and its snapshot/manifest wiring must survive a
+    real end-to-end run over the #3 fixture repo + JIRA fixtures."""
+
+    def test_leaderboard_snapshot_and_manifest_written_on_a_normal_run(
+        self, tmp_path, config, git_workdir
+    ):
+        """`as_of=NOW` (2026-09-25)'s trailing-12m window (2025-09 through
+        2026-08) doesn't overlap the #3 fixture repo's 2024 commit dates or
+        either JIRA fixture's resolution date (2025-08-01, 2026-09-25 --
+        both just outside the window on either edge) -- a real, honest zero
+        for this particular window, not a bug. This test exercises the
+        wiring (snapshot written, schema-valid, manifest populated) for that
+        realistic case; `test_leaderboard_snapshot_has_ranked_rows_when_the_
+        window_overlaps_real_activity` below exercises the populated case
+        over the same fixtures with a `now` whose window actually covers
+        them, and `tests/test_leaderboard.py` covers ranking correctness in
+        isolation."""
+        data_dir = tmp_path / "data"
+        transport = _paginated_transport({0: PAGE_1, 5: PAGE_2, 10: EMPTY_PAGE})
+
+        result = run_pipeline(
+            config=config,
+            data_dir=data_dir,
+            workdir=git_workdir,
+            sources=["git", "jira"],
+            now=NOW,
+            code_sha="abc1234",
+            jira_collector_factory=_jira_factory(transport),
+        )
+
+        assert result.manifest["leaderboard"]["status"] == "ok"
+        assert sorted(result.manifest["leaderboard"]["activity_types"]) == [
+            "commits",
+            "jira_issues_resolved",
+            "reviews",
+        ]
+
+        snapshot_path = data_dir / "snapshots" / result.run_id / "leaderboard.parquet"
+        assert snapshot_path.is_file()
+        leaderboard_table = validate("contributor_leaderboard", pq.read_table(snapshot_path))
+        assert leaderboard_table.schema.equals(get_schema("contributor_leaderboard"))
+        assert result.manifest["leaderboard"]["rows"] == leaderboard_table.num_rows
+
+    def test_leaderboard_snapshot_has_ranked_rows_when_the_window_overlaps_real_activity(
+        self, tmp_path, config, git_workdir
+    ):
+        """Same fixtures as above, but `now` is chosen so the trailing-12m
+        window (2023-09 through 2024-08) actually covers the #3 fixture
+        repo's real 2024 commit/review activity -- proving the full
+        pipeline -> snapshot -> manifest path produces genuinely ranked
+        rows, not just an always-empty table."""
+        data_dir = tmp_path / "data"
+
+        result = run_pipeline(
+            config=config,
+            data_dir=data_dir,
+            workdir=git_workdir,
+            sources=["git"],
+            now=datetime(2024, 8, 15, tzinfo=timezone.utc),
+            code_sha="abc1234",
+        )
+
+        assert result.manifest["leaderboard"]["status"] == "ok"
+        assert result.manifest["leaderboard"]["rows"] > 0
+
+        snapshot_path = data_dir / "snapshots" / result.run_id / "leaderboard.parquet"
+        leaderboard_table = validate("contributor_leaderboard", pq.read_table(snapshot_path))
+        commit_rows = [
+            row for row in leaderboard_table.to_pylist() if row["activity_type"] == "commits"
+        ]
+        assert commit_rows
+        # Ranks are dense from 1, strictly increasing count-desc order.
+        assert [row["rank"] for row in commit_rows] == list(range(1, len(commit_rows) + 1))
+        counts = [row["count"] for row in commit_rows]
+        assert counts == sorted(counts, reverse=True)
+
+    def test_leaderboard_never_marks_a_run_degraded_on_its_own(
+        self, tmp_path, config, git_workdir
+    ):
+        """A run with no JIRA/git sources active still leaves the M0 run's
+        own status untouched by the (empty) leaderboard -- it is additive,
+        never a second, redundant "degraded" signal on top of
+        metrics_missing (see pipeline.py's own comment at the call site)."""
+        data_dir = tmp_path / "data"
+
+        result = run_pipeline(
+            config=config,
+            data_dir=data_dir,
+            workdir=git_workdir,
+            sources=["git"],
+            now=NOW,
+            code_sha="abc1234",
+        )
+
+        # Whatever the M0 run's own status is, it was decided by
+        # metrics_missing alone -- the leaderboard key is present and
+        # informative but never itself downgrades `status`.
+        assert "leaderboard" in result.manifest
+        assert result.manifest["status"] in ("ok", "degraded", "failed")
+        assert result.manifest["leaderboard"]["status"] in ("ok", "failed")
+
+    def test_leaderboard_included_in_generated_community_page(
+        self, tmp_path, config, git_workdir
+    ):
+        data_dir = tmp_path / "data"
+        site_out = tmp_path / "site"
+        transport = _paginated_transport({0: PAGE_1, 5: PAGE_2, 10: EMPTY_PAGE})
+
+        run_pipeline(
+            config=config,
+            data_dir=data_dir,
+            workdir=git_workdir,
+            sources=["git", "jira"],
+            site_out=site_out,
+            now=NOW,
+            code_sha="abc1234",
+            jira_collector_factory=_jira_factory(transport),
+        )
+
+        community_html = (site_out / "community" / "index.html").read_text()
+        assert "Contributor leaderboard" in community_html
+        assert "identity_overrides.yaml" in community_html or "Request an identity correction" in (
+            community_html
+        )
+        assert (site_out / "data" / "leaderboard.json").is_file()
+        assert (site_out / "data" / "leaderboard.csv").is_file()

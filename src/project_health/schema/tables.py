@@ -733,6 +733,34 @@ CLASSIFICATION = pa.schema(
     ]
 )
 
+# --- Contributor leaderboard (D19, issue #56) -------------------------------
+#
+# One row per (activity_type, rank) per run: the top-N ranking for one
+# activity type (never blended across types, D19/D2 rule 7) over a trailing
+# 12-completed-month window (`leaderboard.py`). Deliberately not part of
+# `metric_value`/`METRIC_IDS` -- see `leaderboard.py`'s module docstring for
+# why this is a table, not a registered time-series metric.
+CONTRIBUTOR_LEADERBOARD = pa.schema(
+    [
+        pa.field("run_id", pa.string(), nullable=False),
+        # activity_type: 'commits' | 'reviews' | 'jira_issues_resolved'
+        # (leaderboard.ACTIVITY_TYPES)
+        pa.field("activity_type", pa.string(), nullable=False),
+        pa.field("definition_version", pa.string(), nullable=False),
+        pa.field("window_start", pa.date32(), nullable=False),
+        pa.field("window_end", pa.date32(), nullable=False),
+        pa.field("rank", pa.int64(), nullable=False),
+        pa.field("identity_id", pa.string(), nullable=False),
+        pa.field("display_name", pa.string(), nullable=True),
+        # organization: affiliation_period-resolved org as of window_end, or
+        # "unknown" (normalize.affiliation.UNKNOWN_ORG) when unresolved --
+        # D6/D19: never guessed.
+        pa.field("organization", pa.string(), nullable=False),
+        pa.field("count", pa.int64(), nullable=False),
+        pa.field("computed_at", TIMESTAMP_UTC, nullable=False),
+    ]
+)
+
 TABLE_SCHEMAS: dict[str, pa.Schema] = {
     "person_identity": PERSON_IDENTITY,
     "identity_link": IDENTITY_LINK,
@@ -768,4 +796,5 @@ TABLE_SCHEMAS: dict[str, pa.Schema] = {
     "ci_evidence": GOVERNANCE_CI_EVIDENCE,
     "check_run": GOVERNANCE_CHECK_RUN,
     "classification": CLASSIFICATION,
+    "contributor_leaderboard": CONTRIBUTOR_LEADERBOARD,
 }

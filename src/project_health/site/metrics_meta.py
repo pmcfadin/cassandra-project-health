@@ -64,6 +64,31 @@ _AXIS_LABEL_SUFFIX = {
 }
 
 
+def format_days(value: float) -> str:
+    """Format a `value_kind == "days"` duration for display, switching to a
+    smaller unit rather than rounding a genuinely sub-day duration down to a
+    misleading "0.0 days" (orchestrator review of issue #57: a 0.03-day
+    median -- roughly 43 minutes -- rendered as "0.0 days", indistinguishable
+    from a true zero-latency response).
+
+    - `>= 1` day: `"X.X days"` (unchanged from before this fixup).
+    - `>= 1` hour and `< 1` day: `"X.X h"`.
+    - `< 1` hour: `"X min"` (whole minutes -- a sub-hour duration doesn't
+      need decimal-minute precision to be legible).
+
+    Shared by every card's big-number display and (`generate.py`'s
+    `_vega_lite_spec`) the chart tooltip, so a "days" metric never shows two
+    different numbers for the same point.
+    """
+    hours = value * 24
+    if hours < 1.0:
+        minutes = hours * 60
+        return f"{minutes:.0f} min"
+    if hours < 24.0:
+        return f"{hours:.1f} h"
+    return f"{value:.1f} days"
+
+
 @dataclass(frozen=True)
 class MetricMeta:
     metric_id: str
@@ -92,7 +117,7 @@ class MetricMeta:
         if self.value_kind == "percent":
             return f"{value * 100:.1f}%"
         if self.value_kind == "days":
-            return f"{value:.1f} days"
+            return format_days(value)
         if self.value_kind == "avg":
             return f"{value:.1f}"
         raise ValueError(f"unknown value_kind {self.value_kind!r}")

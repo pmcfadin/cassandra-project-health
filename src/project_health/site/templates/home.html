@@ -10,6 +10,13 @@
     <span class="badge badge--declining composite-declining-flag" role="status">&#9888; a key metric in at least one dimension is declining</span>
     {% endif %}
   </div>
+  <p class="composite-scale-note">
+    <strong>50</strong> = typical for Cassandra over its own previous 24 months; higher is better than its own
+    baseline, lower is worse. This is a self-baselined score, not an absolute quality grade — it is
+    <strong>not comparable</strong> to an absolute score such as LFX Insights' Health Score. The same 0–100
+    self-baseline scale applies to each dimension's score below: 50 there means that dimension's key metrics are
+    typical for Cassandra's own recent history, not "half healthy."
+  </p>
   <p class="composite-caveat">
     Never shown alone: the breakdown below is the same composite, decomposed. Scoring version
     <code>{{ scoring.scoring_version }}</code> — see <a href="{{ scoring.scoring_config_url }}">scoring.yaml</a>
@@ -62,6 +69,9 @@
         {% if m.value_display is not none %}
         <span class="headline-metric-value">{{ m.value_display }}</span>
         <span class="headline-metric-period">{{ m.month_label }}</span>
+        {% if m.is_backfill_pending %}
+        <span class="badge badge--backfill-pending">backfill pending</span>
+        {% endif %}
         {% else %}
         <span class="headline-metric-value headline-metric-value--insufficient">insufficient data</span>
         {% endif %}

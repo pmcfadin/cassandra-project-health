@@ -344,6 +344,11 @@ main {
 .composite-score-scale {
   color: var(--fg-muted);
 }
+.composite-scale-note {
+  font-size: 0.9rem;
+  margin: 0.5rem 0;
+  max-width: 42rem;
+}
 .composite-caveat {
   color: var(--fg-muted);
   font-size: 0.85rem;

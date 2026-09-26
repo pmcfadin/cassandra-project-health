@@ -409,6 +409,18 @@ also shows a single 0–100 composite, "comparable in spirit to LFX Insights' He
 above is unchanged by this — the composite is an *additional*, separately-computed number, never a replacement
 for dimension status, and §9 (revised above) still forbids every other way of combining metrics or dimensions.
 
+**What the scale means (self-baselined, not absolute).** Per §12.3, every input to the composite — and therefore
+the composite itself, and each dimension's own 0–100 score in the breakdown beside it — is normalized against
+*this project's own trailing 24-month baseline* (D2 rule 2), never a universal or cross-project threshold. **50
+means "typical for Cassandra, relative to its own last 24 months," not "half healthy."** Higher is better than
+Cassandra's own baseline; lower is worse than Cassandra's own baseline. This is the same reason a reader must not
+compare this composite directly against an absolute score such as LFX Insights' Health Score (§2, §12.4): the two
+numbers answer different questions — "is this project moving in a good direction relative to its own history?"
+(this composite) versus "how does this project rate against fixed, cross-project criteria?" (LFX). A composite of
+50–60 while LFX shows Cassandra in the 80s is not a contradiction; it is two different, both-legitimate
+questions with two different, non-comparable answers. The home page states this in plain language directly under
+the number (`templates/home.html`), not only here.
+
 ### 12.1 What makes this composite different from a generic weighted score
 
 Unlike a typical weighted-composite tool (§2's OpenSSF Scorecard row), this project's composite is fully

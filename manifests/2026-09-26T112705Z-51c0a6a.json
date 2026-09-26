@@ -1,0 +1,167 @@
+{
+  "completed_at": "2026-09-26T11:45:12.474338+00:00",
+  "data_branch_commit": null,
+  "governance": {
+    "check_runs": {
+      "calls_made": 12,
+      "checked": 12,
+      "pending": 0,
+      "skipped_outside_retention": 18309,
+      "skipped_resolved": 399,
+      "skipped_too_old": 154
+    },
+    "ci_evidence": {
+      "calls_made": 300,
+      "checked": 299,
+      "pending": 1101,
+      "skipped_up_to_date": 1496
+    },
+    "commit_record_reparse": {
+      "parser_version": 2,
+      "status": "skipped"
+    },
+    "commits_scored": 32376,
+    "compliance_rows": 129504,
+    "git_records_collected": 0,
+    "policy_version": 1,
+    "status": "partial"
+  },
+  "leaderboard": {
+    "activity_types": [
+      "commits",
+      "jira_issues_resolved",
+      "reviews"
+    ],
+    "rows": 75,
+    "status": "ok"
+  },
+  "metrics_computed": [
+    "active_contributors_monthly@1.1",
+    "contributor_absence_factor@1.0",
+    "contributor_hhi@1.0",
+    "elephant_factor@1.0",
+    "median_resolution_latency_jira@1.0",
+    "new_contributors_monthly@1.1",
+    "organizational_hhi@1.0",
+    "pmc_joins_quarterly@1.0",
+    "pr_merge_lead_time@1.0",
+    "pr_review_engagement@1.0",
+    "pr_time_to_close@1.0",
+    "pr_time_to_first_review@1.0",
+    "reviewer_hhi@1.0",
+    "single_org_share@1.0",
+    "stale_jira_rate@1.0",
+    "stale_pr_rate@1.0",
+    "time_to_first_reply_devlist@1.0",
+    "time_to_first_response_jira@1.0",
+    "truck_factor@1.0",
+    "unanswered_thread_rate_devlist@1.0",
+    "unique_reviewers_monthly@1.1",
+    "unknown_affiliation_rate@1.0"
+  ],
+  "metrics_missing": [],
+  "metrics_skipped_insufficient_data": [],
+  "pipeline_code_sha": "51c0a6a9a63ab5ee4c8a758637b4e985ab9f3603",
+  "run_id": "2026-09-26T112705Z-51c0a6a",
+  "scoring": {
+    "composite": 54.723589479536145,
+    "dimensions_included": 4,
+    "dimensions_total": 5,
+    "has_declining_dimension": true,
+    "scoring_version": "1.0.0",
+    "status": "ok"
+  },
+  "site_deploy_status": "ok",
+  "sources": {
+    "asf_roster": {
+      "records_collected": 101,
+      "status": "ok"
+    },
+    "git": {
+      "commit_trailer_reparse": {
+        "parser_version": 2,
+        "status": "skipped"
+      },
+      "file_changes_collected": 0,
+      "placeholder_reviewer_commits": 0,
+      "records_collected": 0,
+      "status": "ok",
+      "watermark": "sha:17137ce34bd2fa89bc296e2d61d59eac9957b787"
+    },
+    "github": {
+      "comment_count": 27238,
+      "records_collected": 4391,
+      "repos": {
+        "apache/cassandra": "ok",
+        "apache/cassandra-accord": "rate_limited",
+        "apache/cassandra-analytics": "ok",
+        "apache/cassandra-dtest": "ok",
+        "apache/cassandra-java-driver": "ok",
+        "apache/cassandra-sidecar": "ok",
+        "apache/cassandra-website": "ok"
+      },
+      "review_count": 15973,
+      "status": "partial",
+      "watermark": {
+        "apache/cassandra": "Y3Vyc29yOnYyOpK0MjAyNi0wOS0yNlQxMToxNDo1NVrPAAAAAQqExAI=",
+        "apache/cassandra-accord": "Y3Vyc29yOnYyOpK0MjAyNS0wNy0xN1QwNzozNjozM1rOnvOvIw==",
+        "apache/cassandra-analytics": "Y3Vyc29yOnYyOpK0MjAyNi0wOS0yNVQyMzoxMjo0N1rPAAAAAQWRkz8=",
+        "apache/cassandra-dtest": "Y3Vyc29yOnYyOpK0MjAyNi0wOC0yNlQxNDo1MDo1NlrPAAAAAQRcyR8=",
+        "apache/cassandra-java-driver": "Y3Vyc29yOnYyOpK0MjAyNi0wOS0yM1QyMToxNjoyN1rPAAAAARNL5KE=",
+        "apache/cassandra-sidecar": "Y3Vyc29yOnYyOpK0MjAyNi0wOS0yNlQwMTowODowNlrPAAAAARCB_Q8=",
+        "apache/cassandra-website": "Y3Vyc29yOnYyOpK0MjAyNi0wOS0yMlQxOToxNDowMFrPAAAAAQXf4ic="
+      }
+    },
+    "github_commit_authors": {
+      "commits_seen": 100,
+      "reason": "rate limit budget floor reached (460 remaining <= floor 500)",
+      "records_collected": 97,
+      "status": "partial",
+      "watermark": "17137ce34bd2fa89bc296e2d61d59eac9957b787 199"
+    },
+    "github_profile": {
+      "new_logins_seen": 11,
+      "records_collected": 11,
+      "status": "ok"
+    },
+    "jira": {
+      "backfill": {
+        "calls_made": 1000,
+        "checked": 1000,
+        "pending": 20482
+      },
+      "comment_count": 13,
+      "records_collected": 4,
+      "status": "ok",
+      "watermark": "2026-09-26T11:23:16+00:00"
+    },
+    "ponymail": {
+      "backfill": {
+        "dev": {
+          "months_remaining": 2
+        },
+        "user": {
+          "months_remaining": 0
+        }
+      },
+      "partial": true,
+      "records_collected": 7785,
+      "skipped_count": 0,
+      "status": "ok",
+      "thread_count": 1569,
+      "watermark": {
+        "dev": "2026-06",
+        "user": "2026-08"
+      }
+    },
+    "security": {
+      "advisories_collected": 16,
+      "records_collected": 30,
+      "scorecard_checks_collected": 14,
+      "status": "ok"
+    }
+  },
+  "started_at": "2026-09-26T11:27:05.149953+00:00",
+  "status": "ok",
+  "trigger": "schedule"
+}

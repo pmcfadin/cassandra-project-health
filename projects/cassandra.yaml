@@ -69,6 +69,21 @@ reviewer_extraction:
     reviewer_field: customfield_10022        # "Reviewer", single-user, older/legacy (7,104 issues populated)
   reliable_from: "2017-01-01"      # coverage is patchier before this; see ARCHITECTURE.md §3.1, METRICS.md §0.4
 
+# `truck_factor` metric (issue #53): file-authorship (Avelino DOA) collection excludes
+# generated/vendored paths, which would otherwise inflate whoever ran a codegen/vendoring
+# commit into looking like that file's "author" (METRICS.md `truck_factor` "Population &
+# exclusions"). fnmatch-style globs against the repo-relative path; `*` matches across `/`.
+# Placeholder set -- review against Cassandra's actual generated/vendored tree layout
+# before relying on the metric (data-probe.md doesn't cover this; unverified against the
+# real repo).
+truck_factor:
+  excluded_path_globs:
+    - "*/generated-sources/*"
+    - "*.g4"                       # ANTLR grammar sources are hand-authored; their
+                                    # generated parser output is not checked in under this
+                                    # repo's build, so this is here for defense-in-depth only
+    - "*/antlr/*"
+
 baseline_window:
   trailing_months: 24        # SCORING.md §4.1: status vs. own trailing 24-completed-month baseline
   min_completed_months: 12   # below this, dimension status renders "insufficient data" (SCORING.md §5.1)

@@ -211,6 +211,146 @@ class TestGitCollectorAgainstFixture:
         assert result.unparsed_reviewed_by_count == 0
 
 
+class TestFileChangeEventAgainstFixture:
+    """Issue #53: `file_change_event` collection (per-file authorship input
+    for `truck_factor`). Every fixture commit adds exactly one new,
+    previously-unseen file, so each non-merge, non-bot commit produces
+    exactly one `file_change_event` row with `change_type == 'A'`."""
+
+    def _collect(self, built_repo, cassandra_config, **kwargs):
+        return GitCollector().collect(
+            repo_path=built_repo,
+            repo_label=REPO_LABEL,
+            default_branch="trunk",
+            watermark=None,
+            bot_patterns=cassandra_config.bot_patterns,
+            source_snapshot_id="snap-1",
+            **kwargs,
+        )
+
+    def test_one_row_per_non_bot_non_merge_commit(self, built_repo, expected, cassandra_config):
+        result = self._collect(built_repo, cassandra_config)
+        expected_non_bot = expected["total_commits"] - expected["bot_commits"]
+        assert result.file_changes_collected == expected_non_bot
+        assert result.file_change_event.num_rows == expected_non_bot
+
+    def test_rows_shape_and_bot_exclusion(self, built_repo, expected, cassandra_config):
+        result = self._collect(built_repo, cassandra_config)
+        rows = result.file_change_event.to_pylist()
+        bot_email = next(
+            info["email"] for name, info in expected["authors"].items() if "bot" in name.lower()
+        )
+        for row in rows:
+            assert row["author_raw_type"] == "git_email"
+            assert row["author_raw_value"] != bot_email.lower()
+            assert row["change_type"] == "A"
+            assert row["identity_id"] is None
+            assert row["repo"] == REPO_LABEL
+            assert row["source_snapshot_id"] == "snap-1"
+            assert row["file_path"]
+
+    def test_rows_validate_against_schema(self, built_repo, cassandra_config):
+        result = self._collect(built_repo, cassandra_config)
+        validate("file_change_event", result.file_change_event)
+
+    def test_excluded_path_globs_drop_matching_files(self, built_repo, cassandra_config):
+        # Every fixture file is named "file_N.txt" (plus a few named files);
+        # excluding "*.txt" should drop every row from the numbered fixture
+        # commits but keep the fixture's own non-.txt files, if any -- here
+        # every fixture-added file is .txt, so the whole table empties out.
+        result = self._collect(built_repo, cassandra_config, excluded_path_globs=["*.txt"])
+        assert result.file_change_event.num_rows == 0
+        assert result.file_changes_collected == 0
+        # contribution_event/review_event are unaffected by the file-path
+        # exclusion -- it only prunes file_change_event.
+        assert result.contribution_event.num_rows > 0
+
+    def test_excluded_path_globs_can_target_one_file(self, built_repo, cassandra_config):
+        result = self._collect(
+            built_repo, cassandra_config, excluded_path_globs=["side_branch_feature.txt"]
+        )
+        paths = {row["file_path"] for row in result.file_change_event.to_pylist()}
+        assert "side_branch_feature.txt" not in paths
+        assert "backport_fix.txt" in paths
+
+
+class TestFileChangeEventIncremental:
+    def test_second_collect_only_returns_new_commits_file(self, built_repo, cassandra_config):
+        collector = GitCollector()
+        first = collector.collect(
+            repo_path=built_repo,
+            repo_label=REPO_LABEL,
+            default_branch="trunk",
+            watermark=None,
+            bot_patterns=cassandra_config.bot_patterns,
+            source_snapshot_id="snap-1",
+        )
+        assert first.file_changes_collected > 0
+
+        new_sha = _add_commit(
+            built_repo,
+            author_name="Eve New",
+            author_email="eve@cassandra.apache.org",
+            message="Add a brand new feature\n\nNo trailer here",
+            filename="new_feature_file.txt",
+        )
+
+        second = collector.collect(
+            repo_path=built_repo,
+            repo_label=REPO_LABEL,
+            default_branch="trunk",
+            watermark=first.next_watermark,
+            file_change_watermark=first.next_watermark,
+            bot_patterns=cassandra_config.bot_patterns,
+            source_snapshot_id="snap-2",
+        )
+
+        assert second.file_changes_collected == 1
+        row = second.file_change_event.to_pylist()[0]
+        assert row["file_path"] == "new_feature_file.txt"
+        assert row["change_type"] == "A"
+        assert row["source_ref"] == new_sha
+        assert row["author_raw_value"] == "eve@cassandra.apache.org"
+
+    def test_missing_file_change_watermark_backfills_full_history_even_at_commit_head(
+        self, built_repo, cassandra_config
+    ):
+        """Issue #53 fixup cycle 1 (the "backfill gap"): `file_change_watermark`
+        is independent of `watermark`. A caller that already has a commit
+        watermark at HEAD but has never collected `file_change_event` (a
+        table added after the commit watermark existed) must still get that
+        table's *full* history back, not an empty result from reusing the
+        commit watermark's already-caught-up range.
+        """
+        collector = GitCollector()
+        first = collector.collect(
+            repo_path=built_repo,
+            repo_label=REPO_LABEL,
+            default_branch="trunk",
+            watermark=None,
+            bot_patterns=cassandra_config.bot_patterns,
+            source_snapshot_id="snap-1",
+        )
+        assert first.file_changes_collected > 0
+
+        # Simulate a data dir where `watermark` (contribution_event/
+        # review_event) is already at HEAD, but `file_change_event` has never
+        # been collected -- its own watermark is still `None`.
+        second = collector.collect(
+            repo_path=built_repo,
+            repo_label=REPO_LABEL,
+            default_branch="trunk",
+            watermark=first.next_watermark,
+            file_change_watermark=None,
+            bot_patterns=cassandra_config.bot_patterns,
+            source_snapshot_id="snap-2",
+        )
+
+        assert second.commits_collected == 0  # commit watermark already caught up
+        assert second.file_changes_collected == first.file_changes_collected
+        assert second.file_change_event.num_rows == first.file_change_event.num_rows
+
+
 class TestGitCollectorIncremental:
     """Acceptance criterion #2: a second collect from the returned watermark
     emits only commits added after it."""

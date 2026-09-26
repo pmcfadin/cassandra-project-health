@@ -18,7 +18,11 @@ from datetime import datetime
 
 import pyarrow as pa
 
-from project_health.normalize.identity import extract_raw_identifiers, resolve_identities
+from project_health.normalize.identity import (
+    RawIdentifier,
+    extract_raw_identifiers,
+    resolve_identities,
+)
 from project_health.schema import CODE_COMMIT, get_schema, validate
 
 
@@ -47,6 +51,33 @@ def contribution_events(rows: list[dict]) -> pa.Table:
     ]
     schema = get_schema("contribution_event")
     return validate("contribution_event", pa.Table.from_pylist(built, schema=schema))
+
+
+def file_change_events(rows: list[dict]) -> pa.Table:
+    """Build a `file_change_event` table (issue #53, `truck_factor`).
+
+    Required per row: `author_raw_type`, `author_raw_value`, `file_path`,
+    `occurred_at`. Optional: `author_display_name`, `change_type` (default
+    `"M"`), `repo`, `source_ref`, `event_id`, `source_snapshot_id`.
+    """
+    built = [
+        {
+            "event_id": row.get("event_id", f"file-event-{i}"),
+            "identity_id": None,
+            "author_raw_type": row["author_raw_type"],
+            "author_raw_value": row["author_raw_value"],
+            "author_display_name": row.get("author_display_name"),
+            "change_type": row.get("change_type", "M"),
+            "file_path": row["file_path"],
+            "occurred_at": row["occurred_at"],
+            "repo": row.get("repo", "apache/cassandra"),
+            "source_ref": row.get("source_ref", f"sha-{i}"),
+            "source_snapshot_id": row.get("source_snapshot_id", "snap-1"),
+        }
+        for i, row in enumerate(rows)
+    ]
+    schema = get_schema("file_change_event")
+    return validate("file_change_event", pa.Table.from_pylist(built, schema=schema))
 
 
 def review_events(rows: list[dict]) -> pa.Table:
@@ -138,6 +169,7 @@ def identity_link_for(
     contribution_events: pa.Table | None = None,
     review_events: pa.Table | None = None,
     issues: pa.Table | None = None,
+    file_change_events: pa.Table | None = None,
     now: datetime,
 ) -> pa.Table:
     """Resolve `identity_link` for a scenario via the real #6 naive resolver.
@@ -147,10 +179,25 @@ def identity_link_for(
     through `resolve_identities` -- a golden test's `identity_link` table is
     never hand-assembled independently of the raw columns it's supposed to
     resolve.
+
+    `file_change_events` (issue #53) is accepted for symmetry/completeness
+    but its authors are always a subset of `contribution_events`' authors in
+    real collection (same commit, same email) -- `extract_raw_identifiers`
+    itself has no `file_change_events` parameter, so this only matters for a
+    golden test that builds `file_change_event` rows without a matching
+    `contribution_event` row for the same author.
     """
     raws = extract_raw_identifiers(
         contribution_events=contribution_events,
         review_events=review_events,
         issues=issues,
     )
+    if file_change_events is not None:
+        types = file_change_events.column("author_raw_type").to_pylist()
+        values = file_change_events.column("author_raw_value").to_pylist()
+        names = file_change_events.column("author_display_name").to_pylist()
+        raws.extend(
+            RawIdentifier(source_type, source_value, display_name)
+            for source_type, source_value, display_name in zip(types, values, names, strict=True)
+        )
     return resolve_identities(raws, now=now).identity_link

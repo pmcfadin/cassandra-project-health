@@ -1,9 +1,11 @@
-"""DuckDB computation engine for the 6 M0 metrics (issue #7).
+"""DuckDB computation engine for the M0 metrics (issue #7) plus the
+contributor-sustainability trio added in issue #53 (`truck_factor`,
+`contributor_absence_factor`, `contributor_hhi`).
 
 `compute_all` is the single entry point: given the normalized fact/identity
-tables a run has accumulated (`schema/README.md`), compute every M0 metric's
-`metric_value` rows in one pass and return them as one validated pyarrow
-Table.
+tables a run has accumulated (`schema/README.md`), compute every registered
+metric's `metric_value` rows in one pass and return them as one validated
+pyarrow Table.
 
 Design notes:
 
@@ -48,6 +50,7 @@ Design notes:
 from __future__ import annotations
 
 import json
+import math
 import re
 import statistics
 from datetime import date, datetime, timedelta
@@ -73,6 +76,10 @@ DEFINITION_VERSIONS: dict[str, str] = {
     "median_resolution_latency_jira": "1.0",
     "stale_jira_rate": "1.0",
     "pmc_joins_quarterly": "1.0",
+    # issue #53
+    "truck_factor": "1.0",
+    "contributor_absence_factor": "1.0",
+    "contributor_hhi": "1.0",
 }
 
 # Headcount metrics are plain counts, not rate/ratio/concentration/latency
@@ -95,6 +102,28 @@ FLOOR_CONCENTRATION = 5
 FLOOR_LATENCY = 5
 
 DEFAULT_STALE_THRESHOLD_DAYS = 90
+
+# Avelino et al. (2016) DOA regression coefficients, verified against the
+# primary-source PDF (docs/spec/RESEARCH.md §8.2) -- reused verbatim, never
+# re-fit against this project's own data (re-fitting would itself need
+# validation this project has not done).
+DOA_INTERCEPT = 3.293
+DOA_FA_COEFFICIENT = 1.098
+DOA_DL_COEFFICIENT = 0.164
+DOA_AC_COEFFICIENT = -0.321
+
+# Author thresholds, also verified directly from the paper's text
+# (RESEARCH.md §8.2): a developer counts as a file's "author" only if their
+# *normalized* DOA (their DOA divided by the file's highest absolute DOA,
+# range 0-1) exceeds `DOA_NORMALIZED_THRESHOLD`, *and* their absolute DOA is
+# at least `DOA_MINIMUM_ABSOLUTE` (the model's own constant term). These were
+# tuned by the paper's authors on a corpus of 133 popular GitHub projects,
+# not a JIRA-based ASF-governance project like Cassandra -- METRICS.md's
+# `truck_factor` entry and RESEARCH.md §8.2 both flag them as a researcher
+# judgment call, not a universal law, which is why `truck_factor` ships as
+# `experimental`.
+DOA_NORMALIZED_THRESHOLD = 0.75
+DOA_MINIMUM_ABSOLUTE = DOA_INTERCEPT
 
 # bot_patterns `field` (projects/cassandra.yaml) -> the identity_link
 # `source_type` it screens (normalize/identity.py RAW_TYPES). `github_login`
@@ -125,7 +154,14 @@ def _connect(tables: dict[str, pa.Table]) -> duckdb.DuckDBPyConnection:
     # month/day bucketing is a pure function of the (UTC) input timestamps,
     # not of which machine runs the pipeline.
     con.execute("SET TimeZone='UTC'")
-    for name in ("contribution_event", "review_event", "issue", "identity_link", "roster_entry"):
+    for name in (
+        "contribution_event",
+        "file_change_event",
+        "review_event",
+        "issue",
+        "identity_link",
+        "roster_entry",
+    ):
         con.register(name, _table_or_empty(tables, name))
     con.execute(
         """
@@ -677,6 +713,374 @@ def _pmc_joins_quarterly(
     return out
 
 
+def _contributor_commit_counts(
+    con: duckdb.DuckDBPyConnection, window_start: date, window_end: date
+) -> list[tuple[str, int]]:
+    """`[(identity_id, commit_count), ...]` for non-bot, resolved identities
+    with >= 1 `code_commit` in `[window_start, window_end]` -- the shared
+    population `contributor_absence_factor` and `contributor_hhi` both rank/
+    weight (METRICS.md `contributor_hhi`: "commits per identity")."""
+    return con.execute(
+        """
+        SELECT ri.identity_id AS identity_id, COUNT(*) AS commits
+        FROM contribution_event ce
+        JOIN resolved_identity ri
+            ON ri.source_type = ce.author_raw_type AND ri.source_value = ce.author_raw_value
+        LEFT JOIN bot_identifier bi
+            ON bi.raw_type = ce.author_raw_type AND bi.raw_value = ce.author_raw_value
+        WHERE ce.event_type = ?
+          AND bi.raw_value IS NULL
+          AND ce.occurred_at::DATE >= ? AND ce.occurred_at::DATE <= ?
+        GROUP BY 1
+        ORDER BY commits DESC, identity_id ASC
+        """,
+        [CODE_COMMIT, window_start, window_end],
+    ).fetchall()
+
+
+def _contributor_absence_factor(
+    con: duckdb.DuckDBPyConnection, as_of: date, run_id: str, computed_at: datetime
+) -> list[dict]:
+    """CHAOSS "Bus Factor" (METRICS.md `contributor_absence_factor`): the
+    smallest number of contributors, ranked by trailing-12m commit count
+    descending, whose cumulative commits reach 50% of the window's total --
+    "contributor dependency," in the issue's own words. Dense trailing-12m
+    windows, one per completed month, from the first month any `code_commit`
+    exists through the last completed month before `as_of`.
+    """
+    month_rows = con.execute(
+        "SELECT DISTINCT date_trunc('month', occurred_at)::DATE AS m "
+        "FROM contribution_event WHERE event_type = ?",
+        [CODE_COMMIT],
+    ).fetchall()
+    if not month_rows:
+        return []
+    first_month = min(m for (m,) in month_rows)
+
+    out = []
+    for month in _dense_months(first_month, as_of):
+        window_end = month_end(month)
+        window_start, _ = trailing_12m_window(window_end)
+        credits = _contributor_commit_counts(con, window_start, window_end)
+
+        n = len(credits)
+        total_commits = sum(c for _, c in credits)
+        smallest_n = None
+        top_contributors: list[dict] = []
+        if total_commits > 0:
+            target = 0.5 * total_commits
+            cumulative = 0
+            for identity_id, commits in credits:
+                cumulative += commits
+                top_contributors.append(
+                    {
+                        "identity_id": identity_id,
+                        "commits": commits,
+                        "cumulative_share": round(cumulative / total_commits, 4),
+                    }
+                )
+                if smallest_n is None and cumulative >= target:
+                    smallest_n = len(top_contributors)
+
+        out.append(
+            _make_row(
+                metric_id="contributor_absence_factor",
+                window_start=window_start,
+                window_end=window_end,
+                raw_value=float(smallest_n) if smallest_n is not None else None,
+                n=n,
+                floor=FLOOR_CONCENTRATION,
+                run_id=run_id,
+                computed_at=computed_at,
+                details={
+                    "total_commits": total_commits,
+                    # Full ranked list, not just the top `smallest_n` -- an
+                    # auditor can see exactly which contributors and shares
+                    # produced the count (D2.3).
+                    "contributors": top_contributors,
+                },
+            )
+        )
+    return out
+
+
+def _contributor_hhi(
+    con: duckdb.DuckDBPyConnection, as_of: date, run_id: str, computed_at: datetime
+) -> list[dict]:
+    """Contributor-concentration HHI (METRICS.md `contributor_hhi` /
+    `effective_contributor_population`): sum-of-squared commit shares per
+    resolved, non-bot identity, over dense trailing-12m windows (same
+    population/window as `contributor_absence_factor`, same math as
+    `reviewer_hhi` applied to commit shares instead of review credits).
+    `effective_contributor_population` (1/HHI) is carried in `details_json`,
+    not as its own metric_value row -- same convention `reviewer_hhi`
+    established for its own reciprocal.
+    """
+    month_rows = con.execute(
+        "SELECT DISTINCT date_trunc('month', occurred_at)::DATE AS m "
+        "FROM contribution_event WHERE event_type = ?",
+        [CODE_COMMIT],
+    ).fetchall()
+    if not month_rows:
+        return []
+    first_month = min(m for (m,) in month_rows)
+
+    out = []
+    for month in _dense_months(first_month, as_of):
+        window_end = month_end(month)
+        window_start, _ = trailing_12m_window(window_end)
+        credits = [c for _, c in _contributor_commit_counts(con, window_start, window_end)]
+        hhi, n = _hhi_from_credits(credits)
+        effective_population = (1.0 / hhi) if hhi is not None else None
+
+        out.append(
+            _make_row(
+                metric_id="contributor_hhi",
+                window_start=window_start,
+                window_end=window_end,
+                raw_value=hhi,
+                n=n,
+                floor=FLOOR_CONCENTRATION,
+                run_id=run_id,
+                computed_at=computed_at,
+                details={"effective_contributor_population": effective_population},
+            )
+        )
+    return out
+
+
+def _file_change_rows_through(
+    con: duckdb.DuckDBPyConnection, cutoff: date
+) -> list[tuple[str, str, str, float]]:
+    """`[(file_path, identity_id, change_type, occurred_at_epoch), ...]` for
+    every non-bot, resolved `file_change_event` row at or before `cutoff` --
+    `truck_factor`'s raw per-(file, developer) input, full history up to that
+    point (issue #53: this is a full-repository snapshot, recomputed at each
+    completed month, never a rolling window -- METRICS.md `truck_factor`
+    "Population & exclusions").
+
+    Returns `occurred_at` as a Unix-epoch `float` (`epoch(...)`, matching
+    `_median_resolution_latency_jira`'s pattern below) rather than fetching
+    the raw `TIMESTAMPTZ` column directly: `_truck_factor_snapshot` only ever
+    needs it for relative ordering (min/max per file), and every other query
+    in this module avoids fetching a raw `TIMESTAMPTZ` column as a Python
+    object for exactly this reason -- some duckdb/Python driver builds need
+    an optional `pytz` install to convert one, which this project doesn't
+    otherwise depend on.
+    """
+    return con.execute(
+        """
+        SELECT fc.file_path, ri.identity_id AS identity_id, fc.change_type,
+               epoch(fc.occurred_at) AS occurred_at_epoch
+        FROM file_change_event fc
+        JOIN resolved_identity ri
+            ON ri.source_type = fc.author_raw_type AND ri.source_value = fc.author_raw_value
+        LEFT JOIN bot_identifier bi
+            ON bi.raw_type = fc.author_raw_type AND bi.raw_value = fc.author_raw_value
+        WHERE bi.raw_value IS NULL AND fc.occurred_at::DATE <= ?
+        """,
+        [cutoff],
+    ).fetchall()
+
+
+def _doa(fa: int, dl: int, ac: int) -> float:
+    """Avelino et al. (2016) Degree-of-Authorship, verified formula
+    (RESEARCH.md §8.2): ``3.293 + 1.098*FA + 0.164*DL - 0.321*ln(1+AC)``.
+
+    ``FA`` = 1 if this developer authored the file's first observed version,
+    else 0. ``DL`` = number of commits this developer made to the file
+    ("deliveries," Fritz et al. 2010's degree-of-knowledge model, which
+    Avelino et al. adopt this formula from). ``AC`` = number of commits
+    *other* developers made to the file ("acceptances" of other authors'
+    changes) -- more competing changes by others lowers this developer's DOA.
+    """
+    return (
+        DOA_INTERCEPT
+        + DOA_FA_COEFFICIENT * fa
+        + DOA_DL_COEFFICIENT * dl
+        + DOA_AC_COEFFICIENT * math.log(1 + ac)
+    )
+
+
+def _truck_factor_snapshot(
+    file_rows: list[tuple[str, str, str, float]],
+) -> dict | None:
+    """One point-in-time truck-factor computation from `_file_change_rows_through`'s
+    output (issue #53).
+
+    Returns `None` if there are no existing files to compute over (e.g. every
+    file collected so far has since been deleted, or there's no data yet).
+    Otherwise returns a dict with `truck_factor`, `n` (candidate-author
+    population), `total_files`, `orphaned_files_at_start` (files with no
+    qualifying author even before any developer is removed -- METRICS.md
+    §0.6 doesn't apply to this count itself, it's diagnostic), and
+    `removed_developers` (ordered list of identity_ids, for audit per D2.3).
+
+    Algorithm (METRICS.md `truck_factor`, RESEARCH.md §8.2's "adopt ... the
+    'orphaned files > 50%' stopping criterion verbatim"): repeatedly remove
+    the developer who is a qualifying DOA-author of the most still-covered
+    files, until more than half the project's (still-existing) files have no
+    remaining qualifying author. This project's greedy tie-break (highest
+    coverage count, then lowest identity_id string, for determinism) and its
+    "a file's author set may hold more than one qualifying developer, not
+    just the single top one" reading are this project's own reproducible
+    choice among several defensible reimplementations -- RESEARCH.md §8.2
+    documents that the algorithm's own authors note "no consensus about how
+    to calculate truck factor" and that a later comparative study
+    (Ferreira et al. 2019) exists specifically because independent
+    reimplementations disagree with each other on the same repository.
+    """
+    # Which files still exist at the cutoff: a file whose most recent change
+    # at or before the cutoff was a deletion has nothing left to "own."
+    last_change_at: dict[str, float] = {}
+    last_change_type: dict[str, str] = {}
+    for file_path, _identity_id, change_type, occurred_at in file_rows:
+        if file_path not in last_change_at or occurred_at >= last_change_at[file_path]:
+            last_change_at[file_path] = occurred_at
+            last_change_type[file_path] = change_type
+    existing_files = {f for f, t in last_change_type.items() if t != "D"}
+    if not existing_files:
+        return None
+
+    # Per (file, identity): DL (this dev's commits on the file), AC (everyone
+    # else's), FA (1 iff this dev authored the file's earliest observed
+    # commit).
+    commits_by_file_identity: dict[str, dict[str, int]] = {}
+    first_commit_at: dict[str, float] = {}
+    first_author: dict[str, str] = {}
+    for file_path, identity_id, _change_type, occurred_at in file_rows:
+        if file_path not in existing_files:
+            continue
+        by_identity = commits_by_file_identity.setdefault(file_path, {})
+        by_identity[identity_id] = by_identity.get(identity_id, 0) + 1
+        if file_path not in first_commit_at or occurred_at < first_commit_at[file_path]:
+            first_commit_at[file_path] = occurred_at
+            first_author[file_path] = identity_id
+
+    authors_by_file: dict[str, set[str]] = {}
+    for file_path, by_identity in commits_by_file_identity.items():
+        total_on_file = sum(by_identity.values())
+        doa_by_identity = {
+            identity_id: _doa(
+                fa=1 if first_author[file_path] == identity_id else 0,
+                dl=dl,
+                ac=total_on_file - dl,
+            )
+            for identity_id, dl in by_identity.items()
+        }
+        max_doa = max(doa_by_identity.values())
+        authors: set[str] = set()
+        if max_doa > 0:
+            for identity_id, doa in doa_by_identity.items():
+                if (
+                    doa / max_doa > DOA_NORMALIZED_THRESHOLD
+                    and doa >= DOA_MINIMUM_ABSOLUTE
+                ):
+                    authors.add(identity_id)
+        authors_by_file[file_path] = authors
+
+    total_files = len(existing_files)
+    orphaned = {f for f, authors in authors_by_file.items() if not authors}
+    orphaned_at_start = len(orphaned)
+    remaining = {f: set(a) for f, a in authors_by_file.items() if a}
+    candidate_pool = {i for a in authors_by_file.values() for i in a}
+
+    removed: list[str] = []
+    threshold = 0.5 * total_files
+    while len(orphaned) <= threshold and remaining:
+        coverage: dict[str, int] = {}
+        for authors in remaining.values():
+            for identity_id in authors:
+                coverage[identity_id] = coverage.get(identity_id, 0) + 1
+        if not coverage:
+            break
+        next_removed = min(coverage, key=lambda identity_id: (-coverage[identity_id], identity_id))
+        removed.append(next_removed)
+        for file_path in list(remaining):
+            remaining[file_path].discard(next_removed)
+            if not remaining[file_path]:
+                orphaned.add(file_path)
+                del remaining[file_path]
+
+    return {
+        "truck_factor": len(removed),
+        "n": len(candidate_pool),
+        "total_files": total_files,
+        "orphaned_files_at_start": orphaned_at_start,
+        "orphaned_files_final": len(orphaned),
+        "removed_developers": removed,
+    }
+
+
+def _truck_factor(
+    con: duckdb.DuckDBPyConnection, as_of: date, run_id: str, computed_at: datetime
+) -> list[dict]:
+    """`truck_factor` (METRICS.md, RESEARCH.md §8.2): a full-repository,
+    point-in-time snapshot recomputed at each completed month to build a
+    trend -- explicitly *not* a windowed rate (METRICS.md `truck_factor`:
+    "a snapshot metric, not a windowed rate"), unlike every other metric in
+    this module. Dense months, one per completed month, from the first month
+    any `file_change_event` exists through the last completed month before
+    `as_of`; each month's snapshot uses every `file_change_event` up to that
+    month's end (D2.2 -- trends over snapshots), not just that month's
+    activity.
+    """
+    month_rows = con.execute(
+        "SELECT DISTINCT date_trunc('month', occurred_at)::DATE AS m FROM file_change_event"
+    ).fetchall()
+    if not month_rows:
+        return []
+    first_month = min(m for (m,) in month_rows)
+
+    out = []
+    for month in _dense_months(first_month, as_of):
+        cutoff = month_end(month)
+        snapshot = _truck_factor_snapshot(_file_change_rows_through(con, cutoff))
+
+        if snapshot is None:
+            raw_value = None
+            n = 0
+            details = {"note": "no existing files with recorded authorship at this snapshot"}
+        else:
+            raw_value = float(snapshot["truck_factor"])
+            n = snapshot["n"]
+            details = {
+                "total_files": snapshot["total_files"],
+                "orphaned_files_at_start": snapshot["orphaned_files_at_start"],
+                "orphaned_files_final": snapshot["orphaned_files_final"],
+                "removed_developers": snapshot["removed_developers"],
+                "doa_normalized_threshold": DOA_NORMALIZED_THRESHOLD,
+                "doa_minimum_absolute": DOA_MINIMUM_ABSOLUTE,
+                "limitations": (
+                    "File-authorship concentration, not 'who could review/merge/design' "
+                    "(METRICS.md `truck_factor` Weaknesses); not validated as a failure "
+                    "predictor for an ASF/JIRA-centric project (RESEARCH.md §8.2); DOA is "
+                    "computed per literal file path, not rename-followed. The snapshot counts "
+                    "every historical author through the cutoff, including people inactive for "
+                    "years -- their files are already effectively orphaned in practice (that "
+                    "knowledge is already gone), but the algorithm still counts them as a "
+                    "removable 'key developer,' so the reported value can overstate the "
+                    "project's *current* resilience relative to its actually-available "
+                    "contributor pool."
+                ),
+            }
+
+        out.append(
+            _make_row(
+                metric_id="truck_factor",
+                window_start=cutoff,
+                window_end=cutoff,
+                raw_value=raw_value,
+                n=n,
+                floor=FLOOR_CONCENTRATION,
+                run_id=run_id,
+                computed_at=computed_at,
+                details=details,
+            )
+        )
+    return out
+
+
 # --- Config helpers -----------------------------------------------------------
 
 
@@ -730,6 +1134,9 @@ def compute_all(
         rows.extend(_reviewer_hhi(con, as_of, run_id, computed_at, reliable_from))
         rows.extend(_median_resolution_latency_jira(con, as_of, run_id, computed_at))
         rows.extend(_stale_jira_rate(con, as_of, run_id, computed_at, threshold_days))
+        rows.extend(_truck_factor(con, as_of, run_id, computed_at))
+        rows.extend(_contributor_absence_factor(con, as_of, run_id, computed_at))
+        rows.extend(_contributor_hhi(con, as_of, run_id, computed_at))
     finally:
         con.close()
 

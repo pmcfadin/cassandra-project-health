@@ -35,6 +35,9 @@ _VERSIONS: dict[str, str] = {
     "median_resolution_latency_jira": "1.0",
     "stale_jira_rate": "1.0",
     "pmc_joins_quarterly": "1.0",
+    "truck_factor": "1.0",
+    "contributor_absence_factor": "1.0",
+    "contributor_hhi": "1.0",
 }
 
 _INITIAL_M0_CHANGELOG_NOTE = "Initial M0 implementation (issue #7)."
@@ -49,6 +52,8 @@ _HEADCOUNT_FLOOR_CHANGELOG_NOTE = (
 )
 
 # metric_id -> changelog_note for its current version.
+_INITIAL_ISSUE_53_CHANGELOG_NOTE = "Initial implementation (issue #53)."
+
 _CHANGELOG_NOTES: dict[str, str] = {
     "active_contributors_monthly": _HEADCOUNT_FLOOR_CHANGELOG_NOTE,
     "new_contributors_monthly": _HEADCOUNT_FLOOR_CHANGELOG_NOTE,
@@ -57,6 +62,9 @@ _CHANGELOG_NOTES: dict[str, str] = {
     "median_resolution_latency_jira": _INITIAL_M0_CHANGELOG_NOTE,
     "stale_jira_rate": _INITIAL_M0_CHANGELOG_NOTE,
     "pmc_joins_quarterly": _INITIAL_M0_CHANGELOG_NOTE,
+    "truck_factor": _INITIAL_ISSUE_53_CHANGELOG_NOTE,
+    "contributor_absence_factor": _INITIAL_ISSUE_53_CHANGELOG_NOTE,
+    "contributor_hhi": _INITIAL_ISSUE_53_CHANGELOG_NOTE,
 }
 
 # metric_id -> description, condensed from METRICS.md's own "## <id>" sections.
@@ -141,6 +149,64 @@ _DESCRIPTIONS: dict[str, str] = {
         "monthly time series), and history for this metric accumulates only from nightly "
         "snapshots going forward. Tier: established. Dimension: responsiveness. Role: key. "
         "Direction of good: lower. METRICS.md §4."
+    ),
+    "truck_factor": (
+        "Avelino et al. (2016) Degree-of-Authorship (DOA) truck/bus factor: the minimum "
+        "number of contributors whose simultaneous departure leaves more than 50% of the "
+        "project's (still-existing) files with no remaining qualifying 'author.' DOA(dev, "
+        "file) = 3.293 + 1.098*FA + 0.164*DL - 0.321*ln(1+AC), where FA=1 if the developer "
+        "authored the file's first observed commit, DL=that developer's commit count on the "
+        "file, AC=every other developer's commit count on the file (RESEARCH.md §8.2, "
+        "verified against the paper's own PDF). A developer is a file's 'author' iff their "
+        "DOA normalized against the file's highest DOA exceeds 0.75 and their absolute DOA "
+        "is >= 3.293 (the paper's own thresholds). Greedy algorithm: repeatedly remove "
+        "whichever remaining developer is a qualifying author of the most still-covered "
+        "files, until more than half the existing files have no qualifying author left; "
+        "truck_factor = number removed. Computed from file_change_event (git log --no-merges "
+        "--name-status; excludes generated/vendored paths per "
+        "projects/<id>.yaml's truck_factor.excluded_path_globs -- METRICS.md §0.5). "
+        "SNAPSHOT METRIC, NOT A WINDOWED RATE: each completed month's row uses every "
+        "file_change_event up to that month's end (full accumulated history), not just that "
+        "month's activity -- window_start == window_end == the snapshot date; this "
+        "deliberately differs from the 'trailing-12m' label in METRICS.md's own §1 summary "
+        "table, which its own §2 detail section (\"a snapshot metric, not a windowed rate\") "
+        "overrides. details_json carries total_files, orphaned_files_at_start/_final, "
+        "removed_developers (identity_ids, D2.3 audit trail), and the DOA thresholds used. "
+        "KNOWN LIMITATIONS (RESEARCH.md §8.2): not validated as a failure predictor (the "
+        "paper's own authors and a 2024 replication both caution against this -- losing "
+        "truck-factor developers is not reliably fatal); DOA thresholds (k=0.75, m=3.293) "
+        "were tuned on 133 popular GitHub projects, not a JIRA/ASF-governance project like "
+        "Cassandra; measures file-authorship concentration, not review/design/institutional "
+        "knowledge; DOA is computed per literal file path, not rename-followed; different "
+        "reimplementations of this algorithm are known to disagree (Ferreira et al. 2019). "
+        "Tier: experimental. Dimension: contributor sustainability. Role: key. Direction of "
+        "good: higher. METRICS.md §2."
+    ),
+    "contributor_absence_factor": (
+        "CHAOSS 'Bus Factor' / 'contributor dependency': sort non-bot, identity-resolved "
+        "contributors by trailing-12-calendar-month commit count descending, and find the "
+        "smallest N whose cumulative commits reach 50% of the window's total commits; N is "
+        "the metric's value, output once per completed month (dense: one row per completed "
+        "month from the first month any code_commit exists through the last completed month "
+        "before the run's as_of date). details_json carries total_commits and the full ranked "
+        "contributor list with each one's commits and cumulative_share (D2.3 audit trail), "
+        "not just the top N. Simpler and cruder than truck_factor (commit count only, no "
+        "per-file authorship), so it's reported alongside it rather than in place of it. "
+        "Tier: established. Dimension: contributor sustainability. Role: supporting. "
+        "Direction of good: higher. Window: trailing-12m, one row per completed month. "
+        "METRICS.md §2."
+    ),
+    "contributor_hhi": (
+        "Herfindahl-Hirschman Index (sum of squared commit shares) per non-bot, "
+        "identity-resolved contributor, over trailing-12-calendar-month windows, dense (one "
+        "row per completed month from the first month any code_commit exists through the "
+        "last completed month before the run's as_of date). Same population and window as "
+        "contributor_absence_factor; same HHI math as reviewer_hhi, applied to commit shares "
+        "instead of review credits. details_json carries effective_contributor_population "
+        "(1/HHI), not emitted as its own metric_value row -- the same convention reviewer_hhi "
+        "established for its own reciprocal. Tier: established. Dimension: contributor "
+        "sustainability. Role: key. Direction of good: lower. Window: trailing-12m, one row "
+        "per completed month. METRICS.md §2."
     ),
 }
 

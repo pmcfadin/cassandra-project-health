@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
@@ -415,6 +416,88 @@ class TestPartialFailure:
         loaded = load_manifest(data_dir, second.run_id)
         assert loaded.sources["jira"].status == "failed"
         assert loaded.sources["jira"].last_good_snapshot == first.run_id
+
+
+# --- file_change_event backfill gap (issue #53 fixup cycle 1) ---------------
+
+
+class TestFileChangeEventBackfillGap:
+    """A data dir collected before issue #53 (`file_change_event`,
+    `truck_factor`) existed already has a `git` watermark sitting at HEAD.
+    That table's *own* watermark (`storage.read_watermark(..., table=
+    "file_change_event")`) must still read back `None` in that case, so its
+    first-ever collection backfills full history instead of silently
+    reusing `git`'s "already caught up" position and collecting nothing
+    forever (the real bug found in review: `truck_factor` would compute zero
+    rows on every run, `metrics_missing` would never clear, and the nightly
+    deploy would stay `degraded`)."""
+
+    def test_missing_file_change_event_watermark_backfills_and_clears_metrics_missing(
+        self, tmp_path, config, git_workdir
+    ):
+        data_dir = tmp_path / "data"
+        transport = _paginated_transport({0: PAGE_1, 5: PAGE_2, 10: EMPTY_PAGE})
+
+        # A normal first run: with this fix in place, `file_change_event`'s
+        # watermark is written right alongside `git`'s.
+        first = run_pipeline(
+            config=config,
+            data_dir=data_dir,
+            workdir=git_workdir,
+            now=NOW,
+            code_sha="abc1234",
+            jira_collector_factory=_jira_factory(transport),
+            asf_roster_collector_factory=_roster_factory(),
+        )
+        assert first.exit_code == 0
+        assert first.manifest["metrics_missing"] == []
+        file_change_event_before = storage.read_table(data_dir, "git", "file_change_event")
+        assert file_change_event_before.num_rows > 0
+
+        # Simulate a data dir from *before* this fix: `file_change_event` was
+        # never collected (the table didn't exist yet), so its raw partitions
+        # and its own watermark key are both absent -- but `git`'s commit
+        # watermark (and contribution_event/review_event) already reached
+        # HEAD from years of prior collection.
+        shutil.rmtree(data_dir / "raw" / "git" / "file_change_event")
+        watermarks_path = storage.watermarks_path(data_dir)
+        watermarks = json.loads(watermarks_path.read_text())
+        assert "git:file_change_event" in watermarks  # sanity: the fix did write it
+        del watermarks["git:file_change_event"]
+        watermarks_path.write_text(json.dumps(watermarks, indent=2, sort_keys=True))
+        assert storage.read_watermark(data_dir, "git", table="file_change_event") is None
+        assert storage.read_watermark(data_dir, "git") is not None  # unchanged: still at HEAD
+
+        # Second run: no new commits (git_workdir hasn't moved), so the
+        # `git` commit watermark's range is empty -- but `file_change_event`
+        # must still backfill its full history from scratch.
+        second = run_pipeline(
+            config=config,
+            data_dir=data_dir,
+            workdir=git_workdir,
+            now=NOW.replace(hour=7),
+            code_sha="abc1234",
+            jira_collector_factory=_jira_factory(_paginated_transport({0: EMPTY_PAGE})),
+            asf_roster_collector_factory=_roster_factory(),
+        )
+
+        assert second.exit_code == 0
+        assert second.manifest["status"] == "ok"
+        assert second.manifest["metrics_missing"] == []
+        assert second.manifest["sources"]["git"]["records_collected"] == 0
+        assert second.manifest["sources"]["git"]["file_changes_collected"] == (
+            file_change_event_before.num_rows
+        )
+
+        file_change_event_after = storage.read_table(data_dir, "git", "file_change_event")
+        assert file_change_event_after.num_rows == file_change_event_before.num_rows
+
+        metrics_table = pq.read_table(data_dir / "snapshots" / second.run_id / "metrics.parquet")
+        truck_factor_rows = [
+            r for r in metrics_table.to_pylist() if r["metric_id"] == "truck_factor"
+        ]
+        assert truck_factor_rows
+        assert any(r["n"] >= 1 for r in truck_factor_rows)
 
 
 # --- Metrics-stage failure (ARCHITECTURE.md §7.3) ----------------------------

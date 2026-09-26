@@ -21,6 +21,7 @@ from project_health.config import load_project
 from project_health.metrics.engine import compute_all
 from tests.fixtures.metrics.builders import (
     contribution_events,
+    file_change_events,
     identity_link_for,
     issues,
     review_events,
@@ -603,6 +604,235 @@ def test_reviewer_hhi_dense_windows_continue_past_the_last_event():
         assert row["n"] == 6
         assert row["value"] == pytest.approx(expected_hhi_six)
         assert row["flag"] == "ok"
+
+
+# --- contributor_absence_factor / contributor_hhi (issue #53) ----------------
+
+
+def _contribution_rows_for_identities(counts: dict[str, int], occurred_at: datetime) -> list[dict]:
+    """`counts[email] = commit_count` -> that many `contribution_event` rows
+    for `email`, all at `occurred_at` (only the calendar month matters for
+    these golden tests, not the exact day)."""
+    rows = []
+    for email, count in counts.items():
+        rows.extend(
+            {"author_raw_type": "git_email", "author_raw_value": email, "occurred_at": occurred_at}
+            for _ in range(count)
+        )
+    return rows
+
+
+def test_contributor_absence_factor_and_hhi_golden_trailing_window_accumulates():
+    # January 2024: 5 distinct contributors, commit counts 10/8/6/4/2 (total
+    # 30) -- n == 5 meets the §0.6 concentration floor exactly.
+    jan_counts = {"a@example.org": 10, "b@example.org": 8, "c@example.org": 6,
+                  "d@example.org": 4, "e@example.org": 2}
+    ce_rows = _contribution_rows_for_identities(jan_counts, _ts(2024, 1, 15))
+    # February 2024: one new contributor with 20 commits; the trailing-12m
+    # window ending Feb still carries January's contributors forward too.
+    ce_rows += _contribution_rows_for_identities({"f@example.org": 20}, _ts(2024, 2, 15))
+
+    contribution_event = contribution_events(ce_rows)
+    identity_link = identity_link_for(contribution_events=contribution_event, now=NOW)
+
+    result = compute_all(
+        {"contribution_event": contribution_event, "identity_link": identity_link},
+        as_of=AS_OF,
+        run_id=RUN_ID,
+        computed_at=COMPUTED_AT,
+        config=CONFIG,
+    )
+
+    absence_rows = {r["window_end"]: r for r in _rows_for(result, "contributor_absence_factor")}
+    hhi_rows = {r["window_end"]: r for r in _rows_for(result, "contributor_hhi")}
+
+    jan = absence_rows[date(2024, 1, 31)]
+    assert jan["n"] == 5
+    assert jan["flag"] == "ok"
+    # Sorted desc 10,8,6,4,2 (total 30, target 15): 10 -> cum 10 (<15); +8 ->
+    # cum 18 (>=15) -- smallest N is 2.
+    assert jan["value"] == 2.0
+    jan_details = _details(jan)
+    assert jan_details["total_commits"] == 30
+    assert len(jan_details["contributors"]) == 5
+    assert jan_details["contributors"][-1]["cumulative_share"] == pytest.approx(1.0)
+
+    feb = absence_rows[date(2024, 2, 29)]
+    # Trailing-12m window ending Feb still includes January's 30 commits
+    # plus February's 20 -- n == 6, total 50, f's 20 is the single largest
+    # holder now.
+    assert feb["window_start"] == date(2023, 3, 1)
+    assert feb["n"] == 6
+    assert feb["flag"] == "ok"
+    # Sorted desc 20,10,8,6,4,2 (total 50, target 25): 20 -> cum 20 (<25);
+    # +10 -> cum 30 (>=25) -- smallest N is 2.
+    assert feb["value"] == 2.0
+    feb_details = _details(feb)
+    assert feb_details["total_commits"] == 50
+
+    jan_hhi = hhi_rows[date(2024, 1, 31)]
+    assert jan_hhi["n"] == 5
+    assert jan_hhi["flag"] == "ok"
+    expected_jan_hhi = sum((c / 30) ** 2 for c in jan_counts.values())
+    assert jan_hhi["value"] == pytest.approx(expected_jan_hhi)
+    assert _details(jan_hhi)["effective_contributor_population"] == pytest.approx(
+        1.0 / expected_jan_hhi
+    )
+
+    feb_hhi = hhi_rows[date(2024, 2, 29)]
+    assert feb_hhi["n"] == 6
+    assert feb_hhi["flag"] == "ok"
+    feb_counts = {**jan_counts, "f@example.org": 20}
+    expected_feb_hhi = sum((c / 50) ** 2 for c in feb_counts.values())
+    assert feb_hhi["value"] == pytest.approx(expected_feb_hhi)
+    assert _details(feb_hhi)["effective_contributor_population"] == pytest.approx(
+        1.0 / expected_feb_hhi
+    )
+
+
+def test_contributor_absence_factor_and_hhi_below_floor_is_insufficient_data():
+    # Only 2 distinct contributors -- below the concentration floor (5).
+    ce_rows = _contribution_rows_for_identities(
+        {"solo@example.org": 3, "duo@example.org": 1}, _ts(2024, 1, 10)
+    )
+    contribution_event = contribution_events(ce_rows)
+    identity_link = identity_link_for(contribution_events=contribution_event, now=NOW)
+
+    result = compute_all(
+        {"contribution_event": contribution_event, "identity_link": identity_link},
+        as_of=AS_OF,
+        run_id=RUN_ID,
+        computed_at=COMPUTED_AT,
+        config=CONFIG,
+    )
+
+    absence_row = _rows_for(result, "contributor_absence_factor")[0]
+    assert absence_row["n"] == 2
+    assert absence_row["value"] is None
+    assert absence_row["flag"] == "insufficient_data"
+
+    hhi_row = _rows_for(result, "contributor_hhi")[0]
+    assert hhi_row["n"] == 2
+    assert hhi_row["value"] is None
+    assert hhi_row["flag"] == "insufficient_data"
+
+
+# --- truck_factor (issue #53) -------------------------------------------------
+
+
+def _single_author_file(email: str, file_path: str, occurred_at: datetime) -> dict:
+    return {
+        "author_raw_type": "git_email",
+        "author_raw_value": email,
+        "file_path": file_path,
+        "occurred_at": occurred_at,
+    }
+
+
+def test_truck_factor_golden_below_floor_orphans_two_of_three_files():
+    # Three files, each with exactly one, distinct sole author -- a clean
+    # "one owner per file" graph. Whichever removal order the tie-break
+    # picks, removing 2 of the 3 (tied-coverage) owners always crosses the
+    # ">50% of files orphaned" line for a 3-file project (threshold 1.5).
+    fc_rows = [
+        _single_author_file("alice@example.org", "F1.java", _ts(2024, 1, 10)),
+        _single_author_file("bob@example.org", "F2.java", _ts(2024, 1, 11)),
+        _single_author_file("carol@example.org", "F3.java", _ts(2024, 1, 12)),
+    ]
+    file_change_event = file_change_events(fc_rows)
+    identity_link = identity_link_for(file_change_events=file_change_event, now=NOW)
+
+    result = compute_all(
+        {"file_change_event": file_change_event, "identity_link": identity_link},
+        as_of=AS_OF,
+        run_id=RUN_ID,
+        computed_at=COMPUTED_AT,
+        config=CONFIG,
+    )
+
+    rows = {r["window_end"]: r for r in _rows_for(result, "truck_factor")}
+    # Dense monthly snapshots, Jan and Feb 2024 both completed before AS_OF.
+    assert set(rows) == {date(2024, 1, 31), date(2024, 2, 29)}
+
+    for window_end in (date(2024, 1, 31), date(2024, 2, 29)):
+        row = rows[window_end]
+        # n == 3 candidate authors, below the concentration floor (5).
+        assert row["n"] == 3
+        assert row["flag"] == "insufficient_data"
+        assert row["value"] is None
+        details = _details(row)
+        assert details["total_files"] == 3
+        assert details["orphaned_files_at_start"] == 0
+        assert details["orphaned_files_final"] == 2
+        assert len(details["removed_developers"]) == 2
+        # window is a point-in-time snapshot, not a range.
+        assert row["window_start"] == window_end
+
+
+def test_truck_factor_golden_at_floor_reports_ok():
+    # Five files, each with exactly one, distinct sole author -- n == 5 meets
+    # the concentration floor. Threshold is 2.5 files; removing 3 of the 5
+    # tied-coverage owners crosses it (3 > 2.5).
+    fc_rows = [
+        _single_author_file(f"dev{i}@example.org", f"F{i}.java", _ts(2024, 1, 10))
+        for i in range(5)
+    ]
+    file_change_event = file_change_events(fc_rows)
+    identity_link = identity_link_for(file_change_events=file_change_event, now=NOW)
+
+    result = compute_all(
+        {"file_change_event": file_change_event, "identity_link": identity_link},
+        as_of=AS_OF,
+        run_id=RUN_ID,
+        computed_at=COMPUTED_AT,
+        config=CONFIG,
+    )
+
+    row = _rows_for(result, "truck_factor")[0]
+    assert row["n"] == 5
+    assert row["flag"] == "ok"
+    assert row["value"] == 3.0
+    details = _details(row)
+    assert details["total_files"] == 5
+    assert details["orphaned_files_final"] == 3
+    assert len(details["removed_developers"]) == 3
+
+
+def test_truck_factor_excludes_deleted_files_from_the_population():
+    # A file added then deleted before the snapshot cutoff no longer exists
+    # -- it must not count toward total_files or anyone's authorship.
+    fc_rows = [
+        _single_author_file("alice@example.org", "gone.java", _ts(2024, 1, 5)),
+        {
+            "author_raw_type": "git_email",
+            "author_raw_value": "alice@example.org",
+            "file_path": "gone.java",
+            "occurred_at": _ts(2024, 1, 6),
+            "change_type": "D",
+        },
+        # Five surviving single-owner files so n meets the floor.
+        *[
+            _single_author_file(f"dev{i}@example.org", f"F{i}.java", _ts(2024, 1, 10))
+            for i in range(5)
+        ],
+    ]
+    file_change_event = file_change_events(fc_rows)
+    identity_link = identity_link_for(file_change_events=file_change_event, now=NOW)
+
+    result = compute_all(
+        {"file_change_event": file_change_event, "identity_link": identity_link},
+        as_of=AS_OF,
+        run_id=RUN_ID,
+        computed_at=COMPUTED_AT,
+        config=CONFIG,
+    )
+
+    row = _rows_for(result, "truck_factor")[0]
+    details = _details(row)
+    # Only the 5 surviving files count -- "gone.java" and alice (its only
+    # author) are excluded entirely.
+    assert details["total_files"] == 5
+    assert row["n"] == 5
 
 
 # --- median_resolution_latency_jira -------------------------------------------

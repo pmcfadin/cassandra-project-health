@@ -432,8 +432,15 @@ each `none`/debatable assignment is in that metric's own section below, not just
   Cassandra's real bus-factor risk may live more in review/JIRA/mailing-list institutional knowledge than in raw
   git line authorship. (b) The algorithm was validated on GitHub-centric projects; it has not been validated
   against an ASF project with Cassandra's patch-by-email/JIRA-centric history, especially older history that
-  predates GitHub mirroring. (c) The 50%-of-files threshold is itself a convention, not a law. This project marks
-  the metric `experimental` for exactly these reasons rather than presenting it as ground truth. See also the
+  predates GitHub mirroring. (c) The 50%-of-files threshold is itself a convention, not a law. (d) The snapshot's
+  DOA is computed from *every* historical author through the cutoff date, including contributors who have been
+  inactive for years — their files are already effectively orphaned in practice (that institutional knowledge is
+  already gone), but the algorithm still counts them as a removable "key developer" until the greedy step actually
+  removes them, so the reported truck factor can overstate the project's *current* resilience relative to its
+  actually-available contributor pool. This project does not correct for it (e.g. by pre-filtering to recently
+  active authors) — that would be a different, undocumented algorithm choice on top of Avelino et al.'s own — but
+  it is a real, disclosed limitation of reading this number as "how many people could leave *today*." This project
+  marks the metric `experimental` for exactly these reasons rather than presenting it as ground truth. See also the
   faster/approximate heuristics survey: *Fast and Accurate Heuristics for Bus-Factor Estimation*
   (https://arxiv.org/html/2508.09828) and *Bus Factor In Practice* (https://arxiv.org/pdf/2202.01523) for further
   limitations discussion this project should revisit before promoting the tier.

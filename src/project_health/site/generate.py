@@ -53,11 +53,13 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from project_health import storage
 from project_health.governance.metrics import metric_id_for_check
+from project_health.metrics.windows import add_months, month_start
 from project_health.schema import get_schema, validate
 from project_health.site import chart_spec
 from project_health.site.manifest import RunManifest, load_manifest
 from project_health.site.governance_page import build_governance_page_context
 from project_health.site.leaderboard_page import build_leaderboard_page_context
+from project_health.site.scoring_page import build_scoring_page_context
 from project_health.site.metrics_meta import (
     GOVERNANCE_METRICS,
     HOME_CARD_METRIC_LIMIT,
@@ -65,6 +67,7 @@ from project_health.site.metrics_meta import (
     PAGES,
     MetricMeta,
     PageMeta,
+    format_days,
 )
 
 # Pinned CDN versions (cdn.jsdelivr.net) — issue #8: pinned, not `@latest`,
@@ -135,6 +138,9 @@ class MetricPoint:
     # `metrics/engine.py`'s devlist metrics) -- `False` for every metric that
     # doesn't set it, never inferred from `flag` alone (an `insufficient_data`
     # window can be a genuine small sample with no backfill involved at all).
+    # Also used (fixup, orchestrator review of issue #57) so a card showing
+    # this point as "the latest value" can flag it rather than presenting a
+    # not-yet-caught-up point as though it were current.
     backfill_in_progress: bool = False
 
 
@@ -235,6 +241,45 @@ def _read_optional_metric_value_table(data_dir: Path, run_id: str, filename: str
     return validate("metric_value", pq.read_table(path))
 
 
+def _row_backfill_in_progress(row: dict[str, Any]) -> bool:
+    """`row["details_json"].backfill_in_progress`, or `False` when
+    `details_json` is absent/unparseable/doesn't carry that key -- a
+    metric_value row from a metric that never sets this flag (every M0
+    metric except the two dev@ metrics, `metrics/engine.py`) always reads
+    `False` here."""
+    raw = row.get("details_json")
+    if not raw:
+        return False
+    try:
+        details = json.loads(raw)
+    except (TypeError, ValueError):
+        return False
+    return bool(details.get("backfill_in_progress", False))
+
+
+# Orchestrator review of issue #57: a card showing "the latest value" must
+# not present a stale point as though it were current -- production showed
+# "Time to First Reply 0.0 days, Jul 2023" while dev@ was still backfilling.
+# A point counts as backfill-affected for card display if either its own
+# row was flagged `backfill_in_progress` (the dev@ metrics' own honest
+# signal), or -- as a general safety net covering any metric, not just the
+# two that set that flag -- its month is more than 2 months older than the
+# run's own last completed month (D5: the month containing the run's
+# `completed_at` is never itself complete).
+STALE_CARD_MONTHS = 2
+
+
+def _last_completed_month(manifest: RunManifest, build_time: datetime) -> date:
+    reference = manifest.completed_at or build_time
+    return add_months(month_start(reference.date()), -1)
+
+
+def _latest_point_is_backfill_pending(point: MetricPoint, last_completed_month: date) -> bool:
+    if point.backfill_in_progress:
+        return True
+    return month_start(point.window_end) < add_months(last_completed_month, -STALE_CARD_MONTHS)
+
+
 def _build_series(table: pa.Table, metrics_map: dict[str, MetricMeta]) -> dict[str, MetricSeries]:
     """Group `metric_value` rows by metric_id for every metric in `metrics_map`.
 
@@ -263,11 +308,7 @@ def _build_series(table: pa.Table, metrics_map: dict[str, MetricMeta]) -> dict[s
                 value=r["value"] if r["flag"] == "ok" else None,
                 n=r["n"],
                 flag=r["flag"],
-                backfill_in_progress=bool(
-                    json.loads(r["details_json"]).get("backfill_in_progress", False)
-                    if r.get("details_json")
-                    else False
-                ),
+                backfill_in_progress=_row_backfill_in_progress(r),
             )
             for r in metric_rows
         ]
@@ -378,6 +419,17 @@ def _vega_lite_spec(series: MetricSeries) -> dict[str, Any]:
             "n": point.n,
             "flag": point.flag,
             "low_n": chart_spec.is_low_n(point.n, point.flag, value_kind=series.meta.value_kind),
+            # Precomputed display string for "days" metrics only (orchestrator
+            # review of issue #57): a sub-day duration needs a unit switch
+            # (hours/minutes) a single d3-format spec on the raw day-value
+            # can't express, so the tooltip renders this nominal field
+            # instead of formatting `value` itself for this value_kind --
+            # see the tooltip encoding below and `format_days`.
+            "value_display": (
+                format_days(point.value)
+                if point.value is not None and series.meta.value_kind == "days"
+                else None
+            ),
         }
         for point in series.points
     ]
@@ -428,14 +480,27 @@ def _vega_lite_spec(series: MetricSeries) -> dict[str, Any]:
     if recent_y_domain is not None:
         y_encoding["scale"] = {"domain": recent_y_domain}
 
-    tooltip = [
-        {"field": "window_end", "type": "temporal", "title": "Month", "format": "%b %Y"},
-        {
+    if series.meta.value_kind == "days":
+        # A static d3-format spec can't switch units (days/hours/minutes)
+        # per point, so a "days" metric's tooltip shows the same precomputed,
+        # unit-aware string (`format_days`) its card's big number uses
+        # (orchestrator review of issue #57), as a nominal field rather than
+        # a quantitative one formatted from the raw day-value.
+        value_tooltip: dict[str, Any] = {
+            "field": "value_display",
+            "type": "nominal",
+            "title": series.meta.tooltip_title,
+        }
+    else:
+        value_tooltip = {
             "field": "value",
             "type": "quantitative",
             "title": series.meta.tooltip_title,
             "format": series.meta.vega_format,
-        },
+        }
+    tooltip = [
+        {"field": "window_end", "type": "temporal", "title": "Month", "format": "%b %Y"},
+        value_tooltip,
         {"field": "n", "type": "quantitative", "title": "n"},
         {"field": "flag", "type": "nominal", "title": "Flag"},
     ]
@@ -672,7 +737,9 @@ def _group_by_page(
     return groups
 
 
-def _card_context(series: MetricSeries, base_prefix: str) -> dict[str, Any]:
+def _card_context(
+    series: MetricSeries, base_prefix: str, last_completed_month: date
+) -> dict[str, Any]:
     latest = series.latest
     return {
         "metric_id": series.meta.metric_id,
@@ -684,10 +751,22 @@ def _card_context(series: MetricSeries, base_prefix: str) -> dict[str, Any]:
         # window's end date collapses to a plain month label, e.g. "Aug
         # 2026", rather than the raw ISO end-of-window date.
         "latest_month_label": latest.window_end.strftime("%b %Y") if latest else None,
-        # issue #79/#35: a "backfill in progress" note (governance.html's
-        # existing badge--backfill-pending styling, issue #69) on a card
-        # whose most recent window is still gapped by a historical backfill.
-        "backfill_in_progress": series.backfill_in_progress,
+        # issue #79/#35 + orchestrator review of issue #57, merged into one
+        # flag/badge rather than two: a card's "backfill pending" tag fires
+        # if either the chronologically truest-latest window (which may
+        # itself be `insufficient_data` precisely because of the gap,
+        # `series.backfill_in_progress`, issue #79) is still backfilling, or
+        # the most recent *displayed* (`flag == 'ok'`) point is stale enough
+        # relative to the run's own last completed month to be misleading if
+        # shown without a caveat (`_latest_point_is_backfill_pending`).
+        "latest_is_backfill_pending": (
+            series.backfill_in_progress
+            or (
+                _latest_point_is_backfill_pending(latest, last_completed_month)
+                if latest
+                else False
+            )
+        ),
         "vega_spec_json": json.dumps(_vega_lite_spec(series)),
         "json_href": f"{base_prefix}data/{series.meta.metric_id}.json",
         "csv_href": f"{base_prefix}data/{series.meta.metric_id}.csv",
@@ -703,7 +782,7 @@ def _format_share(share: float) -> str:
     return f"{share * 100:.1f}%"
 
 
-def _headline_metric_context(series: MetricSeries) -> dict[str, Any]:
+def _headline_metric_context(series: MetricSeries, last_completed_month: date) -> dict[str, Any]:
     """A metric's home-page summary-card row: name, latest value, month —
     no chart, no tier badge (D13: "headline metrics (latest value, month)
     and a link")."""
@@ -712,10 +791,15 @@ def _headline_metric_context(series: MetricSeries) -> dict[str, Any]:
         "name": series.meta.name,
         "value_display": series.meta.format_value(latest.value) if latest else None,
         "month_label": latest.window_end.strftime("%b %Y") if latest else None,
+        "is_backfill_pending": (
+            _latest_point_is_backfill_pending(latest, last_completed_month) if latest else False
+        ),
     }
 
 
-def _summary_card_context(page: PageMeta, page_series: list[MetricSeries]) -> dict[str, Any]:
+def _summary_card_context(
+    page: PageMeta, page_series: list[MetricSeries], last_completed_month: date
+) -> dict[str, Any]:
     """A home-page summary card. Summary cards only ever render on the home
     page (`/`), so their link is relative to the site *root*, not to a
     subpage — `HOME_BASE_PREFIX + page.path` (e.g. `"./community/"`), never
@@ -726,7 +810,7 @@ def _summary_card_context(page: PageMeta, page_series: list[MetricSeries]) -> di
         "title": page.title,
         "summary": page.summary,
         "href": HOME_BASE_PREFIX + page.path,
-        "metrics": [_headline_metric_context(s) for s in headline],
+        "metrics": [_headline_metric_context(s, last_completed_month) for s in headline],
         "metric_count": len(page_series),
         "empty_message": page.empty_message,
     }
@@ -786,16 +870,25 @@ def _render_pages(
     )
     common_ctx = _common_page_context(manifest, build_time)
     series_by_page = _group_by_page(series_by_id)
+    last_completed_month = _last_completed_month(manifest, build_time)
 
     # Home (`/`).
     summary_cards = [
-        _summary_card_context(page, series_by_page[page_id])
+        _summary_card_context(page, series_by_page[page_id], last_completed_month)
         for page_id, page in PAGES.items()
     ]
+    # Composite health score + dimension breakdown (D20, issue #57) — a
+    # small, additive call, same reasoning as the leaderboard's own wiring
+    # immediately below: `scoring_page.py` and `scoring/engine.py` are the
+    # only things that read/write this data.
+    scoring_context = build_scoring_page_context(
+        data_dir, run_id, out_dir, base_prefix=HOME_BASE_PREFIX
+    )
     home_html = env.get_template("home.html").render(
         current_page="home",
         base_prefix=HOME_BASE_PREFIX,
         summary_cards=summary_cards,
+        scoring=scoring_context,
         **common_ctx,
     )
     (out_dir / "index.html").write_text(home_html)
@@ -804,7 +897,9 @@ def _render_pages(
     community_dimensions = [
         {
             "dimension": dimension,
-            "metrics": [_card_context(s, SUBPAGE_BASE_PREFIX) for s in series_list],
+            "metrics": [
+                _card_context(s, SUBPAGE_BASE_PREFIX, last_completed_month) for s in series_list
+            ],
         }
         for dimension, series_list in _group_by_dimension(series_by_page["community"])
     ]
@@ -832,7 +927,9 @@ def _render_pages(
     conversations_dimensions = [
         {
             "dimension": dimension,
-            "metrics": [_card_context(s, SUBPAGE_BASE_PREFIX) for s in series_list],
+            "metrics": [
+                _card_context(s, SUBPAGE_BASE_PREFIX, last_completed_month) for s in series_list
+            ],
         }
         for dimension, series_list in _group_by_dimension(series_by_page["conversations"])
     ]
@@ -863,7 +960,7 @@ def _render_pages(
     # informative (D15: "every result showing its evidence" extends to the
     # aggregate view never hiding fail/unknown/exempt behind a bare rate).
     governance_cards_by_metric = {
-        s.meta.metric_id: _card_context(s, SUBPAGE_BASE_PREFIX)
+        s.meta.metric_id: _card_context(s, SUBPAGE_BASE_PREFIX, last_completed_month)
         for s in series_by_page["governance"]
     }
     governance_trend_cards = []

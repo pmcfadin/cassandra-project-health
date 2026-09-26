@@ -20,11 +20,14 @@
           {% if m.latest_value_display is not none %}
             <span class="value">{{ m.latest_value_display }}</span>
             <span class="value-period">{{ m.latest_month_label }}</span>
+            {% if m.latest_is_backfill_pending %}
+            <span class="badge badge--backfill-pending">backfill pending</span>
+            {% endif %}
           {% else %}
             <span class="value value--insufficient">insufficient data</span>
-          {% endif %}
-          {% if m.backfill_in_progress %}
-          <span class="badge badge--backfill-pending">backfill in progress</span>
+            {% if m.latest_is_backfill_pending %}
+            <span class="badge badge--backfill-pending">backfill pending</span>
+            {% endif %}
           {% endif %}
         </p>
 

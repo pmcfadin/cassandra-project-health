@@ -1345,7 +1345,7 @@ def test_community_card_shows_backfill_in_progress_note(tmp_path):
     idx = html_text.index("Time to First Response (JIRA)")
     card_html = html_text[idx : idx + 800]
     assert 'class="badge badge--backfill-pending"' in card_html
-    assert "backfill in progress" in card_html
+    assert "backfill pending" in card_html
 
 
 def test_community_card_omits_backfill_note_when_not_flagged(tmp_path):
@@ -1739,3 +1739,219 @@ def test_generate_raises_if_snapshot_missing(tmp_path):
     _write_manifest(data_dir, RUN_ID, completed_at=BUILD_TIME)
     with pytest.raises(FileNotFoundError):
         generate(data_dir, RUN_ID, tmp_path / "out")
+
+
+# --- Orchestrator review fixups (issue #57): composite scale note, stale-
+# point "backfill pending" flag, sub-day duration formatting -------------
+
+
+def _write_scoring_snapshot(
+    data_dir: Path,
+    run_id: str,
+    *,
+    composite: float | None = 56.4,
+    has_declining_dimension: bool = True,
+) -> None:
+    """A minimal, real `composite_score.parquet` + `dimension_status.parquet`
+    pair (D20, issue #57) -- just enough for `scoring_page.py` to report
+    `has_data=True` so the home page's composite section renders."""
+    computed_at = datetime(2026, 9, 25, 6, 30, tzinfo=UTC)
+    dimensions = [
+        "contributor sustainability",
+        "reviewer capacity",
+        "responsiveness",
+        "organizational diversity",
+        "release cadence",
+    ]
+    breakdown = [
+        {
+            "dimension": dim,
+            "weight": 0.2,
+            "renormalized_weight": 0.2,
+            "score": 55.0,
+            "status": (
+                "declining"
+                if (dim == "reviewer capacity" and has_declining_dimension)
+                else "stable"
+            ),
+            "included": True,
+            "key_metrics_scored": 1,
+            "key_metrics_total": 1,
+        }
+        for dim in dimensions
+    ]
+    composite_row = {
+        "window_end": date(2026, 8, 31),
+        "composite": composite,
+        "dimensions_included": 5,
+        "dimensions_total": 5,
+        "has_declining_dimension": has_declining_dimension,
+        "dimensions_json": json.dumps(breakdown),
+        "scoring_version": "1.0.0",
+        "run_id": run_id,
+        "computed_at": computed_at,
+    }
+    dimension_rows = [
+        {
+            "dimension": entry["dimension"],
+            "window_end": date(2026, 8, 31),
+            "status": entry["status"],
+            "driven_by": "reviewer_hhi" if entry["status"] == "declining" else None,
+            "score": entry["score"],
+            "key_metrics_scored": entry["key_metrics_scored"],
+            "key_metrics_total": entry["key_metrics_total"],
+            "scoring_version": "1.0.0",
+            "run_id": run_id,
+            "computed_at": computed_at,
+        }
+        for entry in breakdown
+    ]
+    snapshot_dir = data_dir / "snapshots" / run_id
+    snapshot_dir.mkdir(parents=True, exist_ok=True)
+    composite_table = validate(
+        "composite_score",
+        pa.Table.from_pylist([composite_row], schema=get_schema("composite_score")),
+    )
+    dimension_table = validate(
+        "dimension_status",
+        pa.Table.from_pylist(dimension_rows, schema=get_schema("dimension_status")),
+    )
+    pq.write_table(composite_table, snapshot_dir / "composite_score.parquet")
+    pq.write_table(dimension_table, snapshot_dir / "dimension_status.parquet")
+
+
+def test_composite_scale_note_shown_on_home_page(tmp_path):
+    """Orchestrator review of issue #57 fix 1: the composite must never be
+    shown without a plain-language explanation of its self-baselined scale,
+    both for the composite itself and for each dimension's own score."""
+    data_dir = tmp_path / "data"
+    _write_snapshot(data_dir, RUN_ID, _default_rows())
+    _write_manifest(data_dir, RUN_ID, completed_at=BUILD_TIME - timedelta(hours=1))
+    _write_scoring_snapshot(data_dir, RUN_ID)
+    out_dir = tmp_path / "out"
+    generate(data_dir, RUN_ID, out_dir, now=BUILD_TIME)
+    html_text = (out_dir / "index.html").read_text()
+
+    assert "typical for Cassandra" in html_text
+    assert "not comparable" in html_text.lower()
+    assert "LFX Insights" in html_text
+    # The same scale note explicitly says it covers each dimension's score.
+    assert "each dimension" in html_text.lower() or "dimension's score" in html_text.lower()
+
+
+def _rows_without(metric_id: str) -> list[dict]:
+    """`_default_rows()` minus every row for `metric_id` -- used so a test's
+    own custom point for that metric is unambiguously "the latest" (never
+    tied against, or shadowed by, the default fixture's own fresh Jul/Aug
+    2026 rows for every M0 metric)."""
+    return [row for row in _default_rows() if row["metric_id"] != metric_id]
+
+
+def test_summary_card_flags_backfill_pending_for_a_stale_point(tmp_path):
+    """Orchestrator review fix 2: a home summary card must not present a
+    stale point as current. `time_to_first_reply_devlist`'s only point here
+    is 13 months before the run's last completed month (Aug 2026) -- well
+    past the 2-month staleness window -- with no `backfill_in_progress` flag
+    of its own, exercising the general "window_end is old" heuristic."""
+    rows = _rows_without("time_to_first_reply_devlist")
+    rows.append(
+        _metric_value_row(
+            "time_to_first_reply_devlist", date(2025, 7, 1), date(2025, 7, 31), 0.03, 12, "ok"
+        )
+    )
+    out_dir = _build_site(tmp_path, rows=rows)
+    html_text = (out_dir / "index.html").read_text()
+    assert "backfill pending" in html_text
+
+
+def test_summary_card_flags_backfill_pending_when_details_json_says_so(tmp_path):
+    """The dev@ metrics' own honest `details_json.backfill_in_progress` flag
+    (metrics/engine.py) is respected even for a recent-looking point."""
+    rows = _rows_without("time_to_first_reply_devlist")
+    row = _metric_value_row(
+        "time_to_first_reply_devlist", date(2026, 8, 1), date(2026, 8, 31), 0.03, 12, "ok"
+    )
+    row["details_json"] = json.dumps({"backfill_in_progress": True})
+    rows.append(row)
+    out_dir = _build_site(tmp_path, rows=rows)
+    html_text = (out_dir / "index.html").read_text()
+    assert "backfill pending" in html_text
+
+
+def test_summary_card_omits_backfill_flag_for_a_fresh_point(tmp_path):
+    """Negative case: every default-rows point is within 0 months of the
+    run's last completed month, and none set `backfill_in_progress` --
+    the badge must not appear anywhere on a normal, fresh run's home page."""
+    out_dir = _build_site(tmp_path)
+    html_text = (out_dir / "index.html").read_text()
+    assert "backfill pending" not in html_text
+
+
+def test_subpage_card_flags_backfill_pending_too(tmp_path):
+    """Fix 2 applies wherever a card shows a metric's latest value, not just
+    the home page's own summary cards -- the Conversations subpage card for
+    the same metric must show the same flag."""
+    rows = _rows_without("time_to_first_reply_devlist")
+    rows.append(
+        _metric_value_row(
+            "time_to_first_reply_devlist", date(2025, 7, 1), date(2025, 7, 31), 0.03, 12, "ok"
+        )
+    )
+    out_dir = _build_site(tmp_path, rows=rows)
+    html_text = (out_dir / "conversations" / "index.html").read_text()
+    assert "backfill pending" in html_text
+
+
+def test_format_days_shows_days_hours_and_minutes_by_magnitude():
+    """Orchestrator review fix 3: a sub-day duration must not render as a
+    misleading "0.0 days" -- switch to hours, then minutes, as the value
+    shrinks."""
+    from project_health.site.metrics_meta import format_days
+
+    assert format_days(14.2) == "14.2 days"
+    assert format_days(1.0) == "1.0 days"
+    assert format_days(0.5) == "12.0 h"  # 12 hours
+    assert format_days(2 / 24) == "2.0 h"
+    assert format_days(0.03) == "43 min"  # ~0.72h, under 1 hour -> minutes
+    assert format_days(0.0) == "0 min"
+
+
+def test_card_shows_duration_in_hours_not_a_misleading_zero_days(tmp_path):
+    """A real sub-day median (0.03 days, issue #57 orchestrator review) must
+    never render as "0.0 days" on the Conversations card or the home
+    summary card."""
+    rows = _rows_without("time_to_first_reply_devlist")
+    rows.append(
+        _metric_value_row(
+            "time_to_first_reply_devlist", date(2026, 8, 1), date(2026, 8, 31), 0.03, 12, "ok"
+        )
+    )
+    out_dir = _build_site(tmp_path, rows=rows)
+    conversations_html = (out_dir / "conversations" / "index.html").read_text()
+    home_html = (out_dir / "index.html").read_text()
+    assert "0.0 days" not in conversations_html
+    assert "43 min" in conversations_html
+    assert "0.0 days" not in home_html
+    assert "43 min" in home_html
+
+
+def test_chart_tooltip_uses_precomputed_display_string_for_days_metrics(tmp_path):
+    """The chart tooltip for a "days" metric must show the same unit-aware
+    string as the card, not a raw quantitative day-value formatted with a
+    static d3-format spec (which can't switch units)."""
+    rows = _rows_without("time_to_first_reply_devlist")
+    rows.append(
+        _metric_value_row(
+            "time_to_first_reply_devlist", date(2026, 8, 1), date(2026, 8, 31), 0.03, 12, "ok"
+        )
+    )
+    out_dir = _build_site(tmp_path, rows=rows)
+    html_text = (out_dir / "conversations" / "index.html").read_text()
+    specs = re.findall(r"data-vega-spec='(.*?)'", html_text)
+    devlist_spec = next(
+        (json.loads(html_module.unescape(s)) for s in specs if "value_display" in s), None
+    )
+    assert devlist_spec is not None, "expected a chart spec whose data.values carry value_display"
+    tooltip_fields = {t["field"] for t in devlist_spec["encoding"]["tooltip"]}
+    assert "value_display" in tooltip_fields
+    assert "43 min" in json.dumps(devlist_spec["data"]["values"])

@@ -836,6 +836,102 @@ CONTRIBUTOR_LEADERBOARD = pa.schema(
     ]
 )
 
+# --- Scoring: baseline status + versioned composite (D20, issue #57) -------
+#
+# Three tables, one per SCORING.md concept, deliberately not merged into a
+# single shape (mirrors `metric_value`/`metric_definition_version` staying
+# separate): a per-metric row, a per-dimension row and a per-run composite
+# row each have a genuinely different shape, and merging them would force
+# nullable-everything columns onto every row. `scoring/engine.py` is the only
+# writer; `site/scoring_page.py` is the only site-side reader.
+
+# One row per (metric_id, window_end) per run: SCORING.md §5.1's per-metric
+# baseline status -- the median/MAD baseline behind it, the modified z-score,
+# the 2-of-3-months confirmation state, and the resulting status label.
+METRIC_BASELINE_STATUS = pa.schema(
+    [
+        pa.field("metric_id", pa.string(), nullable=False),
+        pa.field("dimension", pa.string(), nullable=False),
+        # role: 'key' | 'supporting' (METRICS.md §1, SCORING.md §5.3)
+        pa.field("role", pa.string(), nullable=False),
+        # direction_of_good: 'higher' | 'lower' | 'target-range' | 'none'
+        pa.field("direction_of_good", pa.string(), nullable=False),
+        pa.field("window_end", pa.date32(), nullable=False),
+        pa.field("current_value", pa.float64(), nullable=True),
+        pa.field("baseline_median", pa.float64(), nullable=True),
+        pa.field("baseline_mad", pa.float64(), nullable=True),
+        # Number of completed months feeding `baseline_median`/`baseline_mad`
+        # (SCORING.md §4.1: up to `trailing_months`, at least
+        # `min_completed_months` or the row is `insufficient_data`).
+        pa.field("baseline_months", pa.int64(), nullable=False),
+        pa.field("modified_z", pa.float64(), nullable=True),
+        # status: 'improving' | 'stable' | 'declining' | 'insufficient_data'
+        pa.field("status", pa.string(), nullable=False),
+        # True once the deviation has held for
+        # `confirmation_required` of the last `confirmation_window_months`
+        # completed months (SCORING.md §5.1 rule 4) -- the condition that
+        # promotes `status` from `stable` to `improving`/`declining`.
+        pa.field("confirmed", pa.bool_(), nullable=True),
+        # True when this month alone is a "notable single-month event"
+        # (|modified_z| >= large_deviation_threshold) -- shown even while
+        # `status` is still `stable`, pending confirmation (SCORING.md §5.1
+        # rule 4).
+        pa.field("notable_single_month_event", pa.bool_(), nullable=True),
+        pa.field("scoring_version", pa.string(), nullable=False),
+        pa.field("run_id", pa.string(), nullable=False),
+        pa.field("computed_at", TIMESTAMP_UTC, nullable=False),
+    ]
+)
+
+# One row per (dimension, window_end) per run: SCORING.md §5.3's
+# worst-key-metric dimension status, plus (D20) the dimension's 0-100
+# composite input score.
+DIMENSION_STATUS = pa.schema(
+    [
+        pa.field("dimension", pa.string(), nullable=False),
+        pa.field("window_end", pa.date32(), nullable=False),
+        # status: 'improving' | 'stable' | 'declining' | 'insufficient_data'
+        pa.field("status", pa.string(), nullable=False),
+        # Comma-joined metric_id(s) whose status set the dimension's status
+        # (SCORING.md §5.3's "driven by" disclosure) -- empty when status is
+        # insufficient_data.
+        pa.field("driven_by", pa.string(), nullable=True),
+        # 0-100 composite input score (D20), or null when every key metric in
+        # this dimension is insufficient_data (SCORING.md §5.4).
+        pa.field("score", pa.float64(), nullable=True),
+        # How many of this dimension's key metrics had a computable score,
+        # out of how many are registered -- the composite page's disclosed
+        # renormalization note (D20) is built from these two counts.
+        pa.field("key_metrics_scored", pa.int64(), nullable=False),
+        pa.field("key_metrics_total", pa.int64(), nullable=False),
+        pa.field("scoring_version", pa.string(), nullable=False),
+        pa.field("run_id", pa.string(), nullable=False),
+        pa.field("computed_at", TIMESTAMP_UTC, nullable=False),
+    ]
+)
+
+# One row per run: the versioned 0-100 composite (D20). `dimensions_json`
+# carries the full per-dimension breakdown (weight, renormalized weight,
+# score, status) the home page renders next to the composite -- D20's "the
+# composite never appears alone" -- so a reader/test can reconstruct the
+# exact weighted-average arithmetic without re-joining `dimension_status`.
+COMPOSITE_SCORE = pa.schema(
+    [
+        pa.field("window_end", pa.date32(), nullable=False),
+        # composite: 0-100, or null when every dimension is insufficient_data.
+        pa.field("composite", pa.float64(), nullable=True),
+        pa.field("dimensions_included", pa.int64(), nullable=False),
+        pa.field("dimensions_total", pa.int64(), nullable=False),
+        # True if any included dimension's status is 'declining' (D20's
+        # "flagged next to the composite").
+        pa.field("has_declining_dimension", pa.bool_(), nullable=False),
+        pa.field("dimensions_json", pa.string(), nullable=False),
+        pa.field("scoring_version", pa.string(), nullable=False),
+        pa.field("run_id", pa.string(), nullable=False),
+        pa.field("computed_at", TIMESTAMP_UTC, nullable=False),
+    ]
+)
+
 TABLE_SCHEMAS: dict[str, pa.Schema] = {
     "person_identity": PERSON_IDENTITY,
     "identity_link": IDENTITY_LINK,
@@ -874,4 +970,7 @@ TABLE_SCHEMAS: dict[str, pa.Schema] = {
     "check_run": GOVERNANCE_CHECK_RUN,
     "classification": CLASSIFICATION,
     "contributor_leaderboard": CONTRIBUTOR_LEADERBOARD,
+    "metric_baseline_status": METRIC_BASELINE_STATUS,
+    "dimension_status": DIMENSION_STATUS,
+    "composite_score": COMPOSITE_SCORE,
 }

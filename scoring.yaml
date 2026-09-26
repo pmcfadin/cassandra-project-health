@@ -1,0 +1,155 @@
+# scoring.yaml — versioned scoring rules (DECISIONS.md D20, docs/spec/SCORING.md).
+#
+# Two things are versioned together here because they share one lineage (D20's own
+# wording: "weights, normalization functions and dimension inputs live in a versioned
+# file"): the per-metric baseline-status math (SCORING.md §4-§5: median/MAD, modified
+# z-score, the improving/stable/declining/insufficient_data status rule, and the
+# worst-key-metric dimension rule) and the 0-100 composite health score built on top
+# of it (D20, amending D4's original "no composite, ever").
+#
+# Per SCORING.md §8 / DECISIONS.md D2 rule 6 ("nothing changes silently"): a change to
+# any field below is a `scoring_version` bump, with a dated `CHANGELOG.md` entry, and
+# triggers a full-history recompute under the new version -- never a silent edit that
+# makes an old snapshot's numbers reinterpret differently without a version change to
+# point at.
+#
+# Loaded by `src/project_health/scoring/config.py` (`load_scoring_config`), which is
+# the only place this file's raw YAML shape is parsed -- the rest of the scoring engine
+# works against the typed `ScoringConfig`/`BaselineConfig`/`CompositeConfig` dataclasses
+# it returns, never this raw dict (same split governance-policy.yaml/`governance/
+# policy.py` already established).
+
+scoring_version: "1.0.0"
+
+# --- Baseline status math (SCORING.md §4-§5) --------------------------------------
+
+baseline:
+  # SCORING.md §4.1: "trailing 24 completed months." Where a metric's own history is
+  # shorter (documented per metric, e.g. reviewer-proxy metrics' 2017+ reliable_from),
+  # the baseline uses whatever completed-month history exists -- a "partial baseline"
+  # -- down to `min_completed_months`, never padded or silently shortened further.
+  trailing_months: 24
+
+  # SCORING.md §5.1 rule 1: "insufficient data if ... fewer than 12 completed months
+  # of baseline history exist yet (even a partial 24-month baseline needs a floor)."
+  # This is the floor that actually gates insufficient_data -- NOT `trailing_months`
+  # itself. A metric with, say, 18 completed months has a real (partial, disclosed)
+  # baseline and a classifiable status; a metric with 9 does not.
+  min_completed_months: 12
+
+  # SCORING.md §5.1 rule 3, the Western Electric-derived modified-z-score thresholds:
+  #   |modified_z| < stable_threshold                          -> stable
+  #   stable_threshold <= |modified_z| < large_deviation_threshold, sign-consistent
+  #                                                              -> improving/declining
+  #   |modified_z| >= large_deviation_threshold                 -> same label, flagged
+  #                                                                 as a large deviation
+  stable_threshold: 1.5
+  large_deviation_threshold: 3.0
+
+  # SCORING.md §5.1 rule 4, the "2 of last 3" sustained-trend override: a single
+  # month crossing `stable_threshold` does not by itself flip the *displayed* status
+  # out of stable -- `confirmation_required` of the last `confirmation_window_months`
+  # completed months must cross it, sign-consistent, first. A lone month at or above
+  # `large_deviation_threshold` is still flagged immediately as a "notable
+  # single-month event" alongside the (still-stable, pending-confirmation) status.
+  confirmation_window_months: 3
+  confirmation_required: 2
+
+  # SCORING.md §4.2: when a metric's trailing baseline has MAD = 0 (perfectly flat for
+  # the whole baseline window), the modified z-score is undefined by division-by-zero,
+  # and the system instead compares the raw magnitude of (current - median) against a
+  # "metric-specific minimum-meaningful-change floor (documented per metric in
+  # METRICS.md where relevant)". METRICS.md does not currently document such a floor
+  # for any metric, so this project makes that silence explicit rather than assuming
+  # it: the default floor is 0.0 (any nonzero change against a perfectly flat 24-month
+  # baseline is treated as meaningful), and `mad_zero_floors` is the versioned place a
+  # future per-metric override would go, once one is documented in METRICS.md.
+  mad_zero_floor_default: 0.0
+  mad_zero_floors: {}
+
+  # SCORING.md §4.3's `target-range` direction ("release_frequency" is the only
+  # Phase-1 key metric with this direction) has no monotonic "better" side -- neither
+  # extreme is healthy, and status is judged against the project's own historical
+  # range rather than a sign. SCORING.md does not spell out the exact classification
+  # for this case, so this project makes an explicit, disclosed choice: a target-range
+  # metric is `stable` while |modified_z| stays inside `stable_threshold`, and
+  # `declining` (never `improving` -- there is no direction that is unambiguously
+  # better) once a deviation in *either* direction clears `stable_threshold` and is
+  # confirmed per the same 2-of-3 rule as every other metric. This keeps a real
+  # departure from "this project's own normal cadence" visible without inventing a
+  # fifth status label or a fabricated "improving" reading for, say, an unusually fast
+  # release cadence that is not obviously good.
+  target_range_declining_only: true
+
+# --- Composite health score (D20, amending D4) ------------------------------------
+
+composite:
+  # Dimension weights. Equal weighting across the five Phase-1, non-classified
+  # dimensions (contributor sustainability, reviewer capacity, responsiveness,
+  # organizational diversity, release cadence) is a disclosed, versioned editorial
+  # choice -- D20 requires weights to be published and versioned, not that they be
+  # equal forever. It is not a claim that these five concerns matter equally to every
+  # reader; changing these weights is itself a `scoring_version` bump (SCORING.md §8).
+  dimension_weights:
+    contributor sustainability: 0.2
+    reviewer capacity: 0.2
+    responsiveness: 0.2
+    organizational diversity: 0.2
+    release cadence: 0.2
+
+  # Dimensions intentionally excluded from the composite, and why (disclosed on the
+  # home page next to the composite, D20 / SCORING.md's revised "what must never be
+  # combined" list):
+  excluded_dimensions:
+    interaction health: >
+      Phase 2 classified dimension (COMMUNITY-HEALTH.md's validation gates have not
+      cleared). D20: "Classified (Phase 2) metrics don't enter the composite until
+      they have passed their validation gates."
+    governance: >
+      Governance (per-commit minimums, D14/D15) is not one of D4's dimension list
+      (contributor sustainability, reviewer capacity, responsiveness, organizational
+      diversity, release cadence, interaction health) and SCORING.md's baseline/
+      worst-key-metric machinery was never defined over it -- it is judged against an
+      owner-approved policy version in force on each commit's date, not against a
+      trailing self-baseline. Whether governance compliance should ever feed a project
+      "health" composite is genuinely ambiguous in the spec as written. Per this
+      project's own default for spec ambiguity, governance is kept out of the
+      composite and this note discloses that choice, rather than silently folding it
+      in or silently dropping it without explanation.
+
+  # Per-metric normalization to a 0-100 scale (documented, monotonic, direction-aware,
+  # D20). Only a dimension's `key` metrics (SCORING.md §5.3) feed that dimension's
+  # composite score -- the same metrics that can veto the dimension's *status* are the
+  # only ones that move its *score*, so the composite can never look healthier than a
+  # declining key metric's own status would suggest merely because several supporting
+  # metrics happened to look fine (the same failure mode SCORING.md §5.3 rejects for
+  # status, applied to the score too).
+  #
+  # Formula: reuses the exact modified z-score already computed for baseline status
+  # (never a second, independently-tuned scale) -- self-baseline, not a universal
+  # threshold, consistent with DECISIONS.md D2 rule 2:
+  #   higher/lower direction:  score = clip(50 + z_scale * signed_z, 0, 100)
+  #     (signed_z is the modified z-score, sign-flipped for `lower` metrics so
+  #      positive always means "moving toward improving")
+  #   target-range direction:  score = clip(100 - target_range_scale * |modified_z|, 0, 100)
+  #   `none` direction: excluded (SCORING.md §5.1: never classified, so never scored)
+  #   insufficient_data: excluded from its dimension's average (see below)
+  # `z_scale`/`target_range_scale` are chosen so |z| = stable_threshold (1.5) lands
+  # exactly on 25/75 and |z| = large_deviation_threshold (3.0) saturates at 0/100:
+  # z_scale = 50 / large_deviation_threshold, target_range_scale = 100 / large_deviation_threshold.
+  normalization:
+    z_scale: 16.66666667
+    target_range_scale: 33.33333333
+    neutral_score: 50.0
+
+  insufficient_data_handling: >
+    A dimension's score is the mean of its key metrics' 0-100 scores, over only the
+    key metrics that have a computable (non-insufficient_data) status this month --
+    the dimension's own weight among its key metrics is implicitly renormalized by
+    averaging over just those metrics. If every key metric in a dimension is
+    insufficient_data, the dimension has no score this month (SCORING.md §5.4) and is
+    dropped entirely from the top-level weighted average; the remaining dimensions'
+    `dimension_weights` are renormalized to sum to 1.0 for that month's composite. Both
+    renormalizations are disclosed on the home page next to the composite every time
+    they apply (D20: "the composite never appears alone") -- never silently absorbed
+    into the number.

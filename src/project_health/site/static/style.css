@@ -315,6 +315,112 @@ main {
   color: var(--accent);
 }
 
+/* --- Home page: composite health score + dimension breakdown (D20, issue
+   #57). The composite is never rendered without this whole section --
+   generate.py never passes a bare number, only the full `scoring` context. */
+
+.composite-section {
+  margin: 1.5rem 0;
+  padding: 1.25rem;
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--card-shadow);
+}
+.composite-section h2 {
+  margin: 0 0 0.5rem;
+  font-size: 1.1rem;
+}
+.composite-score-row {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+.composite-score-value {
+  font-size: 2.25rem;
+  font-weight: 700;
+}
+.composite-score-scale {
+  color: var(--fg-muted);
+}
+.composite-scale-note {
+  font-size: 0.9rem;
+  margin: 0.5rem 0;
+  max-width: 42rem;
+}
+.composite-caveat {
+  color: var(--fg-muted);
+  font-size: 0.85rem;
+  margin: 0.5rem 0;
+}
+.composite-caveat a {
+  color: var(--accent);
+}
+.composite-renormalized-note {
+  color: var(--warn);
+}
+.badge--declining {
+  border-color: var(--bad);
+  color: var(--bad);
+  font-weight: 600;
+}
+.badge--status-declining {
+  border-color: var(--bad);
+  color: var(--bad);
+}
+.badge--status-improving {
+  border-color: var(--ok);
+  color: var(--ok);
+}
+.badge--status-stable {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.badge--status-insufficient_data {
+  border-color: var(--fg-muted);
+  color: var(--fg-muted);
+}
+.dimension-breakdown {
+  list-style: none;
+  margin: 1rem 0 0.5rem;
+  padding: 0;
+  display: grid;
+  gap: 0.6rem;
+}
+.dimension-breakdown-item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  border-left-width: 4px;
+}
+.dimension-breakdown-item--declining {
+  border-left-color: var(--bad);
+}
+.dimension-breakdown-item--improving {
+  border-left-color: var(--ok);
+}
+.dimension-breakdown-item--stable {
+  border-left-color: var(--accent);
+}
+.dimension-breakdown-item--insufficient_data {
+  border-left-color: var(--border);
+}
+.dimension-breakdown-name {
+  font-weight: 600;
+  min-width: 11rem;
+}
+.dimension-breakdown-weight,
+.dimension-breakdown-driven-by,
+.dimension-breakdown-keys {
+  color: var(--fg-muted);
+  font-size: 0.8rem;
+}
+
 /* --- Home page: one summary card per top-level page (D13) -------------- */
 
 .summary-grid {

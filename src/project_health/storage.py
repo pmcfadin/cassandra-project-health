@@ -6,7 +6,7 @@ any directory in tests):
     raw/<source>/<table>/date=YYYY-MM-DD/part-<run_id>.parquet   # append-only
     snapshots/<run_id>/metrics.parquet         # full computed-metric output for a run
     manifests/<run_id>.json                    # run manifest (§5)
-    state/watermarks.json                      # per-source watermark (§4.3)
+    state/watermarks.json                      # per-source (or per-table, #53) watermark (§4.3)
 
 This module owns the `raw/` partitions and `state/watermarks.json`.
 `snapshots/` and `manifests/` are established here as part of the layout but
@@ -102,25 +102,58 @@ def read_table(data_dir: str | Path, source: str, table: str) -> pa.Table:
     return validate(table, combined)
 
 
-def read_watermark(data_dir: str | Path, source: str) -> str | None:
-    """Return the last-recorded watermark value for `source`, or `None`."""
+def _watermark_key(source: str, table: str | None) -> str:
+    """The `state/watermarks.json` key for `source`'s watermark, or for one
+    specific raw `table` within that source (issue #53 fixup: the
+    "backfill gap").
+
+    `table=None` is `source`'s original, pre-existing key (e.g. `"git"`,
+    `"jira"`) — unchanged, so a `state/watermarks.json` already on disk keeps
+    meaning what it always meant. A given `table` gets its own
+    `"<source>:<table>"` key, independent of `source`'s other tables.
+
+    This matters whenever a raw table is added to a source *after* that
+    source already has a watermark: `contribution_event`'s git watermark
+    reaching HEAD says nothing about whether `file_change_event` (added by
+    issue #53, long after `contribution_event` existed) has ever been
+    collected. Reusing `source`'s watermark for the new table would silently
+    skip its entire backfill — collection would only ever see commits *after*
+    whatever position `source`'s existing watermark already reached, which on
+    a live data dir is "nothing new," permanently. Giving the new table its
+    own key means it reads back `None` (never collected) until this project's
+    own code writes it for the first time, so its first collection walks full
+    history regardless of a sibling table's position. Any future raw table
+    added to an existing source should use `table=<its own name>` for exactly
+    this reason.
+    """
+    return source if table is None else f"{source}:{table}"
+
+
+def read_watermark(data_dir: str | Path, source: str, *, table: str | None = None) -> str | None:
+    """Return the last-recorded watermark for `source` (or `source`'s
+    `table`, issue #53 — see `_watermark_key`), or `None` if that key has
+    never been written.
+    """
     path = watermarks_path(data_dir)
     if not path.exists():
         return None
     watermarks = json.loads(path.read_text())
-    return watermarks.get(source)
+    return watermarks.get(_watermark_key(source, table))
 
 
-def write_watermark(data_dir: str | Path, source: str, value: str) -> None:
-    """Record `value` as the current watermark for `source`.
+def write_watermark(
+    data_dir: str | Path, source: str, value: str, *, table: str | None = None
+) -> None:
+    """Record `value` as the current watermark for `source` (or `source`'s
+    `table`, issue #53 — see `_watermark_key`).
 
     Read-modify-write against `state/watermarks.json` so writing one
-    source's watermark never disturbs another's.
+    source's (or table's) watermark never disturbs another's.
     """
     path = watermarks_path(data_dir)
     watermarks: dict[str, str] = {}
     if path.exists():
         watermarks = json.loads(path.read_text())
-    watermarks[source] = value
+    watermarks[_watermark_key(source, table)] = value
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(watermarks, indent=2, sort_keys=True))

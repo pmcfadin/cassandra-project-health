@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class ProjectInfo(BaseModel):
@@ -93,6 +93,25 @@ class ReviewerExtraction(BaseModel):
     reliable_from: str | None = None
 
 
+class TruckFactorConfig(BaseModel):
+    """`truck_factor:` block (issue #53) — `truck_factor` metric's file-level
+    collection knobs, distinct from `bot_patterns` (which excludes *people*).
+
+    `excluded_path_globs` excludes generated/vendored *paths* from
+    `file_change_event` collection (METRICS.md `truck_factor` "Population &
+    exclusions"): a mechanically regenerated or vendored file inflates
+    whichever committer happened to run the generator/vendoring step into
+    looking like a file "author," which is not the knowledge-concentration
+    risk this metric is trying to measure. Patterns are matched with
+    `fnmatch` (shell-glob-style, `*` matches across `/` too) against the
+    file's repo-relative path as `git log --name-status` reports it.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    excluded_path_globs: list[str] = []
+
+
 class BaselineWindow(BaseModel):
     """`baseline_window:` block — SCORING.md §4.1/§5.1."""
 
@@ -133,6 +152,7 @@ class ProjectConfig(BaseModel):
     affiliations_file: str | None = None
     bot_patterns: list[BotPattern] = []
     reviewer_extraction: ReviewerExtraction
+    truck_factor: TruckFactorConfig = Field(default_factory=TruckFactorConfig)
     baseline_window: BaselineWindow | None = None
     slack: SlackConfig | None = None
 

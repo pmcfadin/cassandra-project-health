@@ -66,3 +66,35 @@ def test_bot_patterns_and_baseline_window():
     assert "git_author_email" in fields
     assert "github_login" in fields
     assert "jira_username" in fields
+
+
+def test_truck_factor_excluded_path_globs(tmp_path):
+    config = load_project("projects/cassandra.yaml")
+    assert config.truck_factor.excluded_path_globs  # non-empty placeholder set
+    assert all(isinstance(g, str) for g in config.truck_factor.excluded_path_globs)
+
+
+def test_truck_factor_defaults_to_no_exclusions_when_absent(tmp_path):
+    """A project config that never mentions `truck_factor:` must still load
+    (it's a new, optional section) with an empty exclusion list, not fail."""
+    import yaml
+
+    config_path = tmp_path / "no_truck_factor.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "project": {"id": "bare", "display_name": "Bare Project"},
+                "reviewer_extraction": {
+                    "commit_trailer": {
+                        "type": "commit_message_regex",
+                        "pattern": ".*",
+                        "exclude_merge_commits": True,
+                    },
+                    "jira_fields": {"type": "jira_custom_field"},
+                },
+            }
+        )
+    )
+
+    config = load_project(config_path)
+    assert config.truck_factor.excluded_path_globs == []

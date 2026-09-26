@@ -11,6 +11,7 @@ ALL_M0_TABLES = [
     "person_identity",
     "identity_link",
     "contribution_event",
+    "file_change_event",
     "review_event",
     "issue",
     "source_snapshot",
@@ -98,6 +99,23 @@ def test_contribution_event_has_raw_author_identifier_columns():
     assert schema.field("author_raw_value").type == pa.string()
     assert schema.field("author_raw_value").nullable is False
     assert schema.field("author_display_name").nullable is True
+
+
+def test_file_change_event_has_raw_author_identifier_and_file_columns():
+    """`file_change_event` (issue #53, `truck_factor`) follows the same raw-
+    identifier-first shape as `contribution_event` -- same author, plus the
+    per-file columns (`change_type`, `file_path`) that don't exist on any
+    other fact table."""
+    schema = get_schema("file_change_event")
+    assert schema.field("identity_id").nullable is True
+    assert schema.field("author_raw_type").type == pa.string()
+    assert schema.field("author_raw_type").nullable is False
+    assert schema.field("author_raw_value").type == pa.string()
+    assert schema.field("author_raw_value").nullable is False
+    assert schema.field("change_type").type == pa.string()
+    assert schema.field("change_type").nullable is False
+    assert schema.field("file_path").type == pa.string()
+    assert schema.field("file_path").nullable is False
 
 
 def test_review_event_has_raw_reviewer_and_author_identifier_columns():

@@ -12,11 +12,19 @@ Identifiers (`*_id`, `*_key`) are stored as `pa.string()` (e.g. a UUID's
 canonical string form); timestamps are UTC-aware (`pa.timestamp("us",
 tz="UTC")`) except where a table calls for a plain date.
 
-Every fact table (`contribution_event`, `review_event`, `issue`) carries a
-`source_snapshot_id` column, tracing each row back to the collector run that
-produced it (ARCHITECTURE.md §3, §5). Identity tables (`person_identity`,
-`identity_link`) and the run/metric-registry tables do not — they aren't
-sourced from a single collection run.
+Every fact table (`contribution_event`, `file_change_event`, `review_event`,
+`issue`) carries a `source_snapshot_id` column, tracing each row back to the
+collector run that produced it (ARCHITECTURE.md §3, §5). Identity tables
+(`person_identity`, `identity_link`) and the run/metric-registry tables do
+not — they aren't sourced from a single collection run.
+
+`file_change_event` (issue #53, `truck_factor`) is one row per (commit, file)
+pair from `git log --no-merges --name-status` — the same commit range/
+watermark as `contribution_event`, just exploded to file granularity, with
+generated/vendored paths dropped per `projects/<id>.yaml`'s
+`truck_factor.excluded_path_globs`. It never reads file *contents* (only the
+path and the status letter git reports), so it works against a blobless
+clone the same way `contribution_event`'s collection does.
 
 See `tables.py` for the full column list of every table.
 
@@ -37,6 +45,9 @@ For that reason, every fact table carries **both**:
   populated and non-nullable where a source always provides one:
   - `contribution_event`: `author_raw_type` / `author_raw_value` (e.g.
     `git_email` / `alice@example.org`), plus optional `author_display_name`.
+  - `file_change_event`: same `author_raw_type` / `author_raw_value` shape as
+    `contribution_event` (it's the same commit's author) — never a distinct
+    identity resolution path of its own.
   - `review_event`: `reviewer_raw_type` / `reviewer_raw_value` (commit
     trailers use `git_name`, JIRA reviewer fields use `jira_username`), plus
     optional `author_raw_type` / `author_raw_value` for the patch author when

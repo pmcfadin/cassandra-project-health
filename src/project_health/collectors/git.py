@@ -1,10 +1,18 @@
 """Git ``SourceCollector`` (ARCHITECTURE.md §2.2, §3.1, §4.3).
 
-Collects two normalized fact tables from a local clone of a project's git
+Collects three normalized fact tables from a local clone of a project's git
 repository:
 
 - ``contribution_event`` — one row per non-merge commit (``event_type =
   'code_commit'``).
+- ``file_change_event`` — one row per (non-merge commit, file) pair, from
+  ``git log --no-merges --name-status`` (issue #53, ``truck_factor``'s
+  per-file authorship input). Never reads file *contents* — only the path and
+  git's one-letter change-status code — so it works against the same
+  blobless, no-checkout clone ``contribution_event`` collection does; trees
+  are always present in a ``--filter=blob:none`` clone, no blob fetch needed.
+  Paths matching ``projects/<id>.yaml``'s ``truck_factor.excluded_path_globs``
+  (generated/vendored code) are dropped before the row is ever built.
 - ``review_event`` — one row per (reviewer, issue key) pair parsed from each
   commit's trailer by :mod:`project_health.collectors.reviewer_trailer`
   (``source = 'commit_trailer'``).
@@ -14,7 +22,7 @@ Merge commits are always excluded (``git log --no-merges``, ARCHITECTURE.md
 denominators). Bot authors are excluded via ``bot_patterns`` entries whose
 ``field == 'git_author_email'`` (``projects/<id>.yaml``).
 
-Both fact tables are written with only *raw* identifiers
+All three fact tables are written with only *raw* identifiers
 (``author_raw_type``/``author_raw_value``, ``reviewer_raw_type``/
 ``reviewer_raw_value``); ``*_identity_id`` is always ``null`` here —
 identity resolution (#6) fills it in later by joining those raw columns
@@ -24,10 +32,33 @@ The watermark is the resolved branch ref's commit SHA (ARCHITECTURE.md
 §4.3): ``collect`` walks ``watermark..ref`` (exclusive of `watermark`) when
 a watermark is given, or the whole history reachable from `ref` on a first
 run.
+
+``file_change_event`` is collected with its own, independent watermark
+(``file_change_watermark``) — a second ``git log --name-status`` invocation
+over ``file_change_watermark..ref`` (or the whole history reachable from
+`ref` when ``file_change_watermark`` is ``None``), *not* reusing `watermark`.
+This is deliberate, fixing a real bug found in review (issue #53 fixup
+cycle 1): a data dir collected before `file_change_event` existed already
+has a ``git`` watermark sitting at HEAD (from years of ``contribution_event``
+collection); if `file_change_event`'s first-ever walk reused that same
+watermark, its range would be ``HEAD..HEAD`` — empty — and its entire
+backfill would be silently skipped forever, with `truck_factor` computing
+zero rows on every subsequent run (the exact "registered metric produced no
+rows" failure `pipeline.py`'s degraded-run check exists to catch, but only
+after the damage of never backfilling is already done). Both watermarks
+converge to the same `next_watermark` after any run that walks all the way
+to `ref` (`GitCollector.collect`'s only mode), so once `file_change_event`
+has been backfilled once, it advances in lockstep with `watermark` from
+then on — this two-watermark design only matters for that one-time catch-up.
+See `storage.read_watermark`/`write_watermark`'s `table` parameter, which
+`pipeline.py` uses to keep `file_change_event`'s watermark independent in
+`state/watermarks.json`; any future raw table added to an existing source
+should use the same pattern.
 """
 
 from __future__ import annotations
 
+import fnmatch
 import re
 import subprocess
 from collections.abc import Iterable, Iterator, Sequence
@@ -149,6 +180,82 @@ def _iter_commits(repo_path: Path, range_arg: str) -> Iterator[_RawCommit]:
         )
 
 
+# Separate format for the ``--name-status`` walk (issue #53): the record
+# separator is a *prefix* here (`RS%H...`), unlike `_LOG_FORMAT` above where
+# it trails the (multi-line) commit message. `--name-status` always appends
+# its file lines immediately after the pretty-printed header, before the next
+# commit's output begins, so putting `RS` at the very start of the format
+# string is what gives each record a clean, unambiguous boundary to split on.
+_FILE_LOG_FORMAT = f"{_RECORD_SEP}%H{_UNIT_SEP}%an{_UNIT_SEP}%ae{_UNIT_SEP}%aI"
+
+
+@dataclass
+class _RawFileChange:
+    sha: str
+    author_name: str
+    author_email: str
+    occurred_at: datetime
+    change_type: str
+    file_path: str
+
+
+def _iter_file_changes(repo_path: Path, range_arg: str) -> Iterator[_RawFileChange]:
+    """Walk `range_arg` a second time with ``--name-status`` (issue #53).
+
+    A second ``git log`` invocation, over the exact same `range_arg` as
+    `_iter_commits`, rather than folding ``--name-status`` into that first
+    call's format string: `_LOG_FORMAT` ends in a free-text, possibly
+    multi-line commit message (`%B`), and `--name-status`'s file lines would
+    land *between* that message and the next commit's leading separator with
+    no reliable boundary of their own. Two simple, unambiguous parses beat one
+    fragile one. Never reads file contents — only the path and status letter
+    git reports from the tree diff, which a blobless clone already has.
+    """
+    output = _run_git(
+        repo_path,
+        ["log", "--no-merges", f"--format={_FILE_LOG_FORMAT}", "--name-status", range_arg],
+    )
+    for record in output.split(_RECORD_SEP):
+        record = record.strip("\n")
+        if not record:
+            continue
+        header, _, rest = record.partition("\n\n")
+        sha, name, email, date_iso = header.split(_UNIT_SEP, 3)
+        occurred_at = datetime.fromisoformat(date_iso).astimezone(timezone.utc)
+        for line in rest.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            parts = line.split("\t")
+            if len(parts) < 2:
+                continue
+            status_raw = parts[0]
+            # A rename/copy ('R100', 'C100', ...) carries both the source and
+            # destination path; the destination is what a maintainer would
+            # touch going forward, so that's what's attributed here (issue
+            # #53's documented "per literal path, not rename-followed"
+            # limitation — see `schema/tables.py`'s `FILE_CHANGE_EVENT`).
+            file_path = parts[-1]
+            change_type = status_raw[0] if status_raw else "?"
+            yield _RawFileChange(
+                sha=sha,
+                author_name=name,
+                author_email=email,
+                occurred_at=occurred_at,
+                change_type=change_type,
+                file_path=file_path,
+            )
+
+
+def _is_excluded_path(file_path: str, excluded_path_globs: Iterable[str]) -> bool:
+    """True if `file_path` matches any of `excluded_path_globs` (issue #53).
+
+    fnmatch-style glob against the path exactly as git reports it
+    (repo-relative, `/`-separated); `fnmatch` matches `*` across `/`.
+    """
+    return any(fnmatch.fnmatch(file_path, pattern) for pattern in excluded_path_globs)
+
+
 def _is_bot(email: str, bot_patterns: Iterable[BotPattern]) -> bool:
     return any(
         re.search(pattern.regex, email)
@@ -167,9 +274,11 @@ class GitCollectionResult:
     """Return value of :meth:`GitCollector.collect`."""
 
     contribution_event: pa.Table
+    file_change_event: pa.Table
     review_event: pa.Table
     next_watermark: str
     commits_collected: int
+    file_changes_collected: int
     bot_commits_excluded: int
     unparsed_reviewed_by_count: int
     placeholder_reviewer_commits: int
@@ -193,18 +302,36 @@ class GitCollector:
         watermark: str | None,
         bot_patterns: Sequence[BotPattern],
         source_snapshot_id: str,
+        excluded_path_globs: Sequence[str] = (),
+        file_change_watermark: str | None = None,
     ) -> GitCollectionResult:
         """Walk `repo_path`'s `default_branch` from `watermark` (exclusive) to HEAD.
 
         `repo_label` (e.g. ``"apache/cassandra"``) is written into every
         row's `repo` column. `watermark`, if given, is the last-collected
-        commit SHA (ARCHITECTURE.md §4.3); `None` walks full history. Every
-        row is validated against its table's schema (schema/README.md)
-        before being returned.
+        commit SHA for `contribution_event`/`review_event`
+        (ARCHITECTURE.md §4.3); `None` walks full history. Every row is
+        validated against its table's schema (schema/README.md) before being
+        returned. `excluded_path_globs` (issue #53, `projects/<id>.yaml`'s
+        `truck_factor.excluded_path_globs`) drops matching paths from
+        `file_change_event` before a row is ever built — generated/vendored
+        code is never counted as anyone's authorship.
+
+        `file_change_watermark` (issue #53 fixup cycle 1) is
+        `file_change_event`'s *own* watermark, independent of `watermark` —
+        see this module's docstring for why the two must never be conflated:
+        a `None` here walks `file_change_event`'s full history even when
+        `watermark` is already caught up to HEAD, which is exactly the
+        one-time backfill a `file_change_event`-unaware watermark would
+        otherwise skip forever. Defaults to `None` (full history) so a
+        caller that doesn't yet track it separately (e.g. an ad hoc script)
+        gets a correct, if unnecessarily-repeated, full walk rather than a
+        silently-empty one.
         """
         repo_path = Path(repo_path)
         ref = _resolve_ref(repo_path, default_branch)
         range_arg = f"{watermark}..{ref}" if watermark else ref
+        file_range_arg = f"{file_change_watermark}..{ref}" if file_change_watermark else ref
 
         contribution_rows: list[dict] = []
         review_rows: list[dict] = []
@@ -275,13 +402,42 @@ class GitCollector:
                             }
                         )
 
+        file_change_rows: list[dict] = []
+        file_changes_collected = 0
+        for file_change in _iter_file_changes(repo_path, file_range_arg):
+            if _is_bot(file_change.author_email, bot_patterns):
+                continue
+            if _is_excluded_path(file_change.file_path, excluded_path_globs):
+                continue
+
+            file_changes_collected += 1
+            file_change_rows.append(
+                {
+                    "event_id": (
+                        f"git:{repo_label}:{file_change.sha}:file:{file_change.file_path}"
+                    ),
+                    "identity_id": None,
+                    "author_raw_type": "git_email",
+                    "author_raw_value": file_change.author_email.strip().lower(),
+                    "author_display_name": file_change.author_name,
+                    "change_type": file_change.change_type,
+                    "file_path": file_change.file_path,
+                    "occurred_at": file_change.occurred_at,
+                    "repo": repo_label,
+                    "source_ref": file_change.sha,
+                    "source_snapshot_id": source_snapshot_id,
+                }
+            )
+
         next_watermark = _run_git(repo_path, ["rev-parse", ref]).strip()
 
         return GitCollectionResult(
             contribution_event=_to_table("contribution_event", contribution_rows),
+            file_change_event=_to_table("file_change_event", file_change_rows),
             review_event=_to_table("review_event", review_rows),
             next_watermark=next_watermark,
             commits_collected=commits_collected,
+            file_changes_collected=file_changes_collected,
             bot_commits_excluded=bot_excluded,
             unparsed_reviewed_by_count=unparsed_count,
             placeholder_reviewer_commits=placeholder_reviewer_count,

@@ -111,6 +111,54 @@ def test_every_git_sourced_metric_yields_at_least_one_row_with_real_data(repo):
         )
 
 
+def test_truck_factor_yields_a_row_with_real_data_from_the_real_collector(repo):
+    """Issue #53's own version of this file's issue #24 regression check:
+    `file_change_event` is a brand-new raw table with its own new fact-table
+    fields (`change_type`, `file_path`) -- exactly the kind of
+    collector/engine field-name or filter mismatch issue #24 warns about.
+    This runs the real `GitCollector` (not the hand-built fixture in
+    `tests/fixtures/metrics/builders.py`) over the #3 fixture repo and
+    confirms `truck_factor` actually computes real (`n >= 1`) data from it.
+    """
+    result = GitCollector().collect(
+        repo_path=repo,
+        repo_label="apache/cassandra",
+        default_branch="trunk",
+        watermark=None,
+        bot_patterns=CONFIG.bot_patterns,
+        source_snapshot_id=f"{RUN_ID}:git",
+    )
+    assert result.file_change_event.num_rows > 0
+
+    raw_identifiers = extract_raw_identifiers(
+        contribution_events=result.contribution_event,
+        review_events=result.review_event,
+        issues=get_schema("issue").empty_table(),
+    )
+    resolution = resolve_identities(raw_identifiers, now=NOW)
+
+    metrics_table = compute_all(
+        {
+            "contribution_event": result.contribution_event,
+            "file_change_event": result.file_change_event,
+            "review_event": result.review_event,
+            "issue": get_schema("issue").empty_table(),
+            "identity_link": resolution.identity_link,
+        },
+        as_of=AS_OF,
+        run_id=RUN_ID,
+        computed_at=NOW,
+        config=CONFIG,
+    )
+
+    rows = [r for r in metrics_table.to_pylist() if r["metric_id"] == "truck_factor"]
+    assert rows, "truck_factor: expected at least one metric_value row, got none"
+    assert any(r["n"] >= 1 for r in rows), (
+        "truck_factor: every emitted row had n == 0 -- the real GitCollector's "
+        "file_change_event output never matched the engine's query"
+    )
+
+
 def test_contribution_event_type_from_real_collector_matches_engine_filter(repo):
     """Narrower regression pin for issue #24's exact bug: the `event_type`
     the real collector writes is the same string the engine filters

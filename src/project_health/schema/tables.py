@@ -6,10 +6,10 @@ portable Parquet interop. All timestamps are UTC-aware
 (``pa.timestamp("us", tz="UTC")``); the `metric_value` window bounds are
 plain dates (``pa.date32()``) per the issue's output contract.
 
-Every fact table (`contribution_event`, `review_event`, `issue`) carries a
-`source_snapshot_id` column (ARCHITECTURE.md §3), tracing a row back to the
-collector run that produced it. Identity tables and run/metric-registry
-tables do not.
+Every fact table (`contribution_event`, `file_change_event`, `review_event`,
+`issue`) carries a `source_snapshot_id` column (ARCHITECTURE.md §3), tracing
+a row back to the collector run that produced it. Identity tables and
+run/metric-registry tables do not.
 
 Collectors (#4, #5) run before identity resolution (#6), so fact-table rows
 they write can't know a resolved `*_identity_id` yet. Every fact table
@@ -100,6 +100,36 @@ REVIEW_EVENT = pa.schema(
         pa.field("repo", pa.string(), nullable=True),
         pa.field("occurred_at", TIMESTAMP_UTC, nullable=False),
         pa.field("evidence", pa.string(), nullable=True),
+        pa.field("source_snapshot_id", pa.string(), nullable=False),
+    ]
+)
+
+FILE_CHANGE_EVENT = pa.schema(
+    [
+        pa.field("event_id", pa.string(), nullable=False),
+        # filled in by identity resolution (#6); null as written by collectors. Resolves via
+        # the same (author_raw_type, author_raw_value) pair as the commit's own
+        # `contribution_event` row -- a file_change_event's author is never a distinct
+        # identity from that commit's author.
+        pa.field("identity_id", pa.string(), nullable=True),
+        pa.field("author_raw_type", pa.string(), nullable=False),
+        pa.field("author_raw_value", pa.string(), nullable=False),
+        pa.field("author_display_name", pa.string(), nullable=True),
+        # change_type: the first letter of `git log --name-status`'s status code for this
+        # (commit, file) pair -- 'A' (added), 'M' (modified), 'D' (deleted), 'R' (renamed),
+        # 'C' (copied), 'T' (type changed); any similarity-score digits git appends to R/C
+        # (e.g. 'R100') are dropped (issue #53, truck_factor). For a rename/copy row,
+        # `file_path` is the destination path -- history under the source path is not
+        # relinked to it (a documented truck_factor limitation: DOA is computed per literal
+        # path, not per rename-followed file identity, matching the Avelino et al. paper's
+        # own git-log-based approach).
+        pa.field("change_type", pa.string(), nullable=False),
+        pa.field("file_path", pa.string(), nullable=False),
+        pa.field("occurred_at", TIMESTAMP_UTC, nullable=False),
+        pa.field("repo", pa.string(), nullable=True),
+        # natural identifier within its source: commit SHA (same as the commit's
+        # `contribution_event.source_ref`)
+        pa.field("source_ref", pa.string(), nullable=False),
         pa.field("source_snapshot_id", pa.string(), nullable=False),
     ]
 )
@@ -210,6 +240,7 @@ TABLE_SCHEMAS: dict[str, pa.Schema] = {
     "person_identity": PERSON_IDENTITY,
     "identity_link": IDENTITY_LINK,
     "contribution_event": CONTRIBUTION_EVENT,
+    "file_change_event": FILE_CHANGE_EVENT,
     "review_event": REVIEW_EVENT,
     "issue": ISSUE,
     "roster_entry": ROSTER_ENTRY,

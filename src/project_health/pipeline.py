@@ -242,9 +242,23 @@ def _collect_git(
     repo_cfg = config.repos[0]
     repo_label = f"{repo_cfg.owner}/{repo_cfg.name}"
     watermark = storage.read_watermark(data_dir, "git")
+    # `file_change_event`'s own watermark (issue #53 fixup cycle 1 — the
+    # "backfill gap"): tracked independently of `watermark` via
+    # `storage.read_watermark`'s `table` parameter, precisely so a data dir
+    # whose `git` watermark already reached HEAD before `file_change_event`
+    # existed still backfills that table's full history on its first
+    # collection, instead of silently inheriting `watermark`'s "already
+    # caught up" position and never collecting anything for it.
+    file_change_watermark = storage.read_watermark(data_dir, "git", table="file_change_event")
     snapshot_id = f"{run_id}:git"
 
-    _log("source_collect_started", source="git", repo=repo_label, watermark=watermark)
+    _log(
+        "source_collect_started",
+        source="git",
+        repo=repo_label,
+        watermark=watermark,
+        file_change_watermark=file_change_watermark,
+    )
     try:
         clone_or_fetch(github_clone_url(repo_cfg.owner, repo_cfg.name), workdir)
         result = GitCollector().collect(
@@ -252,22 +266,35 @@ def _collect_git(
             repo_label=repo_label,
             default_branch=repo_cfg.default_branch,
             watermark=watermark,
+            file_change_watermark=file_change_watermark,
             bot_patterns=config.bot_patterns,
             source_snapshot_id=snapshot_id,
+            excluded_path_globs=config.truck_factor.excluded_path_globs,
         )
         partition_date = started_at.date()
         storage.write_partition(
             data_dir, "git", "contribution_event", partition_date, run_id, result.contribution_event
         )
         storage.write_partition(
+            data_dir, "git", "file_change_event", partition_date, run_id, result.file_change_event
+        )
+        storage.write_partition(
             data_dir, "git", "review_event", partition_date, run_id, result.review_event
         )
         storage.write_watermark(data_dir, "git", result.next_watermark)
+        # Both watermarks always advance to the same `next_watermark`: a
+        # single `collect()` call always walks each table up to the same
+        # `ref` (HEAD), regardless of which starting point (or none) each
+        # table's own watermark gave it -- see collectors/git.py's docstring.
+        storage.write_watermark(
+            data_dir, "git", result.next_watermark, table="file_change_event"
+        )
         record_last_good_snapshot(data_dir, "git", run_id)
         _log(
             "source_collect_succeeded",
             source="git",
             records_collected=result.commits_collected,
+            file_changes_collected=result.file_changes_collected,
             bot_commits_excluded=result.bot_commits_excluded,
             placeholder_reviewer_commits=result.placeholder_reviewer_commits,
             next_watermark=result.next_watermark,
@@ -281,6 +308,11 @@ def _collect_git(
             # commits emit no review_event row, but the count itself is worth
             # surfacing in the manifest rather than silently dropped.
             "placeholder_reviewer_commits": result.placeholder_reviewer_commits,
+            # issue #53 fixup cycle 1: surfaces in the manifest whether/how
+            # much of file_change_event's own (independent) watermark range
+            # was walked this run -- large on a first-ever backfill, small on
+            # every steady-state run after.
+            "file_changes_collected": result.file_changes_collected,
         }
     except Exception as exc:  # noqa: BLE001 - a source outage must never abort the run (§7.3)
         _log("source_collect_failed", source="git", error=str(exc))
@@ -461,6 +493,7 @@ def run_pipeline(
     # (§7.3), and a source that wasn't asked to run this time still
     # contributes its prior history.
     contribution_event = storage.read_table(data_dir, "git", "contribution_event")
+    file_change_event = storage.read_table(data_dir, "git", "file_change_event")
     git_review_event = storage.read_table(data_dir, "git", "review_event")
     jira_review_event = _dedupe_jira_review_events(
         storage.read_table(data_dir, "jira", "review_event")
@@ -487,6 +520,7 @@ def run_pipeline(
         metrics_table = compute_all(
             {
                 "contribution_event": contribution_event,
+                "file_change_event": file_change_event,
                 "review_event": review_event,
                 "issue": issue,
                 "identity_link": resolution.identity_link,

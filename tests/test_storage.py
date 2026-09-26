@@ -1,5 +1,6 @@
 """Tests for project_health.storage (ARCHITECTURE.md §4.2, §4.3)."""
 
+import json
 from datetime import datetime, timezone
 
 import pyarrow as pa
@@ -99,3 +100,31 @@ def test_watermark_round_trip(tmp_path):
     # advance in place; they aren't append-only partitions)
     storage.write_watermark(tmp_path, "git", "sha:def456")
     assert storage.read_watermark(tmp_path, "git") == "sha:def456"
+
+
+def test_per_table_watermark_is_independent_of_the_source_watermark(tmp_path):
+    """Issue #53 fixup cycle 1 (the "backfill gap"): a raw table added to an
+    existing source after that source already has a watermark must get its
+    own key, so reading it back before it's ever been written gives `None`
+    -- "never collected" -- not the source's own, possibly-already-caught-up
+    position.
+    """
+    storage.write_watermark(tmp_path, "git", "sha:head")
+
+    # A table-scoped watermark that's never been written reads back None,
+    # even though the source's own (untabled) watermark is already set.
+    assert storage.read_watermark(tmp_path, "git", table="file_change_event") is None
+    assert storage.read_watermark(tmp_path, "git") == "sha:head"
+
+    storage.write_watermark(tmp_path, "git", "sha:head", table="file_change_event")
+    assert storage.read_watermark(tmp_path, "git", table="file_change_event") == "sha:head"
+    # Writing the table-scoped watermark never disturbs the source's own.
+    assert storage.read_watermark(tmp_path, "git") == "sha:head"
+
+    # A different table on the same source gets its own, independent slot.
+    assert storage.read_watermark(tmp_path, "git", table="other_table") is None
+
+    # The two keys are visible, distinct entries in state/watermarks.json.
+    raw = json.loads(storage.watermarks_path(tmp_path).read_text())
+    assert raw["git"] == "sha:head"
+    assert raw["git:file_change_event"] == "sha:head"

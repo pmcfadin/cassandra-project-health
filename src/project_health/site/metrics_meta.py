@@ -15,9 +15,11 @@ recompute.
 (`site/generate.py`) groups metrics by this field, so a new metric only
 needs to declare its page here to show up in the right place.
 
-M0 ships exactly these six metrics (ROADMAP.md §0), all on the community
-page; a metric_id present in a `metric_value` snapshot but absent from
-this map is out of scope for the site and is silently not rendered.
+M0 shipped six metrics (ROADMAP.md §0); issue #53 adds three more
+(`truck_factor`, `contributor_absence_factor`, `contributor_hhi`), also on
+the community page. A metric_id present in a `metric_value` snapshot but
+absent from this map is out of scope for the site and is silently not
+rendered.
 """
 
 from __future__ import annotations
@@ -181,6 +183,34 @@ M0_METRICS: dict[str, MetricMeta] = {
         tier="established",
         direction_of_good="lower",
         value_kind="percent",
+        page="community",
+    ),
+    # issue #53
+    "truck_factor": MetricMeta(
+        metric_id="truck_factor",
+        name="Truck Factor (DOA)",
+        dimension="contributor sustainability",
+        tier="experimental",
+        direction_of_good="higher",
+        value_kind="count",
+        page="community",
+    ),
+    "contributor_absence_factor": MetricMeta(
+        metric_id="contributor_absence_factor",
+        name="Contributor Dependency (N for 50%)",
+        dimension="contributor sustainability",
+        tier="established",
+        direction_of_good="higher",
+        value_kind="count",
+        page="community",
+    ),
+    "contributor_hhi": MetricMeta(
+        metric_id="contributor_hhi",
+        name="Contributor Concentration (HHI)",
+        dimension="contributor sustainability",
+        tier="established",
+        direction_of_good="lower",
+        value_kind="ratio",
         page="community",
     ),
 }

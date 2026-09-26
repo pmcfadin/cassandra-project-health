@@ -1,0 +1,70 @@
+{
+  "hits": 5,
+  "emails": [
+    {
+      "message-id": "<root-thread-1@example.com>",
+      "mid": "syntheticmid0001",
+      "from": "Alex Example <al...@example.com>",
+      "in-reply-to": "",
+      "subject": "[DISCUSS] Example proposal for a shared testing module",
+      "list": "<dev.example.org>",
+      "list_raw": "<dev.example.org>",
+      "epoch": 1788200000,
+      "private": false,
+      "attachments": [],
+      "body": "I'd like to propose a shared testing module for the example ecosystem.\n\nThis would let downstream projects reuse the same fixtures instead of\nduplicating them.\n"
+    },
+    {
+      "message-id": "<reply-thread-1@example.com>",
+      "mid": "syntheticmid0002",
+      "from": "Bailey Example <ba...@example.com>",
+      "in-reply-to": "<root-thread-1@example.com>",
+      "subject": "Re: [DISCUSS] Example proposal for a shared testing module",
+      "list": "<dev.example.org>",
+      "list_raw": "<dev.example.org>",
+      "epoch": 1788203600,
+      "private": false,
+      "attachments": [],
+      "body": "On Tue, Sep 1, 2026 at 9:00 AM, Alex Example <al...@example.com> wrote:\n> I'd like to propose a shared testing module for the example ecosystem.\n\n+1 from me, this sounds reasonable and I don't see a downside.\n\n-- \nBailey Example\nExample Corp\n"
+    },
+    {
+      "message-id": "<reply-thread-1-attack@example.com>",
+      "mid": "syntheticmid0003",
+      "from": "Casey Example <ca...@example.com>",
+      "in-reply-to": "<reply-thread-1@example.com>",
+      "subject": "Re: [DISCUSS] Example proposal for a shared testing module",
+      "list": "<dev.example.org>",
+      "list_raw": "<dev.example.org>",
+      "epoch": 1788207200,
+      "private": false,
+      "attachments": [],
+      "body": "I don't think this benchmark number holds up. Here is a stack trace from\na run I did last night that shows the real bottleneck:\n\nTraceback (most recent call last):\n  File \"example.py\", line 12, in run\n    do_thing()\n  File \"example.py\", line 4, in do_thing\nValueError: synthetic example failure\n\nAnd honestly you clearly have no idea how this module works -- maybe read\nthe code before proposing changes.\n"
+    },
+    {
+      "message-id": "<automated-notice@example.com>",
+      "mid": "syntheticmid0004",
+      "from": "Example Bot (JIRA) <no...@example.com>",
+      "in-reply-to": "",
+      "subject": "[jira] [Commented] (EXAMPLE-1) Example issue",
+      "list": "<dev.example.org>",
+      "list_raw": "<dev.example.org>",
+      "epoch": 1788210000,
+      "private": false,
+      "attachments": [],
+      "body": "Example Person commented on EXAMPLE-1:\n----------------------------------------\nSynthetic automated notification body [bot].\n"
+    },
+    {
+      "message-id": "<cross-month-reply@example.com>",
+      "mid": "syntheticmid0005",
+      "from": "Drew Example <dr...@example.com>",
+      "in-reply-to": "<root-in-previous-month@example.com>",
+      "subject": "Re: [DISCUSS] Example thread started last month",
+      "list": "<dev.example.org>",
+      "list_raw": "<dev.example.org>",
+      "epoch": 1788211000,
+      "private": false,
+      "attachments": [],
+      "body": "Following up on last month's thread -- still +1 on this synthetic example.\n"
+    }
+  ]
+}

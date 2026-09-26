@@ -1,0 +1,18 @@
+{
+  "hits": 1,
+  "emails": [
+    {
+      "message-id": "<root-in-previous-month@example.com>",
+      "mid": "syntheticmid0000",
+      "from": "Ellis Example <el...@example.com>",
+      "in-reply-to": "",
+      "subject": "[DISCUSS] Example thread started last month",
+      "list": "<dev.example.org>",
+      "list_raw": "<dev.example.org>",
+      "epoch": 1787900000,
+      "private": false,
+      "attachments": [],
+      "body": "Kicking off a synthetic example discussion last month, continued into next month.\n"
+    }
+  ]
+}

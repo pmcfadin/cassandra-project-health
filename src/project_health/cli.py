@@ -19,6 +19,7 @@ import sys
 import webbrowser
 from pathlib import Path
 
+from project_health.classify.classifier import load_jev_key_from_dotenv
 from project_health.classify.sample import (
     DEFAULT_JIRA_BLOCK_SIZE,
     DEFAULT_JIRA_MIN_ISSUES_PER_YEAR,
@@ -32,6 +33,19 @@ from project_health.label.question_set import QuestionSetReadError
 from project_health.label.safety import UnsafePathError, assert_outside_repo, find_public_repo_root
 from project_health.label.server import LabelQuestionMismatchError, make_server
 from project_health.label.store import CorpusError
+from project_health.pilot.classify_runner import (
+    DEFAULT_MONTHLY_CAP_USD,
+    run_pilot_classify,
+)
+from project_health.pilot.evaluate import (
+    DEFAULT_BOOTSTRAP_ITERATIONS,
+    DEFAULT_SEED,
+    evaluate_pilot,
+)
+from project_health.pilot.report import (
+    render_private_report_markdown,
+    render_public_report_markdown,
+)
 from project_health.pipeline import ALL_SOURCES, run_pipeline
 
 
@@ -190,6 +204,91 @@ def _build_parser() -> argparse.ArgumentParser:
     pilot_parser.add_argument("--jira-block-size", type=int, default=DEFAULT_JIRA_BLOCK_SIZE)
     pilot_parser.add_argument("--jira-max-calls", type=int, default=DEFAULT_JIRA_MAX_CALLS)
 
+    classify_parser = subparsers.add_parser(
+        "pilot-classify",
+        help=(
+            "Run the pinned Jev classifier over every item in the pilot corpus (issue #47; "
+            "DECISIONS.md D17, D18, D22) and write classification records + a cost/latency "
+            "summary to --out. Re-running is free: --out's input-hash cache is reused, so an "
+            "already-classified message is never re-sent."
+        ),
+    )
+    classify_parser.add_argument(
+        "--corpus",
+        required=True,
+        help="Path to the pilot corpus JSONL (private benchmark checkout)",
+    )
+    classify_parser.add_argument(
+        "--out",
+        required=True,
+        help="Output directory for records/cache/summary (private benchmark checkout)",
+    )
+    classify_parser.add_argument(
+        "--concurrency", type=int, default=4, help="Max concurrent system_one calls (default: 4)"
+    )
+    classify_parser.add_argument(
+        "--monthly-cap-usd",
+        type=float,
+        default=DEFAULT_MONTHLY_CAP_USD,
+        help=(
+            f"D10 cost cap for this run (default: {DEFAULT_MONTHLY_CAP_USD}, i.e. "
+            "effectively unbounded)"
+        ),
+    )
+    classify_parser.add_argument(
+        "--classifier-version", default="1.0.0", help="classifier_version recorded on every record"
+    )
+    classify_parser.add_argument(
+        "--dotenv",
+        default=None,
+        help="If set, load TYPESAFE_API_KEY from this .env file's jev_key= entry before running "
+        "(pilot/local use only -- see classify.classifier.load_jev_key_from_dotenv)",
+    )
+
+    evaluate_parser = subparsers.add_parser(
+        "pilot-evaluate",
+        help=(
+            "Evaluate Jev against one or more raters' labels for the pilot corpus (issue #47; "
+            "COMMUNITY-HEALTH.md §6): threshold-swept precision/recall/F1 with bootstrap 95%% "
+            "CIs, reliability diagram, prevalence-stratum-only prevalence estimates, tone "
+            "agreement, rater time, and (2+ raters) Krippendorff's alpha. Writes a per-item "
+            "private detail report to --private-out and an aggregate-only public report to "
+            "--public-out."
+        ),
+    )
+    evaluate_parser.add_argument(
+        "--corpus",
+        required=True,
+        help="Path to the pilot corpus JSONL (private benchmark checkout)",
+    )
+    evaluate_parser.add_argument(
+        "--results",
+        required=True,
+        help="pilot-classify's --out directory (or its records JSONL directly)",
+    )
+    evaluate_parser.add_argument(
+        "--labels",
+        required=True,
+        action="append",
+        help="Path to one rater's label JSONL; repeat --labels for additional raters",
+    )
+    evaluate_parser.add_argument(
+        "--private-out",
+        required=True,
+        help="Output path for the private detail report markdown",
+    )
+    evaluate_parser.add_argument(
+        "--public-out",
+        required=True,
+        help="Output path for the public aggregate-only report markdown",
+    )
+    evaluate_parser.add_argument(
+        "--seed", type=int, default=DEFAULT_SEED, help="Bootstrap RNG seed"
+    )
+    evaluate_parser.add_argument(
+        "--bootstrap-iterations", type=int, default=DEFAULT_BOOTSTRAP_ITERATIONS
+    )
+
     return parser
 
 
@@ -305,6 +404,72 @@ def _cmd_pilot_sample(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_pilot_classify(args: argparse.Namespace) -> int:
+    if args.dotenv:
+        load_jev_key_from_dotenv(args.dotenv)
+
+    repo_root = find_public_repo_root()
+    try:
+        corpus_path = assert_outside_repo(args.corpus, repo_root, label="corpus")
+        out_path = assert_outside_repo(args.out, repo_root, label="out")
+    except UnsafePathError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+
+    result = run_pilot_classify(
+        corpus_path=corpus_path,
+        out_dir=out_path,
+        concurrency=args.concurrency,
+        classifier_version=args.classifier_version,
+        monthly_cap_usd=args.monthly_cap_usd,
+    )
+
+    print(
+        f"pilot-classify: {result.summary['records_written']} records written to "
+        f"{result.records_path} (status={result.summary['status']}, "
+        f"calls_made={result.summary['calls_made']}, cache_hits={result.summary['cache_hits']}, "
+        f"estimated_cost_usd={result.summary['estimated_cost_usd']:.6f})",
+        file=sys.stderr,
+    )
+    print(f"summary written to {result.summary_path}", file=sys.stderr)
+    return 0
+
+
+def _cmd_pilot_evaluate(args: argparse.Namespace) -> int:
+    repo_root = find_public_repo_root()
+    try:
+        corpus_path = assert_outside_repo(args.corpus, repo_root, label="corpus")
+        results_path = assert_outside_repo(args.results, repo_root, label="results")
+        label_paths = [
+            assert_outside_repo(path, repo_root, label="labels") for path in args.labels
+        ]
+        private_out_path = assert_outside_repo(args.private_out, repo_root, label="private-out")
+    except UnsafePathError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+
+    result = evaluate_pilot(
+        corpus_path=corpus_path,
+        results_dir=results_path,
+        label_paths=label_paths,
+        seed=args.seed,
+        bootstrap_iterations=args.bootstrap_iterations,
+    )
+
+    private_markdown = render_private_report_markdown(result)
+    private_out_path.parent.mkdir(parents=True, exist_ok=True)
+    private_out_path.write_text(private_markdown, encoding="utf-8")
+
+    public_markdown = render_public_report_markdown(result)
+    public_out_path = Path(args.public_out)
+    public_out_path.parent.mkdir(parents=True, exist_ok=True)
+    public_out_path.write_text(public_markdown, encoding="utf-8")
+
+    print(f"private report written to {private_out_path}", file=sys.stderr)
+    print(f"public report written to {public_out_path}", file=sys.stderr)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
@@ -314,6 +479,10 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_label(args)
     if args.command == "pilot-sample":
         return _cmd_pilot_sample(args)
+    if args.command == "pilot-classify":
+        return _cmd_pilot_classify(args)
+    if args.command == "pilot-evaluate":
+        return _cmd_pilot_evaluate(args)
     parser.error(f"unknown command {args.command!r}")
     return 2
 

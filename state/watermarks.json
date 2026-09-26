@@ -1,7 +1,11 @@
 {
   "git": "17137ce34bd2fa89bc296e2d61d59eac9957b787",
   "git:file_change_event": "17137ce34bd2fa89bc296e2d61d59eac9957b787",
+  "git:review_event_parser_version": "2",
+  "github": "{\"apache/cassandra\": \"Y3Vyc29yOnYyOpK0MjAyNi0wNC0xMFQwOTowMDozMVrO0KlYjg==\", \"apache/cassandra-accord\": null, \"apache/cassandra-analytics\": null, \"apache/cassandra-dtest\": null, \"apache/cassandra-java-driver\": null, \"apache/cassandra-sidecar\": null, \"apache/cassandra-website\": null}",
+  "github_commit_authors:github_commit_author": "17137ce34bd2fa89bc296e2d61d59eac9957b787 99",
   "governance_git": "17137ce34bd2fa89bc296e2d61d59eac9957b787",
-  "jira": "2026-09-26T04:22:49+00:00",
-  "ponymail": "{\"dev\": \"2020-08\", \"user\": \"2020-10\"}"
+  "governance_git:commit_record_parser_version": "2",
+  "jira": "2026-09-26T05:23:20+00:00",
+  "ponymail": "{\"dev\": \"2023-07\", \"user\": \"2023-09\"}"
 }

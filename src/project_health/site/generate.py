@@ -58,6 +58,7 @@ from project_health.site import chart_spec
 from project_health.site.manifest import RunManifest, load_manifest
 from project_health.site.governance_page import build_governance_page_context
 from project_health.site.leaderboard_page import build_leaderboard_page_context
+from project_health.site.scoring_page import build_scoring_page_context
 from project_health.site.metrics_meta import (
     GOVERNANCE_METRICS,
     HOME_CARD_METRIC_LIMIT,
@@ -792,10 +793,18 @@ def _render_pages(
         _summary_card_context(page, series_by_page[page_id])
         for page_id, page in PAGES.items()
     ]
+    # Composite health score + dimension breakdown (D20, issue #57) — a
+    # small, additive call, same reasoning as the leaderboard's own wiring
+    # immediately below: `scoring_page.py` and `scoring/engine.py` are the
+    # only things that read/write this data.
+    scoring_context = build_scoring_page_context(
+        data_dir, run_id, out_dir, base_prefix=HOME_BASE_PREFIX
+    )
     home_html = env.get_template("home.html").render(
         current_page="home",
         base_prefix=HOME_BASE_PREFIX,
         summary_cards=summary_cards,
+        scoring=scoring_context,
         **common_ctx,
     )
     (out_dir / "index.html").write_text(home_html)

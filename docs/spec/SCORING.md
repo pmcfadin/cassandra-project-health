@@ -304,13 +304,37 @@ and independently citable from a frozen monthly report (D5).
 
 ## 9. What must never be combined
 
-Restating and extending D2.4/D2.7/D4 as concrete rules for implementers, not just principles:
+Restating and extending D2.4/D2.7/D4/D20 as concrete rules for implementers, not just principles. D20
+(2026-09-25) amends D4's original "no composite score, ever" — **this is the one, narrowly-scoped exception** to
+the rule below, not a general license to combine things; §12 is the exact, versioned mechanism, and every other
+combination this section lists is still forbidden without exception.
 
-- **No project-wide composite score, ever**, under any name (health score, grade, index) — D4, D2.7.
+- **No project-wide composite score outside the exact mechanism §12/D20 defines.** The one composite this project
+  publishes is a *fully reproducible*, versioned computation (`scoring.yaml`, `scoring_version`) that (a) never
+  appears without its full per-dimension breakdown and a declining-key-metric flag alongside it (D20: "the
+  composite never appears alone"), (b) is built only from each dimension's own `key` metrics (the same metrics
+  that can veto that dimension's *status*, §5.3 — never a plain average of every metric in a dimension), and
+  (c) is disclosed, never silently smoothed, whenever a dimension is excluded and its weight re-normalized (§12).
+  Any *other* single number presented as "the" health score, grade, or index — an ad hoc weighting, a
+  differently-normalized recomputation, an unversioned one-off — is still exactly what D4/D2.7 forbid.
 - **No averaging of metric statuses within a dimension** — the worst-key-metric rule (§5.3) replaces any
-  averaging or voting scheme.
-- **No combining dimensions across each other** (e.g., no "sustainability + responsiveness ÷ 2") — each
-  dimension's status stands alone on the dashboard.
+  averaging or voting scheme. This is unchanged by D20: the composite's *score* (§12) is a numeric aggregate of
+  numeric key-metric scores, but a dimension's *status* (`improving`/`stable`/`declining`/`insufficient_data`,
+  shown right next to its score on the composite breakdown) is still never an average, always the worst-key-metric
+  rule — the two are computed independently and never substitute for each other.
+- **No combining dimensions across each other outside §12's published composite** (e.g., no ad hoc "sustainability
+  + responsiveness ÷ 2" computed anywhere but the one versioned composite) — each dimension's status still stands
+  alone on the dashboard, and the composite breakdown shows every dimension's own score and status individually,
+  never collapsed into an intermediate sub-total.
+- **No blending Phase 2 (classified) metrics into the composite** until `COMMUNITY-HEALTH.md`'s validation gates
+  clear (D20) — Interaction Health has no key metrics in `scoring.yaml`'s composite-eligible registry today, and
+  adding one is itself a `scoring_version` bump, never a silent inclusion once classification ships.
+- **Governance compliance does not enter the composite.** Governance (D14/D15, per-commit minimums judged against
+  a dated policy version) is not one of D4's five composite dimensions, and its pass/fail/unknown compliance
+  model was never defined against a trailing self-baseline the way §4–5 requires. Whether governance should ever
+  feed a project "health" composite is genuinely ambiguous in this spec as written; this project resolves that
+  ambiguity by keeping governance out and disclosing the reason in `scoring.yaml` (`composite.excluded_dimensions`)
+  rather than guessing either way.
 - **No per-person scores of any kind**, classified or deterministic — D2.4. Reviewer/committer concentration
   metrics (`reviewer_top_k_share`, `merge_authority_concentration`, etc.) report aggregate shares, never a named
   individual's personal "score."
@@ -377,3 +401,85 @@ metric's own page (D2.3), where the full baseline, current value, and calculatio
   (weighted composite vs. this project's dimension-only approach) is a safe characterization, but exact weight
   values or check lists should not be quoted from this document without checking https://github.com/ossf/scorecard
   and https://insights.lfx.linuxfoundation.org/ directly first.
+
+## 12. Composite Health Score (D20)
+
+D20 (2026-09-25) amends D4: alongside the per-dimension statuses this document already specifies, the home page
+also shows a single 0–100 composite, "comparable in spirit to LFX Insights' Health Score." Everything in §2–§10
+above is unchanged by this — the composite is an *additional*, separately-computed number, never a replacement
+for dimension status, and §9 (revised above) still forbids every other way of combining metrics or dimensions.
+
+### 12.1 What makes this composite different from a generic weighted score
+
+Unlike a typical weighted-composite tool (§2's OpenSSF Scorecard row), this project's composite is fully
+reproducible and disclosed at every step, per D20:
+
+- **Versioned inputs.** Every weight, every per-metric normalization function, and the roster of which metrics
+  feed which dimension live in `scoring.yaml` at the repo root, tagged with a `scoring_version`. A change to any
+  of them is a new version plus a `CHANGELOG.md` entry and a full-history recompute (D2 rule 6, mirroring §8's
+  scoring-rules versioning) — never a silent reweighting.
+- **Built only from `key` metrics.** A dimension's composite score is the mean of its own `key` metrics' 0–100
+  normalized scores (§12.3) — the same metrics that can veto that dimension's *status* under §5.3's worst-key-
+  metric rule. Supporting metrics contribute evidence to a metric's own page but never move the composite, for
+  the same reason §5.3 restricts dimension status to key metrics: capping which metrics can move the number is
+  what keeps a handful of healthy supporting metrics from diluting a real problem in a key one.
+- **Never shown alone.** The home page always renders the composite with its full per-dimension breakdown (each
+  dimension's own 0–100 score, status, and weight) immediately beside it, plus a visible flag whenever any
+  dimension's status is `declining` (i.e., a key metric within it is declining, §5.3) — D20's own text: "a
+  weighted average can hide a deteriorating dimension, and this prevents that." A reader never sees the bare
+  number without also seeing exactly which dimension(s), if any, are pulling it down.
+- **Classified metrics excluded until validated.** Phase 2 (`classified`-tier) metrics — Interaction Health's
+  `escalation_rate`/`constructive_resolution_rate` — do not appear in `scoring.yaml`'s composite-eligible registry
+  at all yet, and won't until `COMMUNITY-HEALTH.md`'s validation gates clear (D20's own text, §9's revised list).
+
+### 12.2 Insufficient-data handling: disclosed re-normalization, at two levels
+
+Real Cassandra data at M0 does not yet have a shipped collector for every metric METRICS.md defines — most
+notably, `release_frequency` (release cadence's only key metric, §1) has no release collector yet, so that
+dimension's status and score are `insufficient_data` on every run until it ships. D20 requires this to be shown,
+not hidden behind a reweighted number that looks the same as if every dimension had data:
+
+- **Within a dimension:** the dimension's score is the mean of only its `key` metrics that currently have a
+  classifiable (non-`insufficient_data`) status this month (§5.1) — a key metric with no data yet, or too little
+  baseline history, simply doesn't contribute to that mean. If *every* key metric in a dimension is
+  `insufficient_data` (release cadence, today), the dimension has no score at all this month, matching §5.4's
+  "the dimension only reads insufficient data when no key metric has enough data to classify."
+- **Across dimensions:** a dimension with no score this month is dropped entirely from the top-level weighted
+  average, and the remaining composite-eligible dimensions' `scoring.yaml` weights are re-normalized to sum to
+  1.0 for that month's composite. Both re-normalizations are disclosed on the home page's breakdown every time
+  they apply (which dimensions were included, how many of a dimension's key metrics scored) — never silently
+  absorbed into a number that looks the same as a run with full data.
+
+### 12.3 Per-metric normalization to 0–100
+
+Every composite-eligible (`key`) metric's 0–100 score reuses the exact modified z-score already computed for its
+own baseline status (§4.2) — never a second, independently-tuned statistic — so the composite stays a function of
+the metric's own trailing self-baseline (D2 rule 2), exactly like status. The mapping is monotonic in the modified
+z-score and direction-aware (§4.3):
+
+- **`higher`/`lower` direction:** `score = clip(50 + z_scale × signed_z, 0, 100)`, where `signed_z` is the
+  modified z-score, sign-flipped for a `lower`-direction metric so a positive `signed_z` always means "moving
+  toward improving." A metric sitting exactly on its own trailing median scores 50; `z_scale` is chosen so
+  `|signed_z| = stable_threshold` (1.5, §5.1) lands on 25/75 and `|signed_z| = large_deviation_threshold` (3.0)
+  saturates at 0/100.
+- **`target-range` direction** (`release_frequency` today, §4.3): `score = clip(100 - target_range_scale ×
+  |modified_z|, 0, 100)` — sitting on the metric's own historical center scores 100, and a large deviation in
+  *either* direction (too rare or too frequent) pulls the score down toward 0, matching §5.1's "declining" status
+  reading for a large target-range deviation in either direction.
+- **`none` direction:** excluded — a `none`-direction metric is never classified improving/stable/declining
+  (§5.1 rule 1) and is never `key` for exactly that reason (§4.3: "never carries key power"), so it never enters
+  a composite-eligible dimension's key-metric roster in the first place.
+
+Both scale constants, and the exact 0–100 formula above, are published in `scoring.yaml`'s
+`composite.normalization` block — a reader can recompute any dimension's score by hand from a metric's own
+published `baseline_median`/`baseline_mad`/`modified_z` (D2.3's auditability requirement, extended to the
+composite the same way it already applies to every raw metric).
+
+### 12.4 What is (and isn't) in scope
+
+Per §9 (revised above): governance compliance (D14/D15) and Phase 2 classified metrics never enter this
+composite. `scoring.yaml`'s `composite.excluded_dimensions` names both exclusions and states the reason for each,
+so a reader sees the boundary drawn explicitly rather than wondering why the Governance page's pass rates aren't
+reflected in "the" number. The composite is Phase 1 (deterministic) only, over exactly the five dimensions D4
+names minus Interaction Health (still Phase 2): contributor sustainability, reviewer capacity, responsiveness,
+organizational diversity, release cadence.

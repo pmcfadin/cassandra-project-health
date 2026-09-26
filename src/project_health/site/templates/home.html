@@ -1,5 +1,51 @@
 {% extends "base.html" %}
 {% block content %}
+<section class="composite-section" aria-label="Composite health score">
+  <h2>Composite health score</h2>
+  {% if scoring.has_data %}
+  <div class="composite-score-row">
+    <span class="composite-score-value">{{ scoring.composite_display if scoring.composite_display is not none else "insufficient data" }}</span>
+    <span class="composite-score-scale">/ 100</span>
+    {% if scoring.has_declining_dimension %}
+    <span class="badge badge--declining composite-declining-flag" role="status">&#9888; a key metric in at least one dimension is declining</span>
+    {% endif %}
+  </div>
+  <p class="composite-caveat">
+    Never shown alone: the breakdown below is the same composite, decomposed. Scoring version
+    <code>{{ scoring.scoring_version }}</code> — see <a href="{{ scoring.scoring_config_url }}">scoring.yaml</a>
+    and <a href="{{ scoring.scoring_spec_url }}#{{ scoring.scoring_spec_composite_anchor }}">SCORING.md §12</a>.
+  </p>
+  {% if scoring.renormalized %}
+  <p class="composite-caveat composite-renormalized-note">
+    Based on {{ scoring.dimensions_included }} of {{ scoring.dimensions_total }} dimensions with enough data this
+    month; the remaining dimension weights are re-normalized to sum to 100% (disclosed per-dimension below).
+  </p>
+  {% endif %}
+  <ul class="dimension-breakdown">
+    {% for dim in scoring.dimensions %}
+    <li class="dimension-breakdown-item dimension-breakdown-item--{{ dim.status }}">
+      <span class="dimension-breakdown-name">{{ dim.label }}</span>
+      <span class="badge badge--status-{{ dim.status }}">{{ dim.status.replace('_', ' ') }}</span>
+      <span class="dimension-breakdown-score">
+        {% if dim.score_display is not none %}{{ dim.score_display }} / 100{% else %}insufficient data{% endif %}
+      </span>
+      <span class="dimension-breakdown-weight">
+        weight {{ dim.weight_display }}{% if dim.renormalized_weight_display and dim.renormalized_weight_display != dim.weight_display %} &rarr; {{ dim.renormalized_weight_display }}{% endif %}
+      </span>
+      {% if dim.driven_by %}
+      <span class="dimension-breakdown-driven-by">driven by {{ dim.driven_by }}</span>
+      {% endif %}
+      <span class="dimension-breakdown-keys">{{ dim.key_metrics_scored }}/{{ dim.key_metrics_total }} key metrics scored</span>
+    </li>
+    {% endfor %}
+  </ul>
+  <p class="card-links">
+    <a href="{{ scoring.json_href }}">Download JSON</a> &middot; <a href="{{ scoring.csv_href }}">Download CSV</a>
+  </p>
+  {% else %}
+  <p class="card-empty-state">No composite score yet — scoring has not run for this snapshot.</p>
+  {% endif %}
+</section>
 <section class="summary-grid" aria-label="Page summaries">
   {% for card in summary_cards %}
   <article class="card card--summary">

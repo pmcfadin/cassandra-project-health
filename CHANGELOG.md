@@ -3,6 +3,32 @@
 Metric-definition changelog (ARCHITECTURE.md §4.4 / D2 rule 6: "nothing changes silently"). Entries are ordered
 newest-first; a future version bump adds a new dated entry at the top.
 
+## 2026-09-26
+
+### scoring_version 1.0.0 (new): baseline statuses + versioned composite health score
+
+Implements `docs/spec/SCORING.md`'s baseline-status math (§4-§5: trailing-24-completed-month median/MAD, the
+modified z-score, the 1.5/3.0-sigma thresholds, the 2-of-3-completed-months sustained-trend confirmation, and
+the `insufficient_data` floor below 12 completed baseline months) for every Phase-1 metric, and each dimension's
+status via the worst-key-metric rule (§5.3): a dimension reads `declining` if any `key` metric is, `improving`
+only if none are declining and at least one key metric is improving, `stable` otherwise, and `insufficient_data`
+only when every key metric is. Results persist to each run's snapshot as three new tables
+(`metric_baseline_status`, `dimension_status`, `composite_score`).
+
+Adds DECISIONS.md D20's versioned 0-100 composite health score (amending D4's original "no composite, ever"):
+weights, per-metric normalization functions and dimension inputs are published in `scoring.yaml` at
+`scoring_version` 1.0.0. A dimension's composite score is the mean of its own `key` metrics' 0-100 normalized
+scores (never its supporting metrics); a dimension with no classifiable key metric this month is dropped and the
+remaining dimensions' weights are re-normalized to sum to 1.0, disclosed on the home page every time it applies.
+The home page never shows the composite alone -- it always renders with its full per-dimension breakdown and a
+visible flag beside it whenever any dimension's key metric is `declining`. Classified (Phase 2) metrics and
+governance compliance (D14/D15) are both excluded from the composite; `scoring.yaml`'s
+`composite.excluded_dimensions` states why for each. `docs/spec/SCORING.md` §9 ("what must never be combined")
+is revised to carve out this one, narrowly-scoped exception and add the two new exclusions; a new §12 documents
+the composite mechanism in full.
+
+Closes #57.
+
 ## 2026-09-25
 
 ### reviewer_hhi, unique_reviewers_monthly, contributor leaderboard (issue #56): collector data correction, no definition_version change

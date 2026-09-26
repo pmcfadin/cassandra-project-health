@@ -66,3 +66,22 @@ The Cassandra community first hears about the project on dev@ once the Phase 1 p
 
 ## D12. Open-question defaults
 The recommended defaults in `OPEN-QUESTIONS.md` are accepted (owner decision, 2026-09-25). They can be revisited as pilot data arrives.
+
+## D13. Site structure: separate pages with tab-style navigation
+Three top-level pages share one nav bar: `/community/` (code and contributor metrics), `/conversations/` (mailing lists and, later, Slack) and `/governance/` (per-commit minimums). Each page has a stable, linkable URL and works without JavaScript. The home page summarizes all three and links to them.
+
+## D14. Governance: per-commit minimums from a versioned, owner-approved policy
+- The minimums every commit must meet (e.g. review, testing, CI) are defined in `governance-policy.yaml`. Each rule cites its source (Cassandra's commit documentation, a CEP, or a dev@ decision), carries an effective-from date, and states exactly how it is checked.
+- An agent drafts the policy from Cassandra's documented rules. The project owner approves it before any compliance is published.
+- Each commit is judged against the policy in force on its commit date. A policy change is a dated version bump and never rescores history silently (D2 rule 6).
+- Each check reports `pass`, `fail` or `unknown`. Unknown means the evidence isn't available, and it is never counted as a fail.
+
+## D15. Governance transparency: full per-commit detail, including names
+Owner decision (2026-09-25): the governance page lists individual commits with author, committer and reviewer names alongside each check result. These are deterministic facts about public commits, not classified judgments, so D2 rule 4 (which covers classified output) does not forbid it. Because named results raise the cost of a false positive:
+- every check result shows the evidence it is based on (the trailer text, the JIRA field, the CI link or the test paths), so a reader can verify it;
+- `unknown` is displayed as unknown, never as a fail;
+- every row links to the corrections process, and a correction is a PR-reviewed override with the reason recorded;
+- rules are applied only from their effective date.
+
+## D16. Conversations page ships now with metadata-only metrics
+Before the Phase 2 gates clear (D1), `/conversations/` shows mailing-list metrics computed from metadata only: sender, timestamp and thread structure, never message bodies. Examples are time to first reply on dev@ and the unanswered-thread rate. The page explains that interaction-health metrics arrive after classifier validation (Phase 2a) and that Slack arrives after PMC and ASF Infra approval (Phase 2b).

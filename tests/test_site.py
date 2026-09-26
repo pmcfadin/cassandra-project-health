@@ -209,6 +209,46 @@ def test_csv_output_has_provenance_header_and_matching_rows(tmp_path):
     assert data_rows[-1]["flag"] == "insufficient_data"
 
 
+def test_reported_definition_version_is_the_max_not_the_latest_window(tmp_path):
+    """Issue #27 / ARCHITECTURE.md §4.4: old-version rows are never
+    overwritten -- a snapshot can hold both "1.0" and "1.1" rows for the
+    same metric. The reported `definition_version` must be the numeric
+    maximum among them, regardless of which row's `window_start` sorts
+    last. Here the "1.0" row is deliberately given the LATEST window_start
+    so a naive window_start-sort pick would wrongly report "1.0"."""
+    metric_id = "new_contributors_monthly"
+    rows = [
+        _metric_value_row(
+            metric_id,
+            date(2026, 6, 1),
+            date(2026, 6, 30),
+            3.0,
+            3,
+            "ok",
+            definition_version="1.1",
+        ),
+        # Deliberately the LATEST window_start, but the OLDER version.
+        _metric_value_row(
+            metric_id,
+            date(2026, 7, 1),
+            date(2026, 7, 31),
+            10.0,
+            12,
+            "ok",
+            definition_version="1.0",
+        ),
+    ]
+    for other_id in M0_METRICS:
+        if other_id == metric_id:
+            continue
+        rows.append(_metric_value_row(other_id, date(2026, 7, 1), date(2026, 7, 31), 1.0, 6, "ok"))
+
+    out_dir = _build_site(tmp_path, rows=rows)
+    payload = json.loads((out_dir / "data" / f"{metric_id}.json").read_text())
+
+    assert payload["definition_version"] == "1.1"
+
+
 # --- insufficient_data renders as a gap, never zero -------------------------
 
 

@@ -17,19 +17,48 @@ EXPECTED_METRIC_IDS = {
     "stale_jira_rate",
 }
 
+HEADCOUNT_METRIC_IDS = {
+    "active_contributors_monthly",
+    "new_contributors_monthly",
+    "unique_reviewers_monthly",
+}
+
 
 def test_registry_lists_exactly_the_six_m0_metrics():
     assert set(METRIC_IDS) == EXPECTED_METRIC_IDS
 
 
-def test_build_registry_produces_one_row_per_metric_all_at_version_1_0():
+def test_build_registry_stamps_headcount_metrics_1_1_and_others_1_0():
+    """Issue #27: the three headcount metrics bumped to "1.1" (no more
+    sample-size floor); the other three metrics stay at "1.0"."""
     table = build_registry(NOW)
 
     assert table.num_rows == 6
     assert set(table.column("metric_id").to_pylist()) == EXPECTED_METRIC_IDS
-    assert set(table.column("version").to_pylist()) == {"1.0"}
     assert all(table.column("description").to_pylist())  # every row has a non-empty description
     assert table.column("changed_at").to_pylist() == [NOW] * 6
+
+    rows_by_id = {row["metric_id"]: row for row in table.to_pylist()}
+
+    headcount_notes = set()
+    for metric_id in HEADCOUNT_METRIC_IDS:
+        row = rows_by_id[metric_id]
+        assert row["version"] == "1.1"
+        assert row["changelog_note"]
+        headcount_notes.add(row["changelog_note"])
+
+    other_notes = set()
+    for metric_id in EXPECTED_METRIC_IDS - HEADCOUNT_METRIC_IDS:
+        row = rows_by_id[metric_id]
+        assert row["version"] == "1.0"
+        assert row["changelog_note"]
+        other_notes.add(row["changelog_note"])
+
+    # The headcount notes are a real, distinct explanation of the floor
+    # change -- not the same generic note the other three metrics carry.
+    assert headcount_notes.isdisjoint(other_notes)
+    for note in headcount_notes:
+        assert "floor" in note.lower() or "sample" in note.lower()
 
 
 def test_build_registry_is_a_pure_function_of_changed_at():

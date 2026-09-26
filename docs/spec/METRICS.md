@@ -107,6 +107,19 @@ to dimension status). Default floors, absent a metric-specific override:
 - Latency metrics (medians): floor = **5** closed events in the window; below that, show the raw list of events
   instead of a summary statistic.
 
+**Scope of this rule (owner decision, 2026-09-25, issue #27):** this floor applies to **rate/ratio metrics,
+concentration metrics, and latency statistics** — metrics where the reported number is a *statistic computed over*
+a population, so a small population makes that statistic unstable (a rate over 2 events, a median of 2 latencies,
+or an HHI over 2 contributors is not a trustworthy estimate). It does **not** apply to plain headcounts/counts. A
+raw count of "how many people did X in this window" is already the complete, meaningful statistic at any `n`,
+including 0 — it is not an estimate whose variance shrinks as `n` grows the way a rate, an HHI share, or a median
+is. Suppressing a true low-n headcount as `insufficient data` hides real information (e.g., a month with 3 new
+contributors is real, meaningful signal about the onboarding trend), rather than protecting against instability.
+
+`active_contributors_monthly`, `new_contributors_monthly`, and `unique_reviewers_monthly` are exempted from this
+floor for exactly that reason: they always report `flag = 'ok'` and `value = n`, for any `n` including 0
+(`definition_version` 1.1 as of this decision).
+
 ---
 
 ## 1. Summary Table
@@ -185,6 +198,8 @@ each `none`/debatable assignment is in that metric's own section below, not just
 - **Direction of good:** higher. **Role:** supporting (contributor sustainability).
 - **Formula:** `A(m) = |{ contributors c : commits(c, m) ≥ 1 }|` for calendar month `m`.
 - **Population & exclusions:** §0.5. Excludes bots. Includes identity-unresolved individuals as separate entries.
+  No §0.6 sample-size floor applies (issue #27, `definition_version` 1.1): reports its value for any `n`, including
+  0, always with `flag = 'ok'`.
 - **Window:** monthly, also rolled up trailing-12m as a smoothing view.
 - **Required data / source:** git log (author email, timestamp, commit hash) for `apache/cassandra`.
 - **Strengths:** Simple, fully deterministic, matches CHAOSS "Contributors" intent (any qualifying activity in a
@@ -204,7 +219,10 @@ each `none`/debatable assignment is in that metric's own section below, not just
 - **Direction of good:** higher. **Role:** supporting (contributor sustainability).
 - **Formula:** `N(m) = |{ c : min(commit_date(c)) ∈ m }|`.
 - **Population & exclusions:** §0.5. Requires full-history first-seen date, which requires the raw cache to hold
-  complete git history, not just a rolling window (see D3 — full raw cache, recomputed each run).
+  complete git history, not just a rolling window (see D3 — full raw cache, recomputed each run). No §0.6
+  sample-size floor applies (issue #27, `definition_version` 1.1): reports its value for any `n`, including 0,
+  always with `flag = 'ok'` — a month with 3 (or 0) new contributors is real, meaningful onboarding/attrition
+  signal, not a value to suppress.
 - **Window:** monthly.
 - **Required data / source:** git log, full history.
 - **Strengths:** Direct CHAOSS analog; simple onboarding-funnel entry point.
@@ -497,7 +515,8 @@ baseline or an improving/stable/declining status (see `SCORING.md` §6). All are
   (SCORING.md §5.3): headcount is the most direct, hardest-to-game read of whether the reviewer pool itself is
   shrinking.
 - **Formula:** `UR(m) = |{ reviewers credited in m across any source }|`.
-- **Population & exclusions:** §0.5, §0.6. Baseline window starts 2017 (§0.4).
+- **Population & exclusions:** §0.5. Baseline window starts 2017 (§0.4). No §0.6 sample-size floor applies (issue
+  #27, `definition_version` 1.1): reports its value for any `n`, including 0, always with `flag = 'ok'`.
 - **Window:** monthly.
 - **Required data / source:** git commit trailers (non-merge commits only); ASF JIRA REST API
   (`customfield_12313420`, `customfield_10022`); GitHub Reviews API.

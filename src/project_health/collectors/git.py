@@ -69,6 +69,8 @@ from pathlib import Path
 import pyarrow as pa
 
 from project_health.collectors.reviewer_trailer import (
+    PARSER_VERSION,
+    ReviewAttribution,
     ReviewerExtractor,
     looks_like_reviewer_trailer,
 )
@@ -269,6 +271,147 @@ def _to_table(table_name: str, rows: list[dict]) -> pa.Table:
     return validate(table_name, table)
 
 
+def _build_review_rows(
+    *,
+    repo_label: str,
+    sha: str,
+    attribution: ReviewAttribution,
+    author_email_lower: str,
+    occurred_at: datetime,
+    source_snapshot_id: str,
+) -> list[dict]:
+    """One `review_event` row dict per (reviewer, issue key) pair (issue
+    #77): shared by `GitCollector.collect`'s incremental per-commit walk and
+    `derive_review_events`'s full-history re-derivation, so both always stamp
+    the same fields -- including `parser_version` -- from the same
+    `reviewer_trailer.PARSER_VERSION` the caller's `ReviewerExtractor`
+    actually used to produce `attribution`.
+
+    Only called for an `attribution` that already has at least one
+    non-placeholder reviewer (callers check `attribution.reviewers` first).
+    """
+    rows: list[dict] = []
+    issue_keys: Sequence[str | None] = attribution.issue_keys or (None,)
+    for issue_key in issue_keys:
+        for reviewer in attribution.reviewers:
+            rows.append(
+                {
+                    "event_id": (
+                        f"git:{repo_label}:{sha}:review:{reviewer}:{issue_key or 'none'}"
+                    ),
+                    "source": "commit_trailer",
+                    "reviewer_identity_id": None,
+                    "reviewer_raw_type": "git_name",
+                    "reviewer_raw_value": reviewer,
+                    "author_identity_id": None,
+                    "author_raw_type": "git_email",
+                    "author_raw_value": author_email_lower,
+                    "issue_key": issue_key,
+                    "repo": repo_label,
+                    "occurred_at": occurred_at,
+                    "evidence": attribution.matched_text,
+                    "source_snapshot_id": source_snapshot_id,
+                    "parser_version": PARSER_VERSION,
+                }
+            )
+    return rows
+
+
+@dataclass
+class ReviewEventReparseResult:
+    """Return value of :func:`derive_review_events`."""
+
+    review_event: pa.Table
+    commits_scanned: int
+    bot_commits_excluded: int
+    unparsed_reviewed_by_count: int
+    placeholder_reviewer_commits: int
+
+
+def derive_review_events(
+    *,
+    repo_path: str | Path,
+    repo_label: str,
+    default_branch: str,
+    bot_patterns: Sequence[BotPattern],
+    source_snapshot_id: str,
+    extractor: ReviewerExtractor | None = None,
+) -> ReviewEventReparseResult:
+    """Full-history re-derivation of `commit_trailer` `review_event` rows
+    (issue #77).
+
+    A `reviewer_trailer.PARSER_VERSION` bump (e.g. issue #77's line-wrap fix)
+    can change what an *already-collected* commit's trailer parses to, but
+    `GitCollector.collect`'s own incremental watermark guarantees a commit is
+    only ever walked once, ever -- so it can never re-emit a corrected row
+    for a commit it already collected under an older parser. This function
+    is the other half of that: it walks `default_branch`'s **entire**
+    history (never a `watermark` range) purely to re-derive `review_event`
+    rows with the *current* extractor, and is called once per parser-version
+    bump (`pipeline._collect_git`), not on every run.
+
+    Deliberately never touches `contribution_event` or `file_change_event`:
+    unlike `review_event` (superseded at read time by
+    `pipeline._dedupe_commit_trailer_review_events`, keyed on the commit sha
+    embedded in `event_id` plus this row's `parser_version`), those two
+    tables have no such read-time dedup -- they rely entirely on
+    `GitCollector.collect`'s watermark to guarantee each commit is written
+    exactly once. Re-walking them here would silently double-count every
+    historical commit.
+
+    The returned table is written by the caller as its own new partition
+    (append-only, same `raw/git/review_event` table `GitCollector.collect`
+    writes to) -- this function does no I/O against `project_health.storage`
+    itself.
+    """
+    repo_path = Path(repo_path)
+    ref = _resolve_ref(repo_path, default_branch)
+    extractor = extractor or ReviewerExtractor()
+
+    review_rows: list[dict] = []
+    commits_scanned = 0
+    bot_excluded = 0
+    unparsed_count = 0
+    placeholder_reviewer_count = 0
+
+    for commit in _iter_commits(repo_path, ref):
+        if _is_bot(commit.author_email, bot_patterns):
+            bot_excluded += 1
+            continue
+
+        commits_scanned += 1
+        author_email_lower = commit.author_email.strip().lower()
+
+        attribution = extractor.extract(commit.message)
+        if attribution is None:
+            if looks_like_reviewer_trailer(commit.message):
+                unparsed_count += 1
+            continue
+
+        if attribution.placeholder_reviewers:
+            placeholder_reviewer_count += 1
+
+        if attribution.reviewers:
+            review_rows.extend(
+                _build_review_rows(
+                    repo_label=repo_label,
+                    sha=commit.sha,
+                    attribution=attribution,
+                    author_email_lower=author_email_lower,
+                    occurred_at=commit.occurred_at,
+                    source_snapshot_id=source_snapshot_id,
+                )
+            )
+
+    return ReviewEventReparseResult(
+        review_event=_to_table("review_event", review_rows),
+        commits_scanned=commits_scanned,
+        bot_commits_excluded=bot_excluded,
+        unparsed_reviewed_by_count=unparsed_count,
+        placeholder_reviewer_commits=placeholder_reviewer_count,
+    )
+
+
 @dataclass
 class GitCollectionResult:
     """Return value of :meth:`GitCollector.collect`."""
@@ -378,29 +521,16 @@ class GitCollector:
 
             # Only emit review_event rows if there are non-placeholder reviewers.
             if attribution.reviewers:
-                issue_keys: Sequence[str | None] = attribution.issue_keys or (None,)
-                for issue_key in issue_keys:
-                    for reviewer in attribution.reviewers:
-                        review_rows.append(
-                            {
-                                "event_id": (
-                                    f"git:{repo_label}:{commit.sha}:review:"
-                                    f"{reviewer}:{issue_key or 'none'}"
-                                ),
-                                "source": "commit_trailer",
-                                "reviewer_identity_id": None,
-                                "reviewer_raw_type": "git_name",
-                                "reviewer_raw_value": reviewer,
-                                "author_identity_id": None,
-                                "author_raw_type": "git_email",
-                                "author_raw_value": author_email_lower,
-                                "issue_key": issue_key,
-                                "repo": repo_label,
-                                "occurred_at": commit.occurred_at,
-                                "evidence": attribution.matched_text,
-                                "source_snapshot_id": source_snapshot_id,
-                            }
-                        )
+                review_rows.extend(
+                    _build_review_rows(
+                        repo_label=repo_label,
+                        sha=commit.sha,
+                        attribution=attribution,
+                        author_email_lower=author_email_lower,
+                        occurred_at=commit.occurred_at,
+                        source_snapshot_id=source_snapshot_id,
+                    )
+                )
 
         file_change_rows: list[dict] = []
         file_changes_collected = 0

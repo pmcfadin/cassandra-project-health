@@ -101,6 +101,17 @@ REVIEW_EVENT = pa.schema(
         pa.field("occurred_at", TIMESTAMP_UTC, nullable=False),
         pa.field("evidence", pa.string(), nullable=True),
         pa.field("source_snapshot_id", pa.string(), nullable=False),
+        # The `reviewer_trailer.PARSER_VERSION` that produced this row, for
+        # `source == 'commit_trailer'` rows (issue #77) — null for a
+        # `source == 'jira_field'` row (no parser version applies) and for a
+        # `commit_trailer` row collected before this column existed (treated
+        # as version 1, the original single-physical-line matcher).
+        # `pipeline._dedupe_commit_trailer_review_events` reads this to keep
+        # only a commit's highest-`parser_version` rows at metrics/leaderboard
+        # read time, so a parser fix's full-history re-derivation *replaces*
+        # a stale attribution without ever rewriting the original append-only
+        # row (D2 rule 6, D3).
+        pa.field("parser_version", pa.int32(), nullable=True),
     ]
 )
 
@@ -604,6 +615,14 @@ GOVERNANCE_COMMIT_RECORD = pa.schema(
         # no listed path is never expected in practice but is a valid value.
         pa.field("changed_paths", pa.list_(pa.string()), nullable=True),
         pa.field("source_snapshot_id", pa.string(), nullable=False),
+        # The `reviewer_trailer.PARSER_VERSION` that produced `trailer_reviewers`
+        # (issue #77) — null for a row collected before this column existed
+        # (treated as version 1). `pipeline._dedupe_governance_commit_records`
+        # keeps only the highest-`parser_version` row per `sha` at governance
+        # scoring read time, the same full-history-supersede mechanism
+        # `REVIEW_EVENT.parser_version` documents for the M0 `review_event`
+        # table.
+        pa.field("parser_version", pa.int32(), nullable=True),
     ]
 )
 

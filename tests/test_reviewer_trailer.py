@@ -165,6 +165,126 @@ class TestRealWorldTrailerVariants:
         assert attribution.issue_keys == ("CASSANDRA-18936", "CASSANDRA-18665")
 
 
+class TestWrappedTrailerParagraph:
+    """Issue #77: a "patch by"/"reviewed by" trailer paragraph that's
+    line-wrapped (real trunk history wraps at ~72 columns) must be unwrapped
+    before matching, not truncated at the first newline. Each of the first
+    four cases is a real message copied verbatim from apache/cassandra
+    trunk, the exact regression examples from the issue.
+    """
+
+    def setup_method(self):
+        self.extractor = ReviewerExtractor()
+
+    def test_wrapped_reviewed_by_clause_sha_38f7789534(self):
+        # sha 38f7789534: "reviewed by ... and Sam\nTunnicliffe" wraps mid
+        # reviewer name -- must not truncate to reviewer "Sam".
+        message = (
+            "Fix flaky InProgressSequenceCoordinationTest by increasing "
+            "request_timeout and ensuring background threads are joined "
+            "before test cleanup\n\n"
+            "Patch by Sam Lightfoot; reviewed by Dmitry Konstantinov and Sam\n"
+            "Tunnicliffe for CASSANDRA-21189"
+        )
+        attribution = self.extractor.extract(message)
+        assert attribution is not None
+        assert attribution.patch_by == "Sam Lightfoot"
+        assert attribution.reviewers == ("Dmitry Konstantinov", "Sam Tunnicliffe")
+        assert attribution.issue_keys == ("CASSANDRA-21189",)
+
+    def test_wrapped_reviewed_by_clause_sha_b1f30e94f5_with_co_authored_by(self):
+        # sha b1f30e94f5: wraps mid reviewer list ("... and\nSam
+        # Tunnicliffe"), followed by a blank line then a Co-authored-by
+        # trailer that must survive untouched, not be swallowed into the
+        # unwrapped paragraph.
+        message = (
+            "Move long running TCM operations to a longer timout\n\n"
+            "Replaces the fixed-retry commit loop with deadline-based "
+            "exponential\n"
+            "backoff for long running CMS commit operations "
+            "(cms_commit_timeout=1h, 5s-60s jitter)\n"
+            "to allow heavily contended CMS nodes time to commit "
+            "transforms.\n\n"
+            "Patch by Jon Meredith and Sam Tunnicliffe; reviewed by Jon "
+            "Meredith and\n"
+            "Sam Tunnicliffe for CASSANDRA-21453\n\n"
+            "Co-authored-by: Sam Tunnicliffe <samt@apache.org>\n"
+        )
+        attribution = self.extractor.extract(message)
+        assert attribution is not None
+        assert attribution.reviewers == ("Jon Meredith", "Sam Tunnicliffe")
+        assert attribution.issue_keys == ("CASSANDRA-21453",)
+
+    def test_wrapped_reviewed_by_clause_sha_f05b27502f_with_two_co_authored_by(self):
+        # sha f05b27502f: wraps mid single reviewer name ("... reviewed by
+        # Sam\nTunnicliffe and Marcus Eriksson"), followed by two
+        # Co-authored-by lines that must both survive untouched.
+        message = (
+            "Improve CMS initialization\n\n"
+            "* Better handling of DOWN unupgraded nodes\n\n"
+            "Patch by Sam Tunnicliffe and Marcus Eriksson; reviewed by Sam\n"
+            "Tunnicliffe and Marcus Eriksson for CASSANDRA-21036\n\n"
+            "Co-authored-by: Marcus Eriksson <marcuse@apache.org>\n"
+            "Co-authored-by: Sam Tunnicliffe <samt@apache.org>\n"
+        )
+        attribution = self.extractor.extract(message)
+        assert attribution is not None
+        assert attribution.reviewers == ("Sam Tunnicliffe", "Marcus Eriksson")
+        assert attribution.issue_keys == ("CASSANDRA-21036",)
+
+    def test_wrapped_reviewed_by_clause_sha_1df3a8cef0(self):
+        # sha 1df3a8cef0
+        message = (
+            "Setup async transformation before making internode request\n\n"
+            "Patch by Sam Tunnicliffe and Dmitry Konstantinov; reviewed by "
+            "Sam\n"
+            "Tunnicliffe and Dmitry Konstantinov for CASSANDRA-21384\n\n"
+            "Co-authored-by: Dmitry Konstantinov <netudima@gmail.com>"
+        )
+        attribution = self.extractor.extract(message)
+        assert attribution is not None
+        assert attribution.reviewers == ("Sam Tunnicliffe", "Dmitry Konstantinov")
+        assert attribution.issue_keys == ("CASSANDRA-21384",)
+
+    def test_unwrapping_does_not_swallow_unrelated_paragraph_after_blank_line(self):
+        # A wrapped trailer followed by a blank line and then an unrelated
+        # commit-body paragraph (not a trailer at all) must leave that
+        # paragraph completely untouched.
+        message = (
+            "Patch by Alice Author; reviewed by Bob and\n"
+            "Carol Contributor for CASSANDRA-500\n\n"
+            "This paragraph is unrelated prose that happens to follow the\n"
+            "trailer and must not be merged into it."
+        )
+        attribution = self.extractor.extract(message)
+        assert attribution is not None
+        assert attribution.reviewers == ("Bob", "Carol Contributor")
+        assert attribution.issue_keys == ("CASSANDRA-500",)
+
+    def test_unwrapping_stops_at_a_new_trailer_with_no_blank_line_between(self):
+        # No blank line at all between the wrapped trailer's last
+        # continuation line and a following Co-authored-by line -- the "for
+        # <ISSUE-KEY>" terminator must still stop the join before it.
+        message = (
+            "Patch by Alice Author; reviewed by Bob and\n"
+            "Carol Contributor for CASSANDRA-501\n"
+            "Co-authored-by: Carol Contributor <carol@example.org>"
+        )
+        attribution = self.extractor.extract(message)
+        assert attribution is not None
+        assert attribution.reviewers == ("Bob", "Carol Contributor")
+        assert attribution.issue_keys == ("CASSANDRA-501",)
+
+    def test_non_wrapped_single_line_trailer_is_unaffected(self):
+        # A conventional, non-wrapped trailer must parse exactly as before
+        # (the unwrap pass is a no-op when there's nothing to unwrap).
+        message = "Patch by Alice Author; reviewed by Bob Reviewer for CASSANDRA-502"
+        attribution = self.extractor.extract(message)
+        assert attribution is not None
+        assert attribution.reviewers == ("Bob Reviewer",)
+        assert attribution.issue_keys == ("CASSANDRA-502",)
+
+
 class TestMissingForGluesIssueKeyOntoName:
     """Real trunk trailers that drop (or typo) "for" before the issue key.
 

@@ -58,12 +58,30 @@ never rewritten or deleted:
   `uuid4()` `event_id` on every fetch, so the same reviewer credit gets a
   different `event_id` each time its issue is re-fetched.
 - `review_event` rows sourced from a git commit trailer (`source ==
-  'commit_trailer'`) are **not** deduped this way: `collectors/git.py`'s
-  watermark is an exact, exclusive commit-SHA range, so the same commit is
-  never re-collected, and that source's `event_id` is a deterministic
-  function of `(repo, sha, reviewer, issue_key)` — a real duplicate there
-  would indicate a bug, not an expected overlap, and this module doesn't
-  paper over that by deduping it away.
+  'commit_trailer'`) are **not** deduped on overlap the way JIRA's are:
+  `collectors/git.py`'s watermark is an exact, exclusive commit-SHA range,
+  so the same commit is never re-collected by the ordinary incremental walk,
+  and that source's `event_id` is a deterministic function of `(repo, sha,
+  reviewer, issue_key)` — a duplicate `event_id` there would indicate a bug,
+  not an expected overlap.
+
+  They **are** deduped on a different axis — `parser_version` (issue #77):
+  `collectors/reviewer_trailer.py`'s `PARSER_VERSION` is bumped whenever a
+  parsing-behavior change (e.g. issue #77's line-wrap fix) can change what
+  an already-collected commit's trailer parses to. Since the watermark means
+  that commit will never be re-walked by the ordinary incremental collector,
+  a version bump also triggers a one-time, full-history re-derivation
+  (`collectors/git.py`'s `derive_review_events`, called from `_collect_git`
+  below) that appends a *new* `review_event` partition covering every
+  commit, stamped with the new `parser_version` — never rewriting or
+  deleting the original rows. `_dedupe_commit_trailer_review_events` then
+  keeps, per commit (the sha embedded in `event_id`, since older rows
+  predate any `source_ref`-style column), only the row(s) at that commit's
+  *highest* `parser_version` — so the corrected reviewer set replaces the
+  stale one at read time, exactly like the JIRA dedup above does for a
+  different reason. `collectors/governance_git.py`'s `commit_record` table
+  gets the identical treatment, keyed on its own plain `sha` column, via
+  `_dedupe_governance_commit_records`.
 """
 
 from __future__ import annotations
@@ -73,7 +91,7 @@ import subprocess
 import sys
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -83,8 +101,14 @@ import pyarrow.parquet as pq
 from project_health import storage
 from project_health.leaderboard import build_leaderboards
 from project_health.collectors.asf_roster import AsfRosterCollector
-from project_health.collectors.git import GitCollector, clone_or_fetch, github_clone_url
+from project_health.collectors.git import (
+    GitCollector,
+    clone_or_fetch,
+    derive_review_events,
+    github_clone_url,
+)
 from project_health.collectors.github import GitHubCollector, resolve_github_token
+from project_health.collectors.reviewer_trailer import PARSER_VERSION
 from project_health.collectors.github_commit_authors import GitHubCommitAuthorCollector
 from project_health.collectors.github_profile import GitHubProfileCollector
 from project_health.collectors.jira import JiraCollector
@@ -120,7 +144,7 @@ from project_health.site.manifest import manifest_path
 # stays easy to isolate/rebase against #33/#42's parallel work on the
 # shared collection functions above.
 from project_health.collectors.github_checks import GitHubChecksCollector
-from project_health.collectors.governance_git import collect_commits, resolve_sha
+from project_health.collectors.governance_git import CommitRecord, collect_commits, resolve_sha
 from project_health.collectors.jira_comments import JiraCommentsCollector
 from project_health.governance.checks import CheckstyleEvidence, CIEvidence, CommitFacts
 from project_health.governance.engine import build_commit_compliance_rows, build_commit_facts_rows
@@ -305,6 +329,70 @@ def _dedupe_jira_review_events(table: pa.Table) -> pa.Table:
     return pa.Table.from_pylist(kept, schema=table.schema)
 
 
+def _commit_sha_from_commit_trailer_event_id(event_id: str) -> str | None:
+    """The commit sha embedded in a `commit_trailer` `review_event.event_id`
+    (issue #77): `collectors/git.py` always mints
+    `f"git:{repo_label}:{sha}:review:{reviewer}:{issue_key or 'none'}"`.
+
+    Used as the dedup key instead of a `source_ref`-style column because a
+    row collected before issue #77 has no such column (schemas only ever
+    gain new *nullable* fields, never rewritten in place, D3) — but every
+    row, old or new, already has this exact `event_id` shape, so parsing it
+    is the one grouping key that reaches all the way back to the very first
+    `commit_trailer` row ever collected. `maxsplit=3` is what keeps this
+    correct even if `reviewer` itself contains a `:` (unlikely, but the
+    format doesn't forbid it): the sha is always the third `:`-delimited
+    field, regardless of what's packed into the remainder.
+
+    Returns `None` for an `event_id` that doesn't match this shape (should
+    never happen for a real `commit_trailer` row; defensive rather than
+    raising, so one malformed row can't break dedup for every other row).
+    """
+    parts = event_id.split(":", 3)
+    if len(parts) < 4 or parts[0] != "git" or not parts[3].startswith("review:"):
+        return None
+    return parts[2]
+
+
+def _dedupe_commit_trailer_review_events(table: pa.Table) -> pa.Table:
+    """Keep only the highest-`parser_version` row(s) per commit (issue #77).
+
+    See the module docstring's "Read-time dedupe" section for the full
+    design: a `PARSER_VERSION` bump triggers a full-history re-derivation
+    that appends new, higher-`parser_version` `review_event` rows for every
+    commit rather than rewriting the originals (append-only, D3). This is
+    what makes that re-derivation actually *replace* a stale attribution at
+    metrics/leaderboard read time — a row with a `None` `parser_version`
+    (collected before this column existed) is treated as version 1, the
+    original implicit version.
+
+    Only meaningful for the `raw/git/review_event` table, which contains
+    only `source == 'commit_trailer'` rows.
+    """
+    if table.num_rows == 0:
+        return table
+    rows = table.to_pylist()
+    best_version: dict[str, int] = {}
+    for row in rows:
+        sha = _commit_sha_from_commit_trailer_event_id(row["event_id"])
+        if sha is None:
+            continue
+        version = row["parser_version"] if row["parser_version"] is not None else 1
+        if sha not in best_version or version > best_version[sha]:
+            best_version[sha] = version
+    kept = []
+    for row in rows:
+        sha = _commit_sha_from_commit_trailer_event_id(row["event_id"])
+        version = row["parser_version"] if row["parser_version"] is not None else 1
+        # A row whose event_id doesn't parse (should never happen for a real
+        # commit_trailer row) is kept rather than silently dropped -- never
+        # worse than not deduping at all.
+        if sha is None or version == best_version[sha]:
+            kept.append(row)
+    kept.sort(key=lambda r: r["event_id"])
+    return pa.Table.from_pylist(kept, schema=table.schema)
+
+
 def _dedupe_roster_entries(table: pa.Table) -> pa.Table:
     """Keep only the latest entry per `asf_id` (since roster is stateless).
 
@@ -429,6 +517,87 @@ def _dedupe_issue_comment_rows(table: pa.Table) -> pa.Table:
 # --- Per-source collection -----------------------------------------------
 
 
+def _reparse_commit_trailer_review_events_if_needed(
+    data_dir: Path,
+    workdir: Path,
+    repo_cfg: Any,
+    repo_label: str,
+    run_id: str,
+    partition_date: date,
+    bot_patterns: Sequence[Any],
+    had_prior_history: bool,
+) -> dict[str, Any]:
+    """One-time, full-history re-derivation of `commit_trailer` `review_event`
+    rows when `reviewer_trailer.PARSER_VERSION` has bumped since this data
+    dir's last run (issue #77 — see the module docstring's "Read-time
+    dedupe" section for the full design).
+
+    `had_prior_history` is `watermark is not None` from *before* this run's
+    own incremental collection — a fresh data dir (never collected before)
+    needs no reparse, since every row it's about to write already uses the
+    current parser. Marked via its own watermark key
+    (`table="review_event_parser_version"`, storing `str(PARSER_VERSION)`
+    the same way a real commit-sha watermark stores a sha) so this is a
+    no-op on every run after the one that actually reparses.
+
+    Returns a stats dict for the manifest: `status` is `'skipped'` (no bump
+    pending), `'ok'` (reparsed and written), or `'failed'` (reparse raised —
+    logged, but never propagated: the ordinary incremental collection this
+    run already succeeded and must not be rolled back over a supplementary
+    correction pass failing).
+    """
+    marker = storage.read_watermark(data_dir, "git", table="review_event_parser_version")
+    if marker == str(PARSER_VERSION) or not had_prior_history:
+        if marker != str(PARSER_VERSION):
+            storage.write_watermark(
+                data_dir, "git", str(PARSER_VERSION), table="review_event_parser_version"
+            )
+        return {"status": "skipped", "parser_version": PARSER_VERSION}
+
+    _log(
+        "commit_trailer_reparse_started",
+        source="git",
+        from_marker=marker,
+        to_parser_version=PARSER_VERSION,
+    )
+    try:
+        reparse_result = derive_review_events(
+            repo_path=workdir,
+            repo_label=repo_label,
+            default_branch=repo_cfg.default_branch,
+            bot_patterns=bot_patterns,
+            source_snapshot_id=f"{run_id}:git:reparse",
+        )
+        storage.write_partition(
+            data_dir,
+            "git",
+            "review_event",
+            partition_date,
+            f"{run_id}-reparse",
+            reparse_result.review_event,
+        )
+        storage.write_watermark(
+            data_dir, "git", str(PARSER_VERSION), table="review_event_parser_version"
+        )
+        _log(
+            "commit_trailer_reparse_succeeded",
+            source="git",
+            commits_scanned=reparse_result.commits_scanned,
+            review_rows_written=reparse_result.review_event.num_rows,
+            unparsed_reviewed_by_count=reparse_result.unparsed_reviewed_by_count,
+            placeholder_reviewer_commits=reparse_result.placeholder_reviewer_commits,
+        )
+        return {
+            "status": "ok",
+            "parser_version": PARSER_VERSION,
+            "commits_scanned": reparse_result.commits_scanned,
+            "review_rows_written": reparse_result.review_event.num_rows,
+        }
+    except Exception as exc:  # noqa: BLE001 - never roll back this run's own successful collection
+        _log("commit_trailer_reparse_failed", source="git", error=str(exc))
+        return {"status": "failed", "parser_version": PARSER_VERSION, "reason": str(exc)}
+
+
 def _collect_git(
     config: ProjectConfig,
     data_dir: Path,
@@ -505,6 +674,22 @@ def _collect_git(
             placeholder_reviewer_commits=result.placeholder_reviewer_commits,
             next_watermark=result.next_watermark,
         )
+        # issue #77: a `PARSER_VERSION` bump triggers a one-time, full-history
+        # re-derivation of `commit_trailer` `review_event` rows -- see
+        # `_reparse_commit_trailer_review_events_if_needed`'s docstring. Runs
+        # after the ordinary incremental collection above has already
+        # succeeded and advanced its watermark; a reparse failure is reported
+        # but never turns this (already-successful) source result `failed`.
+        reviewer_reparse = _reparse_commit_trailer_review_events_if_needed(
+            data_dir,
+            workdir,
+            repo_cfg,
+            repo_label,
+            run_id,
+            partition_date,
+            config.bot_patterns,
+            had_prior_history=watermark is not None,
+        )
         return {
             "status": "ok",
             "watermark": f"sha:{result.next_watermark}",
@@ -519,6 +704,9 @@ def _collect_git(
             # was walked this run -- large on a first-ever backfill, small on
             # every steady-state run after.
             "file_changes_collected": result.file_changes_collected,
+            # issue #77: reports whether a commit_trailer parser-version
+            # bump's full-history reparse ran this run.
+            "commit_trailer_reparse": reviewer_reparse,
         }
     except Exception as exc:  # noqa: BLE001 - a source outage must never abort the run (§7.3)
         _log("source_collect_failed", source="git", error=str(exc))
@@ -850,6 +1038,36 @@ def _governance_checkstyle_retention_days(config: ProjectConfig) -> int:
     return int(raw.get("checkstyle_retention_days", DEFAULT_GOVERNANCE_CHECKSTYLE_RETENTION_DAYS))
 
 
+def _governance_commit_record_rows(
+    records: list[CommitRecord], source_snapshot_id: str
+) -> list[dict]:
+    """`CommitRecord` -> `commit_record` row dicts, shared by the ordinary
+    incremental walk and the issue #77 full-history reparse below, so both
+    always stamp the same `parser_version` (`reviewer_trailer.PARSER_VERSION`
+    -- the version `records`' `trailer_reviewers` were actually extracted
+    with, since both callers build `records` via `collect_commits`, which
+    uses the current `ReviewerExtractor`)."""
+    return [
+        {
+            "sha": r.sha,
+            "branch": r.branch,
+            "commit_date": r.commit_date,
+            "message": r.message,
+            "author": r.author,
+            "author_email": r.author_email,
+            "committer": r.committer,
+            "committer_email": r.committer_email,
+            "is_merge": r.is_merge,
+            "trailer_reviewers": list(r.trailer_reviewers),
+            "issue_keys": list(r.issue_keys),
+            "changed_paths": list(r.changed_paths) if r.changed_paths is not None else None,
+            "source_snapshot_id": source_snapshot_id,
+            "parser_version": PARSER_VERSION,
+        }
+        for r in records
+    ]
+
+
 def _collect_governance_commit_records(
     data_dir: Path, workdir: Path, repo_cfg: Any, run_id: str, governance_since: str | None
 ) -> int:
@@ -874,24 +1092,7 @@ def _collect_governance_commit_records(
         since=governance_since,
         since_sha=watermark,
     )
-    rows = [
-        {
-            "sha": r.sha,
-            "branch": r.branch,
-            "commit_date": r.commit_date,
-            "message": r.message,
-            "author": r.author,
-            "author_email": r.author_email,
-            "committer": r.committer,
-            "committer_email": r.committer_email,
-            "is_merge": r.is_merge,
-            "trailer_reviewers": list(r.trailer_reviewers),
-            "issue_keys": list(r.issue_keys),
-            "changed_paths": list(r.changed_paths) if r.changed_paths is not None else None,
-            "source_snapshot_id": f"{run_id}:governance_git",
-        }
-        for r in records
-    ]
+    rows = _governance_commit_record_rows(records, f"{run_id}:governance_git")
     schema = _governance_get_schema("commit_record")
     table = _governance_validate(
         "commit_record",
@@ -908,11 +1109,122 @@ def _collect_governance_commit_records(
     return len(rows)
 
 
+def _reparse_governance_commit_records_if_needed(
+    data_dir: Path,
+    workdir: Path,
+    repo_cfg: Any,
+    run_id: str,
+    governance_since: str | None,
+    had_prior_history: bool,
+) -> dict[str, Any]:
+    """Governance's counterpart to `_reparse_commit_trailer_review_events_if_needed`
+    (issue #77): a `PARSER_VERSION` bump also invalidates `trailer_reviewers`
+    on every already-collected `raw/governance/commit_record` row, and that
+    table's own `since_sha` watermark means the ordinary incremental walk in
+    `_collect_governance_commit_records` will never revisit those commits
+    either. One-time, full-history re-walk (`since_sha=None`, but the same
+    `governance_since` bound the very first ever run used, so the reparsed
+    set matches exactly what a fresh backfill would collect today) written
+    as its own new partition; `_dedupe_governance_commit_records` then keeps
+    only each `sha`'s highest-`parser_version` row at scoring read time.
+
+    Tracked via its own watermark key (`table="commit_record_parser_version"`
+    on the `governance_git` source), independent of the real `since_sha`
+    watermark `_collect_governance_commit_records` advances.
+    """
+    marker = storage.read_watermark(
+        data_dir, "governance_git", table="commit_record_parser_version"
+    )
+    if marker == str(PARSER_VERSION) or not had_prior_history:
+        if marker != str(PARSER_VERSION):
+            storage.write_watermark(
+                data_dir,
+                "governance_git",
+                str(PARSER_VERSION),
+                table="commit_record_parser_version",
+            )
+        return {"status": "skipped", "parser_version": PARSER_VERSION}
+
+    _log(
+        "governance_commit_record_reparse_started",
+        from_marker=marker,
+        to_parser_version=PARSER_VERSION,
+    )
+    try:
+        records = collect_commits(
+            workdir,
+            repo_cfg.default_branch,
+            branch_label=repo_cfg.default_branch,
+            since=governance_since,
+            since_sha=None,
+        )
+        rows = _governance_commit_record_rows(records, f"{run_id}:governance_git:reparse")
+        schema = _governance_get_schema("commit_record")
+        table = _governance_validate(
+            "commit_record",
+            pa.Table.from_pylist(rows, schema=schema) if rows else schema.empty_table(),
+        )
+        storage.write_partition(
+            data_dir,
+            "governance",
+            "commit_record",
+            datetime.now(timezone.utc).date(),
+            f"{run_id}-reparse",
+            table,
+        )
+        storage.write_watermark(
+            data_dir,
+            "governance_git",
+            str(PARSER_VERSION),
+            table="commit_record_parser_version",
+        )
+        _log(
+            "governance_commit_record_reparse_succeeded",
+            commits_scanned=len(records),
+        )
+        return {"status": "ok", "parser_version": PARSER_VERSION, "commits_scanned": len(records)}
+    except Exception as exc:  # noqa: BLE001 - never roll back this run's own successful collection
+        _log("governance_commit_record_reparse_failed", error=str(exc))
+        return {"status": "failed", "parser_version": PARSER_VERSION, "reason": str(exc)}
+
+
+def _dedupe_governance_commit_records(table: pa.Table) -> pa.Table:
+    """Keep only the highest-`parser_version` row per `sha` (issue #77).
+
+    `commit_record`'s natural key is a plain `sha` column (unlike
+    `review_event`, which has to parse it out of `event_id` — see
+    `_dedupe_commit_trailer_review_events`), so this is a simpler version of
+    the same read-time supersede mechanism the module docstring describes. A
+    `None` `parser_version` (a row collected before this column existed) is
+    treated as version 1.
+    """
+    if table.num_rows == 0:
+        return table
+    rows = table.to_pylist()
+    best_version: dict[str, int] = {}
+    for row in rows:
+        version = row["parser_version"] if row["parser_version"] is not None else 1
+        sha = row["sha"]
+        if sha not in best_version or version > best_version[sha]:
+            best_version[sha] = version
+    kept = [
+        row
+        for row in rows
+        if (row["parser_version"] if row["parser_version"] is not None else 1)
+        == best_version[row["sha"]]
+    ]
+    kept.sort(key=lambda r: r["sha"])
+    return pa.Table.from_pylist(kept, schema=table.schema)
+
+
 def _read_all_governance_commits(data_dir: Path) -> list[CommitFacts]:
     """Every commit ever collected by `_collect_governance_commit_records`
     (D3: scoring always reads the *entire* accumulated raw cache, never just
-    this run's delta)."""
-    table = storage.read_table(data_dir, "governance", "commit_record")
+    this run's delta), deduped to each commit's latest-parser-version row
+    (issue #77, `_dedupe_governance_commit_records`)."""
+    table = _dedupe_governance_commit_records(
+        storage.read_table(data_dir, "governance", "commit_record")
+    )
     commits = []
     for row in table.to_pylist():
         changed_paths = row["changed_paths"]
@@ -1395,8 +1707,21 @@ def _collect_governance(
         policy = load_policy(policy_path)
         overrides = load_governance_overrides(overrides_path)
 
+        governance_git_watermark_before = storage.read_watermark(data_dir, "governance_git")
         git_records_collected = _collect_governance_commit_records(
             data_dir, workdir, repo_cfg, run_id, governance_since
+        )
+        # issue #77: a `PARSER_VERSION` bump triggers a one-time, full-history
+        # re-derivation of `commit_record.trailer_reviewers` -- see
+        # `_reparse_governance_commit_records_if_needed`'s docstring. Runs
+        # after the ordinary incremental walk above so it never blocks it.
+        commit_record_reparse = _reparse_governance_commit_records_if_needed(
+            data_dir,
+            workdir,
+            repo_cfg,
+            run_id,
+            governance_since,
+            had_prior_history=governance_git_watermark_before is not None,
         )
         commits = _read_all_governance_commits(data_dir)
 
@@ -1492,6 +1817,7 @@ def _collect_governance(
             "compliance_rows": compliance_table.num_rows,
             "policy_version": policy.version,
             "git_records_collected": git_records_collected,
+            "commit_record_reparse": commit_record_reparse,
             "ci_evidence": ci_stats,
             "check_runs": check_run_stats,
         }
@@ -1885,7 +2211,9 @@ def run_pipeline(
     # contributes its prior history.
     contribution_event = storage.read_table(data_dir, "git", "contribution_event")
     file_change_event = storage.read_table(data_dir, "git", "file_change_event")
-    git_review_event = storage.read_table(data_dir, "git", "review_event")
+    git_review_event = _dedupe_commit_trailer_review_events(
+        storage.read_table(data_dir, "git", "review_event")
+    )
     jira_review_event = _dedupe_jira_review_events(
         storage.read_table(data_dir, "jira", "review_event")
     )

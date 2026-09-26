@@ -16,12 +16,17 @@ approving it:
    fields **and** no exemption matches. Two exemptions are defined with precise, testable patterns (never a
    fail, regardless of reviewer evidence): **`ninja`** (`(?i)\bninja(fix)?\b` anywhere in the message — the
    project's own self-declared "small change, skip full review" convention) and **`release-housekeeping`**
-   (version increments, debian-changelog prep, submodule repins — three sub-patterns, see §8). Everything
+   (version increments, debian-changelog prep, submodule repins — three sub-patterns, see §8). A third
+   condition guards the fail itself: if the message contains any review wording at all
+   (`\breview(ed|er|ers)?\b`, case-insensitive) but no reviewer was parsed, the result is `unknown`
+   ("review text present but unparsed"), never `fail` — added 2026-09-25 after the orchestrator's live run
+   turned up two real reviewed commits the trailer parser missed (see §8 regression examples). Everything
    else with no reviewer stays `unknown`. A descriptive ninja-count trend (not scored) is added alongside the
    rule. The orchestrator's live measurement on `trunk` since 2023-01-01 (2,151 non-merge commits: 1,773
-   trailer-reviewed, 85 JIRA-field-only, 293 with neither — of which 72 are ninja, ~205 are
-   release-housekeeping, and 16 are genuine `CASSANDRA`-keyed commits with no reviewer evidence at all) is the
-   basis for this change; see §8 for the exact figures and an independent order-of-magnitude spot-check.
+   trailer-reviewed, 85 JIRA-field-only, 293 with neither — of which 72 are ninja, 209 are
+   release-housekeeping, 2 have unparsed review wording (`unknown`), and **10** are genuine `CASSANDRA`-keyed
+   commits with no reviewer evidence at all) is the basis for this change; see §8 for the exact figures, the
+   two regression examples, and an independent order-of-magnitude spot-check.
 2. **`jira-ticket-referenced`** stays fail-free: `pass` / `exempt` (same two patterns) / `unknown`.
 3. **`pre-commit-ci-evidence`** ships enabled in v1 as **pass/unknown only**. Issue #36 must live-test the
    `ci-cassandra.apache.org` Jenkins JSON API before this rule can gain `fail_allowed: true` or a new evidence
@@ -119,11 +124,28 @@ source's own stated scope.
   - JIRA reviewer field (either field populated), live sample of the **30 most-recently-resolved
     `CASSANDRA` issues** (`jql=project=CASSANDRA AND resolution=Fixed ORDER BY resolved DESC`, fetched
     2026-09-25): **28/30 = 93%**.
-- **Result semantics (approved v1 — `fail_allowed: true`)**: `pass` if a named reviewer is found by either
-  method. **`fail`** only when *all three* hold: (a) the commit references a `CASSANDRA-N` issue key, (b) no
-  reviewer is found by either method, and (c) no exemption below matches. `unknown` if no issue key is
-  referenced and no reviewer is found (can't tell if this was even a reviewable code change). `exempt` if a
+- **Result semantics (approved v1, corrected 2026-09-25 — `fail_allowed: true`)**: `pass` if a named reviewer
+  is found by either method. **`fail`** only when *all four* hold: (a) the commit references a `CASSANDRA-N`
+  issue key, (b) no reviewer is found by either method, (c) no exemption below matches, and (d) the commit
+  message contains **no review wording at all** — no case-insensitive match of `\breview(ed|er|ers)?\b`
+  anywhere in the message. `unknown` if either no issue key is referenced and no reviewer is found, **or**
+  review wording *is* present but no reviewer was successfully parsed from it (evidence recorded as "review
+  text present but unparsed" — see the regression examples below; this can never be a fail). `exempt` if a
   pattern below matches, regardless of reviewer evidence. `not_in_force` before 2020-06-25.
+- **Review-wording guard, added after a false-fail regression found by the orchestrator applying these
+  patterns live**: the trailer parser (`reviewer_trailer.py`) only recognizes the literal phrase
+  `reviewed by`, anchored at the start of a line. Two real trunk commits since 2023 name a reviewer in a form
+  it misses, and would otherwise have `fail`ed a genuinely reviewed commit with names attached — exactly what
+  D15 exists to prevent:
+  - `208d87513f` — `"patch by Mick Semb Wever; reviewed Štefan Miklošovič for CASSANDRA-21489"` (reviewer
+    named without the word "by").
+  - `05186d7869` — `"Authored by Lorina Poland (polandll); Reviewed by Branimir Lambov (blambov) for
+    CASSANDRA-18236"` (the line starts with "Authored by...", not "patch by" or "reviewed by", so the
+    anchored trailer regex never matches even though "Reviewed by" is literally present in the message).
+
+  Both now resolve to `unknown` under the corrected rule instead of `fail`. **Issue #36 should extend
+  `reviewer_trailer.py` to parse the "reviewed &lt;Name&gt;" (missing "by") and "Authored by …; Reviewed by
+  …" forms**, so these become real `pass` results in a future version rather than `unknown`.
 - **Exemptions (owner-approved, precise and testable — see §8 for the measurement behind them)**:
   - **`ninja`**: `(?i)\bninja(fix)?\b` anywhere in the commit message. Matches the project's own
     self-declared convention for small, uncontroversial changes committed without the full review process
@@ -336,7 +358,7 @@ shown as a fact.
 | Merge commits (on `cassandra-5.0`) carrying a real reviewer trailer despite `--no-merges` conventions | last 5,000 merge commits on `cassandra-5.0` | 6/5,000 ≈ 0.12% — small but structurally real, see §3 |
 | Reviewer commit-trailer, non-merge commits, 2018+ | full history (`DATA-SOURCES.md` §1) | 79–87% |
 | Reviewer commit-trailer, non-merge commits, 2009–2013 | full history (`DATA-SOURCES.md` §1) | 43–57% |
-| `reviewer-present` no-reviewer-evidence breakdown (`trunk`, non-merge, since 2023-01-01; orchestrator's measurement, basis for v1's `fail_allowed`) | 2,151 commits | 1,773 trailer / 85 JIRA-field-only / 293 neither → of the 293: 72 `ninja`-exempt, ~205 `release-housekeeping`-exempt, **16 genuine fails** |
+| `reviewer-present` no-reviewer-evidence breakdown (`trunk`, non-merge, since 2023-01-01; orchestrator's measurement, basis for v1's `fail_allowed`, corrected 2026-09-25) | 2,151 commits | 1,773 trailer / 85 JIRA-field-only / 293 neither → of the 293: 72 `ninja`-exempt, 209 `release-housekeeping`-exempt, 2 `unknown` (review text present but unparsed — see §8 regression examples), **10 genuine fails** |
 
 ---
 
@@ -356,23 +378,42 @@ shown as a fact.
 
 ---
 
-## 8. `reviewer-present` v1 fail logic — measurement and exemption patterns
+## 8. `reviewer-present` v1 fail logic — measurement, regression examples, and exemption patterns
 
 The owner's approval turned on a live measurement of `trunk`, non-merge commits since 2023-01-01
 (2,151 commits): **1,773** carry a commit-trailer reviewer, **85** more have no trailer but a populated JIRA
-reviewer field, and **293** have neither. Of those 293, **72** self-declare as `ninja` commits, **~205** are
-mechanical release-housekeeping, and **16** are ordinary `CASSANDRA`-keyed commits with no reviewer evidence
-at all — those 16 are the only cases `reviewer-present` fails in v1.
+reviewer field, and **293** have neither. Of those 293, **72** self-declare as `ninja` commits and **209** are
+mechanical release-housekeeping. Applying the v1 patterns live, the orchestrator initially got **12** fails
+from the remaining commits — but **2 of the 12 were false fails**: real reviewed commits the trailer parser
+missed because of an unsupported phrasing, which would have publicly shown a reviewed, named commit as
+unreviewed (exactly what D15 exists to prevent). Those two are now `unknown` ("review text present but
+unparsed") instead, leaving **10** genuine fails — ordinary `CASSANDRA`-keyed commits with no reviewer
+evidence in any recognized form at all.
+
+**Regression examples (why the review-wording guard exists)**:
+
+| SHA | Message | Why the parser missed it |
+|---|---|---|
+| `208d87513f` | `patch by Mick Semb Wever; reviewed Štefan Miklošovič for CASSANDRA-21489` | Reviewer named without the word "by" — `reviewer_trailer.py`'s `_TRAILER_LINE_RE` requires the literal phrase `reviewed by`. |
+| `05186d7869` | `Authored by Lorina Poland (polandll); Reviewed by Branimir Lambov (blambov) for CASSANDRA-18236` | The line starts with "Authored by...", not "patch by" or "reviewed by" — the anchored trailer regex never matches even though "Reviewed by" is literally present later in the same line. |
+
+The fix (`governance-policy.yaml` → `reviewer-present.review_wording_check`): before a `fail` is produced,
+also check the commit message for any case-insensitive match of `\breview(ed|er|ers)?\b`. If it matches and
+still no reviewer was extracted, the result is `unknown` with evidence `"review text present but unparsed"`,
+never `fail`. Both regression examples resolve correctly to `unknown` under this rule. **Issue #36 should
+extend `reviewer_trailer.py` to parse the "reviewed &lt;Name&gt;" (missing "by") and "Authored by …;
+Reviewed by …" forms**, which would turn these into real `pass` results in a future version.
 
 **Independent spot-check** (this session, text-matching only, no JIRA-field cross-reference, so not expected
-to reproduce the exact 16): applying the same `ninja` regex and the three `release-housekeeping` sub-patterns
+to reproduce the exact 10): applying the same `ninja` regex and the three `release-housekeeping` sub-patterns
 to the same population (`git log origin/trunk --no-merges --since=2023-01-01`, 2,151 commits parsed) found
 **114** ninja-token matches and **116** release-housekeeping-pattern matches (46 version-increment, 69
 debian-changelog, 1 submodule-repin), leaving **47** residual no-trailer commits that reference an issue key.
-That residual is larger than 16 because it has no JIRA-reviewer-field cross-reference — several of those 47
-almost certainly resolve to the 85 JIRA-field-only bucket once that check runs, which is exactly what the
-real `reviewer-present` implementation does before declaring a fail. The two counts are consistent in order
-of magnitude and give no reason to doubt the exemption patterns' precision.
+That residual is larger than 10 because it has no JIRA-reviewer-field cross-reference and no
+review-wording-check applied — several of those 47 almost certainly resolve to the 85 JIRA-field-only bucket
+or the review-text-present-but-unparsed bucket once those checks run, which is exactly what the real
+`reviewer-present` implementation does before declaring a fail. The two counts are consistent in order of
+magnitude and give no reason to doubt the exemption patterns' precision.
 
 **Exemption pattern reference** (also in `governance-policy.yaml`):
 
@@ -382,6 +423,7 @@ of magnitude and give no reason to doubt the exemption patterns' precision.
 | `release-housekeeping` / `version-increment` | `(?im)^(increment\|bump)\b.*\bversion\b` | first line | `increment to version 5.0.10` |
 | `release-housekeeping` / `debian-changelog` | `(?im)^prepare\s+debian\s+changelog\b` | first line | `Prepare debian changelog for 3.11.19` |
 | `release-housekeeping` / `submodule-repin` | `(?i)\b(repin\|bump)\b.{0,40}\bsubmodule\b\|\bsubmodule\b.{0,40}\b(repin\|bump)\b` | full message | `repin accord submodule` |
+| *(guard, not an exemption)* `review_wording_check` | `(?i)\breview(ed\|er\|ers)?\b` | full message | forces `unknown` instead of `fail` when review wording is present but unparsed |
 
 A descriptive **ninja-count trend** (ninja-exempt commits per month/quarter) is displayed next to
 `reviewer-present` — informational only, never scored.

@@ -89,8 +89,31 @@ rules:
       - evidence_source: jira_reviewer_field
         detail: "customfield_12313420 (Reviewers) or customfield_10022 (Reviewer) populated"
         measured_hit_rate: "28/30 = 93% (30 most-recently-resolved CASSANDRA issues, sampled 2026-09-25)"
+    review_wording_check:
+      # Guard against false fails when the trailer parser misses a real reviewer mention because of an
+      # unsupported phrasing. Applied AFTER the ninja/release-housekeeping exemptions and BEFORE fail is
+      # ever produced.
+      pattern: '(?i)\breview(ed|er|ers)?\b'
+      pattern_scope: full_commit_message
+      purpose: >
+        If this pattern matches the commit message but neither evidence source (trailer, JIRA field)
+        produced a reviewer, the result is `unknown` with evidence "review text present but unparsed" —
+        never `fail`. A commit that names a real reviewer in a form the parser doesn't yet handle must not
+        be shown as an unreviewed FAIL with the author's and reviewer's names attached (D15).
+      regression_examples:
+        - sha: 208d87513f658f6fbf82cabcbb04142e7319fa55
+          message: "patch by Mick Semb Wever; reviewed Štefan Miklošovič for CASSANDRA-21489"
+          issue: 'reviewer named without the word "by" ("reviewed <Name>") — reviewer_trailer.py requires the literal "reviewed by"'
+        - sha: 05186d786974f3caf0491d5373b648c97c718c4a
+          message: "Authored by Lorina Poland (polandll); Reviewed by Branimir Lambov (blambov) for CASSANDRA-18236"
+          issue: '"Authored by ...; Reviewed by ..." form — the line does not start with "patch by" or "reviewed by", so the anchored trailer regex never matches even though "Reviewed by" is literally present'
+      parser_extension_needed: >
+        Issue #36 should extend reviewer_trailer.py to parse the "reviewed <Name>" (missing "by") and
+        "Authored by <Name>; Reviewed by <Name>" forms, so these become real `pass` results instead of
+        `unknown` in a future version.
     measured_on_trunk_since_2023:
-      # Orchestrator's measurement (2026-09-25) that the owner approved fail_allowed:true against:
+      # Orchestrator's measurement (2026-09-25) that the owner approved fail_allowed:true against, then
+      # corrected after applying the v1 patterns live and finding the two regression examples above:
       # trunk, non-merge commits, since 2023-01-01.
       total_commits: 2151
       trailer_reviewer: 1773
@@ -98,14 +121,15 @@ rules:
       no_reviewer_evidence: 293
       no_reviewer_breakdown:
         ninja_exempt: 72
-        release_housekeeping_exempt: 205   # "most of the rest" per orchestrator; residual after ninja and the 16 fails below
-        jira_keyed_no_reviewer_fail: 16
+        release_housekeeping_exempt: 209   # "most of the rest" per orchestrator; residual after ninja, the unparsed-review-text cases, and the 10 fails below
+        review_text_present_but_unparsed: 2   # the two regression examples above — unknown, never fail
+        jira_keyed_no_reviewer_fail: 10   # corrected from an initial 12 after excluding the 2 unparsed-review-text cases
       independent_spot_check: >
         Not independently re-derived commit-by-commit (no JIRA-field cross-reference performed in this
         pass). A rough text-only spot-check of the same population found 114 ninja-token matches and 116
         release-housekeeping-pattern matches, leaving ~47 residual no-trailer/has-issue-key commits before
-        any JIRA-reviewer-field cross-reference narrows that toward the orchestrator's 16 — consistent in
-        order of magnitude. See docs/spec/GOVERNANCE.md §8.
+        any JIRA-reviewer-field cross-reference and the review-wording-check narrow that toward the
+        orchestrator's corrected 10 — consistent in order of magnitude. See docs/spec/GOVERNANCE.md §8.
     descriptive_signal:
       - id: ninja-count-trend
         description: >
@@ -114,8 +138,12 @@ rules:
         scored: false
     result_semantics:
       pass: "named reviewer found by either evidence source"
-      fail: "CASSANDRA-N key referenced AND no reviewer found by either evidence source AND no exemption matched"
-      unknown: "no CASSANDRA-N key referenced and no reviewer found — cannot tell if this was a reviewable code change at all"
+      fail: "CASSANDRA-N key referenced AND no reviewer found by either evidence source AND no exemption matched AND review_wording_check does NOT match (no review wording anywhere in the message)"
+      unknown: >
+        Either (a) no CASSANDRA-N key referenced and no reviewer found, or (b) review_wording_check matches
+        (the message contains "review"/"reviewed"/"reviewer"/"reviewers" in some form) but no reviewer was
+        extracted by either evidence source — evidence recorded as "review text present but unparsed", see
+        regression_examples above. Never fail in case (b).
       exempt: "ninja or release-housekeeping pattern matched — never fail regardless of reviewer evidence"
       not_in_force: "commit date is before 2020-06-25"
       fail_allowed: true

@@ -32,6 +32,29 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+# Bumped whenever this module's parsing behavior changes in a way that can
+# change an already-collected commit's parsed reviewers/issue-keys (issue
+# #77). Collectors that persist parsed output (`collectors/git.py`'s
+# `review_event` rows, `collectors/governance_git.py`'s `commit_record`
+# rows via `pipeline.py`) stamp every row with the `PARSER_VERSION` that
+# produced it; `pipeline.py`'s read-time dedup then keeps only the
+# highest-`parser_version` row(s) for a given commit, so a version bump plus
+# a full-history re-derivation (`pipeline._collect_git`,
+# `pipeline._collect_governance_commit_records`) is what makes a parser fix
+# *replace* every historical commit's stale attribution, without ever
+# rewriting or deleting the original append-only raw Parquet rows (D2 rule
+# 6, D3, ARCHITECTURE.md §3's "a correction is a new row, never an in-place
+# update").
+#
+# History:
+#   1 (implicit, pre-issue-#77): the original single-physical-line match.
+#   2 (issue #77): unwraps a line-wrapped "patch by"/"reviewed by"/
+#      "authored by" trailer paragraph (`_unwrap_trailer_paragraphs`) before
+#      matching, so a reviewer name split across a line wrap (e.g. "...and
+#      Sam\nTunnicliffe for CASSANDRA-21189") is no longer truncated to
+#      "Sam".
+PARSER_VERSION = 2
+
 # Matches one trailer line of the form (all parts case-insensitive):
 #   [patch by <patch_by> [(;|,)]] reviewed by[:] <reviewed_by> [for <issue_tail>]
 # `patch by ...` is optional so a bare "reviewed by X for Y" line still
@@ -142,6 +165,81 @@ _TRAILING_ISSUE_RE = re.compile(
 # dropped).
 _REVIEWED_BY_PHRASE_RE = re.compile(r"(?i)reviewed\s+by")
 
+# --- Line-wrap unwrapping (issue #77) ---------------------------------------
+#
+# Real trunk history line-wraps a "patch by ...; reviewed by ..." trailer
+# paragraph at ~72 columns, e.g.:
+#
+#   Patch by Sam Lightfoot; reviewed by Dmitry Konstantinov and Sam
+#   Tunnicliffe for CASSANDRA-21189
+#
+# `_TRAILER_LINE_RE`/`_TRAILER_LINE_RE_EXT` above are anchored `^...$` under
+# `re.MULTILINE` specifically so they never spill into an unrelated
+# following line (a `Co-authored-by:` trailer, blank line, or new paragraph)
+# -- but that same anchoring truncates a wrapped trailer at the first
+# newline, silently turning "Sam Tunnicliffe" into "Sam". `_unwrap_trailer_
+# paragraphs` runs *before* either regex and rejoins a wrapped trailer
+# paragraph into one logical line (a single space where the wrap was),
+# without touching any other line in the message.
+_TRAILER_START_RE = re.compile(r"(?i)^[ \t]*(?:patch\s+by|authored\s+by|reviewed\s+by)\b")
+
+# A line that starts a *different* trailer -- reaching one of these means
+# the paragraph being unwrapped has ended, even if no blank line separates
+# them (real trunk history sometimes puts a `Co-authored-by:` line directly
+# after the reviewer trailer with no blank line in between).
+_NEW_TRAILER_START_RE = re.compile(
+    r"(?i)^[ \t]*(?:patch\s+by|authored\s+by|reviewed(?:\s+by)?|co-authored-by|signed-off-by)\b"
+)
+
+# The trailer paragraph's own terminator: a "for <ISSUE-KEY>" clause. Once
+# the text accumulated so far contains this, the paragraph is complete --
+# continuing to pull in further lines (a blank line, a new trailer, or just
+# unrelated commit-body prose) must never happen, even if those lines
+# happen to still be adjacent.
+_FOR_ISSUE_TERMINATOR_RE = re.compile(r"(?i:for)\s+[A-Z][A-Z0-9]{1,15}-\d+\b")
+
+
+def _unwrap_trailer_paragraphs(message: str) -> str:
+    """Join a wrapped "patch by"/"reviewed by"/"authored by" trailer
+    paragraph's continuation lines into its opening line (issue #77).
+
+    A line is only ever pulled into the paragraph it continues while *all*
+    of these hold: the paragraph hasn't already reached its "for <ISSUE-KEY>"
+    terminator, the candidate line isn't blank, and the candidate line
+    doesn't itself open a new trailer (`Co-authored-by:`, another `patch
+    by`, ...). Every other line in `message` -- including everything after
+    the paragraph ends -- passes through completely unchanged, so an
+    unrelated following line (a blank line, a `Co-authored-by:` trailer, or
+    ordinary commit-body prose) is never swallowed.
+    """
+    lines = message.split("\n")
+    out: list[str] = []
+    i = 0
+    n = len(lines)
+    while i < n:
+        line = lines[i]
+        if line.strip() and _TRAILER_START_RE.match(line):
+            accumulated = [line.strip()]
+            j = i + 1
+            while j < n:
+                combined = " ".join(accumulated)
+                if _FOR_ISSUE_TERMINATOR_RE.search(combined):
+                    break
+                candidate = lines[j]
+                if candidate.strip() == "":
+                    break
+                if _NEW_TRAILER_START_RE.match(candidate):
+                    break
+                accumulated.append(candidate.strip())
+                j += 1
+            out.append(" ".join(accumulated))
+            i = j
+        else:
+            out.append(line)
+            i += 1
+    return "\n".join(out)
+
+
 # Placeholder reviewer names that should be filtered out (issue #18).
 # These are matched case-insensitively, so stored in lowercase.
 _PLACEHOLDER_NAMES = frozenset(("tbd", "tba", "none", "nobody", "n/a", "na", "?", "unknown"))
@@ -251,13 +349,14 @@ class ReviewerExtractor:
         placeholder names (issue #18); the GitCollector counts these to signal
         data quality issues.
         """
-        match = _TRAILER_LINE_RE.search(commit_message)
+        unwrapped_message = _unwrap_trailer_paragraphs(commit_message)
+        match = _TRAILER_LINE_RE.search(unwrapped_message)
         if match is None:
             # Fallback for the "reviewed <Name>" (missing "by") and
             # "Authored by ...; Reviewed by ..." forms (issue #36) — see
             # `_TRAILER_LINE_RE_EXT`'s docstring above. Never changes the
             # result for a message the strict regex already parses.
-            match = _TRAILER_LINE_RE_EXT.search(commit_message)
+            match = _TRAILER_LINE_RE_EXT.search(unwrapped_message)
         if match is None:
             return None
 

@@ -85,12 +85,32 @@ def write_partition(
     return path
 
 
+def _backfill_missing_columns(table: pa.Table, schema: pa.Schema) -> pa.Table:
+    """Add an all-null column for any `schema` field `table` doesn't have.
+
+    A schema addition (e.g. issue #77's `REVIEW_EVENT.parser_version` /
+    `GOVERNANCE_COMMIT_RECORD.parser_version`) is always a new *nullable*
+    field, never a rewrite of already-written partitions (append-only, D3) —
+    so an older partition file on disk simply won't have that column yet.
+    Backfilling it here as all-null, before `pa.concat_tables` ever sees it,
+    is what lets `read_table` keep reading old and new partitions together
+    without every future schema addition needing its own one-off migration.
+    """
+    for field in schema:
+        if field.name not in table.column_names:
+            null_array = pa.nulls(table.num_rows, type=field.type)
+            table = table.append_column(field, null_array)
+    return table
+
+
 def read_table(data_dir: str | Path, source: str, table: str) -> pa.Table:
     """Read and concatenate every partition of `<source>/<table>`.
 
     Returns a validated `pa.Table` covering the union of all partitions. If
     no partitions have been written yet, returns an empty table with the
-    table's declared schema.
+    table's declared schema. A partition written before a nullable column
+    was added to `table`'s schema is backfilled with nulls for that column
+    (see `_backfill_missing_columns`) rather than failing to concatenate.
     """
     table_dir = raw_table_dir(data_dir, source, table)
     part_files = sorted(table_dir.glob("date=*/part-*.parquet"))
@@ -98,7 +118,9 @@ def read_table(data_dir: str | Path, source: str, table: str) -> pa.Table:
     if not part_files:
         return get_schema(table).empty_table()
 
-    combined = pa.concat_tables([pq.read_table(path) for path in part_files])
+    schema = get_schema(table)
+    tables = [_backfill_missing_columns(pq.read_table(path), schema) for path in part_files]
+    combined = pa.concat_tables(tables)
     return validate(table, combined)
 
 

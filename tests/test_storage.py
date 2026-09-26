@@ -4,10 +4,11 @@ import json
 from datetime import datetime, timezone
 
 import pyarrow as pa
+import pyarrow.parquet as pq
 import pytest
 
 from project_health import storage
-from project_health.schema import SchemaValidationError
+from project_health.schema import SchemaValidationError, get_schema
 
 
 def _person_identity_table(*identity_ids: str) -> pa.Table:
@@ -128,3 +129,58 @@ def test_per_table_watermark_is_independent_of_the_source_watermark(tmp_path):
     raw = json.loads(storage.watermarks_path(tmp_path).read_text())
     assert raw["git"] == "sha:head"
     assert raw["git:file_change_event"] == "sha:head"
+
+
+def test_read_table_backfills_a_column_added_after_a_partition_was_written(tmp_path):
+    """Issue #77: `REVIEW_EVENT.parser_version` was added to the schema
+    after real data dirs already had `raw/git/review_event` partitions on
+    disk. `read_table` must keep reading an older partition that predates a
+    new nullable column, backfilling it as null, rather than failing to
+    concatenate it with newer partitions that do have the column.
+    """
+    schema = get_schema("review_event")
+    old_schema = pa.schema([field for field in schema if field.name != "parser_version"])
+    now = datetime(2020, 1, 1, tzinfo=timezone.utc)
+    old_row = {
+        "event_id": "git:apache/cassandra:oldsha:review:Sam:CASSANDRA-1",
+        "source": "commit_trailer",
+        "reviewer_identity_id": None,
+        "reviewer_raw_type": "git_name",
+        "reviewer_raw_value": "Sam",
+        "author_identity_id": None,
+        "author_raw_type": "git_email",
+        "author_raw_value": "author@example.org",
+        "issue_key": "CASSANDRA-1",
+        "repo": "apache/cassandra",
+        "occurred_at": now,
+        "evidence": "reviewed by Sam for CASSANDRA-1",
+        "source_snapshot_id": "old-run:git",
+    }
+    old_table = pa.Table.from_pylist([old_row], schema=old_schema)
+    old_partition_dir = tmp_path / "raw" / "git" / "review_event" / "date=2020-01-01"
+    old_partition_dir.mkdir(parents=True)
+    pq.write_table(old_table, old_partition_dir / "part-old-run.parquet")
+
+    new_event_id = "git:apache/cassandra:newsha:review:Sam Tunnicliffe:CASSANDRA-2"
+    new_row = {**old_row, "event_id": new_event_id}
+    new_row.update(
+        reviewer_raw_value="Sam Tunnicliffe",
+        issue_key="CASSANDRA-2",
+        parser_version=2,
+    )
+    storage.write_partition(
+        tmp_path,
+        "git",
+        "review_event",
+        "2026-09-25",
+        "new-run",
+        pa.Table.from_pylist([new_row], schema=schema),
+    )
+
+    result = storage.read_table(tmp_path, "git", "review_event")
+
+    assert result.num_rows == 2
+    assert result.schema.equals(schema)
+    by_event_id = {row["event_id"]: row for row in result.to_pylist()}
+    assert by_event_id[old_row["event_id"]]["parser_version"] is None
+    assert by_event_id[new_row["event_id"]]["parser_version"] == 2

@@ -31,6 +31,8 @@ from project_health.collectors.ponymail import PonyMailCollector
 from project_health.collectors.security import SecurityCollector
 from project_health.config import FlexibleSection, load_project
 from project_health.pipeline import (
+    _dedupe_commit_trailer_review_events,
+    _dedupe_governance_commit_records,
     _dedupe_issue_rows,
     _dedupe_jira_review_events,
     _dedupe_pr_review_rows,
@@ -351,6 +353,176 @@ def git_workdir(tmp_path):
         capture_output=True,
     )
     return repo
+
+
+class TestCommitTrailerReparse:
+    """Issue #77: a data dir already holding `commit_trailer` `review_event`
+    rows collected under an older `reviewer_trailer.PARSER_VERSION` must have
+    those rows superseded by a one-time, full-history reparse the next time
+    `_collect_git` runs -- never left stuck alongside the corrected rows.
+    """
+
+    def test_stale_pre_fix_row_is_superseded_after_reparse(self, tmp_path, config, git_workdir):
+        from project_health.collectors.reviewer_trailer import PARSER_VERSION
+        from project_health.pipeline import _collect_git, _dedupe_commit_trailer_review_events
+
+        data_dir = tmp_path / "data"
+
+        real_sha = subprocess.run(
+            ["git", "-C", str(git_workdir), "log", "--format=%H", "--grep=Initial commit"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        assert real_sha, "fixture repo's 'Initial commit' sha not found"
+        head_sha = subprocess.run(
+            ["git", "-C", str(git_workdir), "rev-parse", "trunk"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+
+        # Simulate a data dir collected entirely before issue #77 existed:
+        # the `git` watermark already reached HEAD, a `commit_trailer` row
+        # for a real commit was written with a truncated reviewer name and
+        # no `parser_version` at all, and the reparse marker was never set.
+        review_event_schema = get_schema("review_event")
+        stale_row = {
+            "event_id": f"git:apache/cassandra:{real_sha}:review:Bob:CASSANDRA-100",
+            "source": "commit_trailer",
+            "reviewer_identity_id": None,
+            "reviewer_raw_type": "git_name",
+            "reviewer_raw_value": "Bob",  # truncated stand-in for "Bob Reviewer"
+            "author_identity_id": None,
+            "author_raw_type": "git_email",
+            "author_raw_value": "alice@cassandra.apache.org",
+            "issue_key": "CASSANDRA-100",
+            "repo": "apache/cassandra",
+            "occurred_at": datetime(2024, 1, 15, 10, 0, tzinfo=timezone.utc),
+            "evidence": "reviewed by Bob (pre-fix truncation)",
+            "source_snapshot_id": "pre-fix-run:git",
+            "parser_version": None,
+        }
+        storage.write_partition(
+            data_dir,
+            "git",
+            "review_event",
+            "2024-01-15",
+            "pre-fix-run",
+            pa.Table.from_pylist([stale_row], schema=review_event_schema),
+        )
+        storage.write_watermark(data_dir, "git", head_sha)
+        storage.write_watermark(data_dir, "git", head_sha, table="file_change_event")
+
+        result = _collect_git(
+            config, data_dir, git_workdir, "run-after-fix", datetime.now(timezone.utc)
+        )
+
+        assert result["status"] == "ok"
+        assert result["commit_trailer_reparse"]["status"] == "ok"
+        assert result["commit_trailer_reparse"]["parser_version"] == PARSER_VERSION
+
+        raw = storage.read_table(data_dir, "git", "review_event")
+        # The stale row is still physically present (append-only, D3) ...
+        assert "Bob" in raw.column("reviewer_raw_value").to_pylist()
+
+        # ... but is never read after dedup: only the reparsed, correctly
+        # named reviewer for that commit survives.
+        deduped = _dedupe_commit_trailer_review_events(raw)
+        commit_100_reviewers = {
+            row["reviewer_raw_value"]
+            for row in deduped.to_pylist()
+            if row["issue_key"] == "CASSANDRA-100"
+        }
+        assert commit_100_reviewers == {"Bob Reviewer"}
+
+        # Running _collect_git again is a no-op for the reparse (the marker
+        # now matches the current PARSER_VERSION).
+        result2 = _collect_git(
+            config, data_dir, git_workdir, "run-again", datetime.now(timezone.utc)
+        )
+        assert result2["commit_trailer_reparse"]["status"] == "skipped"
+
+    def test_governance_commit_record_stale_row_is_superseded_after_reparse(
+        self, tmp_path, config, git_workdir
+    ):
+        """Governance's `commit_record.trailer_reviewers` gets the identical
+        supersede treatment (issue #77): `_read_all_governance_commits`
+        (via `_dedupe_governance_commit_records`) must only ever see a
+        commit's highest-`parser_version` `trailer_reviewers`."""
+        from project_health.collectors.reviewer_trailer import PARSER_VERSION
+        from project_health.pipeline import (
+            _collect_governance_commit_records,
+            _read_all_governance_commits,
+            _reparse_governance_commit_records_if_needed,
+        )
+
+        data_dir = tmp_path / "data"
+        repo_cfg = config.repos[0]
+
+        real_sha = subprocess.run(
+            ["git", "-C", str(git_workdir), "log", "--format=%H", "--grep=Initial commit"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        head_sha = subprocess.run(
+            ["git", "-C", str(git_workdir), "rev-parse", "trunk"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+
+        commit_record_schema = get_schema("commit_record")
+        stale_row = {
+            "sha": real_sha,
+            "branch": "trunk",
+            "commit_date": datetime(2024, 1, 15, 10, 0, tzinfo=timezone.utc),
+            "message": (
+                "Initial commit\n\nPatch by Alice Author; reviewed by Bob "
+                "Reviewer for CASSANDRA-100"
+            ),
+            "author": "Alice Author",
+            "author_email": "alice@cassandra.apache.org",
+            "committer": "Alice Author",
+            "committer_email": "alice@cassandra.apache.org",
+            "is_merge": False,
+            "trailer_reviewers": ["Bob"],  # truncated stand-in for "Bob Reviewer"
+            "issue_keys": ["CASSANDRA-100"],
+            "changed_paths": [],
+            "source_snapshot_id": "pre-fix-run:governance_git",
+            "parser_version": None,
+        }
+        storage.write_partition(
+            data_dir,
+            "governance",
+            "commit_record",
+            "2024-01-15",
+            "pre-fix-run",
+            pa.Table.from_pylist([stale_row], schema=commit_record_schema),
+        )
+        storage.write_watermark(data_dir, "governance_git", head_sha)
+
+        # The ordinary incremental walk finds nothing new (watermark == HEAD).
+        assert _collect_governance_commit_records(
+            data_dir, git_workdir, repo_cfg, "run-after-fix", None
+        ) == 0
+
+        reparse_result = _reparse_governance_commit_records_if_needed(
+            data_dir, git_workdir, repo_cfg, "run-after-fix", None, had_prior_history=True
+        )
+        assert reparse_result["status"] == "ok"
+        assert reparse_result["parser_version"] == PARSER_VERSION
+
+        commits = _read_all_governance_commits(data_dir)
+        by_sha = {c.sha: c for c in commits}
+        assert by_sha[real_sha].trailer_reviewers == ("Bob Reviewer",)
+
+        # A second call is a no-op (marker already matches PARSER_VERSION).
+        skipped = _reparse_governance_commit_records_if_needed(
+            data_dir, git_workdir, repo_cfg, "run-again", None, had_prior_history=True
+        )
+        assert skipped["status"] == "skipped"
 
 
 # --- End-to-end -------------------------------------------------------------
@@ -1107,6 +1279,123 @@ class TestDedupe:
             _dedupe_security_advisories(get_schema("security_advisory").empty_table()).num_rows
             == 0
         )
+        assert (
+            _dedupe_commit_trailer_review_events(get_schema("review_event").empty_table()).num_rows
+            == 0
+        )
+        assert (
+            _dedupe_governance_commit_records(get_schema("commit_record").empty_table()).num_rows
+            == 0
+        )
+
+    def test_dedupe_commit_trailer_review_events_keeps_highest_parser_version_per_commit(self):
+        """Issue #77: a commit reparsed under a newer `PARSER_VERSION` must
+        have its old, stale-parser rows superseded -- never coexist with the
+        corrected ones at read time."""
+        schema = get_schema("review_event")
+        base = {
+            "source": "commit_trailer",
+            "reviewer_identity_id": None,
+            "author_identity_id": None,
+            "author_raw_type": "git_email",
+            "author_raw_value": "author@example.org",
+            "reviewer_raw_type": "git_name",
+            "repo": "apache/cassandra",
+            "occurred_at": datetime(2026, 1, 1, tzinfo=timezone.utc),
+        }
+        rows = [
+            # Commit "abc" was originally collected pre-issue-#77 (implicit
+            # parser_version=1, truncated reviewer "Sam") ...
+            {
+                **base,
+                "event_id": "git:apache/cassandra:abc:review:Sam:CASSANDRA-1",
+                "reviewer_raw_value": "Sam",
+                "issue_key": "CASSANDRA-1",
+                "evidence": "reviewed by ... Sam\nTunnicliffe for CASSANDRA-1 (pre-fix)",
+                "source_snapshot_id": "run-1:git",
+                "parser_version": None,
+            },
+            # ... then reparsed under version 2, with the corrected name --
+            # a *different* event_id (the reviewer name changed).
+            {
+                **base,
+                "event_id": "git:apache/cassandra:abc:review:Sam Tunnicliffe:CASSANDRA-1",
+                "reviewer_raw_value": "Sam Tunnicliffe",
+                "issue_key": "CASSANDRA-1",
+                "evidence": "reviewed by ... Sam Tunnicliffe for CASSANDRA-1",
+                "source_snapshot_id": "run-2:git:reparse",
+                "parser_version": 2,
+            },
+            # A different commit, never reparsed (only ever collected at
+            # version 2, e.g. a brand new commit) -- must survive untouched.
+            {
+                **base,
+                "event_id": "git:apache/cassandra:def:review:Alice:CASSANDRA-2",
+                "reviewer_raw_value": "Alice",
+                "issue_key": "CASSANDRA-2",
+                "evidence": "reviewed by Alice for CASSANDRA-2",
+                "source_snapshot_id": "run-2:git",
+                "parser_version": 2,
+            },
+        ]
+        table = validate("review_event", pa.Table.from_pylist(rows, schema=schema))
+
+        deduped = _dedupe_commit_trailer_review_events(table)
+
+        assert deduped.num_rows == 2
+        reviewers = sorted(r["reviewer_raw_value"] for r in deduped.to_pylist())
+        assert reviewers == ["Alice", "Sam Tunnicliffe"]
+        assert "Sam" not in reviewers
+
+    def test_dedupe_governance_commit_records_keeps_highest_parser_version_per_sha(self):
+        schema = get_schema("commit_record")
+        base = {
+            "branch": "trunk",
+            "commit_date": datetime(2026, 1, 1, tzinfo=timezone.utc),
+            "author": "Author",
+            "author_email": "author@example.org",
+            "committer": "Author",
+            "committer_email": "author@example.org",
+            "is_merge": False,
+            "changed_paths": [],
+        }
+        rows = [
+            {
+                **base,
+                "sha": "abc",
+                "message": "patch by X; reviewed by Sam for CASSANDRA-1",
+                "trailer_reviewers": ["Sam"],
+                "issue_keys": ["CASSANDRA-1"],
+                "source_snapshot_id": "run-1:governance_git",
+                "parser_version": None,
+            },
+            {
+                **base,
+                "sha": "abc",
+                "message": "patch by X; reviewed by Sam Tunnicliffe for CASSANDRA-1",
+                "trailer_reviewers": ["Sam Tunnicliffe"],
+                "issue_keys": ["CASSANDRA-1"],
+                "source_snapshot_id": "run-2:governance_git:reparse",
+                "parser_version": 2,
+            },
+            {
+                **base,
+                "sha": "def",
+                "message": "patch by X; reviewed by Alice for CASSANDRA-2",
+                "trailer_reviewers": ["Alice"],
+                "issue_keys": ["CASSANDRA-2"],
+                "source_snapshot_id": "run-2:governance_git",
+                "parser_version": 2,
+            },
+        ]
+        table = validate("commit_record", pa.Table.from_pylist(rows, schema=schema))
+
+        deduped = _dedupe_governance_commit_records(table)
+
+        assert deduped.num_rows == 2
+        by_sha = {r["sha"]: r for r in deduped.to_pylist()}
+        assert by_sha["abc"]["trailer_reviewers"] == ["Sam Tunnicliffe"]
+        assert by_sha["def"]["trailer_reviewers"] == ["Alice"]
 
 
 # --- Ponymail backfill cap (issue #33 fixup) ---------------------------------

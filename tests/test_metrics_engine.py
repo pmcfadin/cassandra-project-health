@@ -20,6 +20,7 @@ import pytest
 from project_health.config import load_project
 from project_health.metrics.engine import compute_all
 from project_health.normalize.identity import identity_id_for
+from project_health.schema import get_schema, validate
 from tests.fixtures.metrics.builders import (
     affiliation_periods,
     contribution_events,
@@ -58,6 +59,32 @@ def _rows_for(table: pa.Table, metric_id: str) -> list[dict]:
 
 def _details(row: dict) -> dict:
     return json.loads(row["details_json"]) if row["details_json"] else {}
+
+
+def _github_login_identity_link(pairs: list[tuple[str, str]]) -> pa.Table:
+    """Hand-built `identity_link` rows mapping `(identity_id, github_login)`
+    pairs (issue #54 fixup: self-review exclusion's identity-level compare).
+    Not routed through `identity_link_for`'s naive resolver -- that resolver
+    has no `github_login` source_type support at all (issue #52's own
+    `link_github_commit_authors` is what actually produces these rows in
+    production); tests exercising the resolved-identity path build the table
+    directly instead.
+    """
+    rows = [
+        {
+            "link_id": f"link-{i}",
+            "identity_id": identity_id,
+            "source_type": "github_login",
+            "source_value": login,
+            "confidence": "high",
+            "evidence": "test fixture",
+            "linked_by": "github_commit_author_v1",
+            "linked_at": _ts(2024, 1, 1),
+        }
+        for i, (identity_id, login) in enumerate(pairs)
+    ]
+    schema = get_schema("identity_link")
+    return validate("identity_link", pa.Table.from_pylist(rows, schema=schema))
 
 
 # --- active_contributors_monthly (headcount: reports any n, issue #27) -----
@@ -1685,6 +1712,121 @@ def test_pr_time_to_first_review_uses_earliest_review_per_pr():
     # still what a details_json list would show.
 
 
+def test_pr_time_to_first_review_excludes_self_review_same_raw_login():
+    """Orchestrator review fixup: GitHub records a PR author's own replies
+    inside review threads as `COMMENTED` reviews by that author -- these must
+    never count as "the first review." The PR author (raw login
+    "alice-dev", the `prs()` builder default) posts a self-review on day 1;
+    the genuine first review from someone else lands on day 3. The metric
+    must report 3 days, not 1."""
+    pr_rows = [{"repo": "apache/cassandra", "number": 100, "created_at": _ts(2024, 1, 1, hh=0)}]
+    review_rows = [
+        {
+            "repo": "apache/cassandra",
+            "pr_number": 100,
+            "reviewer_raw_value": "alice-dev",  # same raw login as the PR author
+            "submitted_at": _ts(2024, 1, 2, hh=0),
+        },
+        {
+            "repo": "apache/cassandra",
+            "pr_number": 100,
+            "reviewer_raw_value": "bob-reviewer",
+            "submitted_at": _ts(2024, 1, 4, hh=0),
+        },
+    ]
+    result = compute_all(
+        {"pr": prs(pr_rows), "pr_review": pr_reviews(review_rows)},
+        as_of=AS_OF,
+        run_id=RUN_ID,
+        computed_at=COMPUTED_AT,
+        config=CONFIG,
+    )
+    rows = _rows_for(result, "pr_time_to_first_review")
+    assert rows[0]["n"] == 1  # only bob's review counts
+    assert _details(rows[0])["n"] == 1
+
+
+def test_pr_time_to_first_review_excludes_self_review_via_resolved_identity():
+    """Same self-review exclusion, but the PR author posted under a
+    *different* raw login than the review -- only `resolved_identity`
+    (issue #52's github_login identity_link) reveals they're the same
+    person. The metric must still exclude it (identity-level compare, not
+    just raw-string compare)."""
+    pr_rows = [
+        {
+            "repo": "apache/cassandra",
+            "number": 100,
+            "author_raw_value": "alice-work-account",
+            "created_at": _ts(2024, 1, 1, hh=0),
+        }
+    ]
+    review_rows = [
+        {
+            "repo": "apache/cassandra",
+            "pr_number": 100,
+            "reviewer_raw_value": "alice-personal-account",  # same human, different login
+            "submitted_at": _ts(2024, 1, 2, hh=0),
+        },
+        {
+            "repo": "apache/cassandra",
+            "pr_number": 100,
+            "reviewer_raw_value": "bob-reviewer",
+            "submitted_at": _ts(2024, 1, 4, hh=0),
+        },
+    ]
+    identity_link = _github_login_identity_link(
+        [
+            ("identity-alice", "alice-work-account"),
+            ("identity-alice", "alice-personal-account"),
+        ]
+    )
+    result = compute_all(
+        {
+            "pr": prs(pr_rows),
+            "pr_review": pr_reviews(review_rows),
+            "identity_link": identity_link,
+        },
+        as_of=AS_OF,
+        run_id=RUN_ID,
+        computed_at=COMPUTED_AT,
+        config=CONFIG,
+    )
+    rows = _rows_for(result, "pr_time_to_first_review")
+    assert rows[0]["n"] == 1  # only bob's review counts, alice's self-review excluded
+
+
+def test_pr_time_to_first_review_unresolvable_author_never_treated_as_self():
+    """A PR with no author at all (`author_raw_value=None`, e.g. a deleted
+    account) must never suppress a genuine review -- an unresolvable side is
+    never treated as matching anything, including itself."""
+    pr_rows = [
+        {
+            "repo": "apache/cassandra",
+            "number": 100,
+            "author_raw_value": None,
+            "created_at": _ts(2024, 1, 1, hh=0),
+        }
+    ]
+    review_rows = [
+        {
+            "repo": "apache/cassandra",
+            "pr_number": 100,
+            "reviewer_raw_value": "bob-reviewer",
+            "submitted_at": _ts(2024, 1, 2, hh=0),
+        }
+    ]
+    result = compute_all(
+        {"pr": prs(pr_rows), "pr_review": pr_reviews(review_rows)},
+        as_of=AS_OF,
+        run_id=RUN_ID,
+        computed_at=COMPUTED_AT,
+        config=CONFIG,
+    )
+    rows = _rows_for(result, "pr_time_to_first_review")
+    assert rows[0]["n"] == 1  # bob's review counts; the null author never suppresses it
+    assert _details(rows[0])["n"] == 1
+
+
 # --- issue #54: pr_time_to_close ------------------------------------------
 
 
@@ -1722,10 +1864,19 @@ def test_pr_time_to_close_golden():
 
 
 def test_pr_review_engagement_golden():
+    pr_rows = []
     review_rows = []
     # 5 PRs reviewed in January: PR i gets (i+1) unique reviewers, each
     # reviewing once, so reviews_per_pr == unique_reviewers_per_pr here.
     for pr_i in range(5):
+        pr_rows.append(
+            {
+                "repo": "apache/cassandra",
+                "number": 100 + pr_i,
+                "author_raw_value": "pr-author",
+                "created_at": _ts(2024, 1, 1, hh=0),
+            }
+        )
         for reviewer_i in range(pr_i + 1):
             review_rows.append(
                 {
@@ -1736,7 +1887,7 @@ def test_pr_review_engagement_golden():
                 }
             )
     result = compute_all(
-        {"pr_review": pr_reviews(review_rows)},
+        {"pr": prs(pr_rows), "pr_review": pr_reviews(review_rows)},
         as_of=AS_OF,
         run_id=RUN_ID,
         computed_at=COMPUTED_AT,
@@ -1757,6 +1908,117 @@ def test_pr_review_engagement_golden():
     assert details["n_prs"] == 5
     assert details["n_reviews"] == 1 + 2 + 3 + 4 + 5
     assert details["n_unique_reviewers_total"] == 5  # reviewer-0..reviewer-4
+
+
+def test_pr_review_engagement_excludes_self_reviews():
+    """Orchestrator review fixup: a PR author's own `COMMENTED` review on
+    their own PR must never count toward unique-reviewers-per-PR, reviews-
+    per-PR, or the total unique-reviewer count -- only genuine third-party
+    reviews are review-engagement credit. 5 PRs with qualifying (non-self)
+    reviews clears the n=5 floor so `value`/flag='ok' are asserted directly,
+    not just `n`."""
+    pr_rows = [
+        {
+            "repo": "apache/cassandra",
+            "number": 100,
+            "author_raw_value": "alice-dev",
+            "created_at": _ts(2024, 1, 1, hh=0),
+        },
+        {
+            "repo": "apache/cassandra",
+            "number": 101,
+            "author_raw_value": "carol-dev",
+            "created_at": _ts(2024, 1, 1, hh=0),
+        },
+        *(
+            {
+                "repo": "apache/cassandra",
+                "number": 102 + i,
+                "author_raw_value": "dave-dev",
+                "created_at": _ts(2024, 1, 1, hh=0),
+            }
+            for i in range(4)
+        ),
+    ]
+    review_rows = [
+        # PR 100: alice (the author) self-reviews once, plus two genuine
+        # reviews from bob and carol.
+        {
+            "repo": "apache/cassandra",
+            "pr_number": 100,
+            "reviewer_raw_value": "alice-dev",
+            "submitted_at": _ts(2024, 1, 2, hh=0),
+        },
+        {
+            "repo": "apache/cassandra",
+            "pr_number": 100,
+            "reviewer_raw_value": "bob-reviewer",
+            "submitted_at": _ts(2024, 1, 3, hh=0),
+        },
+        {
+            "repo": "apache/cassandra",
+            "pr_number": 100,
+            "reviewer_raw_value": "carol-dev",
+            "submitted_at": _ts(2024, 1, 3, hh=0),
+        },
+        # PR 101: only a self-review by carol (the author) -- zero
+        # qualifying reviews, so this PR must not appear in the population.
+        {
+            "repo": "apache/cassandra",
+            "pr_number": 101,
+            "reviewer_raw_value": "carol-dev",
+            "submitted_at": _ts(2024, 1, 4, hh=0),
+        },
+        # PRs 102-105: one genuine (non-self) reviewer each -- erin reviews
+        # two of them, so n_unique_reviewers_total still counts her once.
+        {
+            "repo": "apache/cassandra",
+            "pr_number": 102,
+            "reviewer_raw_value": "erin-reviewer",
+            "submitted_at": _ts(2024, 1, 5, hh=0),
+        },
+        {
+            "repo": "apache/cassandra",
+            "pr_number": 103,
+            "reviewer_raw_value": "frank-reviewer",
+            "submitted_at": _ts(2024, 1, 5, hh=0),
+        },
+        {
+            "repo": "apache/cassandra",
+            "pr_number": 104,
+            "reviewer_raw_value": "grace-reviewer",
+            "submitted_at": _ts(2024, 1, 5, hh=0),
+        },
+        {
+            "repo": "apache/cassandra",
+            "pr_number": 105,
+            "reviewer_raw_value": "erin-reviewer",
+            "submitted_at": _ts(2024, 1, 5, hh=0),
+        },
+    ]
+    result = compute_all(
+        {"pr": prs(pr_rows), "pr_review": pr_reviews(review_rows)},
+        as_of=AS_OF,
+        run_id=RUN_ID,
+        computed_at=COMPUTED_AT,
+        config=CONFIG,
+    )
+
+    rows = _rows_for(result, "pr_review_engagement")
+    jan = rows[0]
+    # PR 101 (self-review only) never appears; the other 5 PRs have unique-
+    # reviewer counts [2, 1, 1, 1, 1] (PR 100 has bob+carol; the rest one
+    # genuine reviewer each) -- mean = 6/5 = 1.2, never inflated by alice's
+    # or carol's own self-reviews.
+    assert jan["n"] == 5
+    assert jan["flag"] == "ok"
+    assert jan["value"] == pytest.approx(1.2)
+    details = _details(jan)
+    assert details["n_prs"] == 5
+    assert details["n_reviews"] == 6
+    # bob, carol, erin, frank, grace -- never alice or (self-reviewing) carol
+    # counted against her own PR 101.
+    assert details["n_unique_reviewers_total"] == 5
 
 
 # --- issue #54: time_to_first_response_jira -------------------------------
@@ -1836,6 +2098,63 @@ def test_time_to_first_response_jira_golden():
     details = _details(jan)
     assert details["n_opened_in_window"] == 7  # all 7 issues opened in January
     assert details["closed_in_window"]["n"] == 5
+
+
+def test_time_to_first_response_jira_assignee_who_is_the_reporter_is_excluded():
+    """Orchestrator review confirmation: when an issue's assignee is also its
+    reporter, that person's own comment must not count as a first response
+    -- already true because the exclusion compares by author_raw_value ==
+    reporter_raw, and this person's author_raw_value equals reporter_raw
+    regardless of them also being the assignee. A *different* assignee's
+    comment, by contrast, is a genuine first response and must count."""
+    issue_rows = [
+        {
+            "issue_key": "CASSANDRA-3000",
+            "created_at": _ts(2024, 1, 1, hh=0),
+            "updated_at": _ts(2024, 1, 2, hh=0),
+            "reporter_raw": "reporter-a",
+            "assignee_raw": "reporter-a",  # self-assigned
+        },
+        {
+            "issue_key": "CASSANDRA-3001",
+            "created_at": _ts(2024, 1, 1, hh=0),
+            "updated_at": _ts(2024, 1, 2, hh=0),
+            "reporter_raw": "reporter-a",
+            "assignee_raw": "assignee-c",  # distinct from the reporter
+        },
+    ]
+    comment_rows = [
+        # CASSANDRA-3000: the self-assigned reporter comments on their own
+        # issue -- must not count as a response.
+        {
+            "issue_key": "CASSANDRA-3000",
+            "author_raw_value": "reporter-a",
+            "created_at": _ts(2024, 1, 2, hh=0),
+        },
+        # CASSANDRA-3001: the (distinct) assignee comments -- this is a
+        # genuine first response and must count.
+        {
+            "issue_key": "CASSANDRA-3001",
+            "author_raw_value": "assignee-c",
+            "created_at": _ts(2024, 1, 3, hh=0),
+        },
+    ]
+
+    result = compute_all(
+        {"issue": issues(issue_rows), "issue_comment": issue_comments(comment_rows)},
+        as_of=AS_OF,
+        run_id=RUN_ID,
+        computed_at=COMPUTED_AT,
+        config=CONFIG,
+    )
+
+    rows = _rows_for(result, "time_to_first_response_jira")
+    jan = rows[0]
+    # Only CASSANDRA-3001's assignee response counts (below the n=5 floor,
+    # so flag/value are suppressed -- the underlying n is what this test
+    # is about).
+    assert jan["n"] == 1
+    assert jan["flag"] == "insufficient_data"
 
 
 # --- issue #54: stale_pr_rate ----------------------------------------------

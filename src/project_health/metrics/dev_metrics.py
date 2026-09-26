@@ -33,7 +33,7 @@ otherwise):
 - `stale_pr_rate` -- METRICS.md §4: share of currently-open PRs with no
   update in 90+ days, one snapshot row per run (mirrors `stale_jira_rate`).
 
-## Why raw GitHub logins, not `resolved_identity`
+## Why raw GitHub logins, not `resolved_identity` -- except for self-review exclusion
 
 `pipeline.py`'s `extract_raw_identifiers` (identity resolution, #6) is not
 extended to `pr`/`pr_review`'s `github_login` raw identifiers by this issue.
@@ -50,6 +50,22 @@ for its own bot exclusion at collection time -- disclosed here rather than
 silently assumed identical to the cross-source `unique_reviewers_monthly`.
 Joining PR review identities through issue #52's linkage is a reasonable
 future enhancement, out of scope for this issue.
+
+The one place this module *does* join `resolved_identity` is self-review
+exclusion (`_SELF_REVIEW_JOIN_SQL`/`_EXCLUDE_SELF_REVIEW_SQL` below, fixup
+after orchestrator review): GitHub records a PR author's own replies inside
+review threads as `COMMENTED` reviews by that same author, which is not a
+*reviewer's* review-latency/engagement signal and must never count as "the
+first review" or as review-engagement credit. This is compared at the
+identity level -- `resolved_identity` when a `github_login` link exists,
+falling back to the raw login string otherwise (the common case, since most
+logins never get an issue #52 identity_link row at all) -- rather than at
+the raw-string level alone, so a PR author who *is* identity-linked (e.g. via
+a different login on a different commit) is still excluded from reviewing
+their own PR under that other login. An unresolvable side (a null
+`author_raw_value`/`reviewer_raw_value`, e.g. a deleted account) is never
+treated as matching anything, including itself -- this fixup only removes
+*positively confirmed* self-reviews, never anything merely ambiguous.
 
 ## Why GitHub-side bot filtering isn't repeated here
 
@@ -80,6 +96,32 @@ from project_health.metrics.engine import (
 from project_health.metrics.windows import month_end
 
 DEFAULT_STALE_PR_THRESHOLD_DAYS = 90
+
+# Self-review exclusion (orchestrator review, issue #54 fixup) -- see module
+# docstring. Both fragments assume the query aliases the `pr` table `p` and
+# the `pr_review` table `r`. `_SELF_REVIEW_JOIN_SQL` must appear after both
+# `p` and `r` are already in scope; `_EXCLUDE_SELF_REVIEW_SQL` is a boolean
+# expression for a `WHERE`/`AND` clause.
+_SELF_REVIEW_JOIN_SQL = """
+    LEFT JOIN resolved_identity ria
+        ON ria.source_type = 'github_login' AND ria.source_value = p.author_raw_value
+    LEFT JOIN resolved_identity rir
+        ON rir.source_type = 'github_login' AND rir.source_value = r.reviewer_raw_value
+"""
+
+# `COALESCE(identity_id, 'login:' || raw_value)` resolves to NULL when
+# raw_value itself is NULL (concatenation with NULL is NULL in SQL), so an
+# unresolvable side's "IS NOT NULL" check is FALSE and the surrounding AND
+# short-circuits to FALSE -- `NOT FALSE` keeps the row. Only a *positive*
+# match (both sides resolve to the same non-null identity) is excluded.
+_EXCLUDE_SELF_REVIEW_SQL = """
+    NOT (
+        COALESCE(ria.identity_id, 'login:' || p.author_raw_value) IS NOT NULL
+        AND COALESCE(rir.identity_id, 'login:' || r.reviewer_raw_value) IS NOT NULL
+        AND COALESCE(ria.identity_id, 'login:' || p.author_raw_value)
+            = COALESCE(rir.identity_id, 'login:' || r.reviewer_raw_value)
+    )
+"""
 
 
 def _pr_merge_lead_time(
@@ -128,18 +170,23 @@ def _pr_merge_lead_time(
 def _pr_time_to_first_review(
     con: duckdb.DuckDBPyConnection, as_of: date, run_id: str, computed_at: datetime
 ) -> list[dict]:
-    """Median/P90 days from a PR's `created_at` to its earliest
-    `pr_review.submitted_at`, among PRs with at least one review, bucketed by
-    the PR's creation month."""
+    """Median/P90 days from a PR's `created_at` to its earliest *non-self*
+    `pr_review.submitted_at`, among PRs with at least one qualifying review,
+    bucketed by the PR's creation month. Excludes reviews where the reviewer
+    is the PR author (`_EXCLUDE_SELF_REVIEW_SQL`, module docstring) -- GitHub
+    records an author's own replies inside review threads as `COMMENTED`
+    reviews by that author, which are not a reviewer's time-to-review signal."""
     rows = con.execute(
-        """
+        f"""
         WITH first_review AS (
             SELECT
                 p.repo, p.number, p.created_at AS pr_created_at,
                 MIN(r.submitted_at) AS first_review_at
             FROM pr p
             JOIN pr_review r ON r.repo = p.repo AND r.pr_number = p.number
+            {_SELF_REVIEW_JOIN_SQL}
             WHERE r.submitted_at IS NOT NULL
+              AND {_EXCLUDE_SELF_REVIEW_SQL}
             GROUP BY 1, 2, 3
         )
         SELECT
@@ -180,7 +227,12 @@ def _pr_time_to_close(
     con: duckdb.DuckDBPyConnection, as_of: date, run_id: str, computed_at: datetime
 ) -> list[dict]:
     """Median/P90 days from `pr.created_at` to `pr.closed_at` (merged or
-    not), bucketed by close month."""
+    not), bucketed by close month. Checked for the same self-activity concern
+    as `_pr_time_to_first_review`/`_pr_review_engagement` (orchestrator
+    review, issue #54 fixup): this metric reads only `pr.created_at`/
+    `pr.closed_at`/`merged`, with no `pr_review` join and no notion of "who
+    acted" at all, so a PR author's own activity cannot be miscounted as
+    someone else's here -- no fix needed."""
     rows = con.execute(
         """
         SELECT
@@ -230,17 +282,23 @@ def _pr_review_engagement(
     con: duckdb.DuckDBPyConnection, as_of: date, run_id: str, computed_at: datetime
 ) -> list[dict]:
     """Mean unique reviewers per PR (value) and mean/median reviews per PR
-    (details_json), among PRs with >=1 review in a completed calendar month
-    (bucketed by `pr_review.submitted_at`)."""
+    (details_json), among PRs with >=1 *non-self* review in a completed
+    calendar month (bucketed by `pr_review.submitted_at`). Excludes the PR
+    author's own reviews from every count here (unique reviewers per PR,
+    reviews per PR, and the total unique-reviewer count) -- same
+    `_EXCLUDE_SELF_REVIEW_SQL` exclusion as `_pr_time_to_first_review`."""
     per_pr_rows = con.execute(
-        """
+        f"""
         SELECT
-            date_trunc('month', submitted_at)::DATE AS month_start,
-            repo, pr_number,
-            COUNT(DISTINCT reviewer_raw_value) AS unique_reviewers,
+            date_trunc('month', r.submitted_at)::DATE AS month_start,
+            r.repo, r.pr_number,
+            COUNT(DISTINCT r.reviewer_raw_value) AS unique_reviewers,
             COUNT(*) AS review_count
-        FROM pr_review
-        WHERE submitted_at IS NOT NULL AND reviewer_raw_value IS NOT NULL
+        FROM pr_review r
+        JOIN pr p ON p.repo = r.repo AND p.number = r.pr_number
+        {_SELF_REVIEW_JOIN_SQL}
+        WHERE r.submitted_at IS NOT NULL AND r.reviewer_raw_value IS NOT NULL
+          AND {_EXCLUDE_SELF_REVIEW_SQL}
         GROUP BY 1, 2, 3
         """
     ).fetchall()
@@ -253,11 +311,14 @@ def _pr_review_engagement(
 
     total_unique_by_month = dict(
         con.execute(
-            """
-            SELECT date_trunc('month', submitted_at)::DATE AS month_start,
-                   COUNT(DISTINCT reviewer_raw_value) AS n_unique
-            FROM pr_review
-            WHERE submitted_at IS NOT NULL AND reviewer_raw_value IS NOT NULL
+            f"""
+            SELECT date_trunc('month', r.submitted_at)::DATE AS month_start,
+                   COUNT(DISTINCT r.reviewer_raw_value) AS n_unique
+            FROM pr_review r
+            JOIN pr p ON p.repo = r.repo AND p.number = r.pr_number
+            {_SELF_REVIEW_JOIN_SQL}
+            WHERE r.submitted_at IS NOT NULL AND r.reviewer_raw_value IS NOT NULL
+              AND {_EXCLUDE_SELF_REVIEW_SQL}
             GROUP BY 1
             """
         ).fetchall()
@@ -311,6 +372,17 @@ def _time_to_first_response_jira(
     `details_json.closed_in_window` carries the same statistic bucketed by
     the qualifying comment's own month instead (METRICS.md §4's "reports
     both ... side by side").
+
+    Confirmed (orchestrator review, issue #54 fixup): this excludes the
+    reporter's own comments by comparing `jc.author_raw_value` against
+    `i.reporter_raw` only -- there is no separate assignee comparison, and
+    none is needed. When the assignee happens to be the same person as the
+    reporter (`i.assignee_raw == i.reporter_raw`), that person's
+    `author_raw_value` is identical to `i.reporter_raw` for any comment they
+    write, so the existing reporter check already excludes it; a distinct
+    assignee (the common case) was never a "self" response to begin with and
+    was never excluded, which is correct -- an assignee who isn't the
+    reporter answering their own assigned issue is a genuine first response.
     """
     month_rows = con.execute(
         "SELECT DISTINCT date_trunc('month', created_at)::DATE AS m FROM issue"
@@ -398,6 +470,16 @@ def _stale_pr_rate(
     """METRICS.md §4: share of currently-open PRs (`state='OPEN'`) with no
     `pr.updated_at` change in `threshold_days`+ days, across every
     configured repo. One snapshot row per run, mirroring `stale_jira_rate`.
+
+    Checked for the same self-activity concern as `_pr_time_to_first_review`/
+    `_pr_review_engagement` (orchestrator review, issue #54 fixup): this
+    metric has no `pr_review` join and no reviewer-identity comparison at
+    all, only `pr.state`/`pr.updated_at` -- there is no "self-review" for a
+    self-review exclusion to fix here. The metric's own `note` field already
+    discloses the *related but distinct* limitation that `pr.updated_at`
+    bumps on the PR author's own commits/pushes too, not just reviewer
+    activity -- that is GitHub's own field semantics, not an identity-join
+    bug, and is unaffected by this fixup.
     """
     cutoff = as_of - timedelta(days=threshold_days)
     n_open, n_stale = con.execute(

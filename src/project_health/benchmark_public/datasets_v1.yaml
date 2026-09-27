@@ -1,0 +1,175 @@
+# Dataset registry v1 for `project-health benchmark-public` (issue #89; DECISIONS.md
+# D23; docs/plans/2026-09-27-public-benchmark-datasets.md). Every URL, sha256, and
+# license below was independently fetched and verified live on 2026-09-27 -- not
+# copied from memory or from the research doc without re-checking. See
+# `docs/benchmark/public-v1.md`'s "Datasets run" / "Datasets not run" sections for the
+# rendered write-up.
+#
+# `target_n`/`seed` follow the research doc's shortlist item counts where it gives one
+# (Ferreira LKML, Ferreira GitHub, TalkDown, Wikipedia); ToxiCR has no shortlist-table
+# entry there (it was added to the six-dataset list later, directly by D23/issue #89,
+# after the research doc's ranking was written) so its target_n is chosen for a
+# comparable scale to the other datasets, not taken from the report.
+version: 1
+datasets:
+  - id: ferreira_lkml
+    name: "Ferreira, Cheng & Adams -- LKML incivility (\"Shut the f**k up\", 2021)"
+    citation: >-
+      Ferreira, Cheng & Adams, "The 'Shut the f**k up' Phenomenon: Characterizing
+      Incivility in Open Source Code Review Discussions", PACMHCI 5(CSCW2), 2021,
+      arXiv:2108.09905. Dataset republished as Ferreira, Rafiq & Cheng, "Incivility
+      Detection in Open Source Code Review and Issue Discussions", Journal of Systems
+      and Software, 2024, figshare DOI 10.6084/m9.figshare.24603237.v1.
+    license: "CC BY 4.0 (figshare API license.name, verified live 2026-09-27; note the GitHub repo iferreiradev/incivility_detection separately reports GPL-3.0 for the same data -- the figshare copy's CC BY 4.0 is used here, per the research doc's own resolution of that conflict)"
+    status: working
+    files:
+      - url: https://ndownloader.figshare.com/files/43233099
+        sha256: 7e43d1bf7fdb6c398e2bdb193617477f94777a1f552d2a299f504a74e04e71aa
+        filename: replication_package.zip
+    loader: load_ferreira_lkml
+    source_venue: mailing_list
+    source_venue_rationale: >-
+      The Linux Kernel Mailing List is a mailing list -- a literal, not merely
+      closest-analog, match to questions_v1.yaml's message.source enum.
+    target_n: 1545
+    seed: 890001
+    reported_iaa: "mean Cohen's kappa 0.62 (range 0.42-0.96), 2-author annotation, only partially double-coded"
+    caveats:
+      - "Only 2 raters (this project's own gate wants >=3), and per-code kappa as low as 0.42 -- below this project's own 0.667 Krippendorff's-alpha usable floor (COMMUNITY-HEALTH.md §6.3). D23 nonetheless names personal_attack/hostility/sarcasm from this dataset as this benchmark's strong, gating mappings; see label_mapping_v1.yaml's notes on each."
+      - "Ground truth is built from sentence-level TBDF (Tone-Bearing Discussion Feature) quotations rolled up to the whole message (raw_labels.tbdf_categories); a message positive for one category may not be positive for the whole message's dominant tone."
+      - "Selection bias toward rejected-patch threads (the corpus was sampled from contentious LKML threads specifically)."
+
+  - id: ferreira_github
+    name: "Ferreira, Adams & Cheng -- GitHub locked issues (\"How heated is it?\", 2022)"
+    citation: >-
+      Ferreira, Adams & Cheng, "How heated is it? Understanding GitHub locked issues",
+      MSR 2022, arXiv:2204.00155. Dataset republished as Ferreira, Rafiq & Cheng,
+      "Incivility Detection in Open Source Code Review and Issue Discussions", Journal
+      of Systems and Software, 2024, figshare DOI 10.6084/m9.figshare.24603237.v1.
+    license: "CC BY 4.0 (figshare API license.name, verified live 2026-09-27; see ferreira_lkml's note on the GPL-3.0-vs-CC-BY-4.0 conflict between the GitHub repo and the figshare copy of this same data)"
+    status: working
+    files:
+      - url: https://ndownloader.figshare.com/files/43233099
+        sha256: 7e43d1bf7fdb6c398e2bdb193617477f94777a1f552d2a299f504a74e04e71aa
+        filename: replication_package.zip
+    loader: load_ferreira_github
+    source_venue: github_pr_comment
+    source_venue_rationale: >-
+      questions_v1.yaml's message.source enum has no plain "github_issue_comment"
+      value -- github_pr_comment is the closest of the three allowed venues (same
+      platform and comment register; GitHub issue-thread comments and PR
+      review-thread comments share far more register conventions with each other
+      than either shares with a mailing-list email or a JIRA status-transition
+      comment).
+    target_n: 2000
+    seed: 890002
+    reported_iaa: "mean Cohen's kappa 0.65 (TBDF, range 0.43-0.91) / 0.85 (justification codes), 2-author annotation, 20% double-coded"
+    caveats:
+      - "Same 2-rater, sub-0.667-floor caveat as ferreira_lkml; see that entry's note on D23's explicit gating decision for personal_attack/hostility/sarcasm."
+      - "Locked-issue selection bias: every thread was locked by a maintainer as \"too heated,\" which skews the sampled threads toward already-escalated discussions relative to GitHub issues generally."
+      - "Same tbdf_categories rollup caveat as ferreira_lkml."
+
+  - id: toxicr
+    name: "ToxiCR (Sarker, Turzo, Dong & Bosu, 2023)"
+    citation: >-
+      Sarker, Turzo, Dong & Bosu, "Automated Identification of Toxic Code Reviews
+      Using ToxiCR", ACM TOSEM 32(1), 2023, arXiv:2202.13056.
+      github.com/WSU-SEAL/ToxiCR.
+    license: "GPL-3.0 (GitHub API license.spdx_id, verified live 2026-09-27; a software-copyleft concern for redistributing the tool/data, not a bar on publishing this benchmark's derived aggregate results)"
+    status: working
+    files:
+      - url: https://raw.githubusercontent.com/WSU-SEAL/ToxiCR/master/models/code-review-dataset-full.xlsx
+        sha256: 51517e250312eadd50c157ef9efc269161938aa864bee97d60c587162b0f03f1
+        filename: code-review-dataset-full.xlsx
+    loader: load_toxicr
+    source_venue: github_pr_comment
+    source_venue_rationale: >-
+      ToxiCR's items are Gerrit/OpenStack code-review comments -- not literally
+      GitHub, but the same short, technical, diff-anchored review-comment register
+      questions_v1.yaml's github_pr_comment venue describes; closer to that than to
+      a mailing-list email or a JIRA comment.
+    target_n: 3000
+    seed: 890003
+    reported_iaa: "Cohen's kappa 0.727 (reused Sarker/Turzo/Bosu 2020 labels) / 0.92 (newly added labels), 2-author annotation"
+    caveats:
+      - "\"is_toxic\" is a single binary bit merged across 9 underlying rules (profanity, insults, identity attacks, threats, sexual references, flirtation, ...) -- broader than any one of our labels; mapped to both personal_attack and hostility as an equally imprecise partial proxy for each, plus this project's own \"any_negative_rollup\" (see label_mapping_v1.yaml), documented there as ours, not ToxiCR's own construct."
+      - "No parent/context text at all -- every item is classified with parent.text=null."
+      - "Class imbalance ~80/20 non-toxic/toxic; source projects (Android, Chromium, LibreOffice, OpenStack) are large, well-governed ones that may under-represent some toxicity styles."
+
+  - id: talkdown
+    name: "TalkDown (Wang & Potts, 2019)"
+    citation: >-
+      Wang & Potts, "TalkDown: A Corpus for Detecting Condescension in the Alt-Right",
+      EMNLP-IJCNLP 2019. github.com/zijwang/talkdown.
+    license: "AGPL-3.0 (GitHub API license.spdx_id, verified live 2026-09-27; repo-level, no separate data-only license file)"
+    status: working
+    files:
+      - url: https://nlp.stanford.edu/~zijwang/talkdown/talkdown.tar.gz
+        sha256: 6b6759ea9b81b35800c89378a70a26529c987088fac28b49d83ef0c14ad19c71
+        filename: talkdown.tar.gz
+    loader: load_talkdown
+    source_venue: mailing_list
+    source_venue_rationale: >-
+      Reddit comment/reply pairs are free-form, asynchronous, threaded prose
+      discussion with no code diff anchoring -- closer in register to a
+      mailing-list thread than to a JIRA status-transition comment or a
+      diff-anchored GitHub PR review comment.
+    target_n: 4992
+    seed: 890004
+    reported_iaa: "Fleiss' kappa 0.593, MTurk crowd workers, EM-aggregated labels"
+    caveats:
+      - "Condescension (TalkDown's own construct) is mapped only to dismissiveness, and only as a partial match -- TalkDown's definition also covers insincere praise, which is not what our dismissiveness label describes. It is NOT mapped to gatekeeping: condescension-as-flagged-by-a-reply is adjacent to standing-denial but is not the same claim (our gatekeeping definition is specifically about asserting a participant lacks standing to contribute), so this benchmark does not credit or debit gatekeeping from this dataset at all."
+      - "Not gating: a single Fleiss' kappa of 0.593 on a differently-defined construct is below this project's 0.667 usable floor, and the mapping itself is only partial."
+
+  - id: wikipedia_attacks
+    name: "Wikipedia Personal Attacks / Aggression (Wulczyn, Thain & Dixon, 2017)"
+    citation: >-
+      Wulczyn, Thain & Dixon, "Ex Machina: Personal Attacks Seen at Scale", WWW 2017,
+      arXiv:1610.08914. figshare DOI 10.6084/m9.figshare.4054689.
+    license: "CC0 (figshare API license.name, verified live 2026-09-27; the paper itself is published under CC BY 4.0)"
+    status: working
+    files:
+      - url: https://ndownloader.figshare.com/files/7554634
+        sha256: 35348ef473842424f78bee54e83125064eddfbc250ebe49b4258a462a2509126
+        filename: attack_annotated_comments.tsv
+      - url: https://ndownloader.figshare.com/files/7554637
+        sha256: eb97decf252083d359273fe358d7b212614ead2119310c10601fd575fb91b5cf
+        filename: attack_annotations.tsv
+    loader: load_wikipedia_attacks
+    source_venue: mailing_list
+    source_venue_rationale: >-
+      Wikipedia talk-page comments are free-form, asynchronous, threaded prose
+      discussion with no code diff anchoring -- closer in register to a
+      mailing-list thread than to a JIRA comment or a diff-anchored GitHub PR
+      review comment (this dataset also carries no parent/reply text at all, so
+      classification runs with parent.text=null regardless of venue choice).
+    target_n: 5000
+    seed: 890005
+    reported_iaa: "Krippendorff's alpha 0.45 (paper's own figure) -- below this project's 0.667 usable floor (COMMUNITY-HEALTH.md §6.3)"
+    caveats:
+      - "Informative only, never gating (D23, this dataset by name): alpha=0.45 is below the usable floor, so this benchmark's personal_attack results here are reported as precision-floor/volume calibration, not as evidence the label clears its §6.4 gate."
+      - "Ground truth is majority vote (mean(attack) > 0.5) across ~10 crowd workers per comment, per the paper's own convention."
+      - "No parent/context text; each comment is scored standalone."
+
+  - id: debagreement
+    name: "DEBAGREEMENT (Pougue-Biyong et al., 2021)"
+    citation: >-
+      Pougue-Biyong, Semenov, Bou, Coker & Bhatia, "DEBAGREEMENT: A comment-reply
+      dataset for (dis)agreement detection in online debates", NeurIPS 2021 Datasets
+      and Benchmarks Track.
+    license: "CC BY 4.0 (quoted from the OpenReview submission metadata; the dataset itself could not be downloaded -- see blocked_reason)"
+    status: blocked
+    blocked_reason: >-
+      No working download exists as of 2026-09-27. The paper's own canonical
+      dataset_url (a Scale AI "Open Datasets" page) has been repurposed for an
+      unrelated product; the current live page
+      (scale.com/research/debagreement:-a-comment-reply-dataset-for-disagreement-detection-in-online-debates,
+      confirmed HTTP 200) links only to a research write-up, not a data file.
+      Checked and exhausted: figshare search (no hits), GitHub repo-name guesses
+      and a GitHub code/repo search (the only matching repos contain no raw data
+      file), Zenodo search (no hits), arXiv API search (no hits -- this is an
+      OpenReview-only publication, never posted to arXiv), and the OpenReview API
+      itself (403, requires auth). No fabricated URL is pinned here; this dataset
+      is reported as blocked, not implemented.
+    caveats:
+      - "The research doc's own summary table already flagged this as an access risk (\"dead canonical link (Scale AI); unverified mirrors\") -- this run's own independent attempt confirms it is fully dead, not merely stale."

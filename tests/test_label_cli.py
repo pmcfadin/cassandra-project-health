@@ -41,6 +41,7 @@ def test_label_subcommand_is_registered():
     assert args.rater == "pmcfadin"
     assert args.port == 8765
     assert args.no_browser is False
+    assert args.label_set == "full"
 
 
 def test_label_subcommand_accepts_port_and_no_browser():
@@ -61,6 +62,42 @@ def test_label_subcommand_accepts_port_and_no_browser():
     )
     assert args.port == 9999
     assert args.no_browser is True
+
+
+def test_label_subcommand_accepts_label_set_gap():
+    parser = cli._build_parser()
+    args = parser.parse_args(
+        [
+            "label",
+            "--corpus",
+            "c.jsonl",
+            "--labels",
+            "l.jsonl",
+            "--rater",
+            "pmcfadin",
+            "--label-set",
+            "gap",
+        ]
+    )
+    assert args.label_set == "gap"
+
+
+def test_label_subcommand_rejects_unknown_label_set():
+    parser = cli._build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(
+            [
+                "label",
+                "--corpus",
+                "c.jsonl",
+                "--labels",
+                "l.jsonl",
+                "--rater",
+                "pmcfadin",
+                "--label-set",
+                "bogus",
+            ]
+        )
 
 
 def test_empty_rater_is_rejected(tmp_path, capsys):

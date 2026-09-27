@@ -30,7 +30,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
-from project_health.label.label_set import LabelSet, load_label_set
+from project_health.label.label_set import LabelSet, LabelSetError, load_label_set
 from project_health.label.question_set import QuestionSetSummary, load_question_set_summary
 from project_health.label.store import (
     CorpusItem,
@@ -62,6 +62,10 @@ class LabelQuestionMismatchError(ValueError):
     question (orchestrator correction, issue #46)."""
 
 
+_DEFAULT_LABEL_SET_MODE = "full"
+_VALID_LABEL_SET_MODES = frozenset({"full", "gap"})
+
+
 @dataclasses.dataclass
 class AppState:
     """In-memory server state for one `project-health label` run.
@@ -80,6 +84,22 @@ class AppState:
     rater: str
     corpus_checksum: str
     records: dict[str, dict[str, Any]]
+    label_set_mode: str = _DEFAULT_LABEL_SET_MODE
+
+    @property
+    def presented_labels(self) -> tuple[Any, ...]:
+        """The labels this run's `label_set_mode` presents (issue #90;
+        `LabelSet.presented`) -- what `validate_save_payload` requires and
+        what every saved record's `labels_presented` field records."""
+        return self.label_set.presented(self.label_set_mode)
+
+    @property
+    def presented_label_ids(self) -> frozenset[str]:
+        return frozenset(label.id for label in self.presented_labels)
+
+
+def _label_dict(label: Any) -> dict[str, Any]:
+    return {"id": label.id, "number": label.number, "definition": label.definition}
 
 
 def build_state_payload(app: AppState) -> dict[str, Any]:
@@ -88,20 +108,34 @@ def build_state_payload(app: AppState) -> dict[str, Any]:
     Blind by construction: the returned `item` dict has only `id`, `source`,
     `text`, `parent_text`, `archive_url` -- never `stratum`, and there is no
     Jev/classifier output anywhere in this tool's data model to leak.
+
+    `label_set_mode` (issue #90; DECISIONS.md D23) changes how labels are
+    grouped, not which ones a rater is asked about (`LabelSet.presented`'s
+    docstring): "full" keeps the flat `labels` list (backward compatible with
+    every pre-issue-#90 record and client); "gap" additionally splits the six
+    gap labels into `labels` (the main form, full verbatim definitions) and
+    the six quick-check labels into `quick_check_labels` (a compact row for
+    the labels D23 says the public benchmark already covers).
     """
     item_ids = {item.id for item in app.items}
     labeled_ids = set(app.records) & item_ids
     total = len(app.items)
     next_item = next((item for item in app.items if item.id not in labeled_ids), None)
 
+    if app.label_set_mode == "gap":
+        main_labels = app.label_set.gap
+        quick_check_labels = app.label_set.quick_check
+    else:
+        main_labels = app.label_set.ratable
+        quick_check_labels = ()
+
     payload: dict[str, Any] = {
         "rater": app.rater,
+        "label_set": app.label_set_mode,
         "label_set_version": app.label_set.version,
         "question_set_version": app.question_set.version,
-        "labels": [
-            {"id": label.id, "number": label.number, "definition": label.definition}
-            for label in app.label_set.ratable
-        ],
+        "labels": [_label_dict(label) for label in main_labels],
+        "quick_check_labels": [_label_dict(label) for label in quick_check_labels],
         "tone_levels": [level.to_dict() for level in app.question_set.tone_levels],
         "progress": {"done": len(labeled_ids), "total": total},
         "complete": next_item is None,
@@ -120,14 +154,19 @@ def build_state_payload(app: AppState) -> dict[str, Any]:
 
 def validate_save_payload(
     body: dict[str, Any],
-    label_set: LabelSet,
+    presented_label_ids: frozenset[str] | set[str],
     known_item_ids: set[str],
     valid_tones: frozenset[int],
 ) -> dict[str, Any]:
     """Validate and normalize a `POST /api/save` body. Raises
     `SavePayloadError` (never including corpus/rater text beyond the item id
     and label ids -- issue #46: "never log message text") on anything
-    malformed."""
+    malformed.
+
+    `presented_label_ids` (issue #90) is exactly the set of label ids this
+    run's `label_set_mode` presents (`LabelSet.presented`) -- `labels` must
+    contain exactly these ids, no more, no fewer, for either mode.
+    """
     if not isinstance(body, dict):
         raise SavePayloadError("body must be a JSON object")
 
@@ -135,14 +174,14 @@ def validate_save_payload(
     if not isinstance(item_id, str) or item_id not in known_item_ids:
         raise SavePayloadError("item_id is missing or does not match the current item")
 
-    ratable_ids = {label.id for label in label_set.ratable}
+    presented_ids = set(presented_label_ids)
     labels = body.get("labels")
     if not isinstance(labels, dict):
         raise SavePayloadError("labels must be an object")
-    unknown = set(labels) - ratable_ids
+    unknown = set(labels) - presented_ids
     if unknown:
         raise SavePayloadError(f"unknown label id(s): {sorted(unknown)}")
-    missing = ratable_ids - set(labels)
+    missing = presented_ids - set(labels)
     if missing:
         raise SavePayloadError(f"missing label id(s): {sorted(missing)}")
     for label_id, mark in labels.items():
@@ -161,12 +200,17 @@ def validate_save_payload(
     if not isinstance(seconds, (int, float)) or isinstance(seconds, bool) or seconds < 0:
         raise SavePayloadError("seconds must be a non-negative number")
 
+    defaults_applied = body.get("defaults_applied", False)
+    if not isinstance(defaults_applied, bool):
+        raise SavePayloadError("defaults_applied must be a boolean")
+
     return {
         "item_id": item_id,
         "labels": dict(labels),
         "tone": tone,
         "note": note,
         "seconds": float(seconds),
+        "defaults_applied": defaults_applied,
     }
 
 
@@ -177,12 +221,26 @@ def make_label_record(
     corpus_checksum: str,
     label_set_version: int,
     question_set_version: int,
+    label_set_mode: str = _DEFAULT_LABEL_SET_MODE,
+    labels_presented: list[str] | None = None,
     saved_at: str | None = None,
 ) -> dict[str, Any]:
     """Build one append-only label JSONL record (issue #46's field list, plus
     `question_set_version` per the orchestrator's correction: the rater's
     tone scale and label list are read from `classify/questions_v1.yaml`, so
-    every record names which version of that file was in effect)."""
+    every record names which version of that file was in effect).
+
+    Issue #90 adds three fields: `label_set` (the `label_set_mode` this
+    record was rated under), `labels_presented` (sorted list of label ids
+    the rater was actually shown -- `pilot/evaluate.py` treats any label id
+    *not* in this list as missing for this item, never as an implicit "no"),
+    and `defaults_applied` (true iff the rater saved via the "nothing
+    applies" shortcut rather than reviewing each label -- both reports flag
+    this, since a shortcut-saved "no" risks under-marking).
+    """
+    presented = sorted(labels_presented) if labels_presented is not None else sorted(
+        normalized["labels"]
+    )
     return {
         "item_id": normalized["item_id"],
         "rater": rater,
@@ -194,6 +252,9 @@ def make_label_record(
         "corpus_checksum": corpus_checksum,
         "label_set_version": label_set_version,
         "question_set_version": question_set_version,
+        "label_set": label_set_mode,
+        "labels_presented": presented,
+        "defaults_applied": normalized.get("defaults_applied", False),
     }
 
 
@@ -219,7 +280,13 @@ def build_app_state(
     rater: str,
     label_set_path: Path | str | None = None,
     question_set_path: Path | str | None = None,
+    label_set_mode: str = _DEFAULT_LABEL_SET_MODE,
 ) -> AppState:
+    if label_set_mode not in _VALID_LABEL_SET_MODES:
+        raise LabelSetError(
+            f"unknown --label-set mode {label_set_mode!r}, expected one of "
+            f"{sorted(_VALID_LABEL_SET_MODES)}"
+        )
     label_set = load_label_set(label_set_path)
     question_set = load_question_set_summary(question_set_path)
     _assert_labels_match_questions(label_set, question_set)
@@ -234,6 +301,7 @@ def build_app_state(
         rater=rater,
         corpus_checksum=corpus_checksum,
         records=records,
+        label_set_mode=label_set_mode,
     )
 
 
@@ -297,8 +365,9 @@ class LabelRequestHandler(BaseHTTPRequestHandler):
             body = json.loads(raw_body) if raw_body else {}
             known_item_ids = {item.id for item in self.app.items}
             valid_tones = self.app.question_set.tone_level_numbers()
+            presented_label_ids = self.app.presented_label_ids
             normalized = validate_save_payload(
-                body, self.app.label_set, known_item_ids, valid_tones
+                body, presented_label_ids, known_item_ids, valid_tones
             )
         except (json.JSONDecodeError, SavePayloadError) as exc:
             self._write_json({"error": str(exc)}, status=400)
@@ -310,6 +379,8 @@ class LabelRequestHandler(BaseHTTPRequestHandler):
             corpus_checksum=self.app.corpus_checksum,
             label_set_version=self.app.label_set.version,
             question_set_version=self.app.question_set.version,
+            label_set_mode=self.app.label_set_mode,
+            labels_presented=sorted(presented_label_ids),
         )
         append_label_record(self.app.labels_path, record)
         self.app.records[record["item_id"]] = record
@@ -324,6 +395,7 @@ def make_server(
     port: int = 8765,
     label_set_path: Path | str | None = None,
     question_set_path: Path | str | None = None,
+    label_set_mode: str = _DEFAULT_LABEL_SET_MODE,
 ) -> ThreadingHTTPServer:
     """Build (but do not start) the labeling `HTTPServer`, bound to
     `127.0.0.1` only -- never `0.0.0.0` (issue #46)."""
@@ -333,6 +405,7 @@ def make_server(
         rater=rater,
         label_set_path=label_set_path,
         question_set_path=question_set_path,
+        label_set_mode=label_set_mode,
     )
     handler_cls = type("BoundLabelRequestHandler", (LabelRequestHandler,), {"app": app_state})
     return ThreadingHTTPServer(("127.0.0.1", port), handler_cls)

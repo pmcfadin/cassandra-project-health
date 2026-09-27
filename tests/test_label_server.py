@@ -21,7 +21,7 @@ import json
 
 import pytest
 
-from project_health.label.label_set import load_label_set
+from project_health.label.label_set import GAP_LABEL_IDS, QUICK_CHECK_LABEL_IDS, load_label_set
 from project_health.label.question_set import load_question_set_summary
 from project_health.label.server import (
     LabelQuestionMismatchError,
@@ -69,6 +69,15 @@ def app(tmp_path):
     corpus_path = _write_corpus(tmp_path / "corpus.jsonl")
     labels_path = tmp_path / "labels.jsonl"
     return build_app_state(corpus_path=corpus_path, labels_path=labels_path, rater="pmcfadin")
+
+
+@pytest.fixture
+def gap_app(tmp_path):
+    corpus_path = _write_corpus(tmp_path / "corpus.jsonl")
+    labels_path = tmp_path / "labels.jsonl"
+    return build_app_state(
+        corpus_path=corpus_path, labels_path=labels_path, rater="pmcfadin", label_set_mode="gap"
+    )
 
 
 def _all_labels_marked(mark="no"):
@@ -132,6 +141,121 @@ class TestBuildStatePayload:
         payload = build_state_payload(app)
         assert payload["question_set_version"] == question_set.version
 
+    def test_full_mode_has_no_quick_check_labels(self, app):
+        payload = build_state_payload(app)
+        assert payload["label_set"] == "full"
+        assert payload["quick_check_labels"] == []
+
+
+class TestGapLabelSetMode:
+    """Issue #90 (DECISIONS.md D23): --label-set gap splits the 12 ratable
+    labels into a gap-focused main form and a compact quick-check row,
+    without changing which items/fields are blind (D18)."""
+
+    def test_main_labels_are_exactly_the_six_gap_labels(self, gap_app):
+        payload = build_state_payload(gap_app)
+        assert payload["label_set"] == "gap"
+        ids = [label["id"] for label in payload["labels"]]
+        assert ids == list(GAP_LABEL_IDS)
+
+    def test_quick_check_labels_are_exactly_the_six_public_covered_labels(self, gap_app):
+        payload = build_state_payload(gap_app)
+        ids = [label["id"] for label in payload["quick_check_labels"]]
+        assert ids == list(QUICK_CHECK_LABEL_IDS)
+
+    def test_gap_labels_carry_verbatim_definitions(self, gap_app):
+        payload = build_state_payload(gap_app)
+        label_set = load_label_set()
+        by_id = {label.id: label for label in label_set.ratable}
+        for label in payload["labels"]:
+            assert label["definition"] == by_id[label["id"]].definition
+
+    def test_blinding_is_unaffected_by_label_set_mode(self, gap_app):
+        payload = build_state_payload(gap_app)
+        assert set(payload["item"]) == {"id", "source", "text", "parent_text", "archive_url"}
+        blob = json.dumps(payload)
+        for forbidden in ("jev", "classifier", "probability", "confidence", "stratum"):
+            assert forbidden not in blob.lower()
+
+    def test_save_validation_requires_exactly_the_presented_labels(self, gap_app):
+        presented_ids = gap_app.presented_label_ids
+        assert presented_ids == set(GAP_LABEL_IDS) | set(QUICK_CHECK_LABEL_IDS)
+        body = {
+            "item_id": "item-1",
+            "labels": {label_id: "no" for label_id in presented_ids},
+            "tone": 0,
+            "seconds": 1,
+        }
+        normalized = validate_save_payload(
+            body, presented_ids, {"item-1", "item-2"}, gap_app.question_set.tone_level_numbers()
+        )
+        assert set(normalized["labels"]) == presented_ids
+
+    def test_save_rejects_a_full_mode_style_payload_missing_no_labels_here_too(self, gap_app):
+        # Same 12 ids either way in this delivered feature (label_set.py's
+        # `LabelSet.presented` docstring) -- a payload missing any one of
+        # them is still rejected under gap mode.
+        presented_ids = gap_app.presented_label_ids
+        labels = {label_id: "no" for label_id in presented_ids}
+        del labels["gatekeeping"]
+        body = {"item_id": "item-1", "labels": labels, "tone": 0, "seconds": 1}
+        with pytest.raises(SavePayloadError):
+            validate_save_payload(
+                body, presented_ids, {"item-1", "item-2"}, gap_app.question_set.tone_level_numbers()
+            )
+
+    def test_unknown_label_set_mode_raises(self, tmp_path):
+        from project_health.label.label_set import LabelSetError
+
+        corpus_path = _write_corpus(tmp_path / "corpus.jsonl")
+        labels_path = tmp_path / "labels.jsonl"
+        with pytest.raises(LabelSetError):
+            build_app_state(
+                corpus_path=corpus_path,
+                labels_path=labels_path,
+                rater="pmcfadin",
+                label_set_mode="not_a_real_mode",
+            )
+
+    def test_defaults_applied_and_labels_presented_round_trip_through_a_save(
+        self, tmp_path
+    ):
+        """End-to-end: a gap-mode "nothing applies" style save records
+        label_set="gap", defaults_applied=True, and labels_presented equal to
+        exactly the 12 presented ids -- what pilot/evaluate.py's "missing,
+        not no" rule (issue #90) depends on being present on every record."""
+        corpus_path = _write_corpus(tmp_path / "corpus.jsonl")
+        labels_path = tmp_path / "labels.jsonl"
+        app_state = build_app_state(
+            corpus_path=corpus_path,
+            labels_path=labels_path,
+            rater="pmcfadin",
+            label_set_mode="gap",
+        )
+        presented_ids = app_state.presented_label_ids
+        body = {
+            "item_id": "item-1",
+            "labels": {label_id: "no" for label_id in presented_ids},
+            "tone": 0,
+            "seconds": 2.5,
+            "defaults_applied": True,
+        }
+        normalized = validate_save_payload(
+            body, presented_ids, {"item-1", "item-2"}, app_state.question_set.tone_level_numbers()
+        )
+        record = make_label_record(
+            normalized,
+            rater="pmcfadin",
+            corpus_checksum=app_state.corpus_checksum,
+            label_set_version=app_state.label_set.version,
+            question_set_version=app_state.question_set.version,
+            label_set_mode=app_state.label_set_mode,
+            labels_presented=sorted(presented_ids),
+        )
+        assert record["label_set"] == "gap"
+        assert record["defaults_applied"] is True
+        assert set(record["labels_presented"]) == presented_ids
+
 
 class TestLabelsMatchQuestionSet:
     """Orchestrator correction: the message-level labels shown to the rater
@@ -194,7 +318,10 @@ class TestValidateSavePayload:
             "seconds": 12.3,
         }
         normalized = validate_save_payload(
-            body, app.label_set, {"item-1", "item-2"}, app.question_set.tone_level_numbers()
+            body,
+            app.presented_label_ids,
+            {"item-1", "item-2"},
+            app.question_set.tone_level_numbers(),
         )
         assert normalized["item_id"] == "item-1"
         assert normalized["tone"] == 1
@@ -204,7 +331,10 @@ class TestValidateSavePayload:
         """The real tone scale is 0-4 (five levels), not 0-2."""
         body = {"item_id": "item-1", "labels": _all_labels_marked(), "tone": 4, "seconds": 1}
         normalized = validate_save_payload(
-            body, app.label_set, {"item-1", "item-2"}, app.question_set.tone_level_numbers()
+            body,
+            app.presented_label_ids,
+            {"item-1", "item-2"},
+            app.question_set.tone_level_numbers(),
         )
         assert normalized["tone"] == 4
 
@@ -212,7 +342,10 @@ class TestValidateSavePayload:
         body = {"item_id": "nope", "labels": _all_labels_marked(), "tone": 0, "seconds": 1}
         with pytest.raises(SavePayloadError):
             validate_save_payload(
-                body, app.label_set, {"item-1", "item-2"}, app.question_set.tone_level_numbers()
+                body,
+                app.presented_label_ids,
+                {"item-1", "item-2"},
+                app.question_set.tone_level_numbers(),
             )
 
     def test_missing_label_rejected(self, app):
@@ -221,7 +354,10 @@ class TestValidateSavePayload:
         body = {"item_id": "item-1", "labels": labels, "tone": 0, "seconds": 1}
         with pytest.raises(SavePayloadError):
             validate_save_payload(
-                body, app.label_set, {"item-1", "item-2"}, app.question_set.tone_level_numbers()
+                body,
+                app.presented_label_ids,
+                {"item-1", "item-2"},
+                app.question_set.tone_level_numbers(),
             )
 
     def test_unknown_label_id_rejected(self, app):
@@ -230,7 +366,10 @@ class TestValidateSavePayload:
         body = {"item_id": "item-1", "labels": labels, "tone": 0, "seconds": 1}
         with pytest.raises(SavePayloadError):
             validate_save_payload(
-                body, app.label_set, {"item-1", "item-2"}, app.question_set.tone_level_numbers()
+                body,
+                app.presented_label_ids,
+                {"item-1", "item-2"},
+                app.question_set.tone_level_numbers(),
             )
 
     def test_invalid_mark_rejected(self, app):
@@ -239,7 +378,10 @@ class TestValidateSavePayload:
         body = {"item_id": "item-1", "labels": labels, "tone": 0, "seconds": 1}
         with pytest.raises(SavePayloadError):
             validate_save_payload(
-                body, app.label_set, {"item-1", "item-2"}, app.question_set.tone_level_numbers()
+                body,
+                app.presented_label_ids,
+                {"item-1", "item-2"},
+                app.question_set.tone_level_numbers(),
             )
 
     @pytest.mark.parametrize("bad_tone", [-1, 5, "1", None, True])
@@ -247,20 +389,29 @@ class TestValidateSavePayload:
         body = {"item_id": "item-1", "labels": _all_labels_marked(), "tone": bad_tone, "seconds": 1}
         with pytest.raises(SavePayloadError):
             validate_save_payload(
-                body, app.label_set, {"item-1", "item-2"}, app.question_set.tone_level_numbers()
+                body,
+                app.presented_label_ids,
+                {"item-1", "item-2"},
+                app.question_set.tone_level_numbers(),
             )
 
     def test_negative_seconds_rejected(self, app):
         body = {"item_id": "item-1", "labels": _all_labels_marked(), "tone": 0, "seconds": -1}
         with pytest.raises(SavePayloadError):
             validate_save_payload(
-                body, app.label_set, {"item-1", "item-2"}, app.question_set.tone_level_numbers()
+                body,
+                app.presented_label_ids,
+                {"item-1", "item-2"},
+                app.question_set.tone_level_numbers(),
             )
 
     def test_note_may_be_omitted(self, app):
         body = {"item_id": "item-1", "labels": _all_labels_marked(), "tone": 0, "seconds": 1}
         normalized = validate_save_payload(
-            body, app.label_set, {"item-1", "item-2"}, app.question_set.tone_level_numbers()
+            body,
+            app.presented_label_ids,
+            {"item-1", "item-2"},
+            app.question_set.tone_level_numbers(),
         )
         assert normalized["note"] is None
 
@@ -293,11 +444,42 @@ class TestMakeLabelRecord:
             "corpus_checksum",
             "label_set_version",
             "question_set_version",
+            "label_set",
+            "labels_presented",
+            "defaults_applied",
         }
         assert record["rater"] == "pmcfadin"
         assert record["corpus_checksum"] == "deadbeef"
         assert record["label_set_version"] == 1
         assert record["question_set_version"] == 1
+        # Defaults (issue #90): label_set_mode defaults to "full",
+        # labels_presented falls back to the submitted labels' own keys, and
+        # defaults_applied falls back to False when the caller doesn't say.
+        assert record["label_set"] == "full"
+        assert record["labels_presented"] == ["hostility"]
+        assert record["defaults_applied"] is False
+
+    def test_label_set_mode_and_labels_presented_and_defaults_applied_are_recorded(self):
+        normalized = {
+            "item_id": "item-1",
+            "labels": {"hostility": "no", "sarcasm": "no"},
+            "tone": 0,
+            "note": None,
+            "seconds": 1.0,
+            "defaults_applied": True,
+        }
+        record = make_label_record(
+            normalized,
+            rater="pmcfadin",
+            corpus_checksum="deadbeef",
+            label_set_version=1,
+            question_set_version=1,
+            label_set_mode="gap",
+            labels_presented=["sarcasm", "hostility"],
+        )
+        assert record["label_set"] == "gap"
+        assert record["labels_presented"] == ["hostility", "sarcasm"]  # sorted
+        assert record["defaults_applied"] is True
 
 
 class TestResumeAcrossRestarts:
@@ -316,7 +498,7 @@ class TestResumeAcrossRestarts:
                 "tone": 0,
                 "seconds": 3,
             },
-            app1.label_set,
+            app1.presented_label_ids,
             {"item-1", "item-2"},
             app1.question_set.tone_level_numbers(),
         )

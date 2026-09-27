@@ -36,6 +36,31 @@ def _fmt_ci(ci: tuple[float, float] | None) -> str:
     return f"[{lo:.3f}, {hi:.3f}]"
 
 
+def _defaults_applied_note_lines(result: PilotEvaluationResult) -> list[str]:
+    """Issue #90: a note both reports show whenever any record in this run
+    was saved via the "nothing applies" default-no shortcut
+    (`label/server.py`'s `defaults_applied`) -- a shortcut "no" was never
+    independently reviewed label by label and so risks under-marking.
+    Returns `[]` (no section at all) when the shortcut was never used."""
+    d = result.defaults_applied
+    if d.n_defaults_applied == 0:
+        return []
+    rate = d.rate if d.rate is not None else 0.0
+    return [
+        "## Default-no usage (caveat)",
+        "",
+        f"- {d.n_defaults_applied} of {d.n_total} label record(s) "
+        f"({rate:.1%}) were saved via the \"nothing applies\" default-no shortcut "
+        "(every presented label marked \"no\", tone 0) rather than reviewed label by "
+        "label.",
+        "- **This risks under-marking**: a defaulted \"no\" was never independently "
+        "considered for that item, unlike a \"no\" a rater arrived at by actually "
+        "reviewing the label's definition against the message. Treat precision/recall "
+        "estimates above as an upper bound on how carefully every \"no\" was checked.",
+        "",
+    ]
+
+
 # --- Private report (per-item detail; ids ok, text never) ------------------------------
 
 
@@ -74,6 +99,8 @@ def render_private_report_markdown(
             f"{s.get('model_id_pinned')}",
             "",
         ]
+
+    lines += _defaults_applied_note_lines(result)
 
     lines += [
         "## Rater time (minutes per message)",
@@ -251,6 +278,8 @@ def render_public_report_markdown(
             f"- Mean latency per call (seconds): {s.get('mean_latency_seconds_per_call')}",
             "",
         ]
+
+    lines += _defaults_applied_note_lines(result)
 
     lines += [
         "## Rater time (minutes per message, pooled across raters)",

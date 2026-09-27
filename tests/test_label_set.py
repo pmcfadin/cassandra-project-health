@@ -14,6 +14,8 @@ import pytest
 
 from project_health.label.label_set import (
     DEFAULT_LABEL_SET_PATH,
+    GAP_LABEL_IDS,
+    QUICK_CHECK_LABEL_IDS,
     LabelSetError,
     load_label_set,
     parse_label_table,
@@ -124,6 +126,40 @@ class TestParseLabelTable:
         assert rows[0].unit == "message"
         assert rows[0].origin == "LLM-classified"
         assert rows[0].definition == "Foo does X."
+
+
+class TestGapAndQuickCheckLabelIds:
+    """Issue #90 (DECISIONS.md D23): the gap-focused label set split."""
+
+    def test_gap_and_quick_check_together_are_exactly_the_ratable_ids(self):
+        label_set = load_label_set()
+        ratable_ids = {label.id for label in label_set.ratable}
+        assert set(GAP_LABEL_IDS) | set(QUICK_CHECK_LABEL_IDS) == ratable_ids
+
+    def test_gap_and_quick_check_are_disjoint(self):
+        assert set(GAP_LABEL_IDS).isdisjoint(set(QUICK_CHECK_LABEL_IDS))
+
+    def test_each_has_six_labels(self):
+        assert len(GAP_LABEL_IDS) == 6
+        assert len(QUICK_CHECK_LABEL_IDS) == 6
+
+    def test_label_set_gap_and_quick_check_properties_match_the_constants(self):
+        label_set = load_label_set()
+        assert [label.id for label in label_set.gap] == list(GAP_LABEL_IDS)
+        assert [label.id for label in label_set.quick_check] == list(QUICK_CHECK_LABEL_IDS)
+
+    def test_presented_full_is_all_twelve_ratable_labels(self):
+        label_set = load_label_set()
+        assert label_set.presented("full") == label_set.ratable
+
+    def test_presented_gap_is_gap_then_quick_check(self):
+        label_set = load_label_set()
+        assert label_set.presented("gap") == label_set.gap + label_set.quick_check
+
+    def test_presented_unknown_mode_raises(self):
+        label_set = load_label_set()
+        with pytest.raises(LabelSetError):
+            label_set.presented("not_a_real_mode")
 
 
 class TestLoadLabelSet:

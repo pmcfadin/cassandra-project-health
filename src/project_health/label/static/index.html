@@ -12,6 +12,8 @@
   <div id="meta-line">
     Rater: <strong id="rater-name">-</strong>
     &middot;
+    Label set: <strong id="label-set-name">-</strong>
+    &middot;
     <span id="progress-text">0 / 0</span>
   </div>
   <div id="progress-track"><div id="progress-bar"></div></div>
@@ -39,6 +41,11 @@
     <form id="label-form">
       <div id="label-rows"></div>
 
+      <fieldset id="quick-check-fieldset" hidden>
+        <legend>Quick check (public-covered labels -- issue #90, DECISIONS.md D23)</legend>
+        <div id="quick-check-rows"></div>
+      </fieldset>
+
       <fieldset id="tone-fieldset">
         <legend>Tone (classify/questions_v1.yaml's tone_intensity scale)</legend>
         <div id="tone-options"></div>
@@ -50,6 +57,7 @@
       </fieldset>
 
       <button type="submit" id="submit-btn">Save &amp; next (Enter)</button>
+      <button type="button" id="defaults-btn">Nothing applies -- save defaults (Space)</button>
       <p id="save-error" role="alert"></p>
     </form>
   </section>
@@ -66,6 +74,7 @@
       <li><kbd>y</kbd> / <kbd>n</kbd> / <kbd>u</kbd> &mdash; mark the highlighted row yes / no / unsure</li>
       <li><kbd>0</kbd> <kbd>1</kbd> <kbd>2</kbd> &mdash; set tone</li>
       <li><kbd>Enter</kbd> &mdash; save and go to the next item</li>
+      <li><kbd>Space</kbd> &mdash; nothing applies: every label defaults to "no", tone 0, save and move on</li>
     </ul>
   </section>
 </main>

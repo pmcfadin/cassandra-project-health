@@ -21,10 +21,12 @@ from project_health.classify.questions import MESSAGE_LEVEL_LABELS
 from project_health.label.store import CorpusItem
 from project_health.pilot import stats
 from project_health.pilot.evaluate import (
+    _label_was_presented,
     aggregate_human_mark,
     aggregate_human_tone,
     classify_gate,
     evaluate_agreement,
+    evaluate_defaults_applied,
     evaluate_label,
     evaluate_pilot,
     evaluate_tone,
@@ -252,6 +254,167 @@ class TestEvaluateLabel:
         assert ev.n_excluded == 0
 
 
+# --- issue #90: labels_presented / "missing, not no" / defaults_applied ------------------------
+
+
+class TestLabelWasPresented:
+    def test_present_in_labels_presented_list(self):
+        record = {"labels": {"hostility": "no"}, "labels_presented": ["hostility", "sarcasm"]}
+        assert _label_was_presented(record, "hostility") is True
+        assert _label_was_presented(record, "personal_attack") is False
+
+    def test_falls_back_to_labels_dict_keys_when_labels_presented_is_absent(self):
+        """A pre-issue-#90 record has no `labels_presented` field at all --
+        every key actually in `labels` counts as presented (backward
+        compatibility / "handle mixed label files")."""
+        legacy_record = {"labels": {"hostility": "no", "sarcasm": "yes"}}
+        assert _label_was_presented(legacy_record, "hostility") is True
+        assert _label_was_presented(legacy_record, "personal_attack") is False
+
+    def test_a_mark_present_but_not_in_labels_presented_is_not_presented(self):
+        """Defensive case: a `labels` dict carrying a stray mark for a label
+        id `labels_presented` says wasn't shown -- still not presented."""
+        record = {"labels": {"personal_attack": "yes"}, "labels_presented": ["hostility"]}
+        assert _label_was_presented(record, "personal_attack") is False
+
+
+class TestMissingVsNo:
+    """`evaluate_label` must treat a label absent from a record's
+    `labels_presented` as missing (unscored), never as an implicit "no" --
+    even when, unusually, a mark happens to still be present in `labels`
+    (the `TestLabelWasPresented` defensive case above)."""
+
+    def test_a_label_not_presented_is_excluded_from_scoring_not_counted_as_no(self):
+        label_id = "personal_attack"
+        corpus_by_id = {
+            "i1": _corpus_item("i1", "prevalence"),
+            "i2": _corpus_item("i2", "prevalence"),
+        }
+        classification_by_id = {"i1": _record("i1", 0.9), "i2": _record("i2", 0.9)}
+        # i1: genuinely not presented (gap-mode style record that never asked
+        # about personal_attack at all). i2: presented and marked "yes".
+        rater_labels = {
+            "r1": {
+                "i1": {
+                    "item_id": "i1",
+                    "rater": "r1",
+                    "labels": {"hostility": "no"},
+                    "labels_presented": ["hostility"],
+                    "tone": 0,
+                    "note": None,
+                    "seconds": 5.0,
+                    "saved_at": "2026-01-01T00:00:00Z",
+                    "corpus_checksum": "c",
+                    "label_set_version": 1,
+                    "question_set_version": 1,
+                    "label_set": "gap",
+                    "defaults_applied": False,
+                },
+                "i2": _label_record("i2", "r1", "yes"),
+            }
+        }
+        ev = evaluate_label(
+            label_id,
+            "reputational_harm",
+            corpus_by_id,
+            classification_by_id,
+            rater_labels,
+            seed=1,
+            bootstrap_iterations=10,
+        )
+        # i1 contributes nothing (missing, not a "no") -- only i2 is scored.
+        assert ev.n_scored == 1
+        assert ev.n_excluded == 0
+        assert ev.n_positives == 1
+
+    def test_a_stray_mark_outside_labels_presented_is_also_excluded(self):
+        label_id = "personal_attack"
+        corpus_by_id = {"i1": _corpus_item("i1", "prevalence")}
+        classification_by_id = {"i1": _record("i1", 0.9)}
+        rater_labels = {
+            "r1": {
+                "i1": {
+                    "item_id": "i1",
+                    "rater": "r1",
+                    "labels": {"personal_attack": "yes"},  # a mark exists...
+                    "labels_presented": ["hostility"],  # ...but wasn't presented
+                    "tone": 0,
+                    "note": None,
+                    "seconds": 5.0,
+                    "saved_at": "2026-01-01T00:00:00Z",
+                    "corpus_checksum": "c",
+                    "label_set_version": 1,
+                    "question_set_version": 1,
+                    "label_set": "gap",
+                    "defaults_applied": False,
+                }
+            }
+        }
+        ev = evaluate_label(
+            label_id,
+            "reputational_harm",
+            corpus_by_id,
+            classification_by_id,
+            rater_labels,
+            seed=1,
+            bootstrap_iterations=10,
+        )
+        assert ev.n_scored == 0
+        assert ev.n_excluded == 0
+
+    def test_legacy_records_without_labels_presented_still_score_normally(self):
+        """Handle mixed label files: a legacy (pre-issue-#90) record with no
+        `labels_presented` field scores exactly as it always did."""
+        label_id = "personal_attack"
+        corpus_by_id = {"i1": _corpus_item("i1", "prevalence")}
+        classification_by_id = {"i1": _record("i1", 0.9)}
+        rater_labels = {"r1": {"i1": _label_record("i1", "r1", "yes")}}
+        ev = evaluate_label(
+            label_id,
+            "reputational_harm",
+            corpus_by_id,
+            classification_by_id,
+            rater_labels,
+            seed=1,
+            bootstrap_iterations=10,
+        )
+        assert ev.n_scored == 1
+        assert ev.n_positives == 1
+
+
+class TestEvaluateDefaultsApplied:
+    def test_no_raters_at_all(self):
+        summary = evaluate_defaults_applied({})
+        assert summary.n_total == 0
+        assert summary.n_defaults_applied == 0
+        assert summary.rate is None
+
+    def test_counts_across_raters(self):
+        rater_labels = {
+            "r1": {
+                "i1": {"defaults_applied": True},
+                "i2": {"defaults_applied": False},
+            },
+            "r2": {
+                "i1": {"defaults_applied": True},
+            },
+        }
+        summary = evaluate_defaults_applied(rater_labels)
+        assert summary.n_total == 3
+        assert summary.n_defaults_applied == 2
+        assert summary.rate == pytest.approx(2 / 3)
+        assert summary.per_rater["r1"] == {"n_total": 2, "n_defaults_applied": 1}
+        assert summary.per_rater["r2"] == {"n_total": 1, "n_defaults_applied": 1}
+
+    def test_records_without_the_field_count_as_not_defaulted(self):
+        """Legacy records predate `defaults_applied` entirely -- treated as
+        not-defaulted rather than raising."""
+        rater_labels = {"r1": {"i1": _label_record("i1", "r1", "yes")}}
+        summary = evaluate_defaults_applied(rater_labels)
+        assert summary.n_total == 1
+        assert summary.n_defaults_applied == 0
+
+
 # --- evaluate_tone ---------------------------------------------------------------------------
 
 
@@ -419,3 +582,53 @@ class TestEvaluatePilotEndToEnd:
         assert result.rater_names == ["rater1", "rater2"]
         assert result.agreement != {}
         assert set(result.agreement) == MESSAGE_LEVEL_LABELS
+        # This fixture's records predate issue #90 (no defaults_applied field
+        # at all) -- evaluate_defaults_applied must not raise and must report
+        # zero usage.
+        assert result.defaults_applied.n_defaults_applied == 0
+        assert result.defaults_applied.n_total == result.defaults_applied.per_rater["rater1"][
+            "n_total"
+        ] + result.defaults_applied.per_rater["rater2"]["n_total"]
+
+    def test_handles_mixed_label_files_full_and_gap_style_records(self, tmp_path: Path):
+        """One rater's file is full-mode-style (every item, every label
+        presented, legacy schema with no labels_presented field at all);
+        another rater's file is gap-mode-style (labels_presented recorded,
+        some items using the defaults_applied shortcut). evaluate_pilot must
+        combine both without error, and defaults_applied must reflect only
+        the gap-mode file's shortcut usage."""
+        paths = self._setup(tmp_path, n_raters=1)  # rater1: legacy-style file
+
+        gap_rows = []
+        for i in range(1, 7):
+            item_id = f"i{i}"
+            gap_rows.append(
+                {
+                    "item_id": item_id,
+                    "rater": "rater2",
+                    "labels": {label_id: "no" for label_id in MESSAGE_LEVEL_LABELS},
+                    "tone": 0,
+                    "note": None,
+                    "seconds": 4.0,
+                    "saved_at": "2026-02-01T00:00:00Z",
+                    "corpus_checksum": "c",
+                    "label_set_version": 1,
+                    "question_set_version": 1,
+                    "label_set": "gap",
+                    "labels_presented": sorted(MESSAGE_LEVEL_LABELS),
+                    "defaults_applied": i % 2 == 0,
+                }
+            )
+        gap_path = tmp_path / "labels_rater2.jsonl"
+        _write_jsonl(gap_path, gap_rows)
+
+        result = evaluate_pilot(
+            corpus_path=paths["corpus_path"],
+            results_dir=paths["results_dir"],
+            label_paths=[*paths["label_paths"], gap_path],
+            bootstrap_iterations=20,
+        )
+        assert result.rater_names == ["rater1", "rater2"]
+        assert result.defaults_applied.per_rater["rater1"]["n_defaults_applied"] == 0
+        assert result.defaults_applied.per_rater["rater2"]["n_defaults_applied"] == 3
+        assert result.defaults_applied.n_defaults_applied == 3

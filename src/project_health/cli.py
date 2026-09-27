@@ -27,6 +27,11 @@ from project_health.classify.sample import (
     DEFAULT_JIRA_MAX_CALLS,
     run_pilot_sample,
 )
+from project_health.classify.subsample import (
+    DEFAULT_SUBSAMPLE_SEED,
+    DEFAULT_SUBSAMPLE_SIZE,
+    run_pilot_subsample,
+)
 from project_health.config import load_project
 from project_health.label.label_set import LabelSetError
 from project_health.label.question_set import QuestionSetReadError
@@ -154,6 +159,18 @@ def _build_parser() -> argparse.ArgumentParser:
     label_parser.add_argument(
         "--no-browser", action="store_true", help="Don't open a browser tab automatically"
     )
+    label_parser.add_argument(
+        "--label-set",
+        choices=["gap", "full"],
+        default="full",
+        help=(
+            "'gap' (issue #90; DECISIONS.md D23) presents the six gap labels (no public "
+            "benchmark coverage) as the main form with verbatim definitions, plus a compact "
+            "quick-check row for the six labels the public benchmark already covers; 'full' "
+            "(default) is the original flat 12-label form. Both accept exactly the labels "
+            "they present -- see label/label_set.py's LabelSet.presented."
+        ),
+    )
 
     pilot_parser = subparsers.add_parser(
         "pilot-sample",
@@ -203,6 +220,43 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     pilot_parser.add_argument("--jira-block-size", type=int, default=DEFAULT_JIRA_BLOCK_SIZE)
     pilot_parser.add_argument("--jira-max-calls", type=int, default=DEFAULT_JIRA_MAX_CALLS)
+
+    subsample_parser = subparsers.add_parser(
+        "pilot-subsample",
+        help=(
+            "Subset the Phase 2a pilot corpus v0 into a smaller, gap-focused corpus v1 "
+            "(issue #90; DECISIONS.md D23): a seeded, stratified subset that keeps v0's "
+            "prevalence/enrichment proportions while reserving enough enrichment items for "
+            "the rare gap labels. Nothing is re-fetched -- this only subsets an existing v0 "
+            "corpus JSONL, writing pilot.jsonl + manifest.json (counts only) to --out, "
+            "mirroring corpus/v0's own layout."
+        ),
+    )
+    subsample_parser.add_argument(
+        "--corpus", required=True, help="Path to the corpus v0 JSONL (private repo clone)"
+    )
+    subsample_parser.add_argument(
+        "--size",
+        type=int,
+        default=DEFAULT_SUBSAMPLE_SIZE,
+        help=f"Target v1 size (default: {DEFAULT_SUBSAMPLE_SIZE})",
+    )
+    subsample_parser.add_argument(
+        "--out",
+        required=True,
+        help="Output directory for pilot.jsonl + manifest.json (private repo clone)",
+    )
+    subsample_parser.add_argument(
+        "--seed",
+        type=int,
+        default=DEFAULT_SUBSAMPLE_SEED,
+        help=f"Subsampler seed, deterministic and reproducible (default: {DEFAULT_SUBSAMPLE_SEED})",
+    )
+    subsample_parser.add_argument(
+        "--enrichment-filters",
+        default=None,
+        help="Path to the enrichment pre-filter YAML (default: classify/enrichment_filters_v2)",
+    )
 
     classify_parser = subparsers.add_parser(
         "pilot-classify",
@@ -308,7 +362,11 @@ def _cmd_label(args: argparse.Namespace) -> int:
 
     try:
         httpd = make_server(
-            corpus_path=corpus_path, labels_path=labels_path, rater=rater, port=args.port
+            corpus_path=corpus_path,
+            labels_path=labels_path,
+            rater=rater,
+            port=args.port,
+            label_set_mode=args.label_set,
         )
     except (
         CorpusError,
@@ -404,6 +462,41 @@ def _cmd_pilot_sample(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_pilot_subsample(args: argparse.Namespace) -> int:
+    repo_root = find_public_repo_root()
+    try:
+        corpus_path = assert_outside_repo(args.corpus, repo_root, label="corpus")
+        out_path = assert_outside_repo(args.out, repo_root, label="out")
+    except UnsafePathError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+
+    out_dir = Path(out_path)
+    corpus_output = out_dir / "pilot.jsonl"
+    manifest_output = out_dir / "manifest.json"
+
+    try:
+        result = run_pilot_subsample(
+            source_corpus_path=corpus_path,
+            seed=args.seed,
+            size=args.size,
+            corpus_output_path=corpus_output,
+            manifest_output_path=manifest_output,
+            enrichment_filters_path=args.enrichment_filters,
+        )
+    except (CorpusError, ValueError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+
+    print(
+        f"corpus v1: {len(result.row_ids)} items written to {result.corpus_path} "
+        f"(checksum {result.manifest['corpus_checksum_sha256']})",
+        file=sys.stderr,
+    )
+    print(f"manifest written to {result.manifest_path}", file=sys.stderr)
+    return 0
+
+
 def _cmd_pilot_classify(args: argparse.Namespace) -> int:
     if args.dotenv:
         load_jev_key_from_dotenv(args.dotenv)
@@ -479,6 +572,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_label(args)
     if args.command == "pilot-sample":
         return _cmd_pilot_sample(args)
+    if args.command == "pilot-subsample":
+        return _cmd_pilot_subsample(args)
     if args.command == "pilot-classify":
         return _cmd_pilot_classify(args)
     if args.command == "pilot-evaluate":

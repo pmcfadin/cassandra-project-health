@@ -67,7 +67,7 @@ def _record(message_id: str, probability: float) -> ClassificationRecord:
     )
 
 
-def _build_pilot_result(tmp_path: Path):
+def _build_pilot_result(tmp_path: Path, defaults_applied_flags=None):
     items = [
         {
             "id": _SECRET_ITEM_IDS[0],
@@ -102,6 +102,7 @@ def _build_pilot_result(tmp_path: Path):
         encoding="utf-8",
     )
 
+    flags = defaults_applied_flags or [False] * len(items)
     label_rows = [
         {
             "item_id": item["id"],
@@ -114,8 +115,9 @@ def _build_pilot_result(tmp_path: Path):
             "corpus_checksum": item["checksum"],
             "label_set_version": 1,
             "question_set_version": 1,
+            "defaults_applied": flag,
         }
-        for item in items
+        for item, flag in zip(items, flags)
     ]
     labels_path = tmp_path / "labels_pmcfadin.jsonl"
     _write_jsonl(labels_path, label_rows)
@@ -149,6 +151,26 @@ class TestPublicReportNeverLeaksPrivateData:
         public_markdown = render_public_report_markdown(result)
         assert "## Recommendation" in public_markdown
         assert "personal_attack" in public_markdown  # label ids are fine, not private
+
+
+class TestDefaultsAppliedNote:
+    """Issue #90: both reports must carry a caveat note when any record used
+    the "nothing applies" default-no shortcut, and neither report mentions
+    it at all when the shortcut was never used."""
+
+    def test_no_note_when_defaults_were_never_applied(self, tmp_path: Path):
+        result = _build_pilot_result(tmp_path, defaults_applied_flags=[False, False])
+        assert "Default-no usage" not in render_public_report_markdown(result)
+        assert "Default-no usage" not in render_private_report_markdown(result)
+
+    def test_note_appears_in_both_reports_when_defaults_were_used(self, tmp_path: Path):
+        result = _build_pilot_result(tmp_path, defaults_applied_flags=[True, False])
+        public_markdown = render_public_report_markdown(result)
+        private_markdown = render_private_report_markdown(result)
+        for markdown in (public_markdown, private_markdown):
+            assert "Default-no usage" in markdown
+            assert "under-marking" in markdown
+            assert "1 of 2" in markdown
 
 
 class TestPrivateReportContent:

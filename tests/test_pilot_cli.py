@@ -35,6 +35,122 @@ def _write_corpus(path: Path) -> Path:
     return path
 
 
+class TestPilotSubsampleParsing:
+    def _write_v0(self, path: Path) -> Path:
+        rows = [
+            {
+                "id": f"p{i}",
+                "stratum": "prevalence",
+                "source": "mailing_list",
+                "archive_url": f"https://example.invalid/{i}",
+                "text": "synthetic prevalence message",
+                "parent_text": None,
+                "checksum": f"c{i}",
+            }
+            for i in range(5)
+        ] + [
+            {
+                "id": f"e{i}",
+                "stratum": "enrichment",
+                "source": "jira_comment",
+                "archive_url": f"https://example.invalid/e{i}",
+                "text": "synthetic enrichment message",
+                "parent_text": None,
+                "checksum": f"ce{i}",
+            }
+            for i in range(3)
+        ]
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("w", encoding="utf-8") as fh:
+            for row in rows:
+                fh.write(json.dumps(row) + "\n")
+        return path
+
+    def test_subcommand_is_registered_with_defaults(self):
+        parser = cli._build_parser()
+        args = parser.parse_args(["pilot-subsample", "--corpus", "c.jsonl", "--out", "o"])
+        assert args.command == "pilot-subsample"
+        assert args.corpus == "c.jsonl"
+        assert args.out == "o"
+        assert args.size == 80
+        assert args.seed == 90
+        assert args.enrichment_filters is None
+
+    def test_accepts_optional_flags(self):
+        parser = cli._build_parser()
+        args = parser.parse_args(
+            [
+                "pilot-subsample",
+                "--corpus",
+                "c.jsonl",
+                "--out",
+                "o",
+                "--size",
+                "40",
+                "--seed",
+                "5",
+                "--enrichment-filters",
+                "filters.yaml",
+            ]
+        )
+        assert args.size == 40
+        assert args.seed == 5
+        assert args.enrichment_filters == "filters.yaml"
+
+    @pytest.mark.parametrize("missing_flag", ["--corpus", "--out"])
+    def test_missing_required_flag_errors(self, missing_flag):
+        all_args = ["pilot-subsample", "--corpus", "c.jsonl", "--out", "o"]
+        idx = all_args.index(missing_flag)
+        filtered = all_args[:idx] + all_args[idx + 2 :]
+        parser = cli._build_parser()
+        with pytest.raises(SystemExit):
+            parser.parse_args(filtered)
+
+    def test_refuses_when_corpus_is_inside_the_public_repo(
+        self, tmp_path: Path, monkeypatch, capsys
+    ):
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir()
+        corpus = self._write_v0(repo_root / "v0.jsonl")
+        out = tmp_path / "outside" / "out"
+
+        monkeypatch.setattr(cli, "find_public_repo_root", lambda: repo_root)
+        parser = cli._build_parser()
+        args = parser.parse_args(["pilot-subsample", "--corpus", str(corpus), "--out", str(out)])
+        exit_code = cli._cmd_pilot_subsample(args)
+        assert exit_code == 2
+        assert "--corpus" in capsys.readouterr().err
+
+    def test_refuses_when_out_is_inside_the_public_repo(self, tmp_path: Path, monkeypatch, capsys):
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir()
+        corpus = self._write_v0(tmp_path / "outside" / "v0.jsonl")
+        out = repo_root / "out"
+
+        monkeypatch.setattr(cli, "find_public_repo_root", lambda: repo_root)
+        parser = cli._build_parser()
+        args = parser.parse_args(["pilot-subsample", "--corpus", str(corpus), "--out", str(out)])
+        exit_code = cli._cmd_pilot_subsample(args)
+        assert exit_code == 2
+        assert "--out" in capsys.readouterr().err
+
+    def test_end_to_end_writes_v1_corpus_and_manifest(self, tmp_path: Path, monkeypatch):
+        corpus = self._write_v0(tmp_path / "outside" / "v0.jsonl")
+        out = tmp_path / "outside" / "out"
+
+        monkeypatch.setattr(cli, "find_public_repo_root", lambda: None)
+        parser = cli._build_parser()
+        args = parser.parse_args(
+            ["pilot-subsample", "--corpus", str(corpus), "--out", str(out), "--size", "4"]
+        )
+        exit_code = cli._cmd_pilot_subsample(args)
+        assert exit_code == 0
+        assert (out / "pilot.jsonl").is_file()
+        assert (out / "manifest.json").is_file()
+        written = (out / "pilot.jsonl").read_text().splitlines()
+        assert len(written) == 4
+
+
 class TestPilotClassifyParsing:
     def test_subcommand_is_registered_with_defaults(self):
         parser = cli._build_parser()

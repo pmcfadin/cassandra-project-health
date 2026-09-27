@@ -61,6 +61,21 @@ MIN_POSITIVES_FOR_CONFIDENT_VERDICT = 10
 _VALID_MARKS = frozenset({"yes", "no", "unsure"})
 
 
+def _label_was_presented(record: dict[str, Any], label_id: str) -> bool:
+    """Was `label_id` actually shown to the rater for this record (issue
+    #90)? Every record `label/server.py.make_label_record` writes now
+    carries `labels_presented`; a record without that field is a
+    pre-issue-#90 (or hand-built legacy) record where every key in `labels`
+    was, by the tool's older, single-label-set behavior, presented -- so it
+    falls back to `record["labels"]`'s own keys rather than being treated as
+    "nothing presented". Either way, a label id absent from the presented
+    set is missing, never an implicit "no" (module docstring)."""
+    presented = record.get("labels_presented")
+    if presented is None:
+        return label_id in record.get("labels", {})
+    return label_id in presented
+
+
 # --- Loading ---------------------------------------------------------------------------
 
 
@@ -261,9 +276,11 @@ def evaluate_label(
             for rater in rater_labels
             if item_id in rater_labels[rater]
             and label_id in rater_labels[rater][item_id].get("labels", {})
+            and _label_was_presented(rater_labels[rater][item_id], label_id)
         ]
         if not marks:
-            continue  # no human ever rated this item at all -- not "excluded", just unscored
+            continue  # no human ever rated (or wasn't presented) this label for this
+            # item -- not "excluded", just unscored (issue #90: missing, never "no")
         aggregate = aggregate_human_mark(marks)
         if aggregate == "unsure":
             n_excluded += 1
@@ -422,6 +439,46 @@ def evaluate_rater_time(rater_labels: dict[str, dict[str, dict[str, Any]]]) -> R
     return RaterTimeEvaluation(per_rater=per_rater, overall=overall)
 
 
+# --- Default-no usage (issue #90) -----------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class DefaultsAppliedEvaluation:
+    """How often the "nothing applies" shortcut (label/server.py's
+    `defaults_applied` field) was used, overall and per rater. Both reports
+    surface this as a caveat: a shortcut-saved "no" was never independently
+    reviewed label by label, so it risks under-marking relative to a mark a
+    rater arrived at by actually considering the label (module docstring:
+    "treat labels not presented as missing" is a separate concern from this
+    one -- a defaulted "no" *was* presented and *is* a real, scored "no";
+    it's simply lower-confidence than a reviewed one)."""
+
+    n_total: int
+    n_defaults_applied: int
+    per_rater: dict[str, dict[str, int]]
+
+    @property
+    def rate(self) -> float | None:
+        return (self.n_defaults_applied / self.n_total) if self.n_total else None
+
+
+def evaluate_defaults_applied(
+    rater_labels: dict[str, dict[str, dict[str, Any]]],
+) -> DefaultsAppliedEvaluation:
+    per_rater: dict[str, dict[str, int]] = {}
+    n_total = 0
+    n_defaults = 0
+    for rater, records in rater_labels.items():
+        total = len(records)
+        defaults = sum(1 for r in records.values() if r.get("defaults_applied") is True)
+        per_rater[rater] = {"n_total": total, "n_defaults_applied": defaults}
+        n_total += total
+        n_defaults += defaults
+    return DefaultsAppliedEvaluation(
+        n_total=n_total, n_defaults_applied=n_defaults, per_rater=per_rater
+    )
+
+
 # --- Inter-rater agreement (Krippendorff's alpha, §6.3) -----------------------------------
 
 
@@ -446,11 +503,15 @@ def evaluate_agreement(
             row: list[int | None] = []
             for rater in raters:
                 record = rater_labels[rater].get(item.id)
-                mark = record["labels"].get(label_id) if record else None
+                mark = (
+                    record["labels"].get(label_id)
+                    if record and _label_was_presented(record, label_id)
+                    else None
+                )
                 if mark in ("yes", "no"):
                     row.append(1 if mark == "yes" else 0)
                 else:
-                    row.append(None)  # missing or "unsure" -- excluded, per module docstring
+                    row.append(None)  # missing, not presented, or "unsure" -- excluded
             rows.append(row)
         result[label_id] = stats.krippendorff_alpha_nominal(rows)
     return result
@@ -469,6 +530,11 @@ class PilotEvaluationResult:
     rater_names: list[str]
     n_corpus_items: int
     n_classified_items: int
+    defaults_applied: DefaultsAppliedEvaluation = field(
+        default_factory=lambda: DefaultsAppliedEvaluation(
+            n_total=0, n_defaults_applied=0, per_rater={}
+        )
+    )
 
 
 def evaluate_pilot(
@@ -502,6 +568,7 @@ def evaluate_pilot(
     tone = evaluate_tone(classification_by_id, rater_labels)
     rater_time = evaluate_rater_time(rater_labels)
     agreement = evaluate_agreement(sorted(MESSAGE_LEVEL_LABELS), items, rater_labels)
+    defaults_applied = evaluate_defaults_applied(rater_labels)
 
     return PilotEvaluationResult(
         label_evaluations=label_evaluations,
@@ -512,4 +579,5 @@ def evaluate_pilot(
         rater_names=sorted(rater_labels),
         n_corpus_items=len(items),
         n_classified_items=len(classification_by_id),
+        defaults_applied=defaults_applied,
     )

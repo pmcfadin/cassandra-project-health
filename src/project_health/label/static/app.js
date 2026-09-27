@@ -1,22 +1,34 @@
 // project-health label -- vanilla JS, no CDN, works fully offline against
-// the local server (DECISIONS.md D18, D22; issue #46).
+// the local server (DECISIONS.md D18, D22; issue #46; gap-focused
+// label_set mode, issue #90, DECISIONS.md D23).
 //
 // Blind by construction: the state this script renders never includes a
 // `stratum` field or any classifier/Jev output -- the server's
 // `/api/state` response simply does not contain them (see server.py's
 // `build_state_payload`), so there is nothing for this file to hide.
+//
+// Every label defaults to "no" and tone defaults to 0 (issue #90's speedup):
+// both the main form and the compact quick-check row pre-check "no" as soon
+// as they're rendered, and the Space shortcut (or the "Nothing applies"
+// button) saves those defaults immediately and moves to the next item,
+// recording `defaults_applied: true` on that record so the reports can flag
+// it as a lower-confidence, unreviewed "no" (pilot/report.py).
 "use strict";
 
 (function () {
   var state = null; // last /api/state payload
-  var currentRow = 0; // keyboard-highlighted label row index
+  var currentRow = 0; // keyboard-highlighted label row index (main form only)
   var itemLoadedAt = null; // Date.now() when the current item was rendered
   var marks = {}; // { labelId: "yes" | "no" | "unsure" }
+  var defaultsShortcutUsed = false; // true only for the save that just used Space/the button
 
   var labelRowsEl = document.getElementById("label-rows");
+  var quickCheckFieldsetEl = document.getElementById("quick-check-fieldset");
+  var quickCheckRowsEl = document.getElementById("quick-check-rows");
   var definitionsListEl = document.getElementById("definitions-list");
   var form = document.getElementById("label-form");
   var saveErrorEl = document.getElementById("save-error");
+  var defaultsBtn = document.getElementById("defaults-btn");
 
   function qs(id) {
     return document.getElementById(id);
@@ -33,6 +45,9 @@
       input.name = "tone";
       input.id = "tone-" + level.level;
       input.value = String(level.level);
+      if (level.level === 0) {
+        input.checked = true; // tone defaults to 0 (issue #90)
+      }
       wrapper.appendChild(input);
       var text = document.createElement("span");
       text.textContent = " " + level.level + " (" + level.name + "): " + level.description;
@@ -41,9 +56,9 @@
     });
   }
 
-  function renderDefinitions(labels) {
+  function renderDefinitions(labels, quickCheckLabels) {
     definitionsListEl.innerHTML = "";
-    labels.forEach(function (label) {
+    (labels || []).concat(quickCheckLabels || []).forEach(function (label) {
       var dt = document.createElement("dt");
       dt.textContent = "#" + label.number + " " + label.id;
       var dd = document.createElement("dd");
@@ -53,47 +68,70 @@
     });
   }
 
-  function renderLabelRows(labels) {
-    labelRowsEl.innerHTML = "";
-    marks = {};
-    labels.forEach(function (label, index) {
-      var row = document.createElement("div");
-      row.className = "label-row";
-      row.dataset.labelId = label.id;
-      row.dataset.index = String(index);
+  // Builds one label row (full-size for the main form, compact for the
+  // quick-check row -- `compact` only changes CSS class, not behavior:
+  // both default to "no" and both are required, presented labels).
+  function buildLabelRow(label, index, compact) {
+    var row = document.createElement("div");
+    row.className = compact ? "label-row label-row-compact" : "label-row";
+    row.dataset.labelId = label.id;
+    row.dataset.index = String(index);
 
-      var heading = document.createElement("div");
-      heading.className = "label-row-heading";
-      heading.textContent = "#" + label.number + " " + label.id;
-      row.appendChild(heading);
+    var heading = document.createElement("div");
+    heading.className = "label-row-heading";
+    heading.textContent = "#" + label.number + " " + label.id;
+    row.appendChild(heading);
 
+    if (!compact) {
       var def = document.createElement("div");
       def.className = "label-row-definition";
       def.textContent = label.definition;
       row.appendChild(def);
+    }
 
-      var choices = document.createElement("div");
-      choices.className = "label-row-choices";
-      ["yes", "no", "unsure"].forEach(function (value) {
-        var id = "label-" + label.id + "-" + value;
-        var wrapper = document.createElement("label");
-        var input = document.createElement("input");
-        input.type = "radio";
-        input.name = "label-" + label.id;
-        input.id = id;
-        input.value = value;
-        input.addEventListener("change", function () {
-          marks[label.id] = value;
-        });
-        wrapper.appendChild(input);
-        wrapper.appendChild(document.createTextNode(" " + value));
-        choices.appendChild(wrapper);
+    var choices = document.createElement("div");
+    choices.className = "label-row-choices";
+    ["yes", "no", "unsure"].forEach(function (value) {
+      var id = "label-" + label.id + "-" + value;
+      var wrapper = document.createElement("label");
+      var input = document.createElement("input");
+      input.type = "radio";
+      input.name = "label-" + label.id;
+      input.id = id;
+      input.value = value;
+      if (value === "no") {
+        input.checked = true; // every label defaults to "no" (issue #90)
+      }
+      input.addEventListener("change", function () {
+        marks[label.id] = value;
       });
-      row.appendChild(choices);
+      wrapper.appendChild(input);
+      wrapper.appendChild(document.createTextNode(" " + value));
+      choices.appendChild(wrapper);
+    });
+    row.appendChild(choices);
+    marks[label.id] = "no"; // matches the pre-checked "no" radio above
+    return row;
+  }
 
-      labelRowsEl.appendChild(row);
+  function renderLabelRows(labels) {
+    labelRowsEl.innerHTML = "";
+    labels.forEach(function (label, index) {
+      labelRowsEl.appendChild(buildLabelRow(label, index, false));
     });
     highlightRow(0);
+  }
+
+  function renderQuickCheckRows(quickCheckLabels) {
+    quickCheckRowsEl.innerHTML = "";
+    if (!quickCheckLabels || quickCheckLabels.length === 0) {
+      quickCheckFieldsetEl.hidden = true;
+      return;
+    }
+    quickCheckFieldsetEl.hidden = false;
+    quickCheckLabels.forEach(function (label, index) {
+      quickCheckRowsEl.appendChild(buildLabelRow(label, index, true));
+    });
   }
 
   function highlightRow(index) {
@@ -155,6 +193,7 @@
 
     form.reset();
     saveErrorEl.textContent = "";
+    defaultsShortcutUsed = false;
     itemLoadedAt = Date.now();
   }
 
@@ -167,9 +206,11 @@
   function render(payload) {
     state = payload;
     qs("rater-name").textContent = payload.rater;
+    qs("label-set-name").textContent = payload.label_set || "full";
     renderProgress(payload.progress);
-    renderDefinitions(payload.labels);
+    renderDefinitions(payload.labels, payload.quick_check_labels);
     renderLabelRows(payload.labels);
+    renderQuickCheckRows(payload.quick_check_labels);
     renderToneOptions(payload.tone_levels);
     renderItem(payload);
   }
@@ -193,6 +234,7 @@
       tone: toneInput ? parseInt(toneInput.value, 10) : null,
       note: qs("note").value || null,
       seconds: itemLoadedAt ? (Date.now() - itemLoadedAt) / 1000 : 0,
+      defaults_applied: defaultsShortcutUsed,
     };
     fetch("/api/save", {
       method: "POST",
@@ -213,9 +255,37 @@
       });
   }
 
+  // "Nothing applies" (issue #90): a genuine reset-and-save, not just "save
+  // whatever's currently checked" -- every presented label (main + quick
+  // check) is forced back to "no" and tone back to 0 even if the rater had
+  // already changed some of them, because "nothing applies" means exactly
+  // that: none of the presented labels apply to this item, full stop.
+  function applyDefaultsAndSubmit() {
+    if (!state || !state.item) {
+      return;
+    }
+    var allLabels = (state.labels || []).concat(state.quick_check_labels || []);
+    allLabels.forEach(function (label) {
+      var input = qs("label-" + label.id + "-no");
+      if (input) {
+        input.checked = true;
+      }
+      marks[label.id] = "no";
+    });
+    setTone(0);
+    defaultsShortcutUsed = true;
+    submitLabels();
+  }
+
   form.addEventListener("submit", function (event) {
     event.preventDefault();
+    defaultsShortcutUsed = false;
     submitLabels();
+  });
+
+  defaultsBtn.addEventListener("click", function (event) {
+    event.preventDefault();
+    applyDefaultsAndSubmit();
   });
 
   document.addEventListener("keydown", function (event) {
@@ -242,6 +312,11 @@
       case "u":
         setCurrentRowMark("unsure");
         break;
+      case " ":
+      case "Spacebar": // older browsers
+        event.preventDefault();
+        applyDefaultsAndSubmit();
+        break;
       case "0":
       case "1":
       case "2":
@@ -257,6 +332,7 @@
       case "Enter":
         if (!inTextarea) {
           event.preventDefault();
+          defaultsShortcutUsed = false;
           submitLabels();
         }
         break;

@@ -34,6 +34,34 @@ DEFAULT_LABEL_SET_PATH = Path(__file__).with_name("label_set_v1.yaml")
 _TABLE_HEADING = "### 1.2 Label reference table"
 _HEADER_CELLS = ("#", "Label", "Unit", "Origin", "Definition")
 
+# --- Gap-focused label set (issue #90; DECISIONS.md D23) ---------------------
+#
+# D23 narrows the owner/rater pilot to "a Cassandra-domain sample... [that]
+# covers the labels with no public ground truth, plus a quick check that the
+# public-data results hold on Cassandra's own venues." These two constants
+# are that split, applied to the 12 message-level (`unit: message`) labels
+# above: GAP_LABEL_IDS has no public benchmark coverage at all (D23's own
+# list, verbatim), QUICK_CHECK_LABEL_IDS is the six labels D23 says the
+# public benchmark already covers well or partially. Together they are
+# exactly the 12 ratable ids -- `tests/test_label_set.py` asserts this stays
+# true rather than silently drifting if a label is ever added or renamed.
+GAP_LABEL_IDS: tuple[str, ...] = (
+    "evidence_based_argument",
+    "compromise_offer",
+    "acknowledgment",
+    "resolution_marker",
+    "gatekeeping",
+    "status_authority_invocation",
+)
+QUICK_CHECK_LABEL_IDS: tuple[str, ...] = (
+    "personal_attack",
+    "hostility",
+    "sarcasm",
+    "dismissiveness",
+    "technical_disagreement",
+    "constructive_counterargument",
+)
+
 
 class LabelSetError(ValueError):
     """Raised when a label-set file fails to load or validate."""
@@ -70,6 +98,40 @@ class LabelSet:
     def ratable(self) -> tuple[LabelDef, ...]:
         """The message-level labels (§1.2 rows 1-12) a rater marks yes/no/unsure."""
         return tuple(label for label in self.labels if label.unit == "message")
+
+    @property
+    def gap(self) -> tuple[LabelDef, ...]:
+        """The 6 gap-focused labels (D23, `GAP_LABEL_IDS`), in that order."""
+        by_id = {label.id: label for label in self.ratable}
+        return tuple(by_id[label_id] for label_id in GAP_LABEL_IDS if label_id in by_id)
+
+    @property
+    def quick_check(self) -> tuple[LabelDef, ...]:
+        """The 6 quick-check labels (D23, `QUICK_CHECK_LABEL_IDS`), in that order."""
+        by_id = {label.id: label for label in self.ratable}
+        return tuple(by_id[label_id] for label_id in QUICK_CHECK_LABEL_IDS if label_id in by_id)
+
+    def presented(self, label_set_mode: str) -> tuple[LabelDef, ...]:
+        """The labels a rater is asked to mark for `label_set_mode`
+        ("full" or "gap") -- issue #90.
+
+        Both modes present all 12 ratable labels: "gap" mode does not skip
+        the six public-covered labels, it only reorganizes them into a
+        compact "quick check" row (label/server.py's `build_state_payload`
+        splits `self.gap` from `self.quick_check` for the UI) behind the six
+        gap labels' full, verbatim-definition main form. `label_set_mode`
+        drives which ids `label/server.py.validate_save_payload` requires --
+        parameterized on this method's result rather than hard-coded, so a
+        future label_set_mode that genuinely omits some labels (and the
+        "labels not presented count as missing" rule `pilot/evaluate.py`
+        applies for exactly that case) works without changing the
+        validation code path itself.
+        """
+        if label_set_mode == "gap":
+            return self.gap + self.quick_check
+        if label_set_mode == "full":
+            return self.ratable
+        raise LabelSetError(f"unknown label_set mode: {label_set_mode!r}")
 
     def by_id(self, label_id: str) -> LabelDef | None:
         return next((label for label in self.labels if label.id == label_id), None)

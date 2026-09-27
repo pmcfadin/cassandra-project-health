@@ -1,0 +1,209 @@
+# Label mapping v1 for `project-health benchmark-public` (issue #89; DECISIONS.md D23;
+# docs/plans/2026-09-27-public-benchmark-datasets.md §2-3). See `mapping.py`'s module
+# docstring for the schema each entry follows.
+#
+# D23's scope statement (verbatim): "strong for personal_attack, hostility and
+# sarcasm. Partial for dismissiveness, technical_disagreement and
+# constructive_counterargument. None for [the rest]. A dataset whose own inter-rater
+# agreement is below our gate (e.g. Wikipedia, alpha~=0.45) is reported as
+# informative, never as gating." This file follows that statement literally:
+# `gating: true` appears only on the Ferreira datasets' strong personal_attack /
+# hostility / sarcasm mappings (the one dataset family D23 does not name as
+# below-gate); every partial mapping, and Wikipedia's personal_attack despite being a
+# strong *mapping*, is `gating: false` because either the mapping itself is partial or
+# the dataset's own reported IAA is below this project's 0.667 usable floor
+# (COMMUNITY-HEALTH.md §6.3). No dataset here supports constructive_counterargument
+# well enough to map to it at all (conservative mapping, per issue #89) -- D23's
+# "partial for constructive_counterargument" describes the public-data landscape in
+# general (WikiTactics, not in this shortlist), not a mapping this benchmark forces
+# without support.
+version: 1
+mappings:
+  ferreira_lkml:
+    - our_label: personal_attack
+      raw_field: tbdf_categories
+      positive_values: [name_calling]
+      strength: strong
+      gating: true
+      notes: >-
+        TBDF "name_calling" (identity attacks/name calling) -- the closest and most
+        literal SE-domain match to our personal_attack definition found in this
+        benchmark's shortlist.
+    - our_label: hostility
+      raw_field: tbdf_categories
+      positive_values: [bitter_frustration, vulgarity, threat]
+      strength: strong
+      gating: true
+      notes: >-
+        TBDF bitter_frustration/vulgarity/threat -- anger, aggression, or a
+        threat directed at the discussion or a participant.
+    - our_label: sarcasm
+      raw_field: tbdf_categories
+      positive_values: [irony, mocking]
+      strength: strong
+      gating: true
+      notes: "TBDF irony/mocking -- the best sarcasm match in this benchmark's shortlist."
+    - our_label: dismissiveness
+      raw_field: tbdf_categories
+      positive_values: [impatience, commanding]
+      strength: partial
+      gating: false
+      notes: >-
+        TBDF impatience/commanding are adjacent to dismissiveness (declining to
+        engage with substance) but are not identical to it -- impatience can
+        co-occur with an actual argument, which our dismissiveness definition
+        excludes.
+    - our_label: acknowledgment
+      raw_field: tbdf_categories
+      positive_values: [humility, appreciation_excitement]
+      strength: partial
+      gating: false
+      notes: >-
+        TBDF humility/appreciation_excitement are positive-affect categories
+        adjacent to, but broader than, our acknowledgment definition (recognizing
+        a specific point/correction/contribution).
+    - our_label: technical_disagreement
+      raw_field: email_classification
+      positive_values: [technical]
+      strength: partial
+      gating: false
+      notes: >-
+        This dataset's "technical" vs. "not_technical" is a topic classification,
+        not a stance label -- it says the message is about a technical matter, not
+        that it disputes a claim on its merits. Partial and topic-general only.
+    - our_label: any_incivility_rollup
+      synthetic: true
+      source_labels: [personal_attack, hostility, dismissiveness, sarcasm]
+      raw_field: tbdf_categories
+      positive_values: [bitter_frustration, impatience, irony, mocking, name_calling, threat, vulgarity]
+      gating: false
+      notes: >-
+        Not one of COMMUNITY-HEALTH.md's 12 labels -- this project's own rollup
+        (orchestrator review of issue #89), added to answer "does Jev separate
+        Ferreira-uncivil from Ferreira-civil at all" independent of which of our
+        4 negative labels the argument runs through. Scored against max(P(
+        personal_attack), P(hostility), P(dismissiveness), P(sarcasm)) vs.
+        whether the message carries ANY of Ferreira's 7 uncivil TBDF categories
+        (not one of the 9 civil categories, and not "(none coded)"). Ferreira's
+        TBDF scheme codes incivility per sentence-level quotation, a milder and
+        narrower construct than our message-level labels -- see the "Separation
+        by source category" section below: Jev's mean negative-label probability
+        separates coded-uncivil from coded-civil/uncoded messages clearly even
+        where this rollup's item-level F1 looks modest, because many of
+        Ferreira's uncoded "civil" messages (e.g. a terse "No. Just no.") still
+        read as dismissive/hostile under our broader definitions, and some of
+        Ferreira's coded sentence-level incivility ("Did you actually test
+        this?" -> mocking) is milder than what our labels are calibrated to
+        flag. Item-level F1 against this dataset is therefore a lower bound on
+        agreement, not proof of a classifier error.
+
+  ferreira_github:
+    - our_label: personal_attack
+      raw_field: tbdf_categories
+      positive_values: [name_calling]
+      strength: strong
+      gating: true
+      notes: "Same TBDF scheme as ferreira_lkml, GitHub-locked-issues side."
+    - our_label: hostility
+      raw_field: tbdf_categories
+      positive_values: [bitter_frustration, vulgarity, threat]
+      strength: strong
+      gating: true
+      notes: "Same TBDF scheme as ferreira_lkml, GitHub-locked-issues side."
+    - our_label: sarcasm
+      raw_field: tbdf_categories
+      positive_values: [irony, mocking]
+      strength: strong
+      gating: true
+      notes: "Same TBDF scheme as ferreira_lkml, GitHub-locked-issues side."
+    - our_label: dismissiveness
+      raw_field: tbdf_categories
+      positive_values: [impatience, commanding]
+      strength: partial
+      gating: false
+      notes: "Same caveat as ferreira_lkml's dismissiveness mapping."
+    - our_label: acknowledgment
+      raw_field: tbdf_categories
+      positive_values: [humility, appreciation_excitement]
+      strength: partial
+      gating: false
+      notes: >-
+        Same caveat as ferreira_lkml's acknowledgment mapping.
+        appreciation_excitement does not actually occur in this dataset's GitHub
+        civil-category set (it uses dissatisfaction/expectation instead where LKML
+        uses appreciation_excitement/hope_to_get_feedback) -- kept in
+        positive_values for documentation parity with ferreira_lkml; it simply
+        never matches here.
+    - our_label: technical_disagreement
+      raw_field: email_classification
+      positive_values: [technical]
+      strength: partial
+      gating: false
+      notes: "Same caveat as ferreira_lkml's technical_disagreement mapping."
+    - our_label: any_incivility_rollup
+      synthetic: true
+      source_labels: [personal_attack, hostility, dismissiveness, sarcasm]
+      raw_field: tbdf_categories
+      positive_values: [bitter_frustration, impatience, irony, mocking, name_calling, threat, vulgarity]
+      gating: false
+      notes: "Same rollup as ferreira_lkml's any_incivility_rollup, GitHub-locked-issues side."
+
+  toxicr:
+    - our_label: personal_attack
+      raw_field: is_toxic
+      positive_values: [1]
+      strength: partial
+      gating: false
+      notes: >-
+        ToxiCR's single "is_toxic" bit merges 9 underlying rules (profanity,
+        insults, identity attacks, threats, sexual references, flirtation, ...)
+        into one undifferentiated flag -- a broad, imprecise proxy for
+        personal_attack specifically.
+    - our_label: hostility
+      raw_field: is_toxic
+      positive_values: [1]
+      strength: partial
+      gating: false
+      notes: "Same broad, merged proxy as personal_attack above, for the same raw bit."
+    - our_label: any_negative_rollup
+      synthetic: true
+      source_labels: [personal_attack, hostility]
+      raw_field: is_toxic
+      positive_values: [1]
+      gating: false
+      notes: >-
+        Not one of COMMUNITY-HEALTH.md's 12 labels -- this project's own rollup
+        (issue #89: "map it to hostility or to an 'any_negative' rollup (the max
+        of the negative labels). If you add a rollup, document it as ours."),
+        added specifically because ToxiCR's single "is_toxic" bit is broader than
+        either personal_attack or hostility alone. Scored against
+        max(P(personal_attack), P(hostility)) from the same classification
+        record. Always informative, never gating.
+
+  talkdown:
+    - our_label: dismissiveness
+      raw_field: label
+      positive_values: [true]
+      strength: partial
+      gating: false
+      notes: >-
+        TalkDown's condescension label is broader than dismissiveness (it also
+        covers insincere praise) and is applied to the REPLY's accusation, not
+        directly to whether the original speaker declined to engage. Not mapped
+        to gatekeeping at all: condescension-as-flagged-by-a-reply is adjacent to
+        standing-denial but is not the same claim as our gatekeeping definition
+        (asserting a participant lacks standing to contribute) -- this benchmark
+        credits/debits gatekeeping from no dataset in this shortlist.
+
+  wikipedia_attacks:
+    - our_label: personal_attack
+      raw_field: attack
+      positive_values: [true]
+      strength: strong
+      gating: false
+      notes: >-
+        Literal, strong match to our personal_attack construct, but this
+        dataset's own Krippendorff's alpha (0.45) is below this project's 0.667
+        usable floor (COMMUNITY-HEALTH.md §6.3) -- reported here as informative
+        precision-floor/volume calibration only, never as a §6.4 gate result
+        (D23 names this dataset by name for this treatment).

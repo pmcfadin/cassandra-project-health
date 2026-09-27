@@ -19,6 +19,16 @@ import sys
 import webbrowser
 from pathlib import Path
 
+from project_health.benchmark_public.evaluate import DEFAULT_SEED as BENCHMARK_PUBLIC_DEFAULT_SEED
+from project_health.benchmark_public.evaluate import compute_all_category_separations
+from project_health.benchmark_public.evaluate import evaluate_benchmark
+from project_health.benchmark_public.mapping import load_label_mapping
+from project_health.benchmark_public.registry import load_registry
+import project_health.benchmark_public.report as benchmark_public_report
+from project_health.benchmark_public.runner import (
+    DEFAULT_MONTHLY_CAP_USD as BENCHMARK_PUBLIC_DEFAULT_CAP,
+)
+from project_health.benchmark_public.runner import run_benchmark
 from project_health.classify.classifier import load_jev_key_from_dotenv
 from project_health.classify.sample import (
     DEFAULT_JIRA_BLOCK_SIZE,
@@ -343,6 +353,61 @@ def _build_parser() -> argparse.ArgumentParser:
         "--bootstrap-iterations", type=int, default=DEFAULT_BOOTSTRAP_ITERATIONS
     )
 
+    benchmark_public_parser = subparsers.add_parser(
+        "benchmark-public",
+        help=(
+            "Run the pinned Jev classifier against the D23 public human-labeled dataset "
+            "shortlist (issue #89): download + verify each dataset's pinned files, draw a "
+            "seeded stratified sample, classify with the cached/cost-capped Jev client, "
+            "and render an aggregate-only public report to --public-out."
+        ),
+    )
+    benchmark_public_parser.add_argument(
+        "--cache-dir",
+        required=True,
+        help="Directory for downloaded dataset files, the Jev cache, and the run manifest "
+        "(must be outside this repo checkout -- D23: never commit dataset text)",
+    )
+    benchmark_public_parser.add_argument(
+        "--public-out",
+        required=True,
+        help="Output path for the public aggregate-only report markdown "
+        "(e.g. docs/benchmark/public-v1.md)",
+    )
+    benchmark_public_parser.add_argument(
+        "--registry",
+        default=None,
+        help="Path to the dataset registry YAML (default: benchmark_public/datasets_v1.yaml)",
+    )
+    benchmark_public_parser.add_argument(
+        "--mapping",
+        default=None,
+        help="Path to the label mapping YAML (default: benchmark_public/label_mapping_v1.yaml)",
+    )
+    benchmark_public_parser.add_argument(
+        "--concurrency", type=int, default=4, help="Max concurrent system_one calls (default: 4)"
+    )
+    benchmark_public_parser.add_argument(
+        "--monthly-cap-usd",
+        type=float,
+        default=BENCHMARK_PUBLIC_DEFAULT_CAP,
+        help=(
+            f"Cost cap for this run (default: {BENCHMARK_PUBLIC_DEFAULT_CAP}; "
+            "issue #89's $10 cap)"
+        ),
+    )
+    benchmark_public_parser.add_argument(
+        "--classifier-version", default="1.0.0", help="classifier_version recorded on every record"
+    )
+    benchmark_public_parser.add_argument(
+        "--seed", type=int, default=BENCHMARK_PUBLIC_DEFAULT_SEED, help="Bootstrap RNG base seed"
+    )
+    benchmark_public_parser.add_argument(
+        "--dotenv",
+        default=None,
+        help="If set, load TYPESAFE_API_KEY from this .env file's jev_key= entry before running",
+    )
+
     return parser
 
 
@@ -563,6 +628,48 @@ def _cmd_pilot_evaluate(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_benchmark_public(args: argparse.Namespace) -> int:
+    if args.dotenv:
+        load_jev_key_from_dotenv(args.dotenv)
+
+    repo_root = find_public_repo_root()
+    try:
+        cache_dir = assert_outside_repo(args.cache_dir, repo_root, label="cache-dir")
+    except UnsafePathError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+
+    run = run_benchmark(
+        cache_dir=cache_dir,
+        registry_path=args.registry,
+        mapping_path=args.mapping,
+        concurrency=args.concurrency,
+        classifier_version=args.classifier_version,
+        monthly_cap_usd=args.monthly_cap_usd,
+    )
+
+    registry = load_registry(args.registry)
+    mapping_set = load_label_mapping(args.mapping)
+    evaluations = evaluate_benchmark(run, mapping_set, seed=args.seed)
+    category_separations = compute_all_category_separations(run, registry)
+
+    public_markdown = benchmark_public_report.render_public_report_markdown(
+        registry, evaluations, run.manifest, category_separations=category_separations
+    )
+    public_out_path = Path(args.public_out)
+    public_out_path.parent.mkdir(parents=True, exist_ok=True)
+    public_out_path.write_text(public_markdown, encoding="utf-8")
+
+    print(
+        f"benchmark-public: status={run.run_result.status}, "
+        f"calls_made={run.run_result.calls_made}, cache_hits={run.run_result.cache_hits}, "
+        f"estimated_cost_usd={run.run_result.estimated_cost_usd:.6f}",
+        file=sys.stderr,
+    )
+    print(f"public report written to {public_out_path}", file=sys.stderr)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
@@ -578,6 +685,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_pilot_classify(args)
     if args.command == "pilot-evaluate":
         return _cmd_pilot_evaluate(args)
+    if args.command == "benchmark-public":
+        return _cmd_benchmark_public(args)
     parser.error(f"unknown command {args.command!r}")
     return 2
 

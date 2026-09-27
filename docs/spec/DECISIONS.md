@@ -131,3 +131,17 @@ Owner decision (2026-09-25): the whole report must be re-runnable as plain scrip
 - The only model call at runtime is the pinned Jev classifier (D17). Its outputs are cached by input hash and stored as probabilities, so re-rendering never calls the model again.
 - No LLM acts as a rater, a tie-breaker or a triage step. Disagreements between raters are settled by humans.
 - The labeling tool is a local page served by `project-health label` rather than a hosted artifact (amends D18).
+
+## D23. Public labeled datasets are the primary classifier benchmark (amends D18)
+Owner decision (2026-09-27). Research (`docs/plans/2026-09-27-public-benchmark-datasets.md`) found human-labeled public datasets that cover part of the taxonomy well.
+- **Primary benchmark:** `project-health benchmark-public` is a fully scripted benchmark (D22). It downloads a pinned shortlist of datasets:
+  - Ferreira et al. LKML incivility
+  - Ferreira et al. GitHub locked issues
+  - ToxiCR
+  - TalkDown
+  - DEBAGREEMENT
+  - Wikipedia Personal Attacks/Aggression
+
+  Each download is pinned by URL and checksum. The command maps each dataset's labels to ours through a versioned mapping file, runs the pinned Jev model (cached), and publishes per-label precision and recall with confidence intervals. Dataset text is fetched at run time and never committed or redistributed. Only aggregate results are published, and each dataset is cited under its license.
+- **Scope of public ground truth:** strong for `personal_attack`, `hostility` and `sarcasm`. Partial for `dismissiveness`, `technical_disagreement` and `constructive_counterargument`. None for `evidence_based_argument`, `compromise_offer`, `acknowledgment`, `resolution_marker`, `gatekeeping`, `status_authority_invocation` or the 0–4 tone scale. A dataset whose own inter-rater agreement is below our gate (e.g. Wikipedia, α≈0.45) is reported as informative, never as gating.
+- **Owner and rater labels shrink to the gaps:** a Cassandra-domain sample of 50–100 messages. It covers the labels with no public ground truth, plus a quick check that the public-data results hold on Cassandra's own venues. This replaces the full 250-message owner pilot in D18. The §6 publication gates still apply: no classified label is published until it clears them, and labels with no public ground truth still need ≥3 raters, including one without a PMC or committer affiliation.

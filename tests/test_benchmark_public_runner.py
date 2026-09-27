@@ -20,7 +20,7 @@ from project_health.benchmark_public.evaluate import evaluate_benchmark
 from project_health.benchmark_public.report import render_public_report_markdown
 from project_health.benchmark_public.registry import load_registry
 from project_health.benchmark_public.mapping import load_label_mapping
-from project_health.benchmark_public.runner import run_benchmark
+from project_health.benchmark_public.runner import message_id_for, run_benchmark
 from project_health.classify.questions import MESSAGE_LEVEL_LABELS
 
 
@@ -180,3 +180,55 @@ def test_run_benchmark_end_to_end(tmp_path: Path) -> None:
     # No dataset item text/ids anywhere in the public report.
     assert "idiot" not in markdown
     assert "nit: please rename" not in markdown
+
+
+def test_duplicate_inputs_are_all_evaluated_not_silently_dropped(tmp_path: Path) -> None:
+    """Orchestrator review of issue #89: two rows with byte-identical
+    preprocessed text hash to the same `input_hash`, and `JevClassifier`'s
+    cache stores exactly one record for that hash (D22's own design) --
+    stamped with whichever item's `message_id` reached it first. Every
+    sampled item must still be joinable back to that one record by its own
+    `message_id`, not just the first one to arrive.
+    """
+    xlsx_path = tmp_path / "source.xlsx"
+    # Two rows share the exact same message text ("LGTM") and the same
+    # ground truth -- a duplicate input that must NOT be silently dropped
+    # from evaluation.
+    rows = [
+        ("LGTM", 0),
+        ("LGTM", 0),
+        ("you idiot, this will never work", 1),
+    ]
+    content = _build_toxicr_xlsx(xlsx_path, rows)
+    sha256 = hashlib.sha256(content).hexdigest()
+
+    def download_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=content)
+
+    registry_path, mapping_path = _write_registry_and_mapping(tmp_path, sha256, target_n=10)
+    cache_dir = tmp_path / "cache"
+
+    run = run_benchmark(
+        cache_dir=cache_dir,
+        registry_path=registry_path,
+        mapping_path=mapping_path,
+        api_key="test-key",
+        transport=httpx.MockTransport(download_handler),
+        async_transport=_jev_transport(),
+    )
+
+    # 3 sampled rows, only 2 distinct inputs ("LGTM" appears twice) -- but
+    # every one of the 3 message_ids must still resolve to a record.
+    assert run.manifest["datasets"]["toy_toxicr"]["n_sampled"] == 3
+    assert run.manifest["datasets"]["toy_toxicr"]["n_distinct_inputs"] == 2
+    assert run.manifest["datasets"]["toy_toxicr"]["n_evaluated"] == 3
+    assert len(run.classification_by_message_id) == 3
+
+    # Both "LGTM" rows resolve to a record with the identical (correct,
+    # low) hostility probability, even though only one Jev call was made
+    # for that shared input.
+    assert run.run_result.calls_made == 2  # one call per distinct input
+    lgtm_ids = [message_id_for("toy_toxicr", f"row_{i}") for i in (0, 1)]
+    for message_id in lgtm_ids:
+        record = run.classification_by_message_id[message_id]
+        assert record.labels["hostility"].probability == pytest.approx(0.05)

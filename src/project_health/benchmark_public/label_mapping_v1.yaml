@@ -71,6 +71,31 @@ mappings:
         This dataset's "technical" vs. "not_technical" is a topic classification,
         not a stance label -- it says the message is about a technical matter, not
         that it disputes a claim on its merits. Partial and topic-general only.
+    - our_label: any_incivility_rollup
+      synthetic: true
+      source_labels: [personal_attack, hostility, dismissiveness, sarcasm]
+      raw_field: tbdf_categories
+      positive_values: [bitter_frustration, impatience, irony, mocking, name_calling, threat, vulgarity]
+      gating: false
+      notes: >-
+        Not one of COMMUNITY-HEALTH.md's 12 labels -- this project's own rollup
+        (orchestrator review of issue #89), added to answer "does Jev separate
+        Ferreira-uncivil from Ferreira-civil at all" independent of which of our
+        4 negative labels the argument runs through. Scored against max(P(
+        personal_attack), P(hostility), P(dismissiveness), P(sarcasm)) vs.
+        whether the message carries ANY of Ferreira's 7 uncivil TBDF categories
+        (not one of the 9 civil categories, and not "(none coded)"). Ferreira's
+        TBDF scheme codes incivility per sentence-level quotation, a milder and
+        narrower construct than our message-level labels -- see the "Separation
+        by source category" section below: Jev's mean negative-label probability
+        separates coded-uncivil from coded-civil/uncoded messages clearly even
+        where this rollup's item-level F1 looks modest, because many of
+        Ferreira's uncoded "civil" messages (e.g. a terse "No. Just no.") still
+        read as dismissive/hostile under our broader definitions, and some of
+        Ferreira's coded sentence-level incivility ("Did you actually test
+        this?" -> mocking) is milder than what our labels are calibrated to
+        flag. Item-level F1 against this dataset is therefore a lower bound on
+        agreement, not proof of a classifier error.
 
   ferreira_github:
     - our_label: personal_attack
@@ -115,6 +140,13 @@ mappings:
       strength: partial
       gating: false
       notes: "Same caveat as ferreira_lkml's technical_disagreement mapping."
+    - our_label: any_incivility_rollup
+      synthetic: true
+      source_labels: [personal_attack, hostility, dismissiveness, sarcasm]
+      raw_field: tbdf_categories
+      positive_values: [bitter_frustration, impatience, irony, mocking, name_calling, threat, vulgarity]
+      gating: false
+      notes: "Same rollup as ferreira_lkml's any_incivility_rollup, GitHub-locked-issues side."
 
   toxicr:
     - our_label: personal_attack

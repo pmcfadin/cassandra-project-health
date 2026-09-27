@@ -11,7 +11,10 @@ detail in gets caught immediately.
 
 from __future__ import annotations
 
-from project_health.benchmark_public.evaluate import evaluate_dataset_label
+from project_health.benchmark_public.evaluate import (
+    compute_category_separation,
+    evaluate_dataset_label,
+)
 from project_health.benchmark_public.loaders import DatasetItem
 from project_health.benchmark_public.mapping import LabelMapping
 from project_health.benchmark_public.registry import DatasetSpec, Registry
@@ -53,6 +56,7 @@ def _spec() -> DatasetSpec:
         blocked_reason=None,
         files=(),
         loader="load_ds1",
+        categorizer=None,
         source_venue="mailing_list",
         source_venue_rationale="it's a mailing list",
         target_n=10,
@@ -117,3 +121,67 @@ def test_public_report_never_leaks_item_ids_or_text() -> None:
     assert "Blocked Dataset" in markdown
     assert "dead link" in markdown
     assert "no label has a calibrated" in markdown.lower()
+
+
+def _multi_label_record(message_id: str, **probs: float) -> ClassificationRecord:
+    return ClassificationRecord(
+        message_id=message_id,
+        thread_id=message_id,
+        source="mailing_list",
+        classifier_version="1.0.0",
+        question_set_version="1",
+        model_id="jev-1.13.0",
+        input_hash="h" * 64,
+        classified_at=NOW,
+        usage=Usage(input_tokens=10, output_tokens=1),
+        labels={k: Label(probability=v) for k, v in probs.items()},
+    )
+
+
+def test_category_separation_table_renders_and_never_leaks_items() -> None:
+    spec = DatasetSpec(
+        id="ferreira_lkml",
+        name="Ferreira LKML",
+        citation="c",
+        license="CC BY 4.0",
+        status="working",
+        blocked_reason=None,
+        files=(),
+        loader="load_ferreira_lkml",
+        categorizer="categorize_ferreira",
+        source_venue="mailing_list",
+        source_venue_rationale="r",
+        target_n=10,
+        seed=1,
+        reported_iaa=None,
+        caveats=(),
+    )
+    secret_id = "zzqx-secret-9f3c7a21"
+    items = [
+        DatasetItem(secret_id, "hidden text", None, {"tbdf_categories": frozenset({"mocking"})}),
+        DatasetItem("i2", "other", None, {"tbdf_categories": frozenset()}),
+    ]
+    records = {
+        secret_id: _multi_label_record(
+            secret_id, personal_attack=0.1, hostility=0.2, dismissiveness=0.1, sarcasm=0.7
+        ),
+        "i2": _multi_label_record(
+            "i2", personal_attack=0.0, hostility=0.05, dismissiveness=0.0, sarcasm=0.0
+        ),
+    }
+    separations = compute_category_separation(
+        "ferreira_lkml", "categorize_ferreira", items, records
+    )
+
+    registry = Registry(version=1, datasets={"ferreira_lkml": spec})
+    manifest = {"classifier": {}, "blocked_datasets": [], "datasets": {"ferreira_lkml": {}}}
+    markdown = render_public_report_markdown(
+        registry, {}, manifest, category_separations={"ferreira_lkml": separations}
+    )
+
+    assert "Separation by source category" in markdown
+    assert "mocking" in markdown
+    assert "(none coded)" in markdown
+    assert "milder" in markdown.lower()  # the Ferreira interpretive note
+    assert secret_id not in markdown
+    assert "hidden text" not in markdown

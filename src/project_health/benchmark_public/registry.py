@@ -61,6 +61,7 @@ class DatasetSpec:
     blocked_reason: str | None
     files: tuple[DatasetFile, ...]
     loader: str | None  # a function name in loaders.py, or None if blocked
+    categorizer: str | None  # a function name in categorize.py, or None if not set/blocked
     source_venue: str | None  # MessageSource-compatible, or None if blocked
     source_venue_rationale: str | None
     target_n: int | None
@@ -145,6 +146,7 @@ def _parse_dataset(entry: dict[str, Any], source_path: Path) -> DatasetSpec:
             blocked_reason=blocked_reason,
             files=(),
             loader=None,
+            categorizer=None,
             source_venue=None,
             source_venue_rationale=None,
             target_n=entry.get("target_n"),
@@ -174,6 +176,7 @@ def _parse_dataset(entry: dict[str, Any], source_path: Path) -> DatasetSpec:
             )
 
     loader = require("loader")
+    categorizer = entry.get("categorizer")  # optional -- see categorize.py's module docstring
     source_venue = require("source_venue")
     if source_venue not in VALID_SOURCE_VENUES:
         raise RegistryError(
@@ -200,6 +203,7 @@ def _parse_dataset(entry: dict[str, Any], source_path: Path) -> DatasetSpec:
         blocked_reason=None,
         files=files,
         loader=loader,
+        categorizer=categorizer,
         source_venue=source_venue,
         source_venue_rationale=source_venue_rationale,
         target_n=target_n,

@@ -27,6 +27,7 @@ datasets:
         sha256: 7e43d1bf7fdb6c398e2bdb193617477f94777a1f552d2a299f504a74e04e71aa
         filename: replication_package.zip
     loader: load_ferreira_lkml
+    categorizer: categorize_ferreira
     source_venue: mailing_list
     source_venue_rationale: >-
       The Linux Kernel Mailing List is a mailing list -- a literal, not merely
@@ -53,6 +54,7 @@ datasets:
         sha256: 7e43d1bf7fdb6c398e2bdb193617477f94777a1f552d2a299f504a74e04e71aa
         filename: replication_package.zip
     loader: load_ferreira_github
+    categorizer: categorize_ferreira
     source_venue: github_pr_comment
     source_venue_rationale: >-
       questions_v1.yaml's message.source enum has no plain "github_issue_comment"
@@ -82,6 +84,7 @@ datasets:
         sha256: 51517e250312eadd50c157ef9efc269161938aa864bee97d60c587162b0f03f1
         filename: code-review-dataset-full.xlsx
     loader: load_toxicr
+    categorizer: categorize_toxicr
     source_venue: github_pr_comment
     source_venue_rationale: >-
       ToxiCR's items are Gerrit/OpenStack code-review comments -- not literally
@@ -108,6 +111,7 @@ datasets:
         sha256: 6b6759ea9b81b35800c89378a70a26529c987088fac28b49d83ef0c14ad19c71
         filename: talkdown.tar.gz
     loader: load_talkdown
+    categorizer: categorize_talkdown
     source_venue: mailing_list
     source_venue_rationale: >-
       Reddit comment/reply pairs are free-form, asynchronous, threaded prose
@@ -136,6 +140,7 @@ datasets:
         sha256: eb97decf252083d359273fe358d7b212614ead2119310c10601fd575fb91b5cf
         filename: attack_annotations.tsv
     loader: load_wikipedia_attacks
+    categorizer: categorize_wikipedia_attacks
     source_venue: mailing_list
     source_venue_rationale: >-
       Wikipedia talk-page comments are free-form, asynchronous, threaded prose

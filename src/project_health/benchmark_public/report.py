@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from project_health.benchmark_public.evaluate import DatasetLabelEvaluation
+from project_health.benchmark_public.evaluate import CategorySeparation, DatasetLabelEvaluation
 from project_health.benchmark_public.registry import DatasetSpec, Registry
 
 
@@ -44,8 +44,10 @@ def render_public_report_markdown(
     evaluations: dict[str, list[DatasetLabelEvaluation]],
     run_manifest: dict,
     *,
+    category_separations: dict[str, list[CategorySeparation]] | None = None,
     generated_at: str | None = None,
 ) -> str:
+    category_separations = category_separations or {}
     generated_at = generated_at or datetime.now(timezone.utc).isoformat()
 
     lines: list[str] = [
@@ -121,28 +123,53 @@ def render_public_report_markdown(
     lines += [
         "## Datasets run",
         "",
-        "| Dataset | Citation | License | Sample n | Population n |",
-        "|---|---|---|---|---|",
+        "`n_sampled` is how many items this run drew from the dataset; `n_distinct_inputs` "
+        "is how many of those are byte-distinct after preprocessing (two different items "
+        "can read identically, e.g. two \"LGTM\" comments, and hash to the same classifier "
+        "input); `n_evaluated` is how many of the `n_sampled` items actually resolved to a "
+        "classification record. `n_evaluated` should equal `n_sampled` whenever the run "
+        "completed without hitting the cost cap -- every sampled item, including ones "
+        "sharing an input with another, is joined back to its record by that shared "
+        "input's hash (orchestrator review of issue #89 caught and fixed a bug where "
+        "duplicate-input items were silently excluded here).",
+        "",
+        "| Dataset | Citation | License | n_sampled | n_distinct_inputs | n_evaluated | "
+        "Population n |",
+        "|---|---|---|---|---|---|---|",
     ]
     dataset_summaries = run_manifest.get("datasets", {})
-    for dataset_id, evals in sorted(evaluations.items()):
+    # Union, not just `evaluations` -- a dataset can (in principle) have a
+    # category-separation table with no scorable label evaluation at all;
+    # every dataset either section covers gets one row/section, never silently
+    # dropped from one but not the other.
+    dataset_ids = sorted(set(evaluations) | set(category_separations))
+    for dataset_id in dataset_ids:
         spec = registry.datasets[dataset_id]
         summary = dataset_summaries.get(dataset_id, {})
         lines.append(
             f"| {spec.name} | {spec.citation} | {spec.license} | "
-            f"{summary.get('sample_n')} | {summary.get('population_n')} |"
+            f"{summary.get('n_sampled')} | {summary.get('n_distinct_inputs')} | "
+            f"{summary.get('n_evaluated')} | {summary.get('population_n')} |"
         )
     lines.append("")
 
-    for dataset_id, evals in sorted(evaluations.items()):
+    for dataset_id in dataset_ids:
         spec = registry.datasets[dataset_id]
-        lines += _dataset_section(spec, evals, dataset_summaries.get(dataset_id, {}))
+        lines += _dataset_section(
+            spec,
+            evaluations.get(dataset_id, []),
+            dataset_summaries.get(dataset_id, {}),
+            category_separations.get(dataset_id),
+        )
 
     return "\n".join(lines) + "\n"
 
 
 def _dataset_section(
-    spec: DatasetSpec, evals: list[DatasetLabelEvaluation], dataset_summary: dict
+    spec: DatasetSpec,
+    evals: list[DatasetLabelEvaluation],
+    dataset_summary: dict,
+    separations: list[CategorySeparation] | None,
 ) -> list[str]:
     lines = [
         f"## {spec.name}",
@@ -182,5 +209,60 @@ def _dataset_section(
         "threshold yet (see \"Thresholds\" above).",
         "",
     ]
+
+    if separations:
+        lines += _category_separation_section(spec, separations)
+
+    return lines
+
+
+def _category_separation_section(
+    spec: DatasetSpec, separations: list[CategorySeparation]
+) -> list[str]:
+    lines = [
+        "### Separation by source category",
+        "",
+        "Mean Jev probability of each of our 4 negative labels "
+        "(`personal_attack`/`hostility`/`dismissiveness`/`sarcasm`), grouped by this "
+        "dataset's own fine-grained category -- independent of any of the label mappings "
+        "above. An item belonging to more than one category (e.g. a Ferreira quotation "
+        "coded with two TBDF categories) is counted under each.",
+        "",
+    ]
+
+    if spec.categorizer == "categorize_ferreira":
+        lines += [
+            "**Reading this table for Ferreira's TBDF scheme**: Ferreira's own inter-rater "
+            "agreement was measured on a milder, *sentence-level* construct -- a coder "
+            "flagged one quoted sentence within a message, not the message's overall tone. "
+            "This benchmark's labels are message-level and calibrated to a broader bar. "
+            "The two constructs disagree in both directions: Ferreira sometimes codes a "
+            "single mild sentence (\"Did you actually test this?\" -> mocking) that reads as "
+            "unremarkable at message level, while Jev sometimes flags a terse, fully "
+            "uncoded message (\"No. Just no.\") that Ferreira's coders simply never marked. "
+            "If Jev's mean negative-label probability nonetheless separates "
+            "TBDF-uncivil-coded messages from civil/uncoded ones clearly (well above vs. "
+            "well below the item-level precision/recall table's thresholds), that is "
+            "evidence the classifier is picking up on real signal even where item-level F1 "
+            "looks modest -- the F1 numbers above are a **lower bound on agreement**, not "
+            "proof of a classifier error, because a meaningful share of the disagreement is "
+            "definitional (which sentences vs. which messages, and how mild counts) rather "
+            "than the classifier misreading the same construct Ferreira's coders used.",
+            "",
+        ]
+
+    lines += [
+        "| Category | n | mean personal_attack | mean hostility | mean dismissiveness | "
+        "mean sarcasm |",
+        "|---|---|---|---|---|---|",
+    ]
+    for sep in separations:
+        probs = sep.mean_probability
+        lines.append(
+            f"| {sep.category} | {sep.n} | {_fmt(probs.get('personal_attack'))} | "
+            f"{_fmt(probs.get('hostility'))} | {_fmt(probs.get('dismissiveness'))} | "
+            f"{_fmt(probs.get('sarcasm'))} |"
+        )
+    lines.append("")
 
     return lines

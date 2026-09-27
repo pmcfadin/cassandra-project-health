@@ -34,13 +34,24 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Sequence
 
+from project_health.benchmark_public.categorize import get_categorizer
 from project_health.benchmark_public.loaders import DatasetItem
 from project_health.benchmark_public.mapping import LabelMapping, LabelMappingSet, is_positive
+from project_health.benchmark_public.registry import Registry
 from project_health.benchmark_public.runner import BenchmarkRunResult, item_id_from_message_id
 from project_health.classify.classifier import ClassificationRecord
 from project_health.pilot import stats
 
 DEFAULT_SEED = 89  # this issue's number -- an arbitrary but fixed, documented base seed
+
+# The four message-level labels the orchestrator review of issue #89 calls
+# "our 4 negative labels" for the "separation by source category" table:
+# personal_attack/hostility/dismissiveness/sarcasm are the labels a dataset's
+# own fine-grained incivility-adjacent categories (Ferreira's TBDF, ToxiCR's
+# is_toxic, TalkDown's condescension label, Wikipedia's attack label) are
+# plausibly evidence for. `gatekeeping`/`status_authority_invocation` are
+# left out -- no dataset in this shortlist maps to either at all (D23).
+NEGATIVE_LABELS: tuple[str, ...] = ("personal_attack", "hostility", "dismissiveness", "sarcasm")
 
 # No label has a calibrated threshold yet (questions_v1.yaml v1: `threshold:
 # null` for all 12 labels, pending issue #47's calibration). Kept as a named
@@ -184,4 +195,85 @@ def evaluate_benchmark(
                 dataset_evaluations.append(evaluation)
         if dataset_evaluations:
             results[dataset_id] = dataset_evaluations
+    return results
+
+
+# --- Separation by source category (orchestrator review of issue #89) ------------------
+
+
+@dataclass(frozen=True)
+class CategorySeparation:
+    """Mean Jev probability of each of `NEGATIVE_LABELS`, for every item
+    tagged with one dataset-specific fine-grained category (`categorize.py`).
+    Aggregate-only (a category name and counts/means, never an item id or
+    text) -- safe to render directly in the public report."""
+
+    dataset_id: str
+    category: str
+    n: int
+    mean_probability: dict[str, float | None]
+
+
+def compute_category_separation(
+    dataset_id: str,
+    categorizer_name: str,
+    sampled_items: Sequence[DatasetItem],
+    classification_by_item_id: dict[str, ClassificationRecord],
+    *,
+    labels: tuple[str, ...] = NEGATIVE_LABELS,
+) -> list[CategorySeparation]:
+    """One `CategorySeparation` per distinct category name the dataset's
+    registered categorizer produces (`registry.py`'s `DatasetSpec.
+    categorizer`), ordered by descending item count. An item belonging to
+    several categories at once (Ferreira's `tbdf_categories`) is counted
+    under each -- see `categorize.py`'s module docstring."""
+    categorizer = get_categorizer(categorizer_name)
+    sums: dict[str, dict[str, float]] = {}
+    counts: dict[str, int] = {}
+
+    for item in sampled_items:
+        record = classification_by_item_id.get(item.item_id)
+        if record is None:
+            continue
+        for category in categorizer(item.raw_labels):
+            counts[category] = counts.get(category, 0) + 1
+            label_sums = sums.setdefault(category, {label: 0.0 for label in labels})
+            for label in labels:
+                answer = record.labels.get(label)
+                if answer is not None:
+                    label_sums[label] += answer.probability
+
+    results: list[CategorySeparation] = []
+    for category, n in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0])):
+        mean_probability = {label: (sums[category][label] / n) if n else None for label in labels}
+        results.append(
+            CategorySeparation(
+                dataset_id=dataset_id, category=category, n=n, mean_probability=mean_probability
+            )
+        )
+    return results
+
+
+def compute_all_category_separations(
+    run: BenchmarkRunResult, registry: Registry
+) -> dict[str, list[CategorySeparation]]:
+    """`{dataset_id: [CategorySeparation, ...]}` for every dataset `run`
+    classified that has a registered categorizer (`registry.py`'s
+    `DatasetSpec.categorizer` -- optional; a dataset with none is simply
+    absent from the result, not an error)."""
+    results: dict[str, list[CategorySeparation]] = {}
+    for dataset_id, run_data in run.datasets.items():
+        categorizer_name = run_data.spec.categorizer
+        if categorizer_name is None:
+            continue
+        classification_by_item_id: dict[str, ClassificationRecord] = {}
+        for message_id, record in run.classification_by_message_id.items():
+            item_id = item_id_from_message_id(dataset_id, message_id)
+            if item_id is not None:
+                classification_by_item_id[item_id] = record
+        separations = compute_category_separation(
+            dataset_id, categorizer_name, run_data.sampling.items, classification_by_item_id
+        )
+        if separations:
+            results[dataset_id] = separations
     return results

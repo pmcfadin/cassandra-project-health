@@ -20,6 +20,7 @@ import webbrowser
 from pathlib import Path
 
 from project_health.benchmark_public.evaluate import DEFAULT_SEED as BENCHMARK_PUBLIC_DEFAULT_SEED
+from project_health.benchmark_public.evaluate import compute_all_category_separations
 from project_health.benchmark_public.evaluate import evaluate_benchmark
 from project_health.benchmark_public.mapping import load_label_mapping
 from project_health.benchmark_public.registry import load_registry
@@ -650,9 +651,10 @@ def _cmd_benchmark_public(args: argparse.Namespace) -> int:
     registry = load_registry(args.registry)
     mapping_set = load_label_mapping(args.mapping)
     evaluations = evaluate_benchmark(run, mapping_set, seed=args.seed)
+    category_separations = compute_all_category_separations(run, registry)
 
     public_markdown = benchmark_public_report.render_public_report_markdown(
-        registry, evaluations, run.manifest
+        registry, evaluations, run.manifest, category_separations=category_separations
     )
     public_out_path = Path(args.public_out)
     public_out_path.parent.mkdir(parents=True, exist_ok=True)

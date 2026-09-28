@@ -567,50 +567,18 @@ def test_governance_page_is_a_placeholder_linking_to_decisions(tmp_path):
 # --- Governance per-commit compliance (issue #37, D14/D15) ------------------
 
 
-def test_governance_page_shows_policy_version_and_approval_linked(tmp_path):
+def test_governance_page_publishes_no_policy_or_verdict_list(tmp_path):
+    """D25 (2026-09-28): the site is informational -- it never publishes this
+    project's policy header or a list of 'failing' commits. The project and
+    its maintainers judge compliance, not this site."""
     out_dir, _ = _build_site_with_governance(tmp_path)
     html_text = _page_html(out_dir, "governance/")
 
-    assert "Policy v2" in html_text
-    assert "pmcfadin" in html_text
-    assert "2026-09-25" in html_text
-    policy_href = (
-        'href="https://github.com/pmcfadin/cassandra-project-health/'
-        'blob/main/governance-policy.yaml"'
-    )
-    assert policy_href in html_text
-    assert "Unknown is not a fail" in html_text
-
-
-def test_governance_page_lists_current_fails_with_evidence_and_correction_link(tmp_path):
-    out_dir, _ = _build_site_with_governance(tmp_path)
-    html_text = _page_html(out_dir, "governance/")
-
-    assert "Currently failing (1)" in html_text
-    assert "no reviewer found in commit trailer" in html_text
-    assert "1111111111" in html_text  # short sha of the failing commit
-    commit_url = "https://github.com/apache/cassandra/commit/1111111111111111111111111111111111aaaa"
-    assert commit_url in html_text
-    assert "Request a correction" in html_text
-    assert "issues/new?" in html_text
-    assert "governance-correction.yml" in html_text
-    assert "sha=1111111111111111111111111111111111aaaa" in html_text
-    assert "check_id=reviewer-present" in html_text
-
-
-def test_governance_page_never_labels_unknown_as_fail(tmp_path):
-    out_dir, _ = _build_site_with_governance(tmp_path)
-    html_text = _page_html(out_dir, "governance/")
-
-    # The one genuine fail (reviewer-present on commit 1) is the only row in
-    # the fails view -- the pre-commit-ci-evidence `unknown` result on that
-    # same commit must never appear there.
-    assert "Currently failing (1)" in html_text
-    fails_start = html_text.index('id="fails-heading"')
-    fails_end = html_text.index("</section>", fails_start)
-    fails_html = html_text[fails_start:fails_end]
-    assert "pre-commit-ci-evidence" not in fails_html
-    assert "no JIRA-comment CI evidence found" not in fails_html
+    assert 'id="policy-heading"' not in html_text
+    assert "Policy v" not in html_text
+    assert 'id="fails-heading"' not in html_text
+    assert "Currently failing" not in html_text
+    assert "does not judge compliance" in html_text
 
 
 def test_governance_page_backfill_partial_status_shown_honestly(tmp_path):

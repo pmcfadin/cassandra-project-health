@@ -672,6 +672,37 @@ COMMIT_FACT = pa.schema(
     ]
 )
 
+# `COMMIT_EVIDENCE` is the commit-history table's CI evidence/CI artefacts
+# facts (issue #97, orchestrator review of 127bd5a) -- one row per commit,
+# computed by `governance/commit_evidence.py::build_commit_evidence_rows`
+# directly from the same raw JIRA comment/attachment evidence
+# `fact_metrics.py` reads, **never** from the scored `commit_compliance`
+# row. This is what fixes the review's finding: `commit_compliance`'s
+# `result` is `exempt`/`not_in_force` for policy reasons that have nothing
+# to do with whether the underlying evidence exists, so deriving the
+# table's CI cells from it leaked policy vocabulary ("not applicable",
+# "before 2026-08-19") and hid real evidence for pre-2026-08-19 commits
+# whose tickets had, in fact, been checked. `reviewer`/`checkstyle` facts
+# stay sourced from `COMMIT_COMPLIANCE`'s `reviewer_detail`/evidence
+# columns -- reviewer-present has no exemption or dated `effective_from`
+# that can hide evidence the same way, so no separate table is needed there
+# (see `site/governance_page.py`'s module docstring).
+COMMIT_EVIDENCE = pa.schema(
+    [
+        pa.field("sha", pa.string(), nullable=False),
+        # ci_evidence_bucket: 'before' | 'after' | 'none' | 'not_checked' | 'no_ticket'
+        pa.field("ci_evidence_bucket", pa.string(), nullable=False),
+        pa.field("ci_evidence_text", pa.string(), nullable=False),
+        pa.field("ci_evidence_url", pa.string(), nullable=True),
+        pa.field("ci_evidence_at", TIMESTAMP_UTC, nullable=True),
+        pa.field("ci_evidence_lead_time_seconds", pa.int64(), nullable=True),
+        # ci_artefacts_bucket: 'both' | 'partial' | 'none' | 'not_checked' | 'no_ticket'
+        pa.field("ci_artefacts_bucket", pa.string(), nullable=False),
+        pa.field("ci_artefacts_text", pa.string(), nullable=False),
+        pa.field("ci_artefacts_at", TIMESTAMP_UTC, nullable=True),
+    ]
+)
+
 # --- Governance raw evidence (issue #36 fixup cycle 1: incremental collection) --
 #
 # Everything below is *raw*, append-only, watermarked collector output
@@ -1057,6 +1088,7 @@ TABLE_SCHEMAS: dict[str, pa.Schema] = {
     "pr_comment": PR_COMMENT,
     "commit_compliance": COMMIT_COMPLIANCE,
     "commit_fact": COMMIT_FACT,
+    "commit_evidence": COMMIT_EVIDENCE,
     # Registered under `source='governance'`'s own bare table names (matching
     # `contribution_event`'s "source namespaces, table name doesn't repeat
     # it" convention) — `storage.write_partition`/`read_table`'s `table`

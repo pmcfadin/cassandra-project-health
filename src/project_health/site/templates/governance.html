@@ -172,19 +172,21 @@
     <label>CI evidence
       <select data-gov-filter="ci_evidence">
         <option value="">Any</option>
-        <option value="before">Before commit</option>
-        <option value="after">After commit</option>
-        <option value="none">None</option>
-        <option value="not_checked">Not checked yet</option>
+        <option value="before">Found before commit</option>
+        <option value="after">Found after commit</option>
+        <option value="none">None found</option>
+        <option value="not_checked">Not checked</option>
+        <option value="no_ticket">No ticket</option>
       </select>
     </label>
     <label>CI artefacts on JIRA
       <select data-gov-filter="ci_artefacts">
         <option value="">Any</option>
-        <option value="both">Both attached</option>
+        <option value="both">Both</option>
         <option value="partial">Partial</option>
         <option value="none">None</option>
-        <option value="not_checked">Not checked yet</option>
+        <option value="not_checked">Not checked</option>
+        <option value="no_ticket">No ticket</option>
       </select>
     </label>
     <label>Checkstyle

@@ -60,6 +60,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Any
 
 from project_health.governance.policy import Rule
 
@@ -191,6 +192,125 @@ def checkstyle_all_succeeded(runs: tuple[CheckstyleEvidence, ...]) -> bool:
     same all-succeeded test `score_code_style_checkstyle` applies, as a
     standalone fact."""
     return bool(runs) and all(r.conclusion == "success" for r in runs)
+
+
+# --- Per-commit evidence facts for the commit-history table (issue #97,
+# orchestrator review of 127bd5a) -----------------------------------------
+#
+# `describe_ci_evidence`/`describe_ci_artefacts` report *what the fetched
+# JIRA evidence actually shows*, independent of `governance-policy.yaml`
+# entirely -- no `effective_from`, no exemption, no "not applicable". A
+# commit's ticket evidence is either not checked yet (the JIRA fetch hasn't
+# reached it), or it has been checked and these functions describe exactly
+# what's there, whatever the date. This is the fix for the orchestrator's
+# 2026-09-28 review of 127bd5a: the table was still reading the *scored*
+# `commit_compliance` row (whose `result` is `exempt`/`not_in_force` for
+# reasons that have nothing to do with whether evidence exists) instead of
+# the raw evidence these two functions take directly -- exactly the
+# `fact_metrics.py` discipline, now applied to the table too.
+
+
+def describe_ci_evidence(commit_date: datetime, evidence: list[CIEvidence]) -> dict[str, Any]:
+    """One JIRA-checked ticket's CI evidence, purely as a fact. `evidence`
+    is the ticket's full list of `CIEvidence` (comment mentions and
+    `ci_summary*`/`results_details*` attachments, already merged by
+    `pipeline._governance_ci_evidence_for_scoring`) -- call this only when
+    the ticket has actually been checked (see `has_ticket_evidence_been_
+    checked`); an unchecked ticket has no evidence list to describe.
+
+    Returns `{"bucket": "before"|"after"|"none", "text": str,
+    "url": str|None, "evidence_at": datetime|None,
+    "lead_time_seconds": int|None}`.
+    """
+    if not evidence:
+        return {
+            "bucket": "none",
+            "text": "none found",
+            "url": None,
+            "evidence_at": None,
+            "lead_time_seconds": None,
+        }
+    at_or_before = [item for item in evidence if item.created_at <= commit_date]
+    if at_or_before:
+        earliest = min(at_or_before, key=lambda item: item.created_at)
+        return {
+            "bucket": "before",
+            "text": (
+                f"{earliest.description}, "
+                f"{_format_lead_time(commit_date, earliest.created_at)} before commit"
+            ),
+            "url": earliest.url,
+            "evidence_at": earliest.created_at,
+            "lead_time_seconds": _lead_time_seconds(commit_date, earliest.created_at),
+        }
+    earliest_after = min(evidence, key=lambda item: item.created_at)
+    return {
+        "bucket": "after",
+        "text": (
+            f"{earliest_after.description}, "
+            f"{_format_lead_time(earliest_after.created_at, commit_date)} after commit"
+        ),
+        "url": earliest_after.url,
+        "evidence_at": earliest_after.created_at,
+        "lead_time_seconds": _lead_time_seconds(commit_date, earliest_after.created_at),
+    }
+
+
+def describe_ci_artefacts(
+    commit_date: datetime, attachments: list[AttachmentEvidence]
+) -> dict[str, Any]:
+    """One JIRA-checked ticket's CI artefact attachments, purely as a fact
+    -- call this only when the ticket has actually been checked. Reports
+    whatever is attached, at any date (this is the fix: the old table
+    showed "not applicable" for a pre-2026-08-19 commit even when its
+    ticket's attachments had been fetched and were sitting right there).
+
+    Returns `{"bucket": "both"|"partial"|"none", "text": str,
+    "evidence_at": datetime|None}`.
+    """
+    ci_summary_hits = sorted(
+        (a for a in attachments if _CI_SUMMARY_RE.search(a.filename)), key=lambda a: a.created_at
+    )
+    results_details_hits = sorted(
+        (a for a in attachments if _RESULTS_DETAILS_RE.search(a.filename)),
+        key=lambda a: a.created_at,
+    )
+    if ci_summary_hits and results_details_hits:
+        evidence_at = max(ci_summary_hits[0].created_at, results_details_hits[0].created_at)
+        timing = (
+            f"{_format_lead_time(commit_date, evidence_at)} before commit"
+            if evidence_at <= commit_date
+            else f"{_format_lead_time(evidence_at, commit_date)} after commit"
+        )
+        return {
+            "bucket": "both",
+            "text": f"ci_summary + results_details attached, {timing}",
+            "evidence_at": evidence_at,
+        }
+    if ci_summary_hits:
+        return {
+            "bucket": "partial",
+            "text": "ci_summary only",
+            "evidence_at": ci_summary_hits[0].created_at,
+        }
+    if results_details_hits:
+        return {
+            "bucket": "partial",
+            "text": "results_details only",
+            "evidence_at": results_details_hits[0].created_at,
+        }
+    return {"bucket": "none", "text": "none found", "evidence_at": None}
+
+
+def has_ticket_evidence_been_checked(
+    issue_keys: tuple[str, ...], fetched_issue_keys: frozenset[str] | set[str]
+) -> bool:
+    """True if any of `issue_keys` has had its JIRA evidence (comments and
+    attachments, fetched together in one pass -- `pipeline._collect_
+    governance_jira_evidence`) actually checked. Shared by
+    `describe_ci_evidence`/`describe_ci_artefacts` callers to decide between
+    "not checked" and a real (possibly empty) evidence description."""
+    return any(key in fetched_issue_keys for key in issue_keys)
 
 
 @dataclass(frozen=True)

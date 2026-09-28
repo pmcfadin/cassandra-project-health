@@ -262,12 +262,33 @@ def _fact_metric_row(
     }
 
 
+def _commit_evidence_row(**overrides) -> dict:
+    """A `commit_evidence` row (issue #97, orchestrator review of 127bd5a) --
+    the raw-evidence-derived facts `governance/commit_evidence.py` computes,
+    which the CI evidence/CI artefacts columns are sourced from (never the
+    scored `commit_compliance` row)."""
+    row = {
+        "sha": "1111111111111111111111111111111111aaaa",
+        "ci_evidence_bucket": "not_checked",
+        "ci_evidence_text": "not checked",
+        "ci_evidence_url": None,
+        "ci_evidence_at": None,
+        "ci_evidence_lead_time_seconds": None,
+        "ci_artefacts_bucket": "not_checked",
+        "ci_artefacts_text": "not checked",
+        "ci_artefacts_at": None,
+    }
+    row.update(overrides)
+    return row
+
+
 def _write_governance_snapshot(
     data_dir: Path,
     run_id: str,
     *,
     compliance_rows: list[dict] | None = None,
     fact_rows: list[dict] | None = None,
+    evidence_rows: list[dict] | None = None,
     metric_rows: list[dict] | None = None,
 ) -> None:
     snapshot_dir = data_dir / "snapshots" / run_id
@@ -283,6 +304,12 @@ def _write_governance_snapshot(
             "commit_fact", pa.Table.from_pylist(fact_rows, schema=get_schema("commit_fact"))
         )
         pq.write_table(table, snapshot_dir / "governance_commit_fact.parquet")
+    if evidence_rows is not None:
+        table = validate(
+            "commit_evidence",
+            pa.Table.from_pylist(evidence_rows, schema=get_schema("commit_evidence")),
+        )
+        pq.write_table(table, snapshot_dir / "governance_commit_evidence.parquet")
     if metric_rows is not None:
         table = _metric_value_table(metric_rows)
         pq.write_table(table, snapshot_dir / "governance_metric_value.parquet")
@@ -356,6 +383,22 @@ def _default_governance_compliance_rows() -> list[dict]:
     ]
 
 
+def _default_governance_evidence_rows() -> list[dict]:
+    """Matches `_default_governance_compliance_rows`'s two commits: commit 1
+    ("...aaaa") references CASSANDRA-90001 but it's never been checked;
+    commit 2 ("...bbbb") is docs-only and references no ticket at all."""
+    return [
+        _commit_evidence_row(sha="1111111111111111111111111111111111aaaa"),
+        _commit_evidence_row(
+            sha="2222222222222222222222222222222222bbbb",
+            ci_evidence_bucket="no_ticket",
+            ci_evidence_text="no ticket referenced",
+            ci_artefacts_bucket="no_ticket",
+            ci_artefacts_text="no ticket referenced",
+        ),
+    ]
+
+
 def _default_governance_metric_rows() -> list[dict]:
     from project_health.governance.fact_metrics import FACT_METRIC_IDS
 
@@ -370,6 +413,7 @@ def _build_site_with_governance(
     *,
     compliance_rows: list[dict] | None = None,
     fact_rows: list[dict] | None = None,
+    evidence_rows: list[dict] | None = None,
     metric_rows: list[dict] | None = None,
     **manifest_kwargs,
 ) -> Path:
@@ -383,6 +427,9 @@ def _build_site_with_governance(
             _default_governance_compliance_rows() if compliance_rows is None else compliance_rows
         ),
         fact_rows=[_commit_fact_row()] if fact_rows is None else fact_rows,
+        evidence_rows=(
+            _default_governance_evidence_rows() if evidence_rows is None else evidence_rows
+        ),
         metric_rows=(_default_governance_metric_rows() if metric_rows is None else metric_rows),
     )
     manifest_kwargs.setdefault("completed_at", BUILD_TIME - timedelta(hours=1))
@@ -676,6 +723,86 @@ def test_governance_page_never_renders_verdict_vocabulary(tmp_path):
 
     assert "currently failing" not in text
     assert "request a correction" not in text
+
+
+def test_no_policy_leak_words_in_json_and_rendered_page(tmp_path):
+    """Orchestrator review of 127bd5a: the CI evidence/CI artefacts columns
+    leaked governance-policy.yaml's own vocabulary -- "not applicable
+    (before 2026-08-19)" -- for an exempt or not_in_force commit under the
+    (unchanged, internal) scoring engine. Never again: "not applicable",
+    "exempt", "in force", "required" and "before <policy date>" must not
+    appear in any published JSON row or on the rendered page, and a
+    pre-2026-08-19 commit whose ticket's attachments were actually fetched
+    must show them."""
+    compliance_rows = _default_governance_compliance_rows() + [
+        # not_in_force under the internal policy engine (before both
+        # reviewer-present's 2020-06-25 and ci-artefacts-attached's
+        # 2026-08-19 effective_from) -- but its ticket's evidence HAS been
+        # fetched and shows both artefacts, well before the commit.
+        _commit_compliance_row(
+            sha="3333333333333333333333333333333333cccc",
+            commit_date=datetime(2018, 3, 1, tzinfo=UTC),
+            check_id="reviewer-present",
+            result="not_in_force",
+            evidence="commit date 2018-03-01 is before rule effective_from 2020-06-25",
+            reason="not in force before 2020-06-25",
+            jira_keys=["CASSANDRA-5000"],
+        ),
+        _commit_compliance_row(
+            sha="3333333333333333333333333333333333cccc",
+            commit_date=datetime(2018, 3, 1, tzinfo=UTC),
+            check_id="ci-artefacts-attached",
+            result="not_in_force",
+            evidence="commit date 2018-03-01 is before rule effective_from 2026-08-19",
+            reason="not in force before 2026-08-19",
+            jira_keys=["CASSANDRA-5000"],
+        ),
+    ]
+    evidence_rows = _default_governance_evidence_rows() + [
+        _commit_evidence_row(
+            sha="3333333333333333333333333333333333cccc",
+            ci_evidence_bucket="before",
+            ci_evidence_text="attachment 'ci_summary.html', 2 days before commit",
+            ci_artefacts_bucket="both",
+            ci_artefacts_text="ci_summary + results_details attached, 2 days before commit",
+        ),
+    ]
+    out_dir, _ = _build_site_with_governance(
+        tmp_path, compliance_rows=compliance_rows, evidence_rows=evidence_rows
+    )
+
+    banned_literal = ("not applicable", "exempt", "in force", "required")
+    banned_date_pattern = re.compile(r"\bbefore \d{4}-\d{2}-\d{2}\b")
+
+    default_payload = json.loads(
+        (out_dir / "data" / "governance-commits-default.json").read_text()
+    )
+    older_payload = json.loads((out_dir / "data" / "governance-commits-older.json").read_text())
+    for payload in (default_payload, older_payload):
+        blob = json.dumps(payload).lower()
+        for word in banned_literal:
+            assert word not in blob, word
+        assert banned_date_pattern.search(blob) is None
+
+    # Scan the filter *options* specifically (not the whole page -- the
+    # older-history toggle's own label, "Include commits before
+    # 2020-06-25", is the owner's own explicit, mandated wording for the
+    # range toggle, not a policy leak in a cell or filter option).
+    full_html = _page_html(out_dir, "governance/")
+    filters_start = full_html.index('<form class="gov-filters"')
+    filters_end = full_html.index("</form>", filters_start)
+    filters_html = _visible_text(full_html[filters_start:filters_end]).lower()
+    for word in banned_literal:
+        assert word not in filters_html, word
+    assert banned_date_pattern.search(filters_html) is None
+
+    # The actual regression: the pre-2026-08-19 commit shows what was
+    # fetched, not a policy dodge.
+    by_sha = {row["sha"]: row for row in default_payload["rows"] + older_payload["rows"]}
+    old_commit = by_sha["3333333333333333333333333333333333cccc"]
+    assert old_commit["ci_artefacts"]["bucket"] == "both"
+    assert "ci_summary" in old_commit["ci_artefacts"]["text"]
+    assert old_commit["ci_evidence"]["bucket"] == "before"
 
 
 def test_governance_page_writes_default_and_older_history_json(tmp_path):

@@ -28,7 +28,6 @@ rules."
 from __future__ import annotations
 
 import json
-import re
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -38,9 +37,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from project_health.governance.checks import (
-    CI_ARTEFACTS_ATTACHED,
     CODE_STYLE_CHECKSTYLE,
-    PRE_COMMIT_CI_EVIDENCE,
 )
 from project_health.governance.fact_metrics import FACT_METRIC_IDS
 from project_health.governance.overrides import DEFAULT_OVERRIDES_PATH, load_overrides
@@ -206,28 +203,16 @@ def _removed_exemptions(policy: Policy) -> list[RemovedExemptionContext]:
 
 # --- Structured evidence -> facts (issue #97) --------------------------------
 #
-# Every function below reads a commit_compliance row's *internal* fields
-# (`result`, `evidence_kind`, `evidence_label`, `evidence_at`,
-# `lead_time_seconds`, `reason`, `evidence_url`) -- produced by the unchanged
-# governance-policy.yaml scoring engine -- and returns a small, JSON-ready
-# fact dict. `result` (pass/fail/unknown/exempt/not_in_force) is read here
-# only to pick which *fact bucket* applies; it is never copied into the
-# returned dict, and no returned text ever uses D14/D15's result vocabulary.
-
-_NOT_IN_FORCE_DATE_RE = re.compile(r"before (\d{4}-\d{2}-\d{2})")
-
-
-def _not_applicable_text(check_row: dict[str, Any]) -> str:
-    """A neutral "why there's nothing to report here" phrase for an
-    `exempt`/`not_in_force` row -- built from `reason`, but never repeating
-    `reason`'s own "not in force before ..." wording verbatim (that phrase is
-    the retired verdict vocabulary; the date fact itself is not)."""
-    result = check_row["result"]
-    reason = check_row.get("reason") or ""
-    if result == "not_in_force":
-        match = _NOT_IN_FORCE_DATE_RE.search(reason)
-        return f"not applicable (before {match.group(1)})" if match else "not applicable"
-    return f"not applicable ({reason})" if reason else "not applicable"
+# `_ci_evidence_fact`/`_ci_artefacts_fact` read a `commit_evidence` row
+# (`governance/commit_evidence.py`, computed directly from raw JIRA
+# evidence -- never from a scored `commit_compliance` row: orchestrator
+# review of 127bd5a found the previous version reading the scored row here,
+# which leaked policy vocabulary -- "not applicable (before 2026-08-19)" --
+# and hid real evidence for a pre-2026-08-19 commit whose ticket had, in
+# fact, been checked). `_checkstyle_fact` and `_reviewer_fact` still read
+# `commit_compliance`, which is safe for them: `code-style-checkstyle` has
+# no exemption and no dated `effective_from`, and `reviewer_detail` is a
+# plain per-commit fact computed independently of any check's result.
 
 
 def _reviewer_fact(reviewer_detail: list[dict[str, str]]) -> dict[str, Any]:
@@ -240,76 +225,60 @@ def _reviewer_fact(reviewer_detail: list[dict[str, str]]) -> dict[str, Any]:
     return {"named": True, "names": reviewer_detail, "text": text}
 
 
-def _ci_evidence_fact(check_row: dict[str, Any] | None) -> dict[str, Any]:
-    """`pre-commit-ci-evidence` -> the "CI evidence" column. Buckets:
-    `before` | `after` | `none` | `not_checked` (design doc: "CI evidence:
-    'ci_summary attached, 2 days before commit', 'CI link in comment, 5 h
-    after commit' or 'none found'")."""
-    empty = {"bucket": "none", "text": "no ticket referenced", "url": None,
-              "evidence_at": None, "lead_time_seconds": None}
-    if check_row is None:
-        return empty
-    result = check_row["result"]
-    if result in ("exempt", "not_in_force"):
-        return {**empty, "text": _not_applicable_text(check_row)}
-    evidence_kind = check_row.get("evidence_kind")
-    if evidence_kind in ("jira_comment_ci_mention", "jira_attachment_ci_artefact"):
-        lead = check_row.get("lead_time_seconds")
-        bucket = "before" if (lead is not None and lead >= 0) else "after"
-        evidence_at = check_row.get("evidence_at")
-        return {
-            "bucket": bucket,
-            "text": check_row.get("evidence_label"),
-            "url": check_row.get("evidence_url"),
-            "evidence_at": evidence_at.isoformat() if evidence_at else None,
-            "lead_time_seconds": lead,
-        }
-    reason = check_row.get("reason") or ""
-    if reason == "ticket not checked yet (backfill)":
-        return {**empty, "bucket": "not_checked", "text": "not checked yet"}
-    if reason == "no ticket referenced":
-        return empty
-    return {**empty, "text": "none found"}
+_NO_TICKET_CI_EVIDENCE = {
+    "bucket": "no_ticket",
+    "text": "no ticket referenced",
+    "url": None,
+    "evidence_at": None,
+    "lead_time_seconds": None,
+}
+_NO_TICKET_CI_ARTEFACTS = {
+    "bucket": "no_ticket",
+    "text": "no ticket referenced",
+    "evidence_at": None,
+}
 
 
-def _ci_artefacts_fact(check_row: dict[str, Any] | None) -> dict[str, Any]:
-    """`ci-artefacts-attached` -> the "CI artefacts on JIRA" column. Buckets:
-    `both` | `partial` | `none` | `not_checked` (design doc: "'ci_summary +
-    results_details attached (09-19)', 'ci_summary only' or 'none'")."""
-    empty = {"bucket": "none", "text": "no ticket referenced", "evidence_at": None}
-    if check_row is None:
-        return empty
-    result = check_row["result"]
-    if result in ("exempt", "not_in_force"):
-        return {**empty, "text": _not_applicable_text(check_row)}
-    if result == "pass":
-        evidence_at = check_row.get("evidence_at")
-        return {
-            "bucket": "both",
-            "text": check_row.get("evidence_label"),
-            "evidence_at": evidence_at.isoformat() if evidence_at else None,
-        }
-    reason = check_row.get("reason") or ""
-    if reason == "ticket not checked yet (backfill)":
-        return {**empty, "bucket": "not_checked", "text": "not checked yet"}
-    if reason == "no ticket referenced":
-        return empty
-    if "results_details missing" in reason:
-        return {**empty, "bucket": "partial", "text": "ci_summary only"}
-    if "ci_summary missing" in reason:
-        return {**empty, "bucket": "partial", "text": "results_details only"}
-    if reason == "artefacts attached only after commit":
-        return {**empty, "text": "attached only after commit"}
-    return {**empty, "text": "none"}
+def _ci_evidence_fact(evidence_row: dict[str, Any] | None) -> dict[str, Any]:
+    """The "CI evidence" column, straight from `commit_evidence` (issue #97,
+    orchestrator review of 127bd5a) -- `evidence_row is None` only for a run
+    whose governance snapshot predates this table, an honest gap rather than
+    a fabricated "no ticket"."""
+    if evidence_row is None:
+        return _NO_TICKET_CI_EVIDENCE
+    evidence_at = evidence_row["ci_evidence_at"]
+    return {
+        "bucket": evidence_row["ci_evidence_bucket"],
+        "text": evidence_row["ci_evidence_text"],
+        "url": evidence_row["ci_evidence_url"],
+        "evidence_at": evidence_at.isoformat() if evidence_at else None,
+        "lead_time_seconds": evidence_row["ci_evidence_lead_time_seconds"],
+    }
+
+
+def _ci_artefacts_fact(evidence_row: dict[str, Any] | None) -> dict[str, Any]:
+    """The "CI artefacts on JIRA" column, straight from `commit_evidence`
+    (issue #97, orchestrator review of 127bd5a)."""
+    if evidence_row is None:
+        return _NO_TICKET_CI_ARTEFACTS
+    evidence_at = evidence_row["ci_artefacts_at"]
+    return {
+        "bucket": evidence_row["ci_artefacts_bucket"],
+        "text": evidence_row["ci_artefacts_text"],
+        "evidence_at": evidence_at.isoformat() if evidence_at else None,
+    }
 
 
 def _checkstyle_fact(check_row: dict[str, Any] | None) -> dict[str, Any]:
     """`code-style-checkstyle` -> the "Checkstyle" column. Buckets: `success`
     | `failure` | `none` (design doc: "'ant-check-jdk11 success/failure' or
     'no check-run recorded'"). `check_row is None` means the check didn't
-    even apply to this commit's branch (pre-4.1)."""
+    even apply to this commit's branch (pre-4.1) -- same plain "no
+    check-run recorded" text as any other reason there's nothing to show,
+    since a branch not being covered is itself just a fact, not a policy
+    exemption."""
     if check_row is None:
-        return {"bucket": "none", "text": "not applicable (pre-4.1 branch)", "url": None}
+        return {"bucket": "none", "text": "no check-run recorded", "url": None}
     result = check_row["result"]
     if result == "pass":
         return {"bucket": "success", "text": check_row.get("evidence_label"),
@@ -343,12 +312,18 @@ def _tags(checks_by_id: dict[str, dict[str, Any]], ninja_declared: bool | None) 
 
 
 def _merge_commit_rows(
-    compliance_rows: list[dict[str, Any]], fact_rows: list[dict[str, Any]]
+    compliance_rows: list[dict[str, Any]],
+    fact_rows: list[dict[str, Any]],
+    evidence_rows: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
     """One fact dict per commit -- the shape the per-commit table's JSON data
     files and row expansion are built from. Never carries a `result`/`state`
-    field (issue #97: facts only)."""
+    field (issue #97: facts only). `evidence_rows` (issue #97, orchestrator
+    review of 127bd5a) is `commit_evidence`'s raw-evidence-derived CI facts,
+    keyed by sha -- the CI evidence/CI artefacts columns come from there,
+    never from `compliance_rows`."""
     facts_by_sha = {row["sha"]: row for row in fact_rows}
+    evidence_by_sha = {row["sha"]: row for row in evidence_rows}
     by_sha: dict[str, dict[str, Any]] = {}
     checks_by_sha: dict[str, dict[str, dict[str, Any]]] = {}
 
@@ -376,8 +351,9 @@ def _merge_commit_rows(
 
     for sha, commit in by_sha.items():
         checks = checks_by_sha[sha]
-        commit["ci_evidence"] = _ci_evidence_fact(checks.get(PRE_COMMIT_CI_EVIDENCE))
-        commit["ci_artefacts"] = _ci_artefacts_fact(checks.get(CI_ARTEFACTS_ATTACHED))
+        evidence_row = evidence_by_sha.get(sha)
+        commit["ci_evidence"] = _ci_evidence_fact(evidence_row)
+        commit["ci_artefacts"] = _ci_artefacts_fact(evidence_row)
         commit["checkstyle"] = _checkstyle_fact(checks.get(CODE_STYLE_CHECKSTYLE))
         fact = facts_by_sha.get(sha)
         commit["changes_txt_touched"] = bool(fact["changes_txt_touched"]) if fact else False
@@ -615,12 +591,19 @@ def build_governance_page_context(
     fact_table = _read_optional_snapshot_table(
         data_dir, run_id, "governance_commit_fact.parquet", "commit_fact"
     )
+    # issue #97 (orchestrator review of 127bd5a): the CI evidence/CI
+    # artefacts columns come from this raw-evidence-derived table, never
+    # from `compliance_table` -- see `governance/commit_evidence.py`.
+    evidence_table = _read_optional_snapshot_table(
+        data_dir, run_id, "governance_commit_evidence.parquet", "commit_evidence"
+    )
     governance_metrics_table = _read_optional_snapshot_table(
         data_dir, run_id, "governance_metric_value.parquet", "metric_value"
     )
 
     compliance_rows = compliance_table.to_pylist()
     fact_rows = fact_table.to_pylist()
+    evidence_rows = evidence_table.to_pylist()
     governance_metric_rows = governance_metrics_table.to_pylist()
 
     has_data = bool(compliance_rows)
@@ -648,7 +631,7 @@ def build_governance_page_context(
             default_range_start=DEFAULT_RANGE_START.isoformat(),
         )
 
-    commit_rows = _merge_commit_rows(compliance_rows, fact_rows)
+    commit_rows = _merge_commit_rows(compliance_rows, fact_rows, evidence_rows)
     default_rows = [c for c in commit_rows if c["commit_date"].date() >= DEFAULT_RANGE_START]
     older_rows = [c for c in commit_rows if c["commit_date"].date() < DEFAULT_RANGE_START]
 

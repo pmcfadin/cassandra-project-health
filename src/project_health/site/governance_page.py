@@ -176,7 +176,7 @@ class RemovedExemptionContext:
     a small note next to the policy table rather than silently vanishing --
     D2 rule 6, "nothing changes silently"."""
 
-    rule_id: str
+    rule_ids: list[str]
     exemption_id: str
     reason: str
 
@@ -194,17 +194,26 @@ class PolicyContext:
 
 
 def _removed_exemptions(policy: Policy) -> list[RemovedExemptionContext]:
-    removed = []
+    """One entry per removed exemption id, listing every rule it was removed
+    from. Rules may repeat an exemption's removal with a short cross-reference
+    reason ("see reviewer-present..."), so the longest reason is kept."""
+    by_id: dict[str, RemovedExemptionContext] = {}
     for rule in policy.rules.values():
         for item in rule.raw.get("removed_in_v2") or []:
-            removed.append(
-                RemovedExemptionContext(
-                    rule_id=rule.id,
-                    exemption_id=item["id"],
-                    reason=(item.get("reason") or "").strip(),
+            exemption_id = item["id"]
+            reason = " ".join((item.get("reason") or "").split())
+            existing = by_id.get(exemption_id)
+            if existing is None:
+                by_id[exemption_id] = RemovedExemptionContext(
+                    rule_ids=[rule.id], exemption_id=exemption_id, reason=reason
                 )
-            )
-    return removed
+            else:
+                existing.rule_ids.append(rule.id)
+                if len(reason) > len(existing.reason):
+                    by_id[exemption_id] = RemovedExemptionContext(
+                        rule_ids=existing.rule_ids, exemption_id=exemption_id, reason=reason
+                    )
+    return list(by_id.values())
 
 
 def _policy_context(policy: Policy, overrides_count: int) -> PolicyContext:

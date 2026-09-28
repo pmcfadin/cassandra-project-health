@@ -60,13 +60,16 @@
     </table>
   </details>
   {% if governance.policy.removed_exemptions %}
-  <p class="governance-note governance-removed-in-v2">
-    <strong>Removed in v2 (D24):</strong>
+  <div class="governance-note governance-removed-in-v2">
+    <strong>Exemptions removed in v2 (D24: no official source):</strong>
+    <ul>
     {% for removed in governance.policy.removed_exemptions %}
-      <code>{{ removed.exemption_id }}</code> (was an exemption on <code>{{ removed.rule_id }}</code>) &mdash;
-      {{ removed.reason }}{% if not loop.last %}; {% endif %}
+      <li><code>{{ removed.exemption_id }}</code> (was an exemption on
+        {% for rid in removed.rule_ids %}<code>{{ rid }}</code>{% if not loop.last %}, {% endif %}{% endfor %})
+        &mdash; {{ removed.reason }}</li>
     {% endfor %}
-  </p>
+    </ul>
+  </div>
   {% endif %}
 </section>
 {% endif %}

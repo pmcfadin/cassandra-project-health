@@ -98,7 +98,7 @@
         {% endif %}
       </p>
       {% if chart.has_data %}
-      <div class="chart" data-vega-spec='{{ chart.vega_spec_json }}' role="img" aria-label="Monthly rate for {{ chart.check_id }}">
+      <div class="chart" data-vega-spec='{{ chart.vega_spec_json }}' role="img" aria-label="Monthly rate for {{ chart.name }}">
         <noscript>Enable JavaScript to see the {{ chart.name }} trend chart, or use the data links below.</noscript>
       </div>
       {% else %}

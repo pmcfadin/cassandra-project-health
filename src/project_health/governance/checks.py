@@ -140,6 +140,59 @@ def is_ci_artefact_filename(filename: str) -> bool:
     return bool(_CI_SUMMARY_RE.search(filename) or _RESULTS_DETAILS_RE.search(filename))
 
 
+def has_cassandra_issue_key(issue_keys: tuple[str, ...]) -> bool:
+    """True if any of `issue_keys` is a `CASSANDRA-N` key specifically (not
+    a CEP or other project's key) -- the public wrapper of the same
+    `_CASSANDRA_ISSUE_KEY_RE` match `score_reviewer_present`'s fail
+    condition uses, exposed for `governance/fact_metrics.py` (issue #97 D25
+    amendment): "a CASSANDRA key is referenced" is a plain fact about the
+    commit message, independent of any policy rule."""
+    return _has_cassandra_issue_key(issue_keys)
+
+
+# --- Policy-free fact helpers (issue #97, D25 amendment) --------------------
+#
+# `governance/fact_metrics.py`'s monthly trend rates are computed directly
+# from these -- never from a scored `commit_compliance` row, whose `result`
+# can be `exempt`/`not_in_force` for reasons that have nothing to do with
+# whether the underlying evidence exists (D25: "the site is informational;
+# it publishes no policy and no verdicts" extends to the trend numbers, not
+# just the per-commit table).
+
+
+def ci_evidence_at_or_before(
+    commit_date: datetime, evidence: list[CIEvidence]
+) -> bool:
+    """True if any `CIEvidence` (JIRA comment mention or attachment) in
+    `evidence` is dated at or before `commit_date` -- the same "before" test
+    `score_pre_commit_ci_evidence` applies, as a standalone fact."""
+    return any(item.created_at <= commit_date for item in evidence)
+
+
+def both_ci_artefacts_at_or_before(
+    commit_date: datetime, attachments: list[AttachmentEvidence]
+) -> bool:
+    """True if `attachments` includes both a `ci_summary*` and a
+    `results_details*`/`result_details*` attachment, each dated at or before
+    `commit_date` -- the same test `score_ci_artefacts_attached` applies, as
+    a standalone fact (no exemption/fetched-key gating)."""
+    ci_summary_ok = any(
+        _CI_SUMMARY_RE.search(a.filename) and a.created_at <= commit_date for a in attachments
+    )
+    results_details_ok = any(
+        _RESULTS_DETAILS_RE.search(a.filename) and a.created_at <= commit_date
+        for a in attachments
+    )
+    return ci_summary_ok and results_details_ok
+
+
+def checkstyle_all_succeeded(runs: tuple[CheckstyleEvidence, ...]) -> bool:
+    """True if `runs` is non-empty and every run concluded `success` -- the
+    same all-succeeded test `score_code_style_checkstyle` applies, as a
+    standalone fact."""
+    return bool(runs) and all(r.conclusion == "success" for r in runs)
+
+
 @dataclass(frozen=True)
 class CommitFacts:
     """One commit's collected, evidence-agnostic facts — everything the

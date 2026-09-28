@@ -42,7 +42,7 @@ from project_health.governance.checks import (
     CODE_STYLE_CHECKSTYLE,
     PRE_COMMIT_CI_EVIDENCE,
 )
-from project_health.governance.engine import SCORED_CHECK_IDS
+from project_health.governance.fact_metrics import FACT_METRIC_IDS
 from project_health.governance.overrides import DEFAULT_OVERRIDES_PATH, load_overrides
 from project_health.governance.policy import DEFAULT_POLICY_PATH, Policy
 from project_health.schema import get_schema, validate
@@ -476,15 +476,19 @@ def _trend_vega_spec(records: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def _compliance_trend_context(governance_metric_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """One neutral, single-series monthly-share chart per fact-based trend
+    metric (`fact_metrics.FACT_METRIC_IDS`) -- issue #97, D25 amendment.
+    `governance_metric_rows` is the *entire* `governance_metric_value.parquet`
+    snapshot, which also still carries the internal-only policy pass-rate
+    rows (`governance/metrics.py`); this function only ever reads the fact
+    metric_ids, so those internal rows are silently ignored here, never
+    rendered."""
     rows_by_metric: dict[str, list[dict[str, Any]]] = {}
     for row in governance_metric_rows:
         rows_by_metric.setdefault(row["metric_id"], []).append(row)
 
-    from project_health.governance.metrics import metric_id_for_check
-
     charts = []
-    for check_id in SCORED_CHECK_IDS:
-        metric_id = metric_id_for_check(check_id)
+    for metric_id in FACT_METRIC_IDS:
         rows = sorted(rows_by_metric.get(metric_id, []), key=lambda r: r["window_start"])
         records = []
         for row in rows:
@@ -499,7 +503,7 @@ def _compliance_trend_context(governance_metric_rows: list[dict[str, Any]]) -> l
         spec = _trend_vega_spec(records)
         charts.append(
             {
-                "check_id": check_id,
+                "metric_id": metric_id,
                 "vega_spec_json": json.dumps(spec),
                 "has_data": bool(rows),
             }

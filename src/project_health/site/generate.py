@@ -52,7 +52,6 @@ import pyarrow.parquet as pq
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from project_health import storage
-from project_health.governance.metrics import metric_id_for_check
 from project_health.metrics.windows import add_months, month_start
 from project_health.schema import get_schema, validate
 from project_health.site import chart_spec
@@ -215,6 +214,18 @@ def generate(
 
     out_dir.mkdir(parents=True, exist_ok=True)
     data_out = out_dir / "data"
+    # A regeneration into an existing `out_dir` (e.g. a persistent site
+    # checkout) must never leave a stale per-metric download behind once
+    # that metric_id is no longer registered -- issue #97 (D25 amendment,
+    # orchestrator review) found exactly this: the old
+    # `governance_*_pass_rate.json`/`.csv` files kept being served from a
+    # prior run even after they were dropped from `GOVERNANCE_METRICS`.
+    # Every file this function writes into `data/` (per-metric downloads
+    # here, plus the governance commit-history JSON `_render_pages` writes
+    # below) is rebuilt fresh within this same call, so clearing the whole
+    # directory first is safe.
+    if data_out.is_dir():
+        shutil.rmtree(data_out)
     data_out.mkdir(parents=True, exist_ok=True)
 
     for metric_id, series in series_by_id.items():
@@ -603,8 +614,8 @@ _SECURITY_CHECK_NOTES: dict[str, str] = {
     "Code-Review": (
         "This check only counts approved GitHub pull-request reviews. Cassandra's actual "
         "review process runs through commit-message trailers (“patch by X; reviewed by "
-        "Y”) and JIRA reviewer fields, both invisible to it — see this page's own "
-        "governance compliance results above for the real review-coverage numbers "
+        "Y”) and JIRA reviewer fields, both invisible to it — see the reviewer column in "
+        "the commit history above "
         "(verified: RESEARCH.md §6.2, GOVERNANCE.md R1)."
     ),
     "Branch-Protection": (
@@ -1001,11 +1012,11 @@ def _render_pages(
     }
     governance_trend_cards = []
     for chart in governance_context.compliance_trends:
-        card = governance_cards_by_metric.get(metric_id_for_check(chart["check_id"]))
+        card = governance_cards_by_metric.get(chart["metric_id"])
         governance_trend_cards.append(
             {
-                "check_id": chart["check_id"],
-                "name": card["name"] if card else chart["check_id"],
+                "metric_id": chart["metric_id"],
+                "name": card["name"] if card else chart["metric_id"],
                 "latest_value_display": card["latest_value_display"] if card else None,
                 "latest_month_label": card["latest_month_label"] if card else None,
                 # issue #86: the check's own card already computed its

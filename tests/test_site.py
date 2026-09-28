@@ -200,6 +200,11 @@ def _commit_fact_row(**overrides) -> dict:
 def _governance_metric_row(
     check_id: str, window_start: date, window_end: date, counts: dict
 ) -> dict:
+    """A row for one of `governance/metrics.py`'s v1.0 policy pass-rate
+    metric_ids -- issue #97, D25 amendment: these are internal-only now
+    (never registered in `metrics_meta.GOVERNANCE_METRICS`, so never
+    rendered/exported), kept here only for tests that exercise
+    `governance/metrics.py` itself."""
     from project_health.governance.metrics import metric_id_for_check
 
     scored = counts.get("pass", 0) + counts.get("fail", 0) + counts.get("unknown", 0)
@@ -225,6 +230,35 @@ def _governance_metric_row(
                 "total_including_exempt_and_not_in_force": total,
             }
         ),
+    }
+
+
+def _fact_metric_row(
+    metric_id: str,
+    window_start: date,
+    window_end: date,
+    *,
+    hit: int,
+    n: int,
+    extra: dict | None = None,
+) -> dict:
+    """A row for one of `governance/fact_metrics.py`'s v1.0 fact-based trend
+    metric_ids -- issue #97, D25 amendment: these are what the Governance
+    page's trend cards actually render."""
+    details = {"n_total": n}
+    if extra:
+        details.update(extra)
+    return {
+        "metric_id": metric_id,
+        "definition_version": "1.0",
+        "window_start": window_start,
+        "window_end": window_end,
+        "value": (hit / n) if n else None,
+        "n": n,
+        "flag": "ok" if n else "insufficient_data",
+        "run_id": RUN_ID,
+        "computed_at": datetime(2026, 9, 25, 6, 30, tzinfo=UTC),
+        "details_json": json.dumps(details),
     }
 
 
@@ -323,15 +357,11 @@ def _default_governance_compliance_rows() -> list[dict]:
 
 
 def _default_governance_metric_rows() -> list[dict]:
-    counts = {"pass": 5, "fail": 1, "unknown": 2, "exempt": 1, "not_in_force": 0}
+    from project_health.governance.fact_metrics import FACT_METRIC_IDS
+
     return [
-        _governance_metric_row(check_id, date(2026, 7, 1), date(2026, 7, 31), counts)
-        for check_id in (
-            "reviewer-present",
-            "jira-ticket-referenced",
-            "pre-commit-ci-evidence",
-            "code-style-checkstyle",
-        )
+        _fact_metric_row(metric_id, date(2026, 7, 1), date(2026, 7, 31), hit=5, n=8)
+        for metric_id in FACT_METRIC_IDS
     ]
 
 
@@ -725,7 +755,7 @@ def test_governance_page_shows_neutral_trend_cards_and_ninja_trend(tmp_path):
     assert "Monthly rates" in html_text
     assert 'Declares "ninja"' in html_text
     assert "descriptive only" in html_text
-    spec = _extract_vega_spec(html_text, "Monthly rate for reviewer-present")
+    spec = _extract_vega_spec(html_text, "Monthly rate for Commits with a named reviewer")
     for value in spec["data"]["values"]:
         assert "state" not in value
         assert set(value) <= {"month", "share", "n", "flag", "low_n"}
@@ -1415,12 +1445,33 @@ def test_every_registered_metric_declares_a_nonempty_source_mapping():
         assert M0_METRICS[metric_id].sources, f"{metric_id} declares no sources"
 
 
-def test_every_governance_check_declares_a_nonempty_source_mapping():
-    from project_health.governance.registry import _CHECK_IDS
-    from project_health.governance.metrics import metric_id_for_check
+def test_no_governance_metric_has_a_non_null_direction_of_good():
+    """Issue #97 (D25 amendment, orchestrator review): the fact-based trend
+    metrics are descriptive, never judged good/bad by this project --
+    `direction_of_good` must be the actual `None` (JSON `null`), not just a
+    falsy-looking string."""
+    for metric_id, meta in GOVERNANCE_METRICS.items():
+        assert meta.direction_of_good is None, (metric_id, meta.direction_of_good)
 
-    expected_metric_ids = {metric_id_for_check(check_id) for check_id in _CHECK_IDS}
-    assert expected_metric_ids == set(GOVERNANCE_METRICS)
+
+def test_no_data_file_has_pass_rate_in_its_name(tmp_path):
+    """Issue #97 (D25 amendment, orchestrator review): the policy-derived
+    `governance_*_pass_rate` metrics are internal only now -- `generate.py`
+    must never write their `data/*.json`/`.csv` download files, even though
+    `governance/metrics.py` still computes them into the snapshot."""
+    out_dir, _ = _build_site_with_governance(tmp_path)
+    data_dir_files = [p.name for p in (out_dir / "data").iterdir()]
+    offenders = [name for name in data_dir_files if "pass_rate" in name]
+    assert offenders == []
+
+
+def test_every_governance_check_declares_a_nonempty_source_mapping():
+    """Issue #97 (D25 amendment): `GOVERNANCE_METRICS` registers the
+    fact-based trend metric_ids (what the page renders), not the internal
+    policy pass-rate ones."""
+    from project_health.governance.fact_metrics import FACT_METRIC_IDS
+
+    assert set(FACT_METRIC_IDS) == set(GOVERNANCE_METRICS)
     for metric_id, meta in GOVERNANCE_METRICS.items():
         assert meta.sources, f"{metric_id} declares no sources"
 
@@ -1464,10 +1515,17 @@ def test_metric_source_mappings_match_the_actual_engine_queries_and_collectors()
     # regex, and the CI-evidence/checkstyle evidence collectors
     # (JiraCommentsCollector/GitHubChecksCollector) have no manifest.sources
     # entry of their own to attribute a badge to.
-    assert GOVERNANCE_METRICS["governance_reviewer_present_pass_rate"].sources == ("git", "jira")
-    assert GOVERNANCE_METRICS["governance_jira_ticket_referenced_pass_rate"].sources == ("git",)
-    assert GOVERNANCE_METRICS["governance_pre_commit_ci_evidence_pass_rate"].sources == ("git",)
-    assert GOVERNANCE_METRICS["governance_code_style_checkstyle_pass_rate"].sources == ("git",)
+    assert GOVERNANCE_METRICS["governance_commits_with_named_reviewer_share"].sources == (
+        "git",
+        "jira",
+    )
+    assert GOVERNANCE_METRICS["governance_commits_with_ticket_share"].sources == ("git",)
+    assert GOVERNANCE_METRICS[
+        "governance_commits_with_ci_evidence_before_commit_share"
+    ].sources == ("git",)
+    assert GOVERNANCE_METRICS["governance_commits_with_checkstyle_success_share"].sources == (
+        "git",
+    )
 
     # Leaderboard: commits/reviews are git-only (reviews credit
     # commit_trailer only, same as reviewer_hhi), jira_issues_resolved is
@@ -1871,7 +1929,7 @@ def test_governance_trend_charts_are_windowed_and_show_n_and_flag(tmp_path):
     html_text = _page_html(out_dir, "governance/")
 
     assert "data-chart-window-toggle" in html_text
-    spec = _extract_vega_spec(html_text, "Monthly rate for reviewer-present")
+    spec = _extract_vega_spec(html_text, "Monthly rate for Commits with a named reviewer")
 
     assert "usermeta" in spec
     assert len(spec["layer"]) == 2

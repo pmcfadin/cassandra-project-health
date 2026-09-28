@@ -2074,11 +2074,20 @@ class TestGovernanceIntegration:
         )
         assert metrics.num_rows > 0
         assert {r["metric_id"] for r in metrics.to_pylist()} <= {
+            # v1.0 policy-derived pass-rate metrics (issue #36) -- internal
+            # only since issue #97's D25 amendment (never rendered/exported).
             "governance_reviewer_present_pass_rate",
             "governance_jira_ticket_referenced_pass_rate",
             "governance_pre_commit_ci_evidence_pass_rate",
             "governance_ci_artefacts_attached_pass_rate",
             "governance_code_style_checkstyle_pass_rate",
+            # v1.0 fact-based trend metrics (issue #97, D25 amendment) --
+            # these are what the Governance page's trend cards render.
+            "governance_commits_with_named_reviewer_share",
+            "governance_commits_with_ticket_share",
+            "governance_commits_with_ci_evidence_before_commit_share",
+            "governance_commits_with_both_ci_artefacts_share",
+            "governance_commits_with_checkstyle_success_share",
         }
 
     def test_github_checks_outage_still_scores_other_checks_with_unknown(

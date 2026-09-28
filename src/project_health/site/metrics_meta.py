@@ -579,6 +579,16 @@ GOVERNANCE_METRICS: dict[str, MetricMeta] = {
         page="governance",
         sources=("git",),
     ),
+    "governance_ci_artefacts_attached_pass_rate": MetricMeta(
+        metric_id="governance_ci_artefacts_attached_pass_rate",
+        name="CI Artefacts Attached — Pass Rate",
+        dimension="governance",
+        tier="proxy",
+        direction_of_good="higher",
+        value_kind="percent",
+        page="governance",
+        sources=("git",),
+    ),
     "governance_code_style_checkstyle_pass_rate": MetricMeta(
         metric_id="governance_code_style_checkstyle_pass_rate",
         name="Checkstyle — Pass Rate",

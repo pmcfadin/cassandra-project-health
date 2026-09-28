@@ -22,21 +22,31 @@ def policy():
 
 
 def test_top_level_fields(policy):
-    assert policy.version == 1
-    assert policy.policy_name == "cassandra-governance-v1"
+    assert policy.version == 2
+    assert policy.policy_name == "cassandra-governance-v2"
     assert policy.approved_by == "pmcfadin"
-    assert policy.approved_on == date(2026, 9, 25)
+    assert policy.approved_on == date(2026, 9, 27)
 
 
-def test_all_four_scored_checks_present(policy):
+def test_all_scored_checks_present(policy):
     for check_id in (
         "reviewer-present",
         "jira-ticket-referenced",
         "pre-commit-ci-evidence",
+        "ci-artefacts-attached",
         "code-style-checkstyle",
     ):
         rule = policy.rule(check_id)
         assert rule.id == check_id
+
+
+def test_source_types_whitelist(policy):
+    assert policy.source_types == ("ratified_governance", "official_docs", "official_tooling")
+
+
+def test_docs_only_paths_present(policy):
+    assert "**/*.md" in policy.docs_only_paths
+    assert "doc/**" in policy.docs_only_paths
 
 
 def test_unscored_rules_marked_not_scored(policy):
@@ -65,35 +75,36 @@ class TestReviewerPresentRule:
         assert rule.applies_to_branch("cassandra-4.1") is True
         assert rule.applies_to_branch("some-feature-branch") is False
 
-    def test_ninja_exemption(self, policy):
+    def test_ninja_no_longer_an_exemption_in_v2(self, policy):
+        """D24/issue #93: v2 removed the unsourced `ninja` exemption
+        entirely -- a self-declared ninja commit message alone (no
+        docs-only paths) no longer matches any exemption."""
         rule = policy.rule("reviewer-present")
-        exemption = rule.matching_exemption("ninjafix - links in CONTRIBUTING.md")
+        assert rule.matching_exemption("ninjafix - links in CONTRIBUTING.md") is None
+
+    def test_submodule_repin_no_longer_an_exemption_in_v2(self, policy):
+        rule = policy.rule("reviewer-present")
+        assert rule.matching_exemption("repin accord submodule") is None
+
+    def test_commit_then_review_exempts_docs_only_change(self, policy):
+        rule = policy.rule("reviewer-present")
+        exemption = rule.matching_exemption(
+            "ninjafix - links in CONTRIBUTING.md", changed_paths=("CONTRIBUTING.md",)
+        )
         assert exemption is not None
-        assert exemption.id == "ninja"
+        assert exemption.id == "commit-then-review"
 
-    def test_ninja_exemption_requires_word_boundary(self, policy):
-        rule = policy.rule("reviewer-present")
-        # "ninjas" contains "ninja" but the pattern is \bninja(fix)?\b --
-        # "ninjas" doesn't match because "s" glues onto the boundary.
-        assert rule.matching_exemption("we are not ninjas here") is None
-
-    def test_release_housekeeping_version_increment_first_line_only(self, policy):
+    def test_release_process_version_increment_first_line_only(self, policy):
         rule = policy.rule("reviewer-present")
         exemption = rule.matching_exemption("increment to version 5.0.10")
         assert exemption is not None
-        assert exemption.id == "release-housekeeping"
+        assert exemption.id == "release-process"
 
-    def test_release_housekeeping_debian_changelog(self, policy):
+    def test_release_process_debian_changelog(self, policy):
         rule = policy.rule("reviewer-present")
         exemption = rule.matching_exemption("Prepare debian changelog for 3.11.19")
         assert exemption is not None
-        assert exemption.id == "release-housekeeping"
-
-    def test_release_housekeeping_submodule_repin(self, policy):
-        rule = policy.rule("reviewer-present")
-        exemption = rule.matching_exemption("repin accord submodule")
-        assert exemption is not None
-        assert exemption.id == "release-housekeeping"
+        assert exemption.id == "release-process"
 
     def test_version_increment_pattern_is_first_line_scoped(self, policy):
         rule = policy.rule("reviewer-present")
@@ -135,8 +146,36 @@ class TestPreCommitCiEvidenceRule:
     def test_no_fail_allowed(self, policy):
         assert policy.rule("pre-commit-ci-evidence").fail_allowed is False
 
-    def test_no_exemptions(self, policy):
-        assert policy.rule("pre-commit-ci-evidence").exemptions == ()
+    def test_v2_exemptions_not_code_and_release_process(self, policy):
+        exemption_ids = {e.id for e in policy.rule("pre-commit-ci-evidence").exemptions}
+        assert exemption_ids == {"not-code", "release-process"}
+
+    def test_not_code_exemption_via_docs_only_change(self, policy):
+        rule = policy.rule("pre-commit-ci-evidence")
+        exemption = rule.matching_exemption("typo fix", changed_paths=("README.md",))
+        assert exemption is not None
+        assert exemption.id == "not-code"
+
+    def test_release_process_exemption_resolved_from_same_as(self, policy):
+        rule = policy.rule("pre-commit-ci-evidence")
+        exemption = rule.matching_exemption("Prepare debian changelog for 3.11.19")
+        assert exemption is not None
+        assert exemption.id == "release-process"
+        assert exemption.same_as is None  # resolved away by load_policy
+
+
+class TestCiArtefactsAttachedRule:
+    def test_fail_allowed_effective_2026_08_19(self, policy):
+        rule = policy.rule("ci-artefacts-attached")
+        assert rule.fail_allowed is True
+        assert rule.effective_from == date(2026, 8, 19)
+
+    def test_exemptions_resolved_via_same_as(self, policy):
+        rule = policy.rule("ci-artefacts-attached")
+        exemption_ids = {e.id for e in rule.exemptions}
+        assert exemption_ids == {"not-code", "release-process"}
+        not_code = next(e for e in rule.exemptions if e.id == "not-code")
+        assert not_code.detection == "docs_only_change"
 
 
 class TestJiraTicketReferencedRule:

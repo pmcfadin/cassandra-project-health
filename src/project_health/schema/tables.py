@@ -604,6 +604,14 @@ COMMIT_FACT = pa.schema(
         pa.field("changes_txt_touched", pa.bool_(), nullable=False),
         pa.field("news_txt_touched", pa.bool_(), nullable=False),
         pa.field("test_touched", pa.bool_(), nullable=False),
+        # v2 (issue #93): does the commit message self-declare "ninja"/
+        # "ninjafix" by the retired v1 exemption pattern (`governance.checks.
+        # is_ninja_declared`) -- descriptive only (governance-policy.yaml
+        # `reviewer-present.descriptive_signal[0]`, id `ninja-count-trend`),
+        # never fed into scoring. Nullable for a partition written before
+        # this column existed (`storage._backfill_missing_columns`); the
+        # site's ninja-count-trend chart treats null the same as false.
+        pa.field("ninja_declared", pa.bool_(), nullable=True),
     ]
 )
 
@@ -675,6 +683,40 @@ GOVERNANCE_CI_EVIDENCE = pa.schema(
         pa.field("comment_created_at", pa.string(), nullable=True),
         pa.field("matched_term", pa.string(), nullable=True),
         pa.field("matched_url", pa.string(), nullable=True),
+        pa.field("source_snapshot_id", pa.string(), nullable=False),
+        # v2 (issue #93): which `pre-commit-ci-evidence.check_method`
+        # `evidence_source` this row is ('jira_comment_ci_mention' |
+        # 'jira_attachment_ci_artefact') -- null for a partition written
+        # before this column existed (`storage._backfill_missing_columns`),
+        # which is always a comment-mention row (attachments didn't exist as
+        # an evidence source yet), so pipeline read code treats
+        # `evidence_source is None` as `'jira_comment_ci_mention'`.
+        pa.field("evidence_source", pa.string(), nullable=True),
+    ]
+)
+
+# `GOVERNANCE_JIRA_ATTACHMENT` is one row per (issue_key, attachment) for
+# `ci-artefacts-attached`'s (and, filtered to ci_summary*/results_details*,
+# `pre-commit-ci-evidence`'s) JIRA-attachment evidence source (issue #93) --
+# **filename, created timestamp and attachment id only, never content**
+# (same D1/D16 "never the body" discipline `GOVERNANCE_CI_EVIDENCE` already
+# applies to comments). One issue can have many attachments, so (unlike
+# `GOVERNANCE_CI_EVIDENCE`, which only ever needs the *first* comment match)
+# this table is genuinely one-row-per-attachment; a checked issue with zero
+# attachments still gets exactly one row, `attachment_id`/`filename`/
+# `attachment_created_at` all null, so "checked, nothing there" (`unknown`
+# case (a) is ruled out, `fail` becomes possible) stays distinct from "never
+# checked at all" (`unknown`, backfill budget) without a second state file —
+# the same sentinel-row technique `GOVERNANCE_CHECK_RUN` already uses for
+# "no checkstyle run found for this sha".
+GOVERNANCE_JIRA_ATTACHMENT = pa.schema(
+    [
+        pa.field("issue_key", pa.string(), nullable=False),
+        pa.field("issue_updated_at", TIMESTAMP_UTC, nullable=False),
+        pa.field("checked_at", TIMESTAMP_UTC, nullable=False),
+        pa.field("attachment_id", pa.string(), nullable=True),
+        pa.field("filename", pa.string(), nullable=True),
+        pa.field("attachment_created_at", TIMESTAMP_UTC, nullable=True),
         pa.field("source_snapshot_id", pa.string(), nullable=False),
     ]
 )
@@ -967,6 +1009,7 @@ TABLE_SCHEMAS: dict[str, pa.Schema] = {
     # above is just this module's own naming choice).
     "commit_record": GOVERNANCE_COMMIT_RECORD,
     "ci_evidence": GOVERNANCE_CI_EVIDENCE,
+    "jira_attachment": GOVERNANCE_JIRA_ATTACHMENT,
     "check_run": GOVERNANCE_CHECK_RUN,
     "classification": CLASSIFICATION,
     "contributor_leaderboard": CONTRIBUTOR_LEADERBOARD,

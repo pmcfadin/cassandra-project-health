@@ -163,9 +163,22 @@ class PolicyRuleContext:
     id: str
     description: str
     source_url: str | None
+    source_type: str | None
+    source_quote: str | None
     effective_from: str | None
     fail_allowed: bool
     scored: bool
+
+
+@dataclass(frozen=True)
+class RemovedExemptionContext:
+    """D24/issue #93: an exemption v2 dropped (no official source), shown in
+    a small note next to the policy table rather than silently vanishing --
+    D2 rule 6, "nothing changes silently"."""
+
+    rule_id: str
+    exemption_id: str
+    reason: str
 
 
 @dataclass(frozen=True)
@@ -177,6 +190,21 @@ class PolicyContext:
     overrides_url: str
     overrides_count: int
     rules: list[PolicyRuleContext]
+    removed_exemptions: list[RemovedExemptionContext]
+
+
+def _removed_exemptions(policy: Policy) -> list[RemovedExemptionContext]:
+    removed = []
+    for rule in policy.rules.values():
+        for item in rule.raw.get("removed_in_v2") or []:
+            removed.append(
+                RemovedExemptionContext(
+                    rule_id=rule.id,
+                    exemption_id=item["id"],
+                    reason=(item.get("reason") or "").strip(),
+                )
+            )
+    return removed
 
 
 def _policy_context(policy: Policy, overrides_count: int) -> PolicyContext:
@@ -184,7 +212,9 @@ def _policy_context(policy: Policy, overrides_count: int) -> PolicyContext:
         PolicyRuleContext(
             id=rule.id,
             description=rule.description.strip(),
-            source_url=rule.raw.get("source_url"),
+            source_url=rule.source_url,
+            source_type=rule.source_type,
+            source_quote=rule.source_quote.strip() if rule.source_quote else None,
             effective_from=rule.effective_from.isoformat() if rule.effective_from else None,
             fail_allowed=rule.fail_allowed,
             scored=rule.scored,
@@ -199,6 +229,7 @@ def _policy_context(policy: Policy, overrides_count: int) -> PolicyContext:
         overrides_url=GOVERNANCE_OVERRIDES_FILE_URL,
         overrides_count=overrides_count,
         rules=rules,
+        removed_exemptions=_removed_exemptions(policy),
     )
 
 
@@ -290,6 +321,13 @@ def _merge_commit_rows(
             if fact is not None
             else None
         )
+        # v2 (issue #93): kept as its own top-level key, not folded into
+        # "facts" above, since `ninja_declared` predates a `commit_fact` row
+        # existing for a commit that's never had its facts collected (a
+        # `null` in an old partition backfills to `None`, not `False` --
+        # see COMMIT_FACT's schema comment) and the ninja trend needs to
+        # tell "unknown" apart from "no".
+        commit["ninja_declared"] = fact["ninja_declared"] if fact is not None else None
 
     return sorted(by_sha.values(), key=lambda c: c["commit_date"], reverse=True)
 
@@ -592,19 +630,26 @@ def _compliance_trend_context(governance_metric_rows: list[dict[str, Any]]) -> l
     return charts
 
 
-def _ninja_trend_context(compliance_rows: list[dict[str, Any]]) -> dict[str, Any]:
-    """Descriptive-only ninja-exemption count per month (governance-policy.yaml
-    `reviewer-present.descriptive_signal`) -- never scored, shown purely as a
-    trend indicator next to the reviewer-present rule. Non-merge commits
-    only, matching `governance/metrics.py`'s own "aggregate denominators
-    exclude merges" convention."""
+def _ninja_trend_context(commit_rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Descriptive-only ninja-count per month (governance-policy.yaml
+    `reviewer-present.descriptive_signal`, id `ninja-count-trend`) -- never
+    scored, shown purely as a trend indicator next to the reviewer-present
+    rule. v2 (D24, issue #93): `ninja` is no longer an *exemption* (no
+    official source), so this counts every commit whose message
+    self-declares "ninja"/"ninjafix" by the retired v1 pattern
+    (`governance.checks.is_ninja_declared`, `commit["ninja_declared"]` from
+    `commit_fact`), regardless of how that commit was actually scored --
+    unlike v1's count (which only ever counted commits the `ninja`
+    exemption itself matched), this is now independent of scoring entirely.
+    Non-merge commits only, matching `governance/metrics.py`'s own
+    "aggregate denominators exclude merges" convention.
+    """
     counts: dict[str, int] = {}
-    for row in compliance_rows:
-        if row["check_id"] != "reviewer-present" or row["is_merge"]:
+    for commit in commit_rows:
+        if commit["is_merge"] or not commit.get("ninja_declared"):
             continue
-        if row["result"] != "exempt" or "ninja" not in row["evidence"]:
-            continue
-        month = date(row["commit_date"].year, row["commit_date"].month, 1).isoformat()
+        commit_date = commit["commit_date"]
+        month = date(commit_date.year, commit_date.month, 1).isoformat()
         counts[month] = counts.get(month, 0) + 1
 
     records = [{"month": month, "count": count} for month, count in sorted(counts.items())]
@@ -739,7 +784,7 @@ def build_governance_page_context(
         fails_total=len(all_fails),
         fails_truncated=fails_truncated,
         compliance_trends=compliance_trends,
-        ninja_trend=_ninja_trend_context(compliance_rows),
+        ninja_trend=_ninja_trend_context(commit_rows),
         filter_options=_filter_options(commit_rows),
         scored_check_ids=list(SCORED_CHECK_IDS),
         commits_recent_json_href=recent_href,

@@ -571,7 +571,7 @@ def test_governance_page_shows_policy_version_and_approval_linked(tmp_path):
     out_dir, _ = _build_site_with_governance(tmp_path)
     html_text = _page_html(out_dir, "governance/")
 
-    assert "Policy v1" in html_text
+    assert "Policy v2" in html_text
     assert "pmcfadin" in html_text
     assert "2026-09-25" in html_text
     policy_href = (
@@ -661,7 +661,7 @@ def test_governance_page_writes_commit_json_and_csv_downloads(tmp_path):
     assert full_csv_path.is_file()
 
     payload = json.loads(full_json_path.read_text())
-    assert payload["policy_version"] == 1
+    assert payload["policy_version"] == 2
     assert payload["row_count"] == 2
     by_sha = {row["sha"]: row for row in payload["rows"]}
     failing = by_sha["1111111111111111111111111111111111aaaa"]

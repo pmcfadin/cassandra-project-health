@@ -40,6 +40,7 @@ def test_commit_fact_schema_registered():
         "changes_txt_touched",
         "news_txt_touched",
         "test_touched",
+        "ninja_declared",
     ]
 
 

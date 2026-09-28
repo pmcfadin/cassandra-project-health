@@ -43,6 +43,8 @@ from project_health.classify.subsample import (
     run_pilot_subsample,
 )
 from project_health.config import load_project
+from project_health.governance.policy import DEFAULT_POLICY_PATH
+from project_health.governance.verify_sources import verify_policy_sources
 from project_health.label.label_set import LabelSetError
 from project_health.label.question_set import QuestionSetReadError
 from project_health.label.safety import UnsafePathError, assert_outside_repo, find_public_repo_root
@@ -408,6 +410,20 @@ def _build_parser() -> argparse.ArgumentParser:
         help="If set, load TYPESAFE_API_KEY from this .env file's jev_key= entry before running",
     )
 
+    verify_policy_sources_parser = subparsers.add_parser(
+        "verify-policy-sources",
+        help=(
+            "D24 (issue #93): re-fetch every scored governance-policy.yaml rule/exemption/"
+            "sub_pattern's source_url and confirm its source_quote still appears there. "
+            "Exits non-zero if any source fails to fetch or no longer contains its quote."
+        ),
+    )
+    verify_policy_sources_parser.add_argument(
+        "--policy",
+        default=str(DEFAULT_POLICY_PATH),
+        help="Path to governance-policy.yaml (default: the repo-root policy file)",
+    )
+
     return parser
 
 
@@ -670,6 +686,23 @@ def _cmd_benchmark_public(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_verify_policy_sources(args: argparse.Namespace) -> int:
+    results = verify_policy_sources(args.policy)
+    failed = [r for r in results if not r.ok]
+    for result in results:
+        status = "OK" if result.ok else "MISS"
+        print(
+            f"[{status}] {result.item.path} <{result.item.source_url}> -- {result.detail}",
+            file=sys.stderr,
+        )
+    print(
+        f"verify-policy-sources: {len(results)} sourced item(s) checked, "
+        f"{len(failed)} failed",
+        file=sys.stderr,
+    )
+    return 1 if failed else 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
@@ -687,6 +720,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_pilot_evaluate(args)
     if args.command == "benchmark-public":
         return _cmd_benchmark_public(args)
+    if args.command == "verify-policy-sources":
+        return _cmd_verify_policy_sources(args)
     parser.error(f"unknown command {args.command!r}")
     return 2
 

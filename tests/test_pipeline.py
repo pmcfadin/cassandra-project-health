@@ -1911,15 +1911,29 @@ class _StubJiraComments:
     """Offline stand-in for `collectors.jira_comments.JiraCommentsCollector`
     (issue #36 fixup cycle 1: `_collect_governance` now calls the *singular*
     `fetch_ci_evidence`/`call_count`-budgeted interface, not the old batch
-    `fetch_ci_evidence_for_issues`)."""
+    `fetch_ci_evidence_for_issues`). `fetch_issue_evidence` (v2, issue #93)
+    is `_collect_governance`'s actual combined comment+attachment call --
+    kept in sync with `fetch_ci_evidence`'s comment result, with an
+    optional per-issue attachment list."""
 
-    def __init__(self, evidence_by_issue: dict):
+    def __init__(self, evidence_by_issue: dict, attachments_by_issue: dict | None = None):
         self._evidence = evidence_by_issue
+        self._attachments = attachments_by_issue or {}
         self.call_count = 0
 
     def fetch_ci_evidence(self, issue_key):
         self.call_count += 1
         return self._evidence.get(issue_key)
+
+    def fetch_issue_evidence(self, issue_key):
+        from project_health.collectors.jira_comments import IssueEvidence
+
+        self.call_count += 1
+        return IssueEvidence(
+            issue_key=issue_key,
+            ci_comment=self._evidence.get(issue_key),
+            attachments=tuple(self._attachments.get(issue_key, ())),
+        )
 
     def close(self):
         pass
@@ -2063,6 +2077,7 @@ class TestGovernanceIntegration:
             "governance_reviewer_present_pass_rate",
             "governance_jira_ticket_referenced_pass_rate",
             "governance_pre_commit_ci_evidence_pass_rate",
+            "governance_ci_artefacts_attached_pass_rate",
             "governance_code_style_checkstyle_pass_rate",
         }
 

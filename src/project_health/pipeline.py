@@ -113,7 +113,7 @@ from project_health.collectors.github import GitHubCollector, resolve_github_tok
 from project_health.collectors.reviewer_trailer import PARSER_VERSION
 from project_health.collectors.github_commit_authors import GitHubCommitAuthorCollector
 from project_health.collectors.github_profile import GitHubProfileCollector
-from project_health.collectors.jira import JiraCollector
+from project_health.collectors.jira import JiraCollector, _parse_jira_timestamp
 from project_health.collectors.ponymail import PonyMailCollector
 from project_health.collectors.security import SecurityCollector
 from project_health.config import ProjectConfig
@@ -148,7 +148,13 @@ from project_health.site.manifest import manifest_path
 from project_health.collectors.github_checks import GitHubChecksCollector
 from project_health.collectors.governance_git import CommitRecord, collect_commits, resolve_sha
 from project_health.collectors.jira_comments import JiraCommentsCollector
-from project_health.governance.checks import CheckstyleEvidence, CIEvidence, CommitFacts
+from project_health.governance.checks import (
+    AttachmentEvidence,
+    CheckstyleEvidence,
+    CIEvidence,
+    CommitFacts,
+    is_ci_artefact_filename,
+)
 from project_health.governance.engine import build_commit_compliance_rows, build_commit_facts_rows
 from project_health.governance.metrics import compute_monthly_check_metrics
 from project_health.governance.overrides import DEFAULT_OVERRIDES_PATH
@@ -1689,6 +1695,345 @@ def _collect_governance_ci_evidence(
     return stats
 
 
+# --- v2 (issue #93): combined comment + JIRA-attachment evidence collection --
+#
+# `_collect_governance_jira_evidence` supersedes `_collect_governance_ci_evidence`
+# above (kept for its own tests/callers, not removed) as `_collect_governance`'s
+# actual evidence-collection step: it fetches both `pre-commit-ci-evidence`'s
+# comment evidence *and* `ci-artefacts-attached`'s full attachment list from
+# one `JiraCommentsCollector.fetch_issue_evidence` call per issue
+# (`fields=comment,attachment` -- issue #93 scope: "consider fetching comments
+# and attachments in one JIRA call... to save budget"), writing the comment
+# match to `raw/governance/ci_evidence` (unchanged shape, now with
+# `evidence_source` set) and the attachment list to the new
+# `raw/governance/jira_attachment`. Eligibility/budget/resume/newest-first
+# ordering is otherwise identical to `_collect_governance_ci_evidence` --
+# `_ci_eligible_issue_keys_newest_first`'s existing eligibility list already
+# covers `ci-artefacts-attached` too, since that rule's `effective_from`
+# (2026-08-19) is strictly later than `pre-commit-ci-evidence`'s
+# (2020-06-25): every ci-artefacts-attached-eligible commit's issue keys are
+# already a subset of the pre-commit-ci-evidence-eligible ones.
+
+
+def _ci_evidence_row(
+    issue_key: str,
+    issue_updated_at: datetime,
+    checked_at: datetime,
+    *,
+    found: bool,
+    evidence_source: str | None,
+    comment_id: str | None,
+    comment_author: str | None,
+    comment_created_at: str | None,
+    matched_term: str | None,
+    matched_url: str | None,
+    run_id: str,
+) -> dict[str, Any]:
+    return {
+        "issue_key": issue_key,
+        "issue_updated_at": issue_updated_at,
+        "checked_at": checked_at,
+        "found": found,
+        "comment_id": comment_id,
+        "comment_author": comment_author,
+        "comment_created_at": comment_created_at,
+        "matched_term": matched_term,
+        "matched_url": matched_url,
+        "source_snapshot_id": f"{run_id}:governance_ci",
+        "evidence_source": evidence_source,
+    }
+
+
+def _collect_governance_jira_evidence(
+    data_dir: Path,
+    run_id: str,
+    started_at: datetime,
+    issue_keys_newest_first: list[str],
+    max_calls: int,
+    jira_base_url: str | None,
+    jira_comments_factory: Callable[[str], object] | None,
+) -> dict[str, Any]:
+    """v2 (issue #93): one combined, budgeted, resumable, newest-first pass
+    over `issue_keys_newest_first` that fetches both `pre-commit-ci-evidence`'s
+    comment evidence and `ci-artefacts-attached`'s attachment list per issue,
+    via a single `fetch_issue_evidence` HTTP call each (see module comment
+    above). Same budget/resume/never-fail contract as
+    `_collect_governance_ci_evidence`: stops cleanly once `max_calls` HTTP
+    requests have been made, never raises (a JIRA outage degrades affected
+    checks to `unknown`), and returns a stats dict recorded on the manifest
+    (`checked`, `skipped_up_to_date`, `pending`, `calls_made`, plus
+    `attachments_found`, the JIRA-attachment backfill count issue #93 asks
+    for)."""
+    stats = {
+        "checked": 0,
+        "skipped_up_to_date": 0,
+        "pending": 0,
+        "calls_made": 0,
+        "attachments_found": 0,
+    }
+    if not jira_base_url or not issue_keys_newest_first:
+        return stats
+
+    issue_updated = _governance_issue_updated_map(data_dir)
+    # Eligibility must be gated on *both* evidence tables being current, not
+    # just `ci_evidence` (issue #93 migration bug found via the real-data
+    # rescore: this data dir's `ci_evidence` table already had rows from
+    # runs that predate the combined comment+attachment collector, so an
+    # issue checked for comments under the old, comment-only collector read
+    # as "already checked" here and was skipped -- meaning its attachments
+    # would never be backfilled at all, since `issue_updated_at` for a
+    # resolved/closed old issue may never advance again). An issue missing
+    # *either* table's check counts as never checked for this combined
+    # pass, regardless of the other table's state.
+    already_checked_comments = _governance_ci_evidence_checked_map(data_dir)
+    already_checked_attachments = _governance_attachment_checked_map(data_dir)
+
+    eligible: list[str] = []
+    for key in issue_keys_newest_first:
+        comment_checked = already_checked_comments.get(key)
+        attachment_checked = already_checked_attachments.get(key)
+        if comment_checked is None or attachment_checked is None:
+            eligible.append(key)
+            continue
+        last_checked = min(comment_checked, attachment_checked)
+        current_updated = issue_updated.get(key)
+        if current_updated is not None and current_updated > last_checked:
+            eligible.append(key)
+        else:
+            stats["skipped_up_to_date"] += 1
+
+    if not eligible:
+        return stats
+
+    try:
+        collector = (jira_comments_factory or JiraCommentsCollector)(jira_base_url)
+    except Exception as exc:  # noqa: BLE001 - an evidence source's outage must not abort the run.
+        _log("governance_jira_comments_failed", error=str(exc))
+        stats["pending"] = len(eligible)
+        return stats
+
+    ci_evidence_rows: list[dict[str, Any]] = []
+    attachment_rows: list[dict[str, Any]] = []
+    try:
+        for key in eligible:
+            if collector.call_count >= max_calls:
+                break
+            try:
+                evidence = collector.fetch_issue_evidence(key)
+            except Exception as exc:  # noqa: BLE001 - one bad issue must not stop the batch.
+                _log("governance_jira_comments_issue_failed", issue_key=key, error=str(exc))
+                continue
+
+            checked_at = datetime.now(timezone.utc)
+            issue_updated_at = issue_updated.get(key, checked_at)
+
+            if evidence is None or evidence.ci_comment is None:
+                ci_evidence_rows.append(
+                    _ci_evidence_row(
+                        key,
+                        issue_updated_at,
+                        checked_at,
+                        found=False,
+                        evidence_source=None,
+                        comment_id=None,
+                        comment_author=None,
+                        comment_created_at=None,
+                        matched_term=None,
+                        matched_url=None,
+                        run_id=run_id,
+                    )
+                )
+            else:
+                ci_evidence_rows.append(
+                    _ci_evidence_row(
+                        key,
+                        issue_updated_at,
+                        checked_at,
+                        found=True,
+                        evidence_source="jira_comment_ci_mention",
+                        comment_id=evidence.ci_comment.comment_id,
+                        comment_author=evidence.ci_comment.comment_author,
+                        comment_created_at=evidence.ci_comment.comment_created_at,
+                        matched_term=evidence.ci_comment.matched_term,
+                        matched_url=evidence.ci_comment.matched_url,
+                        run_id=run_id,
+                    )
+                )
+
+            attachments = evidence.attachments if evidence is not None else ()
+            if attachments:
+                for attachment in attachments:
+                    attachment_rows.append(
+                        {
+                            "issue_key": key,
+                            "issue_updated_at": issue_updated_at,
+                            "checked_at": checked_at,
+                            "attachment_id": attachment.attachment_id,
+                            "filename": attachment.filename,
+                            "attachment_created_at": _parse_jira_timestamp(attachment.created),
+                            "source_snapshot_id": f"{run_id}:governance_jira_attachment",
+                        }
+                    )
+                    stats["attachments_found"] += 1
+            elif evidence is not None:
+                # Sentinel "checked, zero attachments" row -- see
+                # GOVERNANCE_JIRA_ATTACHMENT's schema docstring.
+                attachment_rows.append(
+                    {
+                        "issue_key": key,
+                        "issue_updated_at": issue_updated_at,
+                        "checked_at": checked_at,
+                        "attachment_id": None,
+                        "filename": None,
+                        "attachment_created_at": None,
+                        "source_snapshot_id": f"{run_id}:governance_jira_attachment",
+                    }
+                )
+
+            stats["checked"] += 1
+    finally:
+        stats["calls_made"] = collector.call_count
+        collector.close()
+
+    stats["pending"] = len(eligible) - stats["checked"]
+
+    ci_schema = _governance_get_schema("ci_evidence")
+    ci_table = _governance_validate(
+        "ci_evidence",
+        pa.Table.from_pylist(ci_evidence_rows, schema=ci_schema)
+        if ci_evidence_rows
+        else ci_schema.empty_table(),
+    )
+    storage.write_partition(
+        data_dir, "governance", "ci_evidence", started_at.date(), run_id, ci_table
+    )
+
+    attachment_schema = _governance_get_schema("jira_attachment")
+    attachment_table = _governance_validate(
+        "jira_attachment",
+        pa.Table.from_pylist(attachment_rows, schema=attachment_schema)
+        if attachment_rows
+        else attachment_schema.empty_table(),
+    )
+    storage.write_partition(
+        data_dir, "governance", "jira_attachment", started_at.date(), run_id, attachment_table
+    )
+
+    return stats
+
+
+def _governance_ci_evidence_for_scoring(data_dir: Path) -> dict[str, list[CIEvidence]]:
+    """`issue_key -> [CIEvidence, ...]` for `score_pre_commit_ci_evidence`
+    (v2, issue #93): merges JIRA-comment CI-mention evidence
+    (`raw/governance/ci_evidence`, `found=True` rows) with JIRA-attachment
+    CI-artefact evidence (`raw/governance/jira_attachment`, filenames
+    matching `ci_summary*`/`results_details*`) -- the two evidence sources
+    `pre-commit-ci-evidence.check_method` names. An issue can now have more
+    than one candidate (e.g. both a comment mention and a matching
+    attachment, or several matching attachments); `score_pre_commit_ci_evidence`
+    itself picks whichever is dated earliest at-or-before the commit."""
+    by_issue: dict[str, list[CIEvidence]] = {}
+
+    comment_table = storage.read_table(data_dir, "governance", "ci_evidence")
+    for row in comment_table.to_pylist():
+        if not row["found"]:
+            continue
+        created_raw = row["comment_created_at"]
+        if not created_raw:
+            continue
+        by_issue.setdefault(row["issue_key"], []).append(
+            CIEvidence(
+                issue_key=row["issue_key"],
+                source=row.get("evidence_source") or "jira_comment_ci_mention",
+                created_at=_parse_jira_timestamp(created_raw),
+                description=(
+                    f"JIRA comment {row['comment_id']} matched CI term {row['matched_term']!r}"
+                ),
+                url=row["matched_url"],
+            )
+        )
+
+    attachment_table = storage.read_table(data_dir, "governance", "jira_attachment")
+    for row in attachment_table.to_pylist():
+        filename = row["filename"]
+        if not filename or not is_ci_artefact_filename(filename):
+            continue
+        by_issue.setdefault(row["issue_key"], []).append(
+            CIEvidence(
+                issue_key=row["issue_key"],
+                source="jira_attachment_ci_artefact",
+                created_at=row["attachment_created_at"],
+                description=f"attachment {filename!r} (id {row['attachment_id']})",
+            )
+        )
+
+    return by_issue
+
+
+def _governance_attachment_checked_map(data_dir: Path) -> dict[str, datetime]:
+    """`issue_key -> issue_updated_at` of the *latest* attachment-list fetch
+    recorded in the accumulated `raw/governance/jira_attachment` table
+    (regardless of how many attachments, if any, that fetch found) --
+    mirrors `_governance_ci_evidence_checked_map`'s shape exactly, but reads
+    the attachment table instead of the comment-evidence table (issue #93:
+    the two are checked on separate schedules until an issue has been
+    fetched by the combined collector at least once)."""
+    table = storage.read_table(data_dir, "governance", "jira_attachment")
+    latest_checked_at: dict[str, datetime] = {}
+    latest_updated: dict[str, datetime] = {}
+    for row in table.to_pylist():
+        key = row["issue_key"]
+        if key not in latest_checked_at or row["checked_at"] > latest_checked_at[key]:
+            latest_checked_at[key] = row["checked_at"]
+            latest_updated[key] = row["issue_updated_at"]
+    return latest_updated
+
+
+def _governance_attachments_by_issue(data_dir: Path) -> dict[str, list[AttachmentEvidence]]:
+    """`issue_key -> [AttachmentEvidence, ...]` from each issue's *latest*
+    fetch batch (rows sharing that issue's max `checked_at`) in
+    `raw/governance/jira_attachment` -- a superseded older fetch is never
+    mixed in (same "latest batch wins" technique
+    `_governance_check_run_latest_batch` uses for check-runs). A sentinel
+    "checked, zero attachments" row (`attachment_id is None`) contributes no
+    entry -- see `score_ci_artefacts_attached`."""
+    table = storage.read_table(data_dir, "governance", "jira_attachment")
+    rows = table.to_pylist()
+
+    latest_checked_at: dict[str, datetime] = {}
+    for row in rows:
+        key = row["issue_key"]
+        if key not in latest_checked_at or row["checked_at"] > latest_checked_at[key]:
+            latest_checked_at[key] = row["checked_at"]
+
+    by_issue: dict[str, list[AttachmentEvidence]] = {}
+    for row in rows:
+        key = row["issue_key"]
+        if row["checked_at"] != latest_checked_at[key] or row["attachment_id"] is None:
+            continue
+        by_issue.setdefault(key, []).append(
+            AttachmentEvidence(
+                issue_key=key,
+                attachment_id=row["attachment_id"],
+                filename=row["filename"],
+                created_at=row["attachment_created_at"],
+            )
+        )
+    return by_issue
+
+
+def _governance_fetched_attachment_issue_keys(data_dir: Path) -> frozenset[str]:
+    """Every issue key whose attachment list has been fetched at least once
+    (any row at all in `raw/governance/jira_attachment`, sentinel rows
+    included) -- this is what lets `ci-artefacts-attached` tell "not fetched
+    yet" (`unknown`, backfill budget) apart from "fetched, and it's missing"
+    (`fail`); the JIRA attachment list is complete once fetched, so only a
+    key in this set can ever produce `fail` (`score_ci_artefacts_attached`).
+    """
+    table = storage.read_table(data_dir, "governance", "jira_attachment")
+    return frozenset(row["issue_key"] for row in table.to_pylist())
+
+
 def _governance_check_run_latest_batch(data_dir: Path) -> dict[str, list[dict[str, Any]]]:
     """`sha -> every row from its *latest* fetch batch` (all rows sharing
     that sha's single most recent `fetched_at`, e.g. both `ant-check-jdk11`
@@ -1977,7 +2322,14 @@ def _collect_governance(
         issue_keys_newest_first = _ci_eligible_issue_keys_newest_first(commits, ci_rule)
 
         base_url = getattr(config.issue_tracker, "base_url", None) if config.issue_tracker else None
-        ci_stats = _collect_governance_ci_evidence(
+        # v2 (issue #93): one combined, budgeted pass fetches both
+        # pre-commit-ci-evidence's comment evidence and
+        # ci-artefacts-attached's attachment list per issue (see
+        # `_collect_governance_jira_evidence`'s module comment) --
+        # `_collect_governance_ci_evidence` (comment-only) stays defined for
+        # its own tests/backward compatibility but is no longer the
+        # pipeline's evidence-collection step.
+        jira_evidence_stats = _collect_governance_jira_evidence(
             data_dir,
             run_id,
             started_at,
@@ -1986,7 +2338,9 @@ def _collect_governance(
             base_url,
             jira_comments_factory,
         )
-        ci_evidence_by_issue = _governance_ci_evidence_found_map(data_dir)
+        ci_evidence_by_issue = _governance_ci_evidence_for_scoring(data_dir)
+        attachments_by_issue = _governance_attachments_by_issue(data_dir)
+        fetched_attachment_issue_keys = _governance_fetched_attachment_issue_keys(data_dir)
 
         checkstyle_rule = policy.rule("code-style-checkstyle")
         checkstyle_eligible_commits = [
@@ -2010,6 +2364,8 @@ def _collect_governance(
             commits,
             jira_reviewers_by_issue=jira_reviewers_by_issue,
             ci_evidence_by_issue=ci_evidence_by_issue,
+            attachments_by_issue=attachments_by_issue,
+            fetched_attachment_issue_keys=fetched_attachment_issue_keys,
             checkstyle_runs_by_sha=checkstyle_runs_by_sha,
             checkstyle_retention_cutoff=checkstyle_retention_cutoff,
             overrides=overrides,
@@ -2045,7 +2401,11 @@ def _collect_governance(
             governance_registry, snapshot_dir / "governance_metric_definition_version.parquet"
         )
 
-        status = "ok" if ci_stats["pending"] == 0 and check_run_stats["pending"] == 0 else "partial"
+        status = (
+            "ok"
+            if jira_evidence_stats["pending"] == 0 and check_run_stats["pending"] == 0
+            else "partial"
+        )
 
         _log(
             "governance_scored",
@@ -2054,7 +2414,7 @@ def _collect_governance(
             commits_scored=len(commits),
             compliance_rows=compliance_table.num_rows,
             policy_version=policy.version,
-            ci_evidence=ci_stats,
+            jira_evidence=jira_evidence_stats,
             check_runs=check_run_stats,
         )
         return {
@@ -2064,7 +2424,16 @@ def _collect_governance(
             "policy_version": policy.version,
             "git_records_collected": git_records_collected,
             "commit_record_reparse": commit_record_reparse,
-            "ci_evidence": ci_stats,
+            # v2 (issue #93): backfill counts for the combined comment +
+            # attachment collection pass -- `attachments_found` is the JIRA
+            # attachment metadata backfill count issue #93 asks be reported
+            # on the manifest.
+            "ci_evidence": jira_evidence_stats,
+            "jira_attachments": {
+                "checked": jira_evidence_stats["checked"],
+                "attachments_found": jira_evidence_stats["attachments_found"],
+                "pending": jira_evidence_stats["pending"],
+            },
             "check_runs": check_run_stats,
         }
     except Exception as exc:  # noqa: BLE001 - governance must never abort the run (§7.3-style)

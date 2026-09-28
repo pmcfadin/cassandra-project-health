@@ -146,8 +146,14 @@ class MetricMeta:
     dimension: str
     # tier: 'established' | 'proxy' | 'experimental' | 'classified' (METRICS.md §0.1)
     tier: str
-    # direction_of_good: 'higher' | 'lower' | 'target-range' | 'none' (METRICS.md §1)
-    direction_of_good: str
+    # direction_of_good: 'higher' | 'lower' | 'target-range' | 'none' (METRICS.md §1),
+    # or `None` (JSON null) for a metric this project deliberately never
+    # judges good/bad -- distinct from the string `'none'` above, which
+    # scoring/baseline.py still reads as "no directional judgment, but still
+    # part of the scored/composite system" (SCORING.md §4.3). Issue #97 (D25
+    # amendment): the governance fact-based trend metrics use `None` because
+    # they are outside that system entirely -- descriptive, not scored.
+    direction_of_good: str | None
     # value_kind: how the metric's numeric value is displayed —
     #   'count'   -> integer, no unit suffix, e.g. "12"
     #   'ratio'   -> 3 decimal places on a 0-1 scale, e.g. "0.350"
@@ -548,53 +554,69 @@ M0_METRICS: dict[str, MetricMeta] = {
 #   `sources.github`. Same documented gap as CI evidence above; 'github'
 #   does NOT belong here despite the check's evidence literally coming from
 #   GitHub, because `sources.github`'s status doesn't track it.
+# Issue #97 (D25 amendment, orchestrator review): the pass-rate metrics
+# these five entries used to register (`governance_*_pass_rate`) are
+# policy-derived -- `exempt` commits excluded from the denominator, months
+# before a rule's `effective_from` blanked `not_in_force` -- which reads as
+# a verdict rate even with a neutral-sounding name. They are replaced here
+# with `governance/fact_metrics.py`'s metric_ids: a monthly share computed
+# directly from raw evidence, with no policy gating at all, so a pre-2020
+# month still carries a real value. `direction_of_good=None` (not the
+# string `"none"` some M0 metrics use -- see `MetricMeta.direction_of_good`)
+# because these sit entirely outside the scored/composite system
+# (scoring/baseline.py never reads them; governance isn't in `METRIC_IDS`).
+# The old pass-rate metric_ids are no longer registered here at all, so
+# `generate.py`'s per-metric-id download loop never writes their
+# `data/*.json`/`.csv` files -- `governance/metrics.py` still computes and
+# `pipeline.py` still persists them, for the scoring engine's own internal
+# record only.
 GOVERNANCE_METRICS: dict[str, MetricMeta] = {
-    "governance_reviewer_present_pass_rate": MetricMeta(
-        metric_id="governance_reviewer_present_pass_rate",
-        name="Reviewer Present — Pass Rate",
+    "governance_commits_with_named_reviewer_share": MetricMeta(
+        metric_id="governance_commits_with_named_reviewer_share",
+        name="Commits with a named reviewer",
         dimension="governance",
         tier="established",
-        direction_of_good="higher",
+        direction_of_good=None,
         value_kind="percent",
         page="governance",
         sources=("git", "jira"),
     ),
-    "governance_jira_ticket_referenced_pass_rate": MetricMeta(
-        metric_id="governance_jira_ticket_referenced_pass_rate",
-        name="JIRA Ticket Referenced — Pass Rate",
+    "governance_commits_with_ticket_share": MetricMeta(
+        metric_id="governance_commits_with_ticket_share",
+        name="Commits referencing a ticket",
         dimension="governance",
         tier="established",
-        direction_of_good="higher",
+        direction_of_good=None,
         value_kind="percent",
         page="governance",
         sources=("git",),
     ),
-    "governance_pre_commit_ci_evidence_pass_rate": MetricMeta(
-        metric_id="governance_pre_commit_ci_evidence_pass_rate",
-        name="Pre-Commit CI Evidence — Pass Rate",
+    "governance_commits_with_ci_evidence_before_commit_share": MetricMeta(
+        metric_id="governance_commits_with_ci_evidence_before_commit_share",
+        name="Commits with CI evidence on JIRA before commit",
         dimension="governance",
         tier="proxy",
-        direction_of_good="higher",
+        direction_of_good=None,
         value_kind="percent",
         page="governance",
         sources=("git",),
     ),
-    "governance_ci_artefacts_attached_pass_rate": MetricMeta(
-        metric_id="governance_ci_artefacts_attached_pass_rate",
-        name="CI Artefacts Attached — Pass Rate",
+    "governance_commits_with_both_ci_artefacts_share": MetricMeta(
+        metric_id="governance_commits_with_both_ci_artefacts_share",
+        name="Commits with both CI artefacts attached",
         dimension="governance",
         tier="proxy",
-        direction_of_good="higher",
+        direction_of_good=None,
         value_kind="percent",
         page="governance",
         sources=("git",),
     ),
-    "governance_code_style_checkstyle_pass_rate": MetricMeta(
-        metric_id="governance_code_style_checkstyle_pass_rate",
-        name="Checkstyle — Pass Rate",
+    "governance_commits_with_checkstyle_success_share": MetricMeta(
+        metric_id="governance_commits_with_checkstyle_success_share",
+        name="Commits with a successful checkstyle run",
         dimension="governance",
         tier="established",
-        direction_of_good="higher",
+        direction_of_good=None,
         value_kind="percent",
         page="governance",
         sources=("git",),
@@ -641,8 +663,8 @@ PAGES: dict[str, PageMeta] = {
         page_id="governance",
         title="Governance",
         path="governance/",
-        summary="What the public record shows for each commit: reviewers, CI evidence, checkstyle.",
-        empty_message="Governance policy in development — no compliance results yet.",
+        summary="Per-commit facts from the public record — reviewers, CI evidence, checkstyle.",
+        empty_message="No commit history collected yet.",
     ),
 }
 

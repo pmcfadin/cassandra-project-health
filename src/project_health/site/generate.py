@@ -52,7 +52,6 @@ import pyarrow.parquet as pq
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from project_health import storage
-from project_health.governance.metrics import metric_id_for_check
 from project_health.metrics.windows import add_months, month_start
 from project_health.schema import get_schema, validate
 from project_health.site import chart_spec
@@ -215,6 +214,18 @@ def generate(
 
     out_dir.mkdir(parents=True, exist_ok=True)
     data_out = out_dir / "data"
+    # A regeneration into an existing `out_dir` (e.g. a persistent site
+    # checkout) must never leave a stale per-metric download behind once
+    # that metric_id is no longer registered -- issue #97 (D25 amendment,
+    # orchestrator review) found exactly this: the old
+    # `governance_*_pass_rate.json`/`.csv` files kept being served from a
+    # prior run even after they were dropped from `GOVERNANCE_METRICS`.
+    # Every file this function writes into `data/` (per-metric downloads
+    # here, plus the governance commit-history JSON `_render_pages` writes
+    # below) is rebuilt fresh within this same call, so clearing the whole
+    # directory first is safe.
+    if data_out.is_dir():
+        shutil.rmtree(data_out)
     data_out.mkdir(parents=True, exist_ok=True)
 
     for metric_id, series in series_by_id.items():
@@ -603,8 +614,8 @@ _SECURITY_CHECK_NOTES: dict[str, str] = {
     "Code-Review": (
         "This check only counts approved GitHub pull-request reviews. Cassandra's actual "
         "review process runs through commit-message trailers (“patch by X; reviewed by "
-        "Y”) and JIRA reviewer fields, both invisible to it — see this page's own "
-        "governance compliance results above for the real review-coverage numbers "
+        "Y”) and JIRA reviewer fields, both invisible to it — see the reviewer column in "
+        "the commit history above "
         "(verified: RESEARCH.md §6.2, GOVERNANCE.md R1)."
     ),
     "Branch-Protection": (
@@ -802,15 +813,6 @@ def _card_context(
     }
 
 
-def _format_share(share: float) -> str:
-    """A pass/fail/unknown share as a percentage, one decimal place --
-    matching `MetricMeta.format_value`'s own `value_kind == "percent"`
-    formatting (`metrics_meta.py`) so a governance headline's three shares
-    read consistently with every other percent metric on the site (issue
-    #69)."""
-    return f"{share * 100:.1f}%"
-
-
 def _headline_metric_context(series: MetricSeries, last_completed_month: date) -> dict[str, Any]:
     """A metric's home-page summary-card row: name, latest value, month —
     no chart, no tier badge (D13: "headline metrics (latest value, month)
@@ -997,41 +999,30 @@ def _render_pages(
     )
     # Each scored check gets one card: the same latest-value/tier/JSON-CSV
     # card shell every M0 metric uses (`_card_context`, keyed by this
-    # check's `governance_*_pass_rate` metric_id), but with its chart swapped
-    # for the compliance-trend module's per-check pass/fail/unknown/exempt
-    # breakdown (`governance_context.compliance_trends`) instead of the
-    # generic single-line pass-rate chart -- the breakdown is strictly more
-    # informative (D15: "every result showing its evidence" extends to the
-    # aggregate view never hiding fail/unknown/exempt behind a bare rate).
+    # check's `governance_*_pass_rate` metric_id), with its chart swapped for
+    # the compliance-trend module's single, neutral monthly-share line
+    # (`governance_context.compliance_trends`). issue #97 (owner's
+    # 2026-09-28 "informational stance" decision): no pass/fail/unknown/
+    # exempt breakdown, no color-coding, no "backfill pending" tag tied to a
+    # verdict share -- `MetricMeta.name` (`metrics_meta.py`) is already
+    # neutral ("Commits with a named reviewer", not "... -- Pass Rate").
     governance_cards_by_metric = {
         s.meta.metric_id: _card_context(s, SUBPAGE_BASE_PREFIX, last_completed_month, manifest)
         for s in series_by_page["governance"]
     }
     governance_trend_cards = []
     for chart in governance_context.compliance_trends:
-        card = governance_cards_by_metric.get(metric_id_for_check(chart["check_id"]))
-        # The pass/fail/unknown shares beside the headline pass rate (issue
-        # #69) -- same scored (pass+fail+unknown) denominator the pass rate
-        # itself is computed over (`governance_page._latest_scored_shares`),
-        # never a re-derived total, so a card never shows numbers that don't
-        # add up to the metric it's displaying.
-        shares = chart["latest_shares"]
+        card = governance_cards_by_metric.get(chart["metric_id"])
         governance_trend_cards.append(
             {
-                "check_id": chart["check_id"],
-                "name": card["name"] if card else chart["check_id"],
-                "tier": card["tier"] if card else None,
+                "metric_id": chart["metric_id"],
+                "name": card["name"] if card else chart["metric_id"],
                 "latest_value_display": card["latest_value_display"] if card else None,
                 "latest_month_label": card["latest_month_label"] if card else None,
-                "latest_pass_share_display": _format_share(shares["pass"]) if shares else None,
-                "latest_unknown_share_display": (
-                    _format_share(shares["unknown"]) if shares else None
-                ),
-                "latest_fail_share_display": _format_share(shares["fail"]) if shares else None,
-                "backfill_pending": chart["backfill_pending"],
                 # issue #86: the check's own card already computed its
                 # staleness badge(s) from `MetricMeta.sources` -- reuse it
-                # rather than recomputing.
+                # rather than recomputing. This is about data freshness, not
+                # a compliance verdict.
                 "staleness_badges": card["staleness_badges"] if card else [],
                 "json_href": card["json_href"] if card else None,
                 "csv_href": card["csv_href"] if card else None,

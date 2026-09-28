@@ -576,6 +576,12 @@ COMMIT_COMPLIANCE = pa.schema(
         pa.field("commit_date", TIMESTAMP_UTC, nullable=False),
         pa.field("author", pa.string(), nullable=False),
         pa.field("committer", pa.string(), nullable=False),
+        # The commit message's first line (issue #97: the commit-history
+        # table's "Commit" column shows the subject line under the short
+        # SHA/author, and free-text search matches against it) — denormalized
+        # onto every check_id row for the commit, same convention as
+        # `author`/`committer` above.
+        pa.field("subject", pa.string(), nullable=False),
         # True for a merge commit (>=2 parents) — always scored (GOVERNANCE.md
         # §3), but excluded from `governance/metrics.py`'s aggregate-rate
         # denominators, which is why this flag travels with every row rather
@@ -591,8 +597,59 @@ COMMIT_COMPLIANCE = pa.schema(
         # result: 'pass' | 'fail' | 'unknown' | 'exempt' | 'not_in_force'
         # (governance-policy.yaml top-level `result_states`)
         pa.field("result", pa.string(), nullable=False),
+        # `evidence`/`evidence_url` are the original free-text evidence
+        # columns (issue #36) -- kept unchanged for compatibility (issue #97:
+        # "keep the existing free-text evidence column for compatibility").
         pa.field("evidence", pa.string(), nullable=False),
         pa.field("evidence_url", pa.string(), nullable=True),
+        # --- Structured evidence (issue #97, docs/plans/2026-09-28-commit-
+        # history-table-design.md "Data") -- additive columns, derived from
+        # the same `checks.CheckResult` `evidence`/`evidence_url` above come
+        # from, so they never change what `result` a commit scores.
+        #
+        # `state`: the design doc's four-value display state for `result`
+        # ('met' | 'missing' | 'unverified' | 'not_required' --
+        # `checks.result_state`).
+        pa.field("state", pa.string(), nullable=False),
+        # `evidence_kind`: which evidence_source this result is based on
+        # (e.g. 'trailer', 'jira_field', 'jira_comment_ci_mention',
+        # 'jira_attachment_ci_artefact', 'github_check_run',
+        # 'commit_message', 'policy_exempt', 'not_in_force', 'override');
+        # null when no evidence was found.
+        pa.field("evidence_kind", pa.string(), nullable=True),
+        # `evidence_label`: a short label for a 'met' result, e.g.
+        # "S. Tunnicliffe (trailer)" or "ant-check-jdk11 green" -- distinct
+        # from the full `evidence` sentence.
+        pa.field("evidence_label", pa.string(), nullable=True),
+        # `evidence_at`: the evidence's own timestamp (a JIRA comment's or
+        # attachment's `created_at`), when the evidence source carries one.
+        pa.field("evidence_at", TIMESTAMP_UTC, nullable=True),
+        # `lead_time_seconds`: `commit_date - evidence_at` in whole seconds
+        # when `evidence_at` is known; positive means the evidence predates
+        # the commit, negative means it came after.
+        pa.field("lead_time_seconds", pa.int64(), nullable=True),
+        # `reason`: the design doc's short "why" text for a
+        # missing/unverified/not_required result (e.g. "no reviewer named",
+        # "ticket not checked yet (backfill)", "release process"); null for
+        # a 'met' result.
+        pa.field("reason", pa.string(), nullable=True),
+        # `reviewer_detail`: every reviewer name found on this commit by
+        # either evidence source, each with the source it came from
+        # ('trailer' | 'jira_field') -- design doc "Data": "for the reviewer
+        # requirement, reviewer names with their source". Duplicated onto
+        # every check_id row for the commit, exactly like `reviewers` above.
+        pa.field(
+            "reviewer_detail",
+            pa.list_(
+                pa.struct(
+                    [
+                        pa.field("name", pa.string(), nullable=False),
+                        pa.field("source", pa.string(), nullable=False),
+                    ]
+                )
+            ),
+            nullable=False,
+        ),
     ]
 )
 
@@ -612,6 +669,37 @@ COMMIT_FACT = pa.schema(
         # this column existed (`storage._backfill_missing_columns`); the
         # site's ninja-count-trend chart treats null the same as false.
         pa.field("ninja_declared", pa.bool_(), nullable=True),
+    ]
+)
+
+# `COMMIT_EVIDENCE` is the commit-history table's CI evidence/CI artefacts
+# facts (issue #97, orchestrator review of 127bd5a) -- one row per commit,
+# computed by `governance/commit_evidence.py::build_commit_evidence_rows`
+# directly from the same raw JIRA comment/attachment evidence
+# `fact_metrics.py` reads, **never** from the scored `commit_compliance`
+# row. This is what fixes the review's finding: `commit_compliance`'s
+# `result` is `exempt`/`not_in_force` for policy reasons that have nothing
+# to do with whether the underlying evidence exists, so deriving the
+# table's CI cells from it leaked policy vocabulary ("not applicable",
+# "before 2026-08-19") and hid real evidence for pre-2026-08-19 commits
+# whose tickets had, in fact, been checked. `reviewer`/`checkstyle` facts
+# stay sourced from `COMMIT_COMPLIANCE`'s `reviewer_detail`/evidence
+# columns -- reviewer-present has no exemption or dated `effective_from`
+# that can hide evidence the same way, so no separate table is needed there
+# (see `site/governance_page.py`'s module docstring).
+COMMIT_EVIDENCE = pa.schema(
+    [
+        pa.field("sha", pa.string(), nullable=False),
+        # ci_evidence_bucket: 'before' | 'after' | 'none' | 'not_checked' | 'no_ticket'
+        pa.field("ci_evidence_bucket", pa.string(), nullable=False),
+        pa.field("ci_evidence_text", pa.string(), nullable=False),
+        pa.field("ci_evidence_url", pa.string(), nullable=True),
+        pa.field("ci_evidence_at", TIMESTAMP_UTC, nullable=True),
+        pa.field("ci_evidence_lead_time_seconds", pa.int64(), nullable=True),
+        # ci_artefacts_bucket: 'both' | 'partial' | 'none' | 'not_checked' | 'no_ticket'
+        pa.field("ci_artefacts_bucket", pa.string(), nullable=False),
+        pa.field("ci_artefacts_text", pa.string(), nullable=False),
+        pa.field("ci_artefacts_at", TIMESTAMP_UTC, nullable=True),
     ]
 )
 
@@ -1000,6 +1088,7 @@ TABLE_SCHEMAS: dict[str, pa.Schema] = {
     "pr_comment": PR_COMMENT,
     "commit_compliance": COMMIT_COMPLIANCE,
     "commit_fact": COMMIT_FACT,
+    "commit_evidence": COMMIT_EVIDENCE,
     # Registered under `source='governance'`'s own bare table names (matching
     # `contribution_event`'s "source namespaces, table name doesn't repeat
     # it" convention) — `storage.write_partition`/`read_table`'s `table`

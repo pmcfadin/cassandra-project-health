@@ -1031,3 +1031,29 @@ agreement, precision/recall against a frozen benchmark corpus, classifier-versio
 - Whether pre-2016 git history has any usable reviewer signal at all (the data probe shows 43–57% trailer
   coverage in 2009–2014, not zero) — this project treats that period as context-only, not baseline-eligible, but
   has not attempted to mine an alternative signal (e.g., mailing-list patch-review threads) for those years.
+
+---
+
+## 9. Governance fact-based trend metrics (descriptive only, not in the Summary Table)
+
+Registered separately from every metric above (`governance/fact_metrics.py`, `governance/registry.py`, v1.0) —
+deliberately outside the Summary Table, `metrics/registry.py`'s `METRIC_IDS`, and the scored/composite system
+(SCORING.md): no dimension, no `role`, no `key`/`supporting` classification. Owner decision D25 (2026-09-28,
+DECISIONS.md): the Governance page is informational, not a verdict on the project, so these metrics carry
+`direction_of_good: null` in `metrics_meta.py` and are never read by `scoring/baseline.py` or folded into the
+home page's composite score.
+
+Each is a monthly share computed directly from raw evidence (commit trailer/JIRA reviewer field, commit message
+issue keys, JIRA comment/attachment CI evidence, GitHub checkstyle check-runs) over non-merge `trunk` commits —
+never from `governance-policy.yaml`'s scored pass/fail/unknown/exempt/not_in_force result, and never gated by a
+rule's `effective_from`, so a month from before any rule existed still carries a real value (this is what
+distinguishes them from `governance/metrics.py`'s internal, unpublished pass-rate metrics, which those gates do
+apply to — see that module's docstring).
+
+| id | name | window | denominator |
+|---|---|---|---|
+| `governance_commits_with_named_reviewer_share` | Commits with a named reviewer | monthly | all non-merge trunk commits that month |
+| `governance_commits_with_ticket_share` | Commits referencing a ticket | monthly | all non-merge trunk commits that month |
+| `governance_commits_with_ci_evidence_before_commit_share` | Commits with CI evidence on JIRA before commit | monthly | ticketed commits whose ticket's JIRA evidence has actually been checked (`details_json.n_not_checked` reports the rest) |
+| `governance_commits_with_both_ci_artefacts_share` | Commits with both CI artefacts attached | monthly | same checked/not-yet-checked rule as above |
+| `governance_commits_with_checkstyle_success_share` | Commits with a successful checkstyle run | monthly | commits with at least one recorded GitHub check-run |

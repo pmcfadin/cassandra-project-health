@@ -155,12 +155,17 @@ from project_health.governance.checks import (
     CommitFacts,
     is_ci_artefact_filename,
 )
+from project_health.governance.commit_evidence import build_commit_evidence_rows
 from project_health.governance.engine import build_commit_compliance_rows, build_commit_facts_rows
+from project_health.governance.fact_metrics import compute_monthly_fact_metrics
 from project_health.governance.metrics import compute_monthly_check_metrics
 from project_health.governance.overrides import DEFAULT_OVERRIDES_PATH
 from project_health.governance.overrides import load_overrides as load_governance_overrides
 from project_health.governance.policy import DEFAULT_POLICY_PATH, load_policy
-from project_health.governance.registry import build_governance_registry
+from project_health.governance.registry import (
+    build_governance_fact_metrics_registry,
+    build_governance_registry,
+)
 from project_health.schema import get_schema as _governance_get_schema
 from project_health.schema import validate as _governance_validate
 
@@ -2371,6 +2376,16 @@ def _collect_governance(
             overrides=overrides,
         )
         fact_rows = build_commit_facts_rows(commits)
+        # issue #97 (orchestrator review of 127bd5a): the commit-history
+        # table's CI evidence/CI artefacts cells are derived from raw
+        # evidence directly, never from the scored `compliance_rows` above
+        # (see `governance/commit_evidence.py`'s module docstring).
+        evidence_rows = build_commit_evidence_rows(
+            commits,
+            ci_evidence_by_issue=ci_evidence_by_issue,
+            attachments_by_issue=attachments_by_issue,
+            fetched_attachment_issue_keys=fetched_attachment_issue_keys,
+        )
 
         compliance_schema = _governance_get_schema("commit_compliance")
         compliance_table = _governance_validate(
@@ -2386,16 +2401,55 @@ def _collect_governance(
             if fact_rows
             else fact_schema.empty_table(),
         )
+        evidence_schema = _governance_get_schema("commit_evidence")
+        evidence_table = _governance_validate(
+            "commit_evidence",
+            pa.Table.from_pylist(evidence_rows, schema=evidence_schema)
+            if evidence_rows
+            else evidence_schema.empty_table(),
+        )
 
+        # v1.0 policy-derived pass-rate metrics (issue #36) -- kept for the
+        # scoring engine's own internal record, but no longer registered in
+        # `metrics_meta.GOVERNANCE_METRICS` (issue #97, D25 amendment), so
+        # `generate.py` never renders or exports them.
         governance_metrics = compute_monthly_check_metrics(
             compliance_table, as_of=started_at.date(), run_id=run_id, computed_at=started_at
         )
-        governance_registry = build_governance_registry(started_at)
+        # v1.0 fact-based trend metrics (issue #97, D25 amendment): computed
+        # directly from the same raw evidence as the commit-history table,
+        # never gated by a rule's effective_from or an exemption -- these
+        # are what the Governance page's trend cards actually render.
+        governance_fact_metrics = compute_monthly_fact_metrics(
+            commits,
+            jira_reviewers_by_issue=jira_reviewers_by_issue,
+            ci_evidence_by_issue=ci_evidence_by_issue,
+            attachments_by_issue=attachments_by_issue,
+            fetched_attachment_issue_keys=fetched_attachment_issue_keys,
+            checkstyle_runs_by_sha=checkstyle_runs_by_sha,
+            as_of=started_at.date(),
+            run_id=run_id,
+            computed_at=started_at,
+        )
+        governance_metrics = _governance_validate(
+            "metric_value",
+            pa.concat_tables([governance_metrics, governance_fact_metrics]),
+        )
+        governance_registry = _governance_validate(
+            "metric_definition_version",
+            pa.concat_tables(
+                [
+                    build_governance_registry(started_at),
+                    build_governance_fact_metrics_registry(started_at),
+                ]
+            ),
+        )
 
         snapshot_dir = Path(data_dir) / "snapshots" / run_id
         snapshot_dir.mkdir(parents=True, exist_ok=True)
         pq.write_table(compliance_table, snapshot_dir / "governance_commit_compliance.parquet")
         pq.write_table(fact_table, snapshot_dir / "governance_commit_fact.parquet")
+        pq.write_table(evidence_table, snapshot_dir / "governance_commit_evidence.parquet")
         pq.write_table(governance_metrics, snapshot_dir / "governance_metric_value.parquet")
         pq.write_table(
             governance_registry, snapshot_dir / "governance_metric_definition_version.parquet"

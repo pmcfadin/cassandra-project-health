@@ -1,79 +1,8 @@
 {% extends "base.html" %}
 {% block title %}Governance — Cassandra Project Health{% endblock %}
 {% block content %}
-<p class="page-intro">What the public record shows for each commit: reviewers named, CI evidence on the JIRA ticket, checkstyle runs. This page does not judge compliance; the Apache Cassandra project and its maintainers set and interpret their own rules.</p>
-
-{% if governance.policy %}
-{% if governance_show_verdicts %}
-<section class="governance-policy" aria-labelledby="policy-heading">
-  <h2 id="policy-heading">Policy v{{ governance.policy.version }}</h2>
-  <p class="security-meta">
-    Approved by <strong>{{ governance.policy.approved_by }}</strong> on
-    <strong>{{ governance.policy.approved_on }}</strong> —
-    <a href="{{ governance.policy.policy_url }}">governance-policy.yaml</a>.
-    {{ governance.policy.overrides_count }} correction(s) on record in
-    <a href="{{ governance.policy.overrides_url }}">governance_overrides.yaml</a>.
-    See <a href="{{ decisions_url }}#{{ decisions_d14_anchor }}">DECISIONS.md — D14</a> and
-    <a href="{{ decisions_url }}#{{ decisions_d15_anchor }}">D15</a>.
-  </p>
-  <p class="governance-note">
-    <strong>Unknown is not a fail.</strong> A result of <code>unknown</code> means the evidence
-    wasn't available, or the evidence source's own false-negative rate was too high to read
-    absence as non-compliance — it is never counted against a commit. Only a check marked
-    "can fail: yes" below can ever produce a <code>fail</code>, and only via that check's own
-    documented condition (see the table below). A result of <code>not_in_force</code> means the
-    check's rule did not exist yet on that commit's date (D14) — also never a fail.
-  </p>
-  <details class="policy-rules">
-    <summary>What's checked (policy v{{ governance.policy.version }})</summary>
-    <table class="security-table">
-      <thead>
-        <tr>
-          <th scope="col">Check</th>
-          <th scope="col">In force from</th>
-          <th scope="col">Can fail?</th>
-          <th scope="col">Scored</th>
-          <th scope="col">Source</th>
-          <th scope="col">What it checks</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for rule in governance.policy.rules %}
-        <tr>
-          <td>
-            {% if rule.source_url %}<a href="{{ rule.source_url }}">{{ rule.id }}</a>{% else %}{{ rule.id }}{% endif %}
-          </td>
-          <td>{{ rule.effective_from or "always" }}</td>
-          <td>{{ "yes" if rule.fail_allowed else "no" }}</td>
-          <td>{{ "scored" if rule.scored else "display only" }}</td>
-          <td>
-            {% if rule.source_type %}
-              <span class="governance-source-type">{{ rule.source_type }}</span>
-              {% if rule.source_quote %}<br><q class="governance-source-quote">{{ rule.source_quote }}</q>{% endif %}
-            {% else %}
-              &mdash;
-            {% endif %}
-          </td>
-          <td>{{ rule.description }}</td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-  </details>
-  {% if governance.policy.removed_exemptions %}
-  <div class="governance-note governance-removed-in-v2">
-    <strong>Exemptions removed in v2 (D24: no official source):</strong>
-    <ul>
-    {% for removed in governance.policy.removed_exemptions %}
-      <li><code>{{ removed.exemption_id }}</code> (was an exemption on
-        {% for rid in removed.rule_ids %}<code>{{ rid }}</code>{% if not loop.last %}, {% endif %}{% endfor %})
-        &mdash; {{ removed.reason }}</li>
-    {% endfor %}
-    </ul>
-  </div>
-  {% endif %}
-</section>
-{% endif %}
+{% if governance.has_data %}
+<p class="page-intro">{{ governance.page_intro }}</p>
 {% endif %}
 
 {% if governance.backfill.has_status %}
@@ -81,21 +10,21 @@
   <h2 id="backfill-heading">Backfill status</h2>
   {% if governance.backfill.is_failed %}
     <p class="banner banner--stale" role="status">
-      Governance scoring failed on the last run — the results below may be stale or incomplete
+      Governance collection failed on the last run — the results below may be stale or incomplete
       for this run.
     </p>
   {% elif governance.backfill.is_partial %}
     <p class="security-meta">
       Backfill in progress (<strong>partial</strong>): {{ governance.backfill.commits_scored }}
-      commit(s) scored this run, with {{ governance.backfill.ci_pending }} CI-evidence lookup(s)
+      commit(s) processed this run, with {{ governance.backfill.ci_pending }} CI-evidence lookup(s)
       and {{ governance.backfill.check_run_pending }} checkstyle-check lookup(s) still pending —
-      picked up automatically on a later run. A pending lookup shows as <code>unknown</code> below,
-      never as a gap in the commit list and never as a fail.
+      picked up automatically on a later run. A pending lookup shows as "not checked yet" below,
+      never as a gap in the commit list.
     </p>
   {% else %}
     <p class="security-meta">
       Backfill complete for this run (<strong>ok</strong>): {{ governance.backfill.commits_scored }}
-      commit(s) scored, {{ governance.backfill.compliance_rows }} check result(s).
+      commit(s) processed, {{ governance.backfill.compliance_rows }} evidence lookup(s).
     </p>
   {% endif %}
 </section>
@@ -103,11 +32,11 @@
 
 {% if not governance.has_data %}
 <section class="empty-state" aria-labelledby="governance-empty-heading">
-  <h2 id="governance-empty-heading">Governance compliance is not published yet</h2>
+  <h2 id="governance-empty-heading">Governance commit history is not published yet</h2>
   <p>
-    This page will list individual commits alongside author, committer and reviewer names and each
-    check's pass/fail/unknown result (D15). It stays empty until the compliance engine has scored at
-    least one commit for this project.
+    This page will list individual commits alongside author, committer and reviewer names, and
+    what the public record shows for CI evidence, CI artefacts and checkstyle (D15). It stays
+    empty until the evidence-collection engine has processed at least one commit for this project.
   </p>
 </section>
 
@@ -115,13 +44,12 @@
   <h2 id="governance-coming-heading">What's coming</h2>
 
   <article class="phase-card">
-    <h3>Per-commit minimums (D14)</h3>
+    <h3>Per-commit evidence collection (D14)</h3>
     <p>
-      The minimums every commit must meet — review, testing, CI — are defined in a versioned
-      <code>governance-policy.yaml</code>. Each rule cites its source (Cassandra's commit
-      documentation, a CEP, or a dev@ decision), carries an effective-from date, and states exactly
-      how it is checked. An agent drafts the policy from Cassandra's documented rules, and the
-      project owner approves it before any compliance result is published. See
+      What's collected for every commit — reviewer names, CI evidence, CI artefacts, checkstyle
+      results — follows a versioned <code>governance-policy.yaml</code> that cites its sources
+      (Cassandra's commit documentation, a CEP, or a dev@ decision) and states exactly how each
+      piece of evidence is found. See
       <a href="{{ decisions_url }}#{{ decisions_d14_anchor }}">DECISIONS.md — D14</a>.
     </p>
   </article>
@@ -129,77 +57,21 @@
   <article class="phase-card">
     <h3>Full per-commit transparency (D15)</h3>
     <p>
-      Each commit's checks are judged against the policy in force on its commit date, and each
-      result shows the evidence it is based on (trailer text, JIRA field, CI link, or test paths) so
-      a reader can verify it. <code>unknown</code> is always shown as unknown, never counted as a
-      fail, and every row links to a corrections process. See
+      Each commit's row shows the evidence it is based on (trailer text, JIRA field, CI link, or
+      test paths) so a reader can verify it. This page reports facts, not verdicts — the Apache
+      Cassandra project and its maintainers set and interpret their own rules. See
       <a href="{{ decisions_url }}#{{ decisions_d15_anchor }}">DECISIONS.md — D15</a>.
     </p>
   </article>
 </section>
 {% else %}
 
-{% if governance_show_verdicts %}
-<section class="governance-fails" aria-labelledby="fails-heading">
-  <h2 id="fails-heading">Currently failing ({{ governance.fails_total }})</h2>
-  <p class="page-intro">
-    Every commit currently scored <code>fail</code> under policy v{{ governance.policy.version if governance.policy else "?" }} —
-    <code>pass</code>, <code>unknown</code>, <code>exempt</code> and <code>not_in_force</code> results
-    are never listed here. Think one of these is wrong? Each row links to a pre-filled correction
-    request; corrections are PR-reviewed into
-    {% if governance.policy %}<a href="{{ governance.policy.overrides_url }}">governance_overrides.yaml</a>{% else %}<code>governance_overrides.yaml</code>{% endif %}
-    (D15).
-  </p>
-  {% if governance.fails %}
-  <table class="security-table gov-fails-table">
-    <thead>
-      <tr>
-        <th scope="col">Commit</th>
-        <th scope="col">Date</th>
-        <th scope="col">Branch</th>
-        <th scope="col">Check</th>
-        <th scope="col">Author</th>
-        <th scope="col">Evidence</th>
-        <th scope="col"></th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for f in governance.fails %}
-      <tr>
-        <td><a href="{{ f.commit_url }}"><code>{{ f.short_sha }}</code></a></td>
-        <td>{{ f.commit_date.strftime('%Y-%m-%d') }}</td>
-        <td>{{ f.branch }}</td>
-        <td><span class="badge badge--result badge--result-fail">{{ f.check_id }}</span></td>
-        <td>{{ f.author }}</td>
-        <td>
-          {{ f.evidence }}
-          {% if f.evidence_url %}(<a href="{{ f.evidence_url }}">evidence</a>){% endif %}
-        </td>
-        <td><a href="{{ f.correction_url }}">Request a correction</a></td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
-  {% if governance.fails_truncated %}
-  <p class="card-more">
-    Showing the first {{ governance.fails | length }} of {{ governance.fails_total }} fails —
-    download the full CSV below for the rest.
-  </p>
-  {% endif %}
-  {% else %}
-  <p class="card-empty-state">
-    No commits currently fail policy v{{ governance.policy.version if governance.policy else "?" }}.
-  </p>
-  {% endif %}
-</section>
-{% endif %}
-
 <section class="governance-trends" aria-labelledby="trends-heading">
-  <h2 id="trends-heading">Compliance trends</h2>
+  <h2 id="trends-heading">Monthly rates</h2>
   <p class="page-intro">
-    Monthly share of non-merge commits in each result state, per check (governance/metrics.py;
-    <code>exempt</code>/<code>not_in_force</code> commits are excluded from the pass-rate math but
-    plotted here for context, not hidden).
+    A plain, neutral share of non-merge commits per month for each column below — how many had a
+    named reviewer, CI evidence before commit, both CI artefacts, or a successful checkstyle run.
+    No thresholds and no judgment are attached to these numbers.
   </p>
 
   {% include "_chart_window_toggle.html" %}
@@ -209,7 +81,6 @@
     <article class="card">
       <header class="card-header">
         <h3>{{ chart.name }}</h3>
-        {% if chart.tier %}<span class="badge badge--tier badge--tier-{{ chart.tier }}">{{ chart.tier }}</span>{% endif %}
       </header>
       {% if chart.staleness_badges %}
       <p class="card-staleness">
@@ -220,19 +91,14 @@
       {% endif %}
       <p class="card-value">
         {% if chart.latest_value_display is not none %}
-          <span class="value gov-headline">
-            <span class="gov-headline-share gov-result--pass">{{ chart.latest_pass_share_display }} pass</span><span class="gov-headline-sep" aria-hidden="true"> &middot; </span><span class="gov-headline-share gov-result--unknown">{{ chart.latest_unknown_share_display }} unknown</span><span class="gov-headline-sep" aria-hidden="true"> &middot; </span><span class="gov-headline-share gov-result--fail">{{ chart.latest_fail_share_display }} fail</span>
-          </span>
+          <span class="value">{{ chart.latest_value_display }}</span>
           <span class="value-period">{{ chart.latest_month_label }}</span>
-          {% if chart.backfill_pending %}
-          <span class="badge badge--backfill-pending">backfill pending</span>
-          {% endif %}
         {% else %}
           <span class="value value--insufficient">insufficient data</span>
         {% endif %}
       </p>
       {% if chart.has_data %}
-      <div class="chart" data-vega-spec='{{ chart.vega_spec_json }}' role="img" aria-label="Compliance trend for {{ chart.check_id }}">
+      <div class="chart" data-vega-spec='{{ chart.vega_spec_json }}' role="img" aria-label="Monthly rate for {{ chart.name }}">
         <noscript>Enable JavaScript to see the {{ chart.name }} trend chart, or use the data links below.</noscript>
       </div>
       {% else %}
@@ -248,17 +114,16 @@
 
     <article class="card">
       <header class="card-header">
-        <h3>Ninja exemptions</h3>
+        <h3>Declares "ninja"</h3>
         <span class="badge">descriptive only</span>
       </header>
       <p class="card-status">
-        Not a documented Cassandra rule and never scored pass/fail — a count of
-        <code>reviewer-present</code> commits exempted by the project's own "ninja" convention
-        (governance-policy.yaml <code>descriptive_signal</code>).
+        A count of commits whose message self-declares "ninja", per month — a project convention,
+        not a documented Cassandra rule, shown for context only.
       </p>
       {% if governance.ninja_trend.has_data %}
-      <div class="chart" data-vega-spec='{{ governance.ninja_trend.vega_spec_json }}' role="img" aria-label="Ninja-exempt commits per month">
-        <noscript>Enable JavaScript to see the ninja-exemption trend chart.</noscript>
+      <div class="chart" data-vega-spec='{{ governance.ninja_trend.vega_spec_json }}' role="img" aria-label="Commits declaring ninja per month">
+        <noscript>Enable JavaScript to see the ninja-declared trend chart.</noscript>
       </div>
       {% else %}
       <p class="card-empty-state">No monthly data yet.</p>
@@ -268,28 +133,27 @@
 </section>
 
 <section class="governance-commits" aria-labelledby="commits-heading" data-gov-commits
-  data-recent-href="{{ governance.commits_recent_json_href }}"
-  data-full-href="{{ governance.commits_full_json_href }}"
-  data-recent-months="{{ governance.recent_months }}">
-  <h2 id="commits-heading">Per-commit detail</h2>
+  data-default-href="{{ governance.commits_default_json_href }}"
+  data-older-href="{{ governance.commits_older_json_href }}"
+  data-default-range-start="{{ governance.default_range_start }}">
+  <h2 id="commits-heading">Commit history</h2>
   <p class="page-intro">
-    Every scored commit, with its check results and the evidence behind each one (D15). Loads the
-    last {{ governance.recent_months }} months by default;
-    <button type="button" class="gov-load-all" data-gov-load-all>load full history</button>
-    to filter across everything. Downloads:
-    <a href="{{ governance.commits_full_json_href }}" data-gov-download-json>full JSON</a> &middot;
-    <a href="{{ governance.commits_full_csv_href }}">full CSV</a>.
+    Every commit from {{ governance.default_range_start }} on, one row each, with what the public
+    record shows for review, CI evidence and checkstyle.
+    <label class="gov-toggle">
+      <input type="checkbox" data-gov-older-toggle>
+      Include commits before {{ governance.default_range_start }}
+    </label>
+    <label class="gov-toggle">
+      <input type="checkbox" data-gov-merges-toggle>
+      Show forward-merge commits
+    </label>
+    Export the current view:
+    <button type="button" data-gov-export="csv">CSV</button>
+    <button type="button" data-gov-export="json">JSON</button>
   </p>
 
   <form class="gov-filters" data-gov-filters aria-label="Filter commits">
-    <label>Month
-      <select data-gov-filter="month">
-        <option value="">All loaded months</option>
-        {% for month in governance.filter_options.months %}
-        <option value="{{ month }}">{{ month }}</option>
-        {% endfor %}
-      </select>
-    </label>
     <label>Branch
       <select data-gov-filter="branch">
         <option value="">All branches</option>
@@ -298,42 +162,91 @@
         {% endfor %}
       </select>
     </label>
-    <label>Check
-      <select data-gov-filter="check">
-        <option value="">All checks</option>
-        {% for check in governance.filter_options.checks %}
-        <option value="{{ check }}">{{ check }}</option>
-        {% endfor %}
+    <label>Reviewer named
+      <select data-gov-filter="reviewer">
+        <option value="">Any</option>
+        <option value="yes">Named</option>
+        <option value="no">Not named</option>
       </select>
     </label>
-    <label>Result
-      <select data-gov-filter="result">
-        <option value="">Any result</option>
-        {% for result in governance.filter_options.results %}
-        <option value="{{ result }}">{{ result }}</option>
-        {% endfor %}
+    <label>CI evidence
+      <select data-gov-filter="ci_evidence">
+        <option value="">Any</option>
+        <option value="before">Found before commit</option>
+        <option value="after">Found after commit</option>
+        <option value="none">None found</option>
+        <option value="not_checked">Not checked</option>
+        <option value="no_ticket">No ticket</option>
       </select>
+    </label>
+    <label>CI artefacts on JIRA
+      <select data-gov-filter="ci_artefacts">
+        <option value="">Any</option>
+        <option value="both">Both</option>
+        <option value="partial">Partial</option>
+        <option value="none">None</option>
+        <option value="not_checked">Not checked</option>
+        <option value="no_ticket">No ticket</option>
+      </select>
+    </label>
+    <label>Checkstyle
+      <select data-gov-filter="checkstyle">
+        <option value="">Any</option>
+        <option value="success">Success</option>
+        <option value="failure">Failure</option>
+        <option value="none">No check-run</option>
+      </select>
+    </label>
+    <label>From
+      <input type="date" data-gov-filter="date_from">
+    </label>
+    <label>To
+      <input type="date" data-gov-filter="date_to">
+    </label>
+    <label>Author
+      <input type="text" data-gov-filter="author" placeholder="author name">
+    </label>
+    <label>Search
+      <input type="text" data-gov-filter="search" placeholder="sha, ticket or subject">
+    </label>
+    <label class="gov-toggle">
+      <input type="checkbox" data-gov-filter="docs_only">
+      Docs-only change
+    </label>
+    <label class="gov-toggle">
+      <input type="checkbox" data-gov-filter="release_process">
+      Release-process commit
+    </label>
+    <label class="gov-toggle">
+      <input type="checkbox" data-gov-filter="ninja">
+      Declares ninja
+    </label>
+    <label class="gov-toggle">
+      <input type="checkbox" data-gov-filter="changes_txt">
+      CHANGES.txt included
+    </label>
+    <label class="gov-toggle">
+      <input type="checkbox" data-gov-filter="news_txt">
+      NEWS.txt included
     </label>
   </form>
 
   <p class="gov-status" data-gov-status role="status">Loading commits…</p>
 
   <div class="gov-table-wrap">
-    <table class="security-table gov-commits-table" data-gov-table
-      data-gov-checks="{{ governance.filter_options.checks | join(',') }}">
+    <table class="security-table gov-commits-table" data-gov-table>
       <thead>
         <tr>
-          <th scope="col">Commit</th>
-          <th scope="col">Date</th>
-          <th scope="col">Branch</th>
-          <th scope="col">JIRA</th>
-          <th scope="col">Author</th>
-          <th scope="col">Committer</th>
-          <th scope="col">Reviewers</th>
-          {% for check in governance.filter_options.checks %}
-          <th scope="col">{{ check }}</th>
-          {% endfor %}
           <th scope="col"></th>
+          <th scope="col" data-gov-sort="commit_date" tabindex="0" role="button" aria-sort="descending">Date</th>
+          <th scope="col" data-gov-sort="sha" tabindex="0" role="button" aria-sort="none">Commit</th>
+          <th scope="col" data-gov-sort="jira" tabindex="0" role="button" aria-sort="none">Ticket</th>
+          <th scope="col" data-gov-sort="reviewer" tabindex="0" role="button" aria-sort="none">Reviewed by</th>
+          <th scope="col" data-gov-sort="ci_evidence" tabindex="0" role="button" aria-sort="none">CI evidence</th>
+          <th scope="col" data-gov-sort="ci_artefacts" tabindex="0" role="button" aria-sort="none">CI artefacts on JIRA</th>
+          <th scope="col" data-gov-sort="checkstyle" tabindex="0" role="button" aria-sort="none">Checkstyle</th>
+          <th scope="col" data-gov-sort="changes_txt" tabindex="0" role="button" aria-sort="none">CHANGES.txt</th>
+          <th scope="col" data-gov-sort="news_txt" tabindex="0" role="button" aria-sort="none">NEWS.txt</th>
         </tr>
       </thead>
       <tbody data-gov-tbody></tbody>
@@ -346,15 +259,29 @@
     <button type="button" data-gov-next>Next</button>
   </nav>
   <noscript>
-    <p>Enable JavaScript to browse the per-commit table, or download the
-    <a href="{{ governance.commits_full_csv_href }}">full CSV</a> directly.</p>
+    <p>Enable JavaScript to browse the commit history.</p>
   </noscript>
+</section>
+
+<section class="governance-references" aria-labelledby="references-heading">
+  <h2 id="references-heading">References</h2>
+  <p class="page-intro">
+    The project's own published guidance this page's facts are drawn from. This project does not
+    interpret these as requirements it enforces — see the note at the top of this page.
+  </p>
+  <ul class="governance-reference-list">
+    {% for ref in governance.references %}
+    <li><a href="{{ ref.url }}">{{ ref.label }}</a></li>
+    {% endfor %}
+  </ul>
+  {{ governance.overrides_count }} correction(s) on record in
+  <a href="{{ governance.overrides_url }}">governance_overrides.yaml</a>.
 </section>
 <script src="{{ base_prefix }}static/governance.js" defer></script>
 {% endif %}
 
 {# Security section (OpenSSF Scorecard + CVE/advisory history, issue #55,
    D21 item 3) — kept in its own partial/include so this page's own
-   compliance-engine work never needs to touch this section's markup. #}
+   evidence-collection work never needs to touch this section's markup. #}
 {% include "_security.html" %}
 {% endblock %}

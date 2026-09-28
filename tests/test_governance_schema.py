@@ -18,6 +18,7 @@ def test_commit_compliance_schema_registered():
         "commit_date",
         "author",
         "committer",
+        "subject",
         "is_merge",
         "reviewers",
         "jira_keys",
@@ -26,9 +27,28 @@ def test_commit_compliance_schema_registered():
         "result",
         "evidence",
         "evidence_url",
+        # Structured evidence (issue #97) -- additive.
+        "state",
+        "evidence_kind",
+        "evidence_label",
+        "evidence_at",
+        "lead_time_seconds",
+        "reason",
+        "reviewer_detail",
     ]
     assert schema.field("evidence_url").nullable is True
     assert schema.field("reviewers").type == pa.list_(pa.string())
+    assert schema.field("state").nullable is False
+    assert schema.field("evidence_kind").nullable is True
+    assert schema.field("reviewer_detail").nullable is False
+    assert schema.field("reviewer_detail").type == pa.list_(
+        pa.struct(
+            [
+                pa.field("name", pa.string(), nullable=False),
+                pa.field("source", pa.string(), nullable=False),
+            ]
+        )
+    )
 
 
 def test_commit_fact_schema_registered():
@@ -51,6 +71,7 @@ def _valid_compliance_row() -> dict:
         "commit_date": NOW,
         "author": "Alice",
         "committer": "Alice",
+        "subject": "patch by Alice; reviewed by Bob for CASSANDRA-100",
         "is_merge": False,
         "reviewers": ["Bob"],
         "jira_keys": ["CASSANDRA-100"],
@@ -59,6 +80,13 @@ def _valid_compliance_row() -> dict:
         "result": "pass",
         "evidence": "commit trailer reviewer(s): Bob",
         "evidence_url": None,
+        "state": "met",
+        "evidence_kind": "trailer",
+        "evidence_label": "Bob (trailer)",
+        "evidence_at": None,
+        "lead_time_seconds": None,
+        "reason": None,
+        "reviewer_detail": [{"name": "Bob", "source": "trailer"}],
     }
 
 

@@ -1,10 +1,16 @@
 """Tests for project_health.governance.engine (issue #36)."""
 
+from collections import Counter
 from datetime import datetime, timezone
 
 import pytest
 
-from project_health.governance.checks import CommitFacts
+from project_health.governance.checks import (
+    AttachmentEvidence,
+    CheckstyleEvidence,
+    CIEvidence,
+    CommitFacts,
+)
 from project_health.governance.engine import (
     SCORED_CHECK_IDS,
     build_commit_compliance_rows,
@@ -128,3 +134,196 @@ def test_merge_commit_with_real_trailer_is_still_scored(policy):
     reviewer_row = next(r for r in rows if r["check_id"] == "reviewer-present")
     assert reviewer_row["result"] == "pass"
     assert reviewer_row["is_merge"] is True
+
+
+# --- Per-check result-state counts (issue #97) -------------------------------
+#
+# The structured-evidence fields added by issue #97 (`state`, `evidence_kind`,
+# `evidence_label`, `evidence_at`, `lead_time_seconds`, `reason`,
+# `reviewer_detail`) are purely additive on top of the same `result` every
+# `score_*` function in `checks.py` already computed (see that module's
+# `CheckResult` docstring) -- this test is the count-level proof: six
+# commits, deliberately covering every result state
+# (pass/fail/unknown/exempt/not_in_force) for every one of the five scored
+# checks, tallied by `(check_id, result)`. The real-data before/after
+# comparison (issue #97's acceptance criteria) additionally re-runs the full
+# pipeline against real collected data and diffs these same per-check counts
+# — this synthetic version is the fast, hermetic regression guard for it.
+
+
+def _counting_commits() -> list[CommitFacts]:
+    return [
+        # A: every check meets its evidence -- pass across the board.
+        CommitFacts(
+            sha="a" * 40,
+            branch="trunk",
+            commit_date=datetime(2026, 8, 20, tzinfo=timezone.utc),
+            message="patch by Alice; reviewed by Bob for CASSANDRA-1",
+            author="Alice",
+            committer="Alice",
+            is_merge=False,
+            trailer_reviewers=("Bob",),
+            issue_keys=("CASSANDRA-1",),
+            changed_paths=("src/Foo.java",),
+        ),
+        # B: every check has direct contrary evidence -- fail where allowed.
+        CommitFacts(
+            sha="b" * 40,
+            branch="trunk",
+            commit_date=datetime(2026, 8, 20, tzinfo=timezone.utc),
+            message="Fix a bug for CASSANDRA-2",
+            author="Carol",
+            committer="Carol",
+            is_merge=False,
+            trailer_reviewers=(),
+            issue_keys=("CASSANDRA-2",),
+            changed_paths=("src/Bar.java",),
+        ),
+        # C: no ticket, no reviewer, no runs -- unknown everywhere.
+        CommitFacts(
+            sha="c" * 40,
+            branch="trunk",
+            commit_date=datetime(2026, 8, 20, tzinfo=timezone.utc),
+            message="misc cleanup",
+            author="Dave",
+            committer="Dave",
+            is_merge=False,
+            trailer_reviewers=(),
+            issue_keys=(),
+            changed_paths=("src/Baz.java",),
+        ),
+        # D: docs-only -- commit-then-review/not-code exemptions apply.
+        CommitFacts(
+            sha="d" * 40,
+            branch="trunk",
+            commit_date=datetime(2026, 8, 20, tzinfo=timezone.utc),
+            message="Fix docs typo",
+            author="Erin",
+            committer="Erin",
+            is_merge=False,
+            trailer_reviewers=(),
+            issue_keys=(),
+            changed_paths=("README.md",),
+        ),
+        # E: before every dated rule's effective_from -- not_in_force.
+        CommitFacts(
+            sha="e" * 40,
+            branch="trunk",
+            commit_date=datetime(2019, 1, 1, tzinfo=timezone.utc),
+            message="patch by Frank; reviewed by Grace for CASSANDRA-5",
+            author="Frank",
+            committer="Frank",
+            is_merge=False,
+            trailer_reviewers=("Grace",),
+            issue_keys=("CASSANDRA-5",),
+            changed_paths=("src/Qux.java",),
+        ),
+        # F: the sourced release-process pattern -- exempt.
+        CommitFacts(
+            sha="f" * 40,
+            branch="trunk",
+            commit_date=datetime(2026, 8, 20, tzinfo=timezone.utc),
+            message="Increment version to 5.0.10",
+            author="Release Manager",
+            committer="Release Manager",
+            is_merge=False,
+            trailer_reviewers=(),
+            issue_keys=(),
+            changed_paths=None,
+        ),
+    ]
+
+
+def test_per_check_result_counts_are_stable(policy):
+    commits = _counting_commits()
+    ci_evidence_by_issue = {
+        "CASSANDRA-1": [
+            CIEvidence(
+                issue_key="CASSANDRA-1",
+                source="jira_attachment_ci_artefact",
+                created_at=datetime(2026, 8, 19, tzinfo=timezone.utc),
+                description="attachment 'ci_summary.html'",
+            )
+        ],
+    }
+    attachments_by_issue = {
+        "CASSANDRA-1": [
+            AttachmentEvidence(
+                issue_key="CASSANDRA-1",
+                attachment_id="1",
+                filename="ci_summary.html",
+                created_at=datetime(2026, 8, 19, tzinfo=timezone.utc),
+            ),
+            AttachmentEvidence(
+                issue_key="CASSANDRA-1",
+                attachment_id="2",
+                filename="results_details.tar.gz",
+                created_at=datetime(2026, 8, 19, tzinfo=timezone.utc),
+            ),
+        ],
+        "CASSANDRA-2": [],
+    }
+    fetched_attachment_issue_keys = {"CASSANDRA-1", "CASSANDRA-2"}
+    checkstyle_runs_by_sha = {
+        "a" * 40: (
+            CheckstyleEvidence(
+                sha="a" * 40, check_run_name="ant-check-jdk11", conclusion="success"
+            ),
+        ),
+        "b" * 40: (
+            CheckstyleEvidence(
+                sha="b" * 40, check_run_name="ant-check-jdk11", conclusion="failure"
+            ),
+        ),
+    }
+
+    rows = build_commit_compliance_rows(
+        policy,
+        commits,
+        ci_evidence_by_issue=ci_evidence_by_issue,
+        attachments_by_issue=attachments_by_issue,
+        fetched_attachment_issue_keys=fetched_attachment_issue_keys,
+        checkstyle_runs_by_sha=checkstyle_runs_by_sha,
+    )
+
+    counts: dict[str, Counter] = {}
+    for row in rows:
+        counts.setdefault(row["check_id"], Counter())[row["result"]] += 1
+
+    assert dict(counts["reviewer-present"]) == {
+        "pass": 1,
+        "fail": 1,
+        "unknown": 1,
+        "exempt": 2,
+        "not_in_force": 1,
+    }
+    assert dict(counts["jira-ticket-referenced"]) == {
+        "pass": 3,
+        "unknown": 2,
+        "exempt": 1,
+    }
+    assert dict(counts["pre-commit-ci-evidence"]) == {
+        "pass": 1,
+        "unknown": 2,
+        "exempt": 2,
+        "not_in_force": 1,
+    }
+    assert dict(counts["ci-artefacts-attached"]) == {
+        "pass": 1,
+        "fail": 1,
+        "unknown": 1,
+        "exempt": 2,
+        "not_in_force": 1,
+    }
+    assert dict(counts["code-style-checkstyle"]) == {
+        "pass": 1,
+        "fail": 1,
+        "unknown": 4,
+    }
+
+    # Every row's `state` is the pure, total mapping of its own `result`
+    # (checks.result_state) -- never independently drifted.
+    from project_health.governance.checks import result_state
+
+    for row in rows:
+        assert row["state"] == result_state(row["result"])

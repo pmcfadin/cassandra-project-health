@@ -714,8 +714,11 @@ def score_pre_commit_ci_evidence(
 def _format_lead_time(later: datetime, earlier: datetime) -> str:
     """A short human duration for `later - earlier` (design doc examples:
     "5 h before commit", "evidence posted 2 days after commit") --
-    MEASUREMENT (ours): whole hours under a day, otherwise whole days."""
+    MEASUREMENT (ours): whole minutes under an hour, whole hours under a day,
+    otherwise whole days."""
     seconds = max(0, int((later - earlier).total_seconds()))
+    if seconds < 3600:
+        return f"{max(1, round(seconds / 60))} min"
     if seconds < 86400:
         hours = max(1, round(seconds / 3600))
         return f"{hours} h"

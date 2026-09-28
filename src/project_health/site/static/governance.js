@@ -244,10 +244,61 @@
     return rows;
   }
 
-  function factCellHtml(fact, label) {
-    var text = escapeHtml(fact.text || "");
+  // Compact cell text (the full sentence stays in the title tooltip and the
+  // expanded evidence trail), so the whole table fits a normal window.
+  function shortLead(seconds) {
+    var s = Math.abs(seconds || 0);
+    if (s < 3600) return Math.max(1, Math.round(s / 60)) + " min";
+    if (s < 86400) return Math.max(1, Math.round(s / 3600)) + " h";
+    var d = Math.round(s / 86400);
+    return d + (d === 1 ? " day" : " days");
+  }
+
+  var BUCKET_LABELS = {
+    none: "none found",
+    not_checked: "not checked",
+    no_ticket: "no ticket",
+  };
+
+  function shortCiEvidence(fact) {
+    if (BUCKET_LABELS[fact.bucket]) return BUCKET_LABELS[fact.bucket];
+    var kind = /^attachment/i.test(fact.text || "") ? "attachment" : "comment";
+    var when = fact.lead_time_seconds != null ? " · " + shortLead(fact.lead_time_seconds) : "";
+    return kind + when + (fact.bucket === "after" ? " after" : " before");
+  }
+
+  function shortCiArtefacts(fact) {
+    if (BUCKET_LABELS[fact.bucket]) return BUCKET_LABELS[fact.bucket];
+    if (fact.bucket === "both") {
+      var m = /, (.+?) (before|after) commit/.exec(fact.text || "");
+      return "both" + (m ? " · " + m[1] + " " + m[2] : "");
+    }
+    return fact.text || "";
+  }
+
+  function shortCheckstyle(fact) {
+    if (fact.bucket === "success") return "success";
+    if (fact.bucket === "failure") return "failure";
+    return "no run";
+  }
+
+  function factCellHtml(fact, label, shortText) {
+    var full = fact.text || "";
     var link = fact.url ? ' <a href="' + escapeHtml(fact.url) + '">link</a>' : "";
-    return '<td data-label="' + escapeHtml(label) + '">' + text + link + "</td>";
+    return (
+      '<td data-label="' + escapeHtml(label) + '" title="' + escapeHtml(full) + '">' +
+      escapeHtml(shortText) + link + "</td>"
+    );
+  }
+
+  function reviewerCellHtml(reviewer) {
+    var names = (reviewer.names || []).map(function (n) { return n.name; });
+    var shown = names.length ? names.slice(0, 3).join(", ") : "none named";
+    if (names.length > 3) shown += " +" + (names.length - 3);
+    return (
+      '<td data-label="Reviewed by" title="' + escapeHtml(reviewer.text || "") + '">' +
+      escapeHtml(shown) + "</td>"
+    );
   }
 
   function evidenceTrailHtml(row) {
@@ -313,7 +364,7 @@
         '">' +
         (expanded ? "−" : "+") +
         '<span class="visually-hidden"> details</span></button></td>',
-      '<td data-label="Date">' + escapeHtml(date) + "</td>",
+      '<td data-label="Date" class="gov-nowrap">' + escapeHtml(date) + "</td>",
       '<td data-label="Commit"><a href="' +
         escapeHtml(row.commit_url) +
         '"><code>' +
@@ -323,12 +374,12 @@
         '<br><span class="gov-author">' +
         escapeHtml(row.author) +
         "</span></td>",
-      '<td data-label="Ticket">' + (jira || "—") + "</td>",
-      '<td data-label="Reviewed by">' + escapeHtml(row.reviewer.text) + "</td>",
+      '<td data-label="Ticket" class="gov-nowrap">' + (jira || "—") + "</td>",
+      reviewerCellHtml(row.reviewer),
     ];
-    cells.push(factCellHtml(row.ci_evidence, "CI evidence"));
-    cells.push(factCellHtml(row.ci_artefacts, "CI artefacts on JIRA"));
-    cells.push(factCellHtml(row.checkstyle, "Checkstyle"));
+    cells.push(factCellHtml(row.ci_evidence, "CI evidence", shortCiEvidence(row.ci_evidence)));
+    cells.push(factCellHtml(row.ci_artefacts, "CI artefacts on JIRA", shortCiArtefacts(row.ci_artefacts)));
+    cells.push(factCellHtml(row.checkstyle, "Checkstyle", shortCheckstyle(row.checkstyle)));
     cells.push(
       '<td data-label="CHANGES.txt">' + (row.changes_txt_touched ? "included" : "—") + "</td>"
     );

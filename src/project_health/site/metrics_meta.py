@@ -641,7 +641,7 @@ PAGES: dict[str, PageMeta] = {
         page_id="governance",
         title="Governance",
         path="governance/",
-        summary="Per-commit minimums checked against an owner-approved policy.",
+        summary="What the public record shows for each commit: reviewers, CI evidence, checkstyle.",
         empty_message="Governance policy in development — no compliance results yet.",
     ),
 }

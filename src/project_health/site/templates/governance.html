@@ -1,9 +1,10 @@
 {% extends "base.html" %}
 {% block title %}Governance — Cassandra Project Health{% endblock %}
 {% block content %}
-<p class="page-intro">Per-commit compliance against an owner-approved policy — deterministic checks on public commits, not classified judgments.</p>
+<p class="page-intro">What the public record shows for each commit: reviewers named, CI evidence on the JIRA ticket, checkstyle runs. This page does not judge compliance; the Apache Cassandra project and its maintainers set and interpret their own rules.</p>
 
 {% if governance.policy %}
+{% if governance_show_verdicts %}
 <section class="governance-policy" aria-labelledby="policy-heading">
   <h2 id="policy-heading">Policy v{{ governance.policy.version }}</h2>
   <p class="security-meta">
@@ -73,6 +74,7 @@
   {% endif %}
 </section>
 {% endif %}
+{% endif %}
 
 {% if governance.backfill.has_status %}
 <section class="governance-backfill" aria-labelledby="backfill-heading">
@@ -137,6 +139,7 @@
 </section>
 {% else %}
 
+{% if governance_show_verdicts %}
 <section class="governance-fails" aria-labelledby="fails-heading">
   <h2 id="fails-heading">Currently failing ({{ governance.fails_total }})</h2>
   <p class="page-intro">
@@ -189,6 +192,7 @@
   </p>
   {% endif %}
 </section>
+{% endif %}
 
 <section class="governance-trends" aria-labelledby="trends-heading">
   <h2 id="trends-heading">Compliance trends</h2>

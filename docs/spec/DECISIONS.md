@@ -156,3 +156,11 @@ Owner decision (2026-09-27): "We should always follow the rules set by the PMC a
 - **Rules versus measurement:** how evidence is found, and when missing evidence counts as `unknown` rather than `fail`, are measurement choices this project makes and documents per rule. Rules, exemptions and thresholds are not ours to make. Anything without an official source can only be a descriptive signal, never pass/fail.
 - **Enforcement:** a test fails if any scored rule or exemption lacks a source. `project-health verify-policy-sources` re-fetches each source and confirms each quote still appears, so a change to the project's rules is noticed.
 - **First application (policy v2):** the audit of v1 removed two unsourced exemptions, `ninja` and `submodule-repin`. It added the ratified Commit Then Review exemption, sourced the release-process exemptions, and added `ci-artefacts-attached` (official docs, effective 2026-08-19).
+
+## D25. The site is informational; it publishes no policy and no verdicts (amends D14, D15, D24)
+Owner decision (2026-09-28): "Let's not publish any policy on our website. That's up to the project. Let's get more in an informational stance and let project maintainers judge."
+- **What the site shows:** what the public record shows for each commit: reviewers named and where they came from, the ticket, CI evidence on the JIRA ticket and when it was posted relative to the commit, CI artefacts attached, checkstyle run results, CHANGES.txt and NEWS.txt. Trends are plain rates with neutral labels.
+- **What it never shows:** pass/fail/exempt/"not in force" verdicts, a list of "failing" commits, compliance or pass-rate headlines, or a policy of this project's presented as the rules.
+- **The project's own guidance** (cwiki governance and CI Process pages, the contributor docs) is linked as references, so readers can judge for themselves.
+- **`governance-policy.yaml` becomes an internal evidence definition.** It records what signals are extracted and cites where the project describes each one (D24's sourcing discipline still applies to those citations). Its scoring semantics stay internal and are not rendered.
+- The Governance page intro states that the page does not judge compliance, and that the Apache Cassandra project and its maintainers set and interpret their own rules.

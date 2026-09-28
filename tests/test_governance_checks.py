@@ -15,6 +15,7 @@ from project_health.governance.checks import (
     CIEvidence,
     CommitFacts,
     build_commit_facts_row,
+    is_ci_artefact_filename,
     score_ci_artefacts_attached,
     score_code_style_checkstyle,
     score_jira_ticket_referenced,
@@ -311,6 +312,29 @@ class TestPreCommitCiEvidence:
         assert "release-process" in result.evidence
 
 
+class TestIsCiArtefactFilename:
+    """Live JIRA findings (orchestrator review, issue #93): the match is a
+    substring search, not an anchored prefix, and "results_details" accepts
+    the "result_details" (no "s") spelling real attachments sometimes use."""
+
+    def test_bare_filenames_match(self):
+        assert is_ci_artefact_filename("ci_summary.html") is True
+        assert is_ci_artefact_filename("results_details.tar.gz") is True
+
+    def test_issue_branch_prefixed_filenames_match(self):
+        assert is_ci_artefact_filename("CASSANDRA-21712-trunk-ci_summary.html") is True
+        assert (
+            is_ci_artefact_filename("CASSANDRA-21712-cassandra-6.0-ci_summary.html") is True
+        )
+
+    def test_result_details_missing_s_matches(self):
+        assert is_ci_artefact_filename("result_details.tar.gz") is True
+        assert is_ci_artefact_filename("result_details.tar-1.gz") is True
+
+    def test_unrelated_filename_does_not_match(self):
+        assert is_ci_artefact_filename("patch.diff") is False
+
+
 _CI_ARTEFACTS_COMMIT_DATE = datetime(2026, 9, 1, tzinfo=timezone.utc)  # >= effective_from
 
 
@@ -363,9 +387,52 @@ class TestCiArtefactsAttached:
             rule, commit, attachments, fetched_issue_keys={"CASSANDRA-100"}
         )
         assert result.result == "fail"
-        assert "results_details missing" in result.evidence
+        assert "results_details missing (ci_summary attached)" in result.evidence
 
-    def test_fail_names_artefact_attached_later(self, policy):
+    def test_fail_ci_summary_missing_when_only_results_details_attached(self, policy):
+        """Symmetric case (orchestrator review, issue #93): results_details
+        attached but ci_summary isn't."""
+        rule = policy.rule("ci-artefacts-attached")
+        attachments = {
+            "CASSANDRA-100": [
+                AttachmentEvidence(
+                    issue_key="CASSANDRA-100",
+                    attachment_id="1",
+                    filename="result_details.tar.gz",
+                    created_at=datetime(2026, 8, 31, tzinfo=timezone.utc),
+                ),
+            ]
+        }
+        commit = _commit(commit_date=_CI_ARTEFACTS_COMMIT_DATE)
+        result = score_ci_artefacts_attached(
+            rule, commit, attachments, fetched_issue_keys={"CASSANDRA-100"}
+        )
+        assert result.result == "fail"
+        assert "ci_summary missing (results_details attached)" in result.evidence
+
+    def test_fail_no_ci_artefacts_attached_at_all(self, policy):
+        rule = policy.rule("ci-artefacts-attached")
+        attachments = {
+            "CASSANDRA-100": [
+                AttachmentEvidence(
+                    issue_key="CASSANDRA-100",
+                    attachment_id="1",
+                    filename="patch.diff",
+                    created_at=datetime(2026, 8, 31, tzinfo=timezone.utc),
+                ),
+            ]
+        }
+        commit = _commit(commit_date=_CI_ARTEFACTS_COMMIT_DATE)
+        result = score_ci_artefacts_attached(
+            rule, commit, attachments, fetched_issue_keys={"CASSANDRA-100"}
+        )
+        assert result.result == "fail"
+        assert "no CI artefacts attached" in result.evidence
+
+    def test_fail_artefacts_attached_only_after_commit(self, policy):
+        """Both artefacts exist, but neither is dated at or before the
+        commit -- a distinct evidence string from "missing" (orchestrator
+        review, issue #93)."""
         rule = policy.rule("ci-artefacts-attached")
         attachments = {
             "CASSANDRA-100": [
@@ -373,7 +440,7 @@ class TestCiArtefactsAttached:
                     issue_key="CASSANDRA-100",
                     attachment_id="1",
                     filename="ci_summary_x86.txt",
-                    created_at=datetime(2026, 8, 31, tzinfo=timezone.utc),
+                    created_at=datetime(2026, 9, 2, tzinfo=timezone.utc),  # after commit
                 ),
                 AttachmentEvidence(
                     issue_key="CASSANDRA-100",
@@ -388,7 +455,62 @@ class TestCiArtefactsAttached:
             rule, commit, attachments, fetched_issue_keys={"CASSANDRA-100"}
         )
         assert result.result == "fail"
-        assert "attached later" in result.evidence
+        assert "artefacts attached only after commit" in result.evidence
+
+    def test_pass_with_issue_branch_prefixed_filename(self, policy):
+        """Live JIRA finding (orchestrator review, issue #93): real
+        attachments are commonly prefixed with the issue key and branch,
+        e.g. "CASSANDRA-21712-trunk-ci_summary.html" -- substring match,
+        not a filename-prefix match."""
+        rule = policy.rule("ci-artefacts-attached")
+        attachments = {
+            "CASSANDRA-100": [
+                AttachmentEvidence(
+                    issue_key="CASSANDRA-100",
+                    attachment_id="1",
+                    filename="CASSANDRA-100-trunk-ci_summary.html",
+                    created_at=datetime(2026, 8, 31, tzinfo=timezone.utc),
+                ),
+                AttachmentEvidence(
+                    issue_key="CASSANDRA-100",
+                    attachment_id="2",
+                    filename="CASSANDRA-100-trunk-results_details.tar.gz",
+                    created_at=datetime(2026, 8, 31, tzinfo=timezone.utc),
+                ),
+            ]
+        }
+        commit = _commit(commit_date=_CI_ARTEFACTS_COMMIT_DATE)
+        result = score_ci_artefacts_attached(
+            rule, commit, attachments, fetched_issue_keys={"CASSANDRA-100"}
+        )
+        assert result.result == "pass"
+
+    def test_pass_with_result_details_missing_s(self, policy):
+        """Live JIRA finding (orchestrator review, issue #93): real
+        attachments are sometimes named "result_details" (no "s"), e.g.
+        "result_details.tar.gz"."""
+        rule = policy.rule("ci-artefacts-attached")
+        attachments = {
+            "CASSANDRA-100": [
+                AttachmentEvidence(
+                    issue_key="CASSANDRA-100",
+                    attachment_id="1",
+                    filename="ci_summary.html",
+                    created_at=datetime(2026, 8, 31, tzinfo=timezone.utc),
+                ),
+                AttachmentEvidence(
+                    issue_key="CASSANDRA-100",
+                    attachment_id="2",
+                    filename="result_details.tar.gz",
+                    created_at=datetime(2026, 8, 31, tzinfo=timezone.utc),
+                ),
+            ]
+        }
+        commit = _commit(commit_date=_CI_ARTEFACTS_COMMIT_DATE)
+        result = score_ci_artefacts_attached(
+            rule, commit, attachments, fetched_issue_keys={"CASSANDRA-100"}
+        )
+        assert result.result == "pass"
 
     def test_unknown_when_no_issue_key(self, policy):
         rule = policy.rule("ci-artefacts-attached")

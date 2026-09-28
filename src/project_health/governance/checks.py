@@ -109,18 +109,35 @@ _FAILING_CONCLUSIONS = frozenset({"failure", "timed_out", "cancelled", "action_r
 # (`collectors/jira_comments.py`) is: the policy's `check_method.detail` is
 # prose, not a structured list, and a filename-pattern change here is a
 # scoring-behavior change that should be reviewed as one.
-_CI_SUMMARY_RE = re.compile(r"(?i)^ci_summary")
-_RESULTS_DETAILS_RE = re.compile(r"(?i)^results_details")
+#
+# MEASUREMENT correction (orchestrator review, issue #93): the rule itself
+# (source_quote/source_url/source_type/effective_from/exemptions/
+# result_semantics) names two artefacts, "ci_summary" and "results_details"
+# -- how a filename is matched against those names is this project's own
+# measurement choice (governance-policy.yaml's `check_method.detail` text is
+# describing that choice, not the rule), and D24 doesn't protect it. A live
+# JIRA spot-check found the original anchored-prefix match
+# (`(?i)^ci_summary`, `(?i)^results_details`) was too strict for real
+# `.build/run-ci` output: contributors and the tooling routinely prefix the
+# artefact with the issue key and branch (`CASSANDRA-21712-trunk-
+# ci_summary.html`) and sometimes drop the "s" in "results"
+# (`result_details.tar.gz`). Both patterns are now unanchored substring
+# matches (`re.search`, not `re.match`), and `results?_details` accepts
+# either spelling -- see governance-policy.yaml's corrected `check_method.
+# detail` text for both rules that use these.
+_CI_SUMMARY_RE = re.compile(r"(?i)ci_summary")
+_RESULTS_DETAILS_RE = re.compile(r"(?i)results?_details")
 
 
 def is_ci_artefact_filename(filename: str) -> bool:
     """True if `filename` matches either of `ci-artefacts-attached`'s two
-    artefact patterns (`ci_summary*` or `results_details*`). Used both by
+    artefact patterns (`ci_summary` or `results_details`/`result_details`,
+    matched anywhere in the filename). Used both by
     `score_ci_artefacts_attached` (which requires *both* patterns matched,
     each on its own attachment) and by `pipeline.py`'s evidence-building for
     `pre-commit-ci-evidence` (where *either* one, as an attachment, counts
     as CI evidence alongside a JIRA comment mention)."""
-    return bool(_CI_SUMMARY_RE.match(filename) or _RESULTS_DETAILS_RE.match(filename))
+    return bool(_CI_SUMMARY_RE.search(filename) or _RESULTS_DETAILS_RE.search(filename))
 
 
 @dataclass(frozen=True)
@@ -384,12 +401,12 @@ def score_ci_artefacts_attached(
         ci_summary_hits = [
             a
             for a in attachments
-            if _CI_SUMMARY_RE.match(a.filename) and a.created_at <= commit.commit_date
+            if _CI_SUMMARY_RE.search(a.filename) and a.created_at <= commit.commit_date
         ]
         results_details_hits = [
             a
             for a in attachments
-            if _RESULTS_DETAILS_RE.match(a.filename) and a.created_at <= commit.commit_date
+            if _RESULTS_DETAILS_RE.search(a.filename) and a.created_at <= commit.commit_date
         ]
         if ci_summary_hits and results_details_hits:
             return CheckResult(
@@ -400,29 +417,27 @@ def score_ci_artefacts_attached(
             )
 
     # No fetched key had both artefacts at or before the commit -- fail,
-    # naming what's missing (and whether it was attached later) on the
-    # first fetched key.
+    # with evidence text distinguishing three cases (orchestrator review,
+    # issue #93): no relevant attachment at all, one artefact attached but
+    # not the other, or a relevant attachment exists but only after commit.
     key = fetched_keys[0]
     attachments = attachments_by_issue.get(key, [])
-    ci_summary_any = [a for a in attachments if _CI_SUMMARY_RE.match(a.filename)]
-    results_details_any = [a for a in attachments if _RESULTS_DETAILS_RE.match(a.filename)]
+    ci_summary_any = [a for a in attachments if _CI_SUMMARY_RE.search(a.filename)]
+    results_details_any = [a for a in attachments if _RESULTS_DETAILS_RE.search(a.filename)]
     ci_summary_ok = any(a.created_at <= commit.commit_date for a in ci_summary_any)
     results_details_ok = any(a.created_at <= commit.commit_date for a in results_details_any)
 
-    parts = []
-    if not ci_summary_ok:
-        if ci_summary_any:
-            attached_at = min(a.created_at for a in ci_summary_any).isoformat()
-            parts.append(f"ci_summary missing at commit time (attached later, {attached_at})")
-        else:
-            parts.append("ci_summary missing")
-    if not results_details_ok:
-        if results_details_any:
-            attached_at = min(a.created_at for a in results_details_any).isoformat()
-            parts.append(f"results_details missing at commit time (attached later, {attached_at})")
-        else:
-            parts.append("results_details missing")
-    return CheckResult(rule.id, "fail", f"{key}: " + "; ".join(parts))
+    if not ci_summary_any and not results_details_any:
+        evidence = "no CI artefacts attached"
+    elif not ci_summary_ok and not results_details_ok:
+        # Something relevant exists, but nothing of either kind is dated at
+        # or before the commit -- distinct from "nothing attached at all".
+        evidence = "artefacts attached only after commit"
+    elif ci_summary_ok and not results_details_ok:
+        evidence = "results_details missing (ci_summary attached)"
+    else:
+        evidence = "ci_summary missing (results_details attached)"
+    return CheckResult(rule.id, "fail", f"{key}: {evidence}")
 
 
 def score_code_style_checkstyle(

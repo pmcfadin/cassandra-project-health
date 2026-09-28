@@ -281,8 +281,11 @@ rules:
       # MEASUREMENT (ours). Evidence must be dated at or before the commit timestamp, per "before".
       - evidence_source: jira_attachment_ci_artefact
         detail: >
-          A JIRA attachment on any referenced issue whose filename matches (?i)^ci_summary|^results_details,
-          created at or before the commit. These are the artefacts .build/run-ci produces
+          A JIRA attachment on any referenced issue whose filename contains "ci_summary" or "results_details"/
+          "result_details" (substring match, not a filename prefix -- real attachments are commonly named
+          with an issue/branch prefix, e.g. "CASSANDRA-21712-trunk-ci_summary.html", and .build/run-ci and
+          contributors both sometimes drop the "s" in "results", e.g. "result_details.tar.gz"), created at or
+          before the commit. These are the artefacts .build/run-ci produces
           (cassandra.apache.org/_/development/ci.html).
       - evidence_source: jira_comment_ci_mention
         detail: >
@@ -337,9 +340,13 @@ rules:
     check_method:
       - evidence_source: jira_attachment_ci_artefact
         detail: >
-          On any referenced issue: at least one attachment matching (?i)^ci_summary AND at least one matching
-          (?i)^results_details, each created at or before the commit. The attachment list of an issue is
-          complete (it is JIRA's own record), which is what makes a fail state honest here.
+          On any referenced issue: at least one attachment whose filename contains "ci_summary" AND at least
+          one whose filename contains "results_details" or "result_details" (substring match, not a filename
+          prefix -- real attachments are commonly named with an issue/branch prefix, e.g.
+          "CASSANDRA-21712-trunk-ci_summary.html", and .build/run-ci and contributors both sometimes drop the
+          "s" in "results", e.g. "result_details.tar.gz"), each created at or before the commit. The
+          attachment list of an issue is complete (it is JIRA's own record), which is what makes a fail state
+          honest here.
     result_semantics:
       pass: "both artefacts attached at or before the commit"
       fail: >

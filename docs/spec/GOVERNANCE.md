@@ -143,29 +143,34 @@ rescoring full history.
      literal `“Commit Then Review”` inside the cwiki sentence) are left alone. An opt-in live test
      (`tests/test_verify_policy_sources.py::TestLiveVerifyRealPolicy`, `RUN_LIVE_NETWORK_TESTS=1`) runs this
      against the real policy file; run live during issue #93's implementation, all ten sourced items passed.
-8. **Live finding, reported not fixed (D24: "report it and don't redesign it").** Spot-checking real
-   `ci-artefacts-attached` fails against the live JIRA attachments API (issue #93 implementation, 2026-09-28)
-   found two real naming mismatches between the policy's sourced `check_method` regex and what
-   `.build/run-ci` actually attaches on real tickets:
+8. **Live finding, fixed as a measurement correction (D24: `check_method`/`detail` text is measurement, not
+   the protected rule text).** Spot-checking real `ci-artefacts-attached` fails against the live JIRA
+   attachments API (issue #93 implementation, 2026-09-28) found the original filename match --- an anchored
+   prefix, `(?i)^ci_summary` / `(?i)^results_details` --- was too strict for what `.build/run-ci` and
+   contributors actually attach to real tickets:
    - **`results_details` vs. `result_details`.** CASSANDRA-21671's real attachments are named
      `result_details.tar.gz` (and `-1`/`-2` suffixed re-attempts) — singular "result", no "s" — never
-     `results_details*`. The policy's `check_method` (`(?i)^results_details`) is quoted directly from the
-     official docs' own wording ("attach the ci_summary and results_details artefacts"), so this is a
-     mismatch between what the docs *say* the artefact is called and what the tooling *actually* names it,
-     not a bug in this project's regex. `pre-commit-ci-evidence`'s attachment-evidence source and
-     `ci-artefacts-attached` both inherit this gap.
+     `results_details*`. The *rule*'s `source_quote` (from the official docs, "attach the ci_summary and
+     results_details artefacts") is unchanged and still names both artefacts; only the code's and the
+     policy's own `check_method.detail` prose describing how a filename is matched against those names has
+     changed.
    - **Issue/branch-prefixed filenames.** CASSANDRA-21712's and CASSANDRA-21587's `ci_summary`-equivalent
      attachments are named `CASSANDRA-21712-cassandra-6.0-ci_summary.html` /
-     `CASSANDRA-21712-trunk-ci_summary.html` — a `<ISSUE-KEY>-<branch>-` prefix before `ci_summary`, which
-     the anchored `(?i)^ci_summary` pattern (also quoted verbatim from the check_method) does not match,
-     even though the attachment is functionally the CI summary and was uploaded before the commit.
-   Per D24, this project does not invent a replacement pattern — the check_method text is the project's
-   own sourced measurement choice, and any change to what counts as a match is a policy change for the
-   owner to approve, not something this implementation should quietly widen. Both fails are real, honestly
-   reported `fail` results (the attachment lists were genuinely fetched and genuinely lack a
-   pattern-matching artefact) rather than an implementation defect; a future policy revision may want to
-   pin down the *actual* naming convention `.build/run-ci` uses today rather than the docs' prose
-   description of it.
+     `CASSANDRA-21712-trunk-ci_summary.html` — a `<ISSUE-KEY>-<branch>-` prefix before `ci_summary`.
+   **Fix (measurement only — no `source_quote`/`source_url`/`source_type`/`effective_from`/`exemptions`/
+   `result_semantics` changed anywhere in `governance-policy.yaml`):** `governance/checks.py`'s
+   `_CI_SUMMARY_RE`/`_RESULTS_DETAILS_RE` are now unanchored substring searches (`re.search`, not
+   `re.match`), `_RESULTS_DETAILS_RE` accepts either `results_details` or `result_details`
+   (`(?i)results?_details`), and `governance-policy.yaml`'s two `check_method.detail` texts (the only lines
+   touched) now describe a substring match with both real filenames as examples. Fail evidence now
+   distinguishes three cases instead of a per-artefact "missing / attached later": `"no CI artefacts
+   attached"`, `"results_details missing (ci_summary attached)"` (or the symmetric `"ci_summary missing
+   (results_details attached)"`), and `"artefacts attached only after commit"` (relevant attachments exist,
+   none dated at or before the commit). Re-scored from the same cached raw evidence (no re-collection):
+   `ci-artefacts-attached`'s since-2026-08-19 breakdown went from 16 pass / 51 fail / 97 unknown / 6 exempt
+   to **37 pass / 30 fail / 97 unknown / 6 exempt** — 21 of the original 51 fails were the filename-match
+   defect, not real missing evidence; 3 have the artefacts attached only after the commit; the remaining 27
+   are real misses (no CI artefacts on the ticket, or `ci_summary` present without `results_details`).
 9. **Governance page.** Each rule's row now shows its `source_type` and `source_quote` linked to `source_url`;
    a small note lists exemptions removed in v2 (`ninja`, `submodule-repin`) with the reason; `SCORED_CHECK_IDS`
    including `ci-artefacts-attached` means the existing per-check trend chart, headline pass-rate card, and

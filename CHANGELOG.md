@@ -54,15 +54,15 @@ JIRA attachment backfill this run):
 | `jira-ticket-referenced` | pass | 12,612 | 12,821 | +209 |
 | `jira-ticket-referenced` | unknown | 18,885 | 19,314 | +429 |
 | `jira-ticket-referenced` | exempt | 879 | 241 | -638 |
-| `pre-commit-ci-evidence` | pass | 876 | 851 | -25 |
-| `pre-commit-ci-evidence` | unknown | 6,137 | 5,748 | -389 |
+| `pre-commit-ci-evidence` | pass | 876 | 923 | +47 |
+| `pre-commit-ci-evidence` | unknown | 6,137 | 5,676 | -461 |
 | `pre-commit-ci-evidence` | exempt | 0 | 414 | +414 |
 | `pre-commit-ci-evidence` | not_in_force | 25,363 | 25,363 | 0 |
 | `code-style-checkstyle` | pass | 389 | 389 | 0 |
 | `code-style-checkstyle` | fail | 10 | 10 | 0 |
 | `code-style-checkstyle` | unknown | 31,977 | 31,977 | 0 |
-| `ci-artefacts-attached` (new) | pass | 0 | 16 | +16 |
-| `ci-artefacts-attached` (new) | fail | 0 | 51 | +51 |
+| `ci-artefacts-attached` (new) | pass | 0 | 37 | +37 |
+| `ci-artefacts-attached` (new) | fail | 0 | 30 | +30 |
 | `ci-artefacts-attached` (new) | unknown | 0 | 97 | +97 |
 | `ci-artefacts-attached` (new) | exempt | 0 | 6 | +6 |
 | `ci-artefacts-attached` (new) | not_in_force | 0 | 32,206 | +32,206 |
@@ -78,14 +78,25 @@ composition changed completely -- v1's 420 were mostly `ninja`-pattern matches; 
 they reference an issue key, which is why `jira-ticket-referenced`'s `pass`/`unknown` both rose.
 `pre-commit-ci-evidence`'s new `exempt` count (414) is entirely the `not-code`/`release-process` exemptions v1
 never had (v1 scored docs-only commits as `unknown`, same as any other commit with no CI comment).
-`ci-artefacts-attached`'s 164 commits scored so far (attachment backfill is budgeted/incremental, D14/D15 --
-`unknown` will keep falling in later runs as the backlog clears) since it went into force on 2026-08-19: 16
-pass, 51 fail, 97 unknown, 6 exempt. Live spot-checks of 3 real fails against the JIRA attachments API
-surfaced a genuine, reported-not-fixed naming gap (docs/spec/GOVERNANCE.md §"Approved v2" item 8, D24): real
-`.build/run-ci` attachments are sometimes named `result_details.tar.gz` (no "s") rather than the docs'
-`results_details*`, and sometimes prefixed `<ISSUE-KEY>-<branch>-ci_summary.html` rather than a bare
-`ci_summary*` -- both cases the sourced check_method's literal regex correctly does not match, producing an
-honest `fail` under the policy's own wording rather than an implementation bug.
+`ci-artefacts-attached`'s 170 commits scored so far (attachment backfill is budgeted/incremental, D14/D15 --
+`unknown` will keep falling in later runs as the backlog clears) since it went into force on 2026-08-19: 37
+pass, 30 fail, 97 unknown, 6 exempt.
+
+**Follow-up correction (same day):** live spot-checks of 3 real fails against the JIRA attachments API
+surfaced a filename-match defect -- real `.build/run-ci` attachments are sometimes named
+`result_details.tar.gz` (no "s") rather than `results_details*`, and sometimes prefixed
+`<ISSUE-KEY>-<branch>-ci_summary.html` rather than a bare `ci_summary*` -- in the *measurement* (the
+`check_method`/code filename match), not the sourced rule itself. Per D24, `check_method.detail` prose is
+this project's own measurement choice, not protected rule text, so it was corrected: `governance/checks.py`'s
+filename match is now an unanchored substring search accepting either `results_details` or `result_details`,
+and `governance-policy.yaml`'s two `check_method.detail` texts (only) now describe that match with both real
+filenames as examples -- no `source_quote`/`source_url`/`source_type`/`effective_from`/`exemptions`/
+`result_semantics` changed. Re-scored from the same cached raw evidence (no re-collection):
+`ci-artefacts-attached`'s breakdown went from 16 pass / 51 fail / 97 unknown / 6 exempt to **37 pass / 30
+fail / 97 unknown / 6 exempt** -- 21 of the original 51 fails were the filename-match defect, 3 have the
+artefacts attached only after the commit, and 27 are real misses. Fail evidence now distinguishes "no CI
+artefacts attached", "results_details missing (ci_summary attached)" (or the symmetric case), and "artefacts
+attached only after commit".
 
 Governance page: each rule's row now shows its `source_type` and `source_quote` linked to `source_url`; a
 small note lists the exemptions removed in v2 with the reason; the new rule's trend/headline card renders via

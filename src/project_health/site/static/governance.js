@@ -152,6 +152,12 @@
     if (f.author && row.author.toLowerCase().indexOf(f.author.toLowerCase()) === -1) {
       return false;
     }
+    if (
+      f.committer &&
+      (row.committer || "").toLowerCase().indexOf(f.committer.toLowerCase()) === -1
+    ) {
+      return false;
+    }
     if (f.search) {
       var needle = f.search.toLowerCase();
       var haystack = (
@@ -187,6 +193,9 @@
     },
     sha: function (r) {
       return r.sha;
+    },
+    committer: function (r) {
+      return (r.committer || "").toLowerCase();
     },
     jira: function (r) {
       return r.jira_keys.join(",");
@@ -303,6 +312,18 @@
 
   function evidenceTrailHtml(row) {
     var parts = [];
+    if (row.jira_keys.length) {
+      parts.push(
+        "<dt>Tickets</dt><dd>" +
+          row.jira_keys
+            .map(function (key, i) {
+              return '<a href="' + escapeHtml(row.jira_urls[i]) + '">' + escapeHtml(key) + "</a>";
+            })
+            .join(", ") +
+          "</dd>"
+      );
+    }
+    parts.push("<dt>Committer</dt><dd>" + escapeHtml(row.committer || "—") + "</dd>");
     parts.push("<dt>Reviewed by</dt><dd>" + escapeHtml(row.reviewer.text) + "</dd>");
     parts.push(
       "<dt>CI evidence</dt><dd>" +
@@ -346,11 +367,21 @@
   }
 
   function rowHtml(row, index) {
+    // Each key stays on one line; the list wraps between keys and shows at
+    // most 3 (the expanded row lists them all).
     var jira = row.jira_keys
+      .slice(0, 3)
       .map(function (key, i) {
-        return '<a href="' + escapeHtml(row.jira_urls[i]) + '">' + escapeHtml(key) + "</a>";
+        return (
+          '<a class="gov-nowrap" href="' + escapeHtml(row.jira_urls[i]) + '">' +
+          escapeHtml(key) + "</a>"
+        );
       })
       .join(", ");
+    if (row.jira_keys.length > 3) {
+      jira += ' <span title="' + escapeHtml(row.jira_keys.join(", ")) + '">+' +
+        (row.jira_keys.length - 3) + "</span>";
+    }
     var date = row.commit_date ? row.commit_date.slice(0, 10) : "";
     var detailId = "gov-detail-" + index;
     var expanded = !!state.expanded[row.sha];
@@ -374,7 +405,8 @@
         '<br><span class="gov-author">' +
         escapeHtml(row.author) +
         "</span></td>",
-      '<td data-label="Ticket" class="gov-nowrap">' + (jira || "—") + "</td>",
+      '<td data-label="Committer">' + escapeHtml(row.committer || "—") + "</td>",
+      '<td data-label="Ticket">' + (jira || "—") + "</td>",
       reviewerCellHtml(row.reviewer),
     ];
     cells.push(factCellHtml(row.ci_evidence, "CI evidence", shortCiEvidence(row.ci_evidence)));
@@ -391,7 +423,7 @@
       html +=
         '<tr class="gov-row-detail" id="' +
         detailId +
-        '"><td colspan="10">' +
+        '"><td colspan="11">' +
         evidenceTrailHtml(row) +
         "</td></tr>";
     }
@@ -465,8 +497,16 @@
 
   // --- Filters / toggles ----------------------------------------------------
 
+  var typingTimer = null;
   filterInputs.forEach(function (el) {
     el.addEventListener("change", applyFiltersAndSort);
+    if (el.type === "text") {
+      // Text filters apply as you type (debounced), not only on Enter/blur.
+      el.addEventListener("input", function () {
+        clearTimeout(typingTimer);
+        typingTimer = setTimeout(applyFiltersAndSort, 200);
+      });
+    }
   });
   if (mergesToggle) {
     mergesToggle.addEventListener("change", applyFiltersAndSort);

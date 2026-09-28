@@ -599,7 +599,19 @@ main {
   font-size: 0.85rem;
   vertical-align: top;
 }
+/* 11 columns: tighter cell padding than the other security tables so the
+   whole commit history fits a ~1366px window. */
+.gov-commits-table th,
+.gov-commits-table td {
+  padding: 0.45rem 0.5rem;
+}
+.gov-commits-table thead th {
+  white-space: normal;
+  vertical-align: bottom;
+  line-height: 1.25;
+}
 .gov-commits-table .gov-nowrap,
+.gov-commits-table a.gov-nowrap,
 .gov-commits-table td code {
   white-space: nowrap;
 }
@@ -650,8 +662,8 @@ main {
 .governance-commits {
   margin-left: calc(50% - 50vw);
   margin-right: calc(50% - 50vw);
-  padding-left: 1.5rem;
-  padding-right: 1.5rem;
+  padding-left: 1rem;
+  padding-right: 1rem;
 }
 
 /* Sortable column headers (keyboard + aria-sort, issue #97). */

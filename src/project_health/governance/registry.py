@@ -15,6 +15,7 @@ from datetime import datetime
 import pyarrow as pa
 
 from project_health.governance.checks import (
+    CI_ARTEFACTS_ATTACHED,
     CODE_STYLE_CHECKSTYLE,
     JIRA_TICKET_REFERENCED,
     PRE_COMMIT_CI_EVIDENCE,
@@ -27,14 +28,18 @@ _CHECK_IDS: tuple[str, ...] = (
     REVIEWER_PRESENT,
     JIRA_TICKET_REFERENCED,
     PRE_COMMIT_CI_EVIDENCE,
+    CI_ARTEFACTS_ATTACHED,
     CODE_STYLE_CHECKSTYLE,
 )
 
 _CHANGELOG_NOTE = (
-    "Initial v1.0 (issue #36): monthly pass-rate among scored outcomes "
-    "(pass+fail+unknown; exempt and not_in_force excluded from both the "
-    "numerator and denominator) per governance-policy.yaml check, computed "
-    "over non-merge commits only (docs/spec/GOVERNANCE.md §3)."
+    "v1.0 (issue #36): monthly pass-rate among scored outcomes (pass+fail+unknown; exempt and "
+    "not_in_force excluded from both the numerator and denominator) per governance-policy.yaml "
+    "check, computed over non-merge commits only (docs/spec/GOVERNANCE.md §3). Policy v2 (D24, "
+    "issue #93) rescored full history under the same v1.0 metric definition -- only the "
+    "underlying policy changed (removed unsourced ninja/submodule-repin exemptions, added the "
+    "sourced commit-then-review/release-process exemptions, added ci-artefacts-attached), not "
+    "how the rate is computed; see CHANGELOG.md for v1 -> v2 counts per check."
 )
 
 _DESCRIPTIONS: dict[str, str] = {
@@ -42,16 +47,25 @@ _DESCRIPTIONS: dict[str, str] = {
         "Monthly pass rate for governance-policy.yaml's reviewer-present check: share of "
         "non-merge, in-scope commits with a named reviewer (commit trailer or JIRA Reviewers/"
         "Reviewer field), among commits where the check produced pass/fail/unknown (exempt "
-        "ninja/release-housekeeping commits and not-yet-in-force commits are excluded from the "
-        "rate). details_json carries the raw pass/fail/unknown/exempt/not_in_force counts."
+        "commit-then-review/release-process commits and not-yet-in-force commits are excluded "
+        "from the rate). details_json carries the raw pass/fail/unknown/exempt/not_in_force "
+        "counts."
     ),
     JIRA_TICKET_REFERENCED: (
         "Monthly pass rate for governance-policy.yaml's jira-ticket-referenced check "
         "(no fail state -- rate is pass / (pass+unknown))."
     ),
     PRE_COMMIT_CI_EVIDENCE: (
-        "Monthly pass rate for governance-policy.yaml's pre-commit-ci-evidence check "
-        "(JIRA-comment CI evidence found; no fail state in v1 -- rate is pass / (pass+unknown))."
+        "Monthly pass rate for governance-policy.yaml's pre-commit-ci-evidence check (JIRA "
+        "comment or attachment CI evidence dated at or before the commit; no fail state -- "
+        "rate is pass / (pass+unknown))."
+    ),
+    CI_ARTEFACTS_ATTACHED: (
+        "Monthly pass rate for governance-policy.yaml's ci-artefacts-attached check (v2, "
+        "effective 2026-08-19): both the ci_summary and results_details JIRA attachments "
+        "present on a referenced issue at or before the commit. fail_allowed -- only issues "
+        "whose attachment list has actually been fetched can fail; unfetched issues are "
+        "unknown."
     ),
     CODE_STYLE_CHECKSTYLE: (
         "Monthly pass rate for governance-policy.yaml's code-style-checkstyle check "

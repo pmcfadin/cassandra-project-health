@@ -44,6 +44,136 @@ Global result states (used by every rule below) are defined at the top of §2.
 
 ---
 
+## Approved v2 (D24, issue #93)
+
+**Approved by the project owner (`pmcfadin`) on 2026-09-27**, per DECISIONS.md D24 ("We should always follow
+the rules set by the PMC and not make up our own"). `governance-policy.yaml` version 2 removes every rule and
+exemption this project invented rather than sourced from the project's own published rules, and adds one new
+rule the official docs now require. `CHANGELOG.md` has the real v1 -> v2 counts per check x result from
+rescoring full history.
+
+**What changed, and why:**
+
+1. **`ninja` and `submodule-repin` exemptions removed.** v1's `ninja` exemption ("by long-standing project
+   convention, observed throughout trunk history") and `release-housekeeping`'s `submodule-repin`
+   sub-pattern had no official source — an audited convention, not a PMC rule. v2 scores these commits like
+   any other. Code no longer special-cases `ninja` anywhere (`governance/checks.py`'s scoring order is
+   entirely policy-driven: an exemption only ever comes from `Rule.matching_exemption`, which reads
+   `governance-policy.yaml`'s `exemptions:` list — a removed exemption simply never appears there again). The
+   **ninja-count-trend stays as a purely descriptive, unscored signal**: `governance/checks.is_ninja_declared`
+   re-checks every commit message against the retired v1 pattern (`(?i)\bninja(fix)?\b`), independent of how
+   the commit was actually scored, and the count is stored per-commit on `commit_fact.ninja_declared` (a plain
+   display fact, exactly like `changes_txt_touched`/`test_touched`) rather than derived from `exempt` rows —
+   see engineering note in `checks.py`.
+2. **`commit-then-review` exemption added** (`reviewer-present`, `pre-commit-ci-evidence`,
+   `ci-artefacts-attached`): the ratified cwiki governance page's own words — "Correcting typos, docs,
+   website, and comments etc operate a "Commit Then Review" policy" — replace the old ninja/
+   release-housekeeping pattern-matching with a **measurement choice we own**: a commit is "docs-only" when
+   every changed path matches the policy's own top-level `docs_only_paths` glob list. Glob matching
+   (`governance/policy.py`'s `_path_matches_glob`) uses gitignore-style semantics, not bare `fnmatch`: a
+   leading `**/` means "at any depth including the repo root" (so `**/*.md` matches a top-level
+   `CONTRIBUTING.md`, not just a nested one — plain `fnmatch.fnmatchcase` would wrongly require a literal `/`
+   in the pattern), a trailing `/**` means "anything under this directory", and a bare pattern with neither is
+   matched against the path's basename. A commit whose `changed_paths` weren't collected (e.g. a merge
+   commit) can never be proven docs-only and never gets this exemption.
+3. **`release-process` exemption sourced.** v1's `release-housekeeping` (version-increment, debian-changelog,
+   submodule-repin, unsourced as a group) is replaced by `release-process`, with `version-increment` sourced
+   to `release_process.html`'s exact `git commit` invocation and `debian-changelog` to the exact
+   `cassandra-builds/cassandra-release/prepare_release.sh` line that produces it (`official_tooling`, "cited
+   only for the exact commits those scripts create," per D24). `submodule-repin` is dropped (no source found).
+4. **`pre-commit-ci-evidence` now scores from JIRA attachments too, and evidence must predate the commit.**
+   The rule's own check_method previously only searched JIRA comments; v2 adds a JIRA-attachment evidence
+   source (any attachment matching `(?i)^ci_summary` or `(?i)^results_details`) and requires whichever
+   evidence is used to be dated **at or before the commit** — MEASUREMENT (ours): both the commit's own
+   timestamp (`CommitFacts.commit_date`) and every evidence timestamp (`collectors/jira.py`'s
+   `_parse_jira_timestamp`) are already UTC-aware by the time they reach `governance/checks.py`, so "at or
+   before" is a plain, unambiguous datetime comparison — no separate timezone-normalization step is needed.
+   Evidence that exists only *after* the commit is real (the CI eventually happened) but is not proof it
+   happened *before* commit, so it gets its own `unknown` evidence string ("... dated ..., AFTER the commit")
+   rather than being folded into "no evidence found at all."
+5. **`ci-artefacts-attached` (new rule, `fail_allowed: true`, effective 2026-08-19).** Sourced to
+   `patches.html`'s "attach the ci_summary and results_details artefacts to the ticket" and `ci.html`'s
+   "Attach both to the Jira ticket... they outlive any CI instance," added to the official docs by
+   `apache/cassandra-website` commit `30bdcc1` (2026-08-19). It requires **both** artefacts, on the same
+   referenced issue, dated at or before the commit. It is the only new `fail_allowed` rule in v2, and its
+   fail condition is deliberately narrow: a commit can only fail if the *referenced issue's attachment list
+   has actually been fetched* this run or a prior one (`fetched_issue_keys` in
+   `score_ci_artefacts_attached`) — an issue nobody has checked yet is `unknown` (backfill budget), never
+   `fail`, because JIRA's attachment list is only trustworthy evidence of absence once it's actually been
+   read. MEASUREMENT (ours): a commit referencing more than one issue key is scored against the first
+   referenced key whose attachments have been fetched, in the order the commit message names them — this
+   policy has no opinion about which of several referenced tickets "is" the CI record, so the
+   already-established "first in referenced order" convention (`reviewer-present`'s union-of-evidence
+   ordering) is reused rather than inventing a new tie-break rule.
+6. **JIRA attachment metadata collection** (`collectors/jira_comments.py`'s `fetch_issue_evidence`,
+   `pipeline._collect_governance_jira_evidence`): filename, `created` timestamp and attachment id only, never
+   content — the same D1/D16 discipline the comment-evidence collector already applies to comment bodies.
+   Budgeted, resumable and newest-referencing-commit-first, identical in shape to the existing CI-comment
+   backfill (`_ci_eligible_issue_keys_newest_first`'s eligibility list already covers `ci-artefacts-attached`
+   too, since its `effective_from` is strictly later than `pre-commit-ci-evidence`'s). Comments and
+   attachments are fetched in **one JIRA call per issue** (`GET /rest/api/2/issue/{key}?fields=comment,
+   attachment`) rather than two, to save budget — JIRA never paginates the `attachment` field, so this is
+   also a strict correctness win for `ci-artefacts-attached` (the old dedicated `/comment` endpoint has no
+   attachment equivalent at all). Whether an issue's attachment list has ever been fetched is its own
+   queryable fact (`raw/governance/jira_attachment` has at least one row, sentinel or real, for that issue) —
+   this is what lets "not fetched" (`unknown`) stay distinct from "fetched, and it's missing" (`fail`).
+7. **Enforcement.** `tests/test_governance_policy_sources.py` fails if any *scored* rule, exemption, or
+   `sub_pattern` in `governance-policy.yaml` lacks `source_type`/`source_url`/`source_quote`/`effective_from`
+   (a key present with an explicit YAML `null` is fine; a missing key is not), or cites a `source_type` outside
+   the file's own `source_types:` whitelist. It walks the raw YAML directly (not the parsed `Policy` objects)
+   specifically so it can tell "key present, value null" apart from "key absent" — a distinction a value
+   already parsed to `None` can't preserve. `project-health verify-policy-sources`
+   (`governance/verify_sources.py`) re-fetches every one of those `source_url`s live and confirms
+   `source_quote` still appears there:
+   - **cwiki** (`ratified_governance`) is fetched through Confluence's REST content API
+     (`.../confluence/rest/api/content?spaceKey=...&title=...&expand=body.storage`), not the rendered
+     `/display/` page, and its `body.storage.value` (Confluence storage XHTML) is tag-stripped.
+   - **GitHub blobs** (`official_tooling`) are rewritten to `raw.githubusercontent.com/<owner>/<repo>/<ref>/
+     <path>` and fetched as plain text.
+   - Everything else (`official_docs`) is fetched as HTML, tags stripped, entities unescaped.
+   - Quote matching normalizes curly vs. straight quotes and collapses whitespace (including whitespace
+     stripping-HTML-tags introduces just inside a quote mark, e.g. a cwiki `<strong>` around "Commit Then
+     Review" rendering as `" Commit Then Review "` once its tags are stripped — the same normalization is
+     applied to both the live page and the policy's own `source_quote`, so which side "should" have the
+     space never has to be decided); a `source_quote` split by a literal `"..."` elision, or written as
+     several independently double-quoted sentences with no elision marker at all (e.g.
+     `code-style-checkstyle`'s two sentences), becomes multiple fragments that must **each** appear
+     somewhere on the page; and a fragment's own outer wrapping quotes (the YAML convention for "this is a
+     quoted excerpt") are stripped before matching, while quotes that only wrap part of a fragment (e.g. the
+     literal `“Commit Then Review”` inside the cwiki sentence) are left alone. An opt-in live test
+     (`tests/test_verify_policy_sources.py::TestLiveVerifyRealPolicy`, `RUN_LIVE_NETWORK_TESTS=1`) runs this
+     against the real policy file; run live during issue #93's implementation, all ten sourced items passed.
+8. **Live finding, reported not fixed (D24: "report it and don't redesign it").** Spot-checking real
+   `ci-artefacts-attached` fails against the live JIRA attachments API (issue #93 implementation, 2026-09-28)
+   found two real naming mismatches between the policy's sourced `check_method` regex and what
+   `.build/run-ci` actually attaches on real tickets:
+   - **`results_details` vs. `result_details`.** CASSANDRA-21671's real attachments are named
+     `result_details.tar.gz` (and `-1`/`-2` suffixed re-attempts) — singular "result", no "s" — never
+     `results_details*`. The policy's `check_method` (`(?i)^results_details`) is quoted directly from the
+     official docs' own wording ("attach the ci_summary and results_details artefacts"), so this is a
+     mismatch between what the docs *say* the artefact is called and what the tooling *actually* names it,
+     not a bug in this project's regex. `pre-commit-ci-evidence`'s attachment-evidence source and
+     `ci-artefacts-attached` both inherit this gap.
+   - **Issue/branch-prefixed filenames.** CASSANDRA-21712's and CASSANDRA-21587's `ci_summary`-equivalent
+     attachments are named `CASSANDRA-21712-cassandra-6.0-ci_summary.html` /
+     `CASSANDRA-21712-trunk-ci_summary.html` — a `<ISSUE-KEY>-<branch>-` prefix before `ci_summary`, which
+     the anchored `(?i)^ci_summary` pattern (also quoted verbatim from the check_method) does not match,
+     even though the attachment is functionally the CI summary and was uploaded before the commit.
+   Per D24, this project does not invent a replacement pattern — the check_method text is the project's
+   own sourced measurement choice, and any change to what counts as a match is a policy change for the
+   owner to approve, not something this implementation should quietly widen. Both fails are real, honestly
+   reported `fail` results (the attachment lists were genuinely fetched and genuinely lack a
+   pattern-matching artefact) rather than an implementation defect; a future policy revision may want to
+   pin down the *actual* naming convention `.build/run-ci` uses today rather than the docs' prose
+   description of it.
+9. **Governance page.** Each rule's row now shows its `source_type` and `source_quote` linked to `source_url`;
+   a small note lists exemptions removed in v2 (`ninja`, `submodule-repin`) with the reason; `SCORED_CHECK_IDS`
+   including `ci-artefacts-attached` means the existing per-check trend chart, headline pass-rate card, and
+   drift/backfill-pending machinery (issue #69) all pick up the new rule with no page-specific code — they
+   were already written generically over `governance-policy.yaml`'s scored checks.
+
+---
+
 **Verification method.** Every rule below cites a primary source with a URL and, where the source states one,
 an effective/ratification date. Every check method's hit rate was measured live against real Cassandra data on
 **2026-09-25** — sample sizes, exact query/command, and raw counts are given inline so the numbers are

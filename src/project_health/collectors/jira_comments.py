@@ -23,6 +23,27 @@ class rather than an extension of `JiraCollector` — the two hit different
 endpoints (`/issue/{key}/comment` vs. `/search`) for different purposes and
 have no shared state.
 
+## `fetch_issue_evidence` (v2, issue #93)
+
+`ci-artefacts-attached` needs a referenced issue's full JIRA *attachment*
+list (filename, created timestamp, attachment id -- never content), and v2
+extends `pre-commit-ci-evidence` to also treat a `ci_summary*`/
+`results_details*` attachment as CI evidence. Rather than adding a third
+endpoint call, `fetch_issue_evidence` hits `GET /rest/api/2/issue/{key}
+?fields=comment,attachment` -- one HTTP call per issue that returns both
+fields in a single response (issue #93 scope: "fetching comments and
+attachments in one JIRA call... to save budget"). JIRA's `attachment` field
+is never itself paginated (unlike the dedicated `/comment` endpoint this
+module's `fetch_ci_evidence` uses), so this is a strict budget win for
+attachments and, for comments, matches `collectors/jira.py`'s own
+`fields=comment` M0 search behavior (full embedded comment list, no
+separate pagination) rather than `fetch_ci_evidence`'s own oldest-first
+paginated walk. The tradeoff (documented, not hidden): an issue with more
+comments than JIRA embeds by default under `fields=` could have a
+CI-evidence comment past that embedded window go unseen by this path alone;
+`fetch_ci_evidence`'s dedicated paginated walk remains available and is
+what a caller should fall back to if that matters for a specific run.
+
 ## `fetch_comment_metadata` (issue #79)
 
 A second, unrelated evidence need reuses this same class rather than
@@ -92,6 +113,31 @@ class CommentCIEvidence:
     comment_created_at: str | None
     matched_term: str
     matched_url: str | None = None
+
+
+@dataclass(frozen=True)
+class AttachmentMeta:
+    """One JIRA attachment's metadata (v2, issue #93) -- filename, created
+    timestamp and attachment id **only, never content**."""
+
+    attachment_id: str
+    filename: str
+    created: str  # raw JIRA REST timestamp string, e.g. '2026-08-20T12:00:00.000+0000'
+
+
+@dataclass(frozen=True)
+class IssueEvidence:
+    """Both governance evidence sources for one issue, from a single
+    combined `fields=comment,attachment` fetch (v2, issue #93) --
+    `ci_comment` is the first comment matching `CI_EVIDENCE_TERMS`
+    (identical matching to `fetch_ci_evidence`, just against the comments
+    embedded in this one response rather than a separate paginated walk),
+    and `attachments` is the issue's complete attachment list (JIRA never
+    paginates this field)."""
+
+    issue_key: str
+    ci_comment: CommentCIEvidence | None
+    attachments: tuple[AttachmentMeta, ...]
 
 
 def _find_ci_evidence(body: str, terms: tuple[str, ...]) -> tuple[str, str | None] | None:
@@ -257,6 +303,54 @@ class JiraCommentsCollector:
             start_at += len(comments)
             if not comments or start_at >= total:
                 return None
+
+    def fetch_issue_evidence(self, issue_key: str) -> IssueEvidence | None:
+        """Combined comment + attachment fetch for `issue_key` (v2, issue
+        #93) -- one `GET /rest/api/2/issue/{key}?fields=comment,attachment`
+        call. Returns `None` if the issue doesn't exist (404); otherwise an
+        `IssueEvidence` (possibly with `ci_comment=None` and/or
+        `attachments=()`, both legitimate "checked, found nothing" states,
+        distinct from `None`'s "issue not found at all").
+        """
+        response = self._get_with_retry(
+            f"/rest/api/2/issue/{issue_key}",
+            {"fields": "comment,attachment"},
+        )
+        if response.status_code == 404:
+            return None
+
+        payload = response.json()
+        fields = payload.get("fields") or {}
+
+        ci_comment: CommentCIEvidence | None = None
+        comments = ((fields.get("comment") or {}).get("comments")) or []
+        for comment in comments:
+            body = comment.get("body") or ""
+            match = _find_ci_evidence(body, self._terms)
+            if match is not None:
+                term, url = match
+                author = (comment.get("author") or {}).get("name")
+                ci_comment = CommentCIEvidence(
+                    issue_key=issue_key,
+                    comment_id=str(comment.get("id")),
+                    comment_author=author,
+                    comment_created_at=comment.get("created"),
+                    matched_term=term,
+                    matched_url=url,
+                )
+                break
+
+        attachments = tuple(
+            AttachmentMeta(
+                attachment_id=str(attachment.get("id")),
+                filename=attachment.get("filename") or "",
+                created=attachment.get("created"),
+            )
+            for attachment in (fields.get("attachment") or [])
+            if attachment.get("created")
+        )
+
+        return IssueEvidence(issue_key=issue_key, ci_comment=ci_comment, attachments=attachments)
 
     def fetch_comment_metadata(self, issue_key: str) -> list[dict]:
         """All comment *metadata* for `issue_key` (issue #79 backfill) --

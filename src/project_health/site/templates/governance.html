@@ -32,6 +32,7 @@
           <th scope="col">In force from</th>
           <th scope="col">Can fail?</th>
           <th scope="col">Scored</th>
+          <th scope="col">Source</th>
           <th scope="col">What it checks</th>
         </tr>
       </thead>
@@ -44,12 +45,29 @@
           <td>{{ rule.effective_from or "always" }}</td>
           <td>{{ "yes" if rule.fail_allowed else "no" }}</td>
           <td>{{ "scored" if rule.scored else "display only" }}</td>
+          <td>
+            {% if rule.source_type %}
+              <span class="governance-source-type">{{ rule.source_type }}</span>
+              {% if rule.source_quote %}<br><q class="governance-source-quote">{{ rule.source_quote }}</q>{% endif %}
+            {% else %}
+              &mdash;
+            {% endif %}
+          </td>
           <td>{{ rule.description }}</td>
         </tr>
         {% endfor %}
       </tbody>
     </table>
   </details>
+  {% if governance.policy.removed_exemptions %}
+  <p class="governance-note governance-removed-in-v2">
+    <strong>Removed in v2 (D24):</strong>
+    {% for removed in governance.policy.removed_exemptions %}
+      <code>{{ removed.exemption_id }}</code> (was an exemption on <code>{{ removed.rule_id }}</code>) &mdash;
+      {{ removed.reason }}{% if not loop.last %}; {% endif %}
+    {% endfor %}
+  </p>
+  {% endif %}
 </section>
 {% endif %}
 

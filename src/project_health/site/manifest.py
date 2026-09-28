@@ -42,8 +42,9 @@ class SourceStatus(BaseModel):
 
 class GovernanceEvidenceStats(BaseModel):
     """One evidence collector's per-run backfill stats
-    (`pipeline._collect_governance_ci_evidence` / `_collect_governance_check_runs`),
-    as written into manifest `governance.ci_evidence` / `governance.check_runs`.
+    (`pipeline._collect_governance_jira_evidence` / `_collect_governance_check_runs`),
+    as written into manifest `governance.ci_evidence` / `governance.jira_attachments` /
+    `governance.check_runs`.
     `pending` (issue #37, D14/D15) is how the Governance page shows the
     backfill honestly instead of pretending every commit's evidence is
     already in."""
@@ -53,6 +54,11 @@ class GovernanceEvidenceStats(BaseModel):
     checked: int | None = None
     pending: int | None = None
     calls_made: int | None = None
+    # v2 (issue #93): the JIRA attachment-metadata backfill count, present
+    # on `governance.jira_attachments` (and also echoed into
+    # `governance.ci_evidence`, since both now come from the same combined
+    # `_collect_governance_jira_evidence` pass).
+    attachments_found: int | None = None
 
 
 class GovernanceStatus(BaseModel):
@@ -78,6 +84,11 @@ class GovernanceStatus(BaseModel):
     policy_version: int | None = None
     ci_evidence: GovernanceEvidenceStats | None = None
     check_runs: GovernanceEvidenceStats | None = None
+    # v2 (issue #93): the JIRA attachment-metadata backfill's own counts
+    # (checked / attachments_found / pending), reported separately from
+    # `ci_evidence` even though both are collected in the same HTTP pass --
+    # see `pipeline._collect_governance_jira_evidence`.
+    jira_attachments: GovernanceEvidenceStats | None = None
 
 
 class RunManifest(BaseModel):

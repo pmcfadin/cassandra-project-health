@@ -28,15 +28,18 @@ from collections.abc import Sequence
 from datetime import datetime
 
 from project_health.governance.checks import (
+    AttachmentEvidence,
     CIEvidence,
     CheckResult,
     CheckstyleEvidence,
+    CI_ARTEFACTS_ATTACHED,
     CODE_STYLE_CHECKSTYLE,
     CommitFacts,
     JIRA_TICKET_REFERENCED,
     PRE_COMMIT_CI_EVIDENCE,
     REVIEWER_PRESENT,
     build_commit_facts_row,
+    score_ci_artefacts_attached,
     score_code_style_checkstyle,
     score_jira_ticket_referenced,
     score_pre_commit_ci_evidence,
@@ -49,6 +52,7 @@ SCORED_CHECK_IDS: tuple[str, ...] = (
     REVIEWER_PRESENT,
     JIRA_TICKET_REFERENCED,
     PRE_COMMIT_CI_EVIDENCE,
+    CI_ARTEFACTS_ATTACHED,
     CODE_STYLE_CHECKSTYLE,
 )
 
@@ -58,14 +62,18 @@ def score_commit(
     commit: CommitFacts,
     *,
     jira_reviewers: tuple[str, ...] = (),
-    ci_evidence_by_issue: dict[str, CIEvidence] | None = None,
+    ci_evidence_by_issue: dict[str, list[CIEvidence]] | None = None,
+    attachments_by_issue: dict[str, list[AttachmentEvidence]] | None = None,
+    fetched_attachment_issue_keys: frozenset[str] | set[str] = frozenset(),
     checkstyle_runs: tuple[CheckstyleEvidence, ...] = (),
     checkstyle_retention_cutoff: datetime | None = None,
 ) -> list[CheckResult]:
     """Every scored check's result for one commit (omitting checks that
     don't apply to this commit's branch). `checkstyle_retention_cutoff`
     (issue #36 fixup cycle 2) is passed straight through to
-    `score_code_style_checkstyle` — see that function's docstring."""
+    `score_code_style_checkstyle` — see that function's docstring.
+    `attachments_by_issue`/`fetched_attachment_issue_keys` (v2, issue #93)
+    are passed straight through to `score_ci_artefacts_attached`."""
     results: list[CheckResult] = []
 
     reviewer_result = score_reviewer_present(
@@ -83,6 +91,15 @@ def score_commit(
     )
     if ci_result is not None:
         results.append(ci_result)
+
+    ci_artefacts_result = score_ci_artefacts_attached(
+        policy.rule(CI_ARTEFACTS_ATTACHED),
+        commit,
+        attachments_by_issue,
+        fetched_attachment_issue_keys,
+    )
+    if ci_artefacts_result is not None:
+        results.append(ci_artefacts_result)
 
     checkstyle_result = score_code_style_checkstyle(
         policy.rule(CODE_STYLE_CHECKSTYLE),
@@ -125,7 +142,9 @@ def build_commit_compliance_rows(
     commits: Sequence[CommitFacts],
     *,
     jira_reviewers_by_issue: dict[str, tuple[str, ...]] | None = None,
-    ci_evidence_by_issue: dict[str, CIEvidence] | None = None,
+    ci_evidence_by_issue: dict[str, list[CIEvidence]] | None = None,
+    attachments_by_issue: dict[str, list[AttachmentEvidence]] | None = None,
+    fetched_attachment_issue_keys: frozenset[str] | set[str] = frozenset(),
     checkstyle_runs_by_sha: dict[str, tuple[CheckstyleEvidence, ...]] | None = None,
     checkstyle_retention_cutoff: datetime | None = None,
     overrides: Sequence[Override] | None = None,
@@ -137,10 +156,13 @@ def build_commit_compliance_rows(
     (`governance_overrides.yaml`) are looked up by `(sha, check_id)` and
     applied last, per-row, after all real scoring. `checkstyle_retention_cutoff`
     (issue #36 fixup cycle 2) is passed straight through to
-    `score_commit`/`score_code_style_checkstyle`.
+    `score_commit`/`score_code_style_checkstyle`. `attachments_by_issue`/
+    `fetched_attachment_issue_keys` (v2, issue #93) are passed straight
+    through to `score_commit`/`score_ci_artefacts_attached`.
     """
     jira_reviewers_by_issue = jira_reviewers_by_issue or {}
     ci_evidence_by_issue = ci_evidence_by_issue or {}
+    attachments_by_issue = attachments_by_issue or {}
     checkstyle_runs_by_sha = checkstyle_runs_by_sha or {}
     overrides_index = index_overrides(list(overrides) if overrides else [])
 
@@ -161,6 +183,8 @@ def build_commit_compliance_rows(
             commit,
             jira_reviewers=jira_reviewers,
             ci_evidence_by_issue=ci_evidence_by_issue,
+            attachments_by_issue=attachments_by_issue,
+            fetched_attachment_issue_keys=fetched_attachment_issue_keys,
             checkstyle_runs=checkstyle_runs,
             checkstyle_retention_cutoff=checkstyle_retention_cutoff,
         ):
@@ -200,6 +224,7 @@ def build_commit_facts_rows(commits: Sequence[CommitFacts]) -> list[dict]:
                 "changes_txt_touched": fact.changes_txt_touched,
                 "news_txt_touched": fact.news_txt_touched,
                 "test_touched": fact.test_touched,
+                "ninja_declared": fact.ninja_declared,
             }
         )
     return rows

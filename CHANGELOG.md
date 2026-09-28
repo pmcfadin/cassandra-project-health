@@ -3,6 +3,96 @@
 Metric-definition changelog (ARCHITECTURE.md §4.4 / D2 rule 6: "nothing changes silently"). Entries are ordered
 newest-first; a future version bump adds a new dated entry at the top.
 
+## 2026-09-27
+
+### governance-policy.yaml v1 -> v2: every rule and exemption sourced from official Cassandra rules (D24, issue #93)
+
+Implements DECISIONS.md D24 ("We should always follow the rules set by the PMC and not make up our own"):
+`governance-policy.yaml` version 2 removes every rule/exemption this project invented rather than sourced from
+the Cassandra project's own published rules, sources the ones that remain, and adds one new rule the official
+docs now require. `rescore_history: true` -- the entire commit history is rescored under v2, per each rule's
+own `effective_from` (D14: "no commit is judged against a rule the project had not yet published"). See
+`docs/spec/GOVERNANCE.md`'s "Approved v2" section for the full rationale and every source quote.
+
+**What changed:**
+
+- **Removed** (no official source found): the `ninja` exemption (`reviewer-present`,
+  `jira-ticket-referenced`) and the `submodule-repin` sub-pattern of `release-housekeeping`. Both were audited
+  project *conventions*, never a PMC-published rule. The ninja-count-trend stays as a purely descriptive,
+  unscored signal (`commit_fact.ninja_declared`, `governance/checks.is_ninja_declared`), computed independently
+  of scoring.
+- **Added**, sourced to the ratified cwiki governance page: `commit-then-review` (a measurement-choice
+  docs-only-change detector, `docs_only_paths` glob matching, replaces the old ninja/release-housekeeping
+  pattern match).
+- **Sourced**, replacing the unsourced `release-housekeeping` group: `release-process` (`version-increment` ->
+  `release_process.html`'s exact `git commit` invocation; `debian-changelog` -> the exact
+  `cassandra-builds/cassandra-release/prepare_release.sh` line that produces it).
+- **Extended**: `pre-commit-ci-evidence` now also scores from JIRA attachments (`ci_summary*`/
+  `results_details*`), and evidence must be dated at or before the commit (evidence found only after the
+  commit is its own distinct `unknown`, not folded into "no evidence").
+- **New rule**: `ci-artefacts-attached` (effective 2026-08-19, `fail_allowed: true`) -- both pre-commit CI
+  artefacts attached to the referenced issue at or before the commit, sourced to `patches.html`/`ci.html`.
+  Only fails an issue whose attachment list has actually been fetched (JIRA attachment metadata backfill,
+  filename/created/id only, never content, budgeted/resumable/newest-first, one combined JIRA call per issue
+  alongside the existing comment-evidence fetch).
+- **Enforcement**: `tests/test_governance_policy_sources.py` fails the suite if any scored rule/exemption/
+  sub_pattern lacks a source or cites an unlisted `source_type`; `project-health verify-policy-sources`
+  re-fetches every source live and confirms every quote still appears (opt-in live test,
+  `RUN_LIVE_NETWORK_TESTS=1`, run live during implementation -- all sourced items passed).
+
+**v1 -> v2 counts per check x result**, real data, full rescored history (`apache/cassandra`, all branches this
+project tracks, as of 2026-09-28; git+JIRA+GitHub-checks evidence already cached from prior runs plus a fresh
+JIRA attachment backfill this run):
+
+| Check | Result | v1 | v2 | Delta |
+|---|---|---:|---:|---:|
+| `reviewer-present` | pass | 3,089 | 3,030 | -59 |
+| `reviewer-present` | fail | 11 | 15 | +4 |
+| `reviewer-present` | unknown | 3,493 | 3,554 | +61 |
+| `reviewer-present` | exempt | 420 | 414 | -6 |
+| `reviewer-present` | not_in_force | 25,363 | 25,363 | 0 |
+| `jira-ticket-referenced` | pass | 12,612 | 12,821 | +209 |
+| `jira-ticket-referenced` | unknown | 18,885 | 19,314 | +429 |
+| `jira-ticket-referenced` | exempt | 879 | 241 | -638 |
+| `pre-commit-ci-evidence` | pass | 876 | 851 | -25 |
+| `pre-commit-ci-evidence` | unknown | 6,137 | 5,748 | -389 |
+| `pre-commit-ci-evidence` | exempt | 0 | 414 | +414 |
+| `pre-commit-ci-evidence` | not_in_force | 25,363 | 25,363 | 0 |
+| `code-style-checkstyle` | pass | 389 | 389 | 0 |
+| `code-style-checkstyle` | fail | 10 | 10 | 0 |
+| `code-style-checkstyle` | unknown | 31,977 | 31,977 | 0 |
+| `ci-artefacts-attached` (new) | pass | 0 | 16 | +16 |
+| `ci-artefacts-attached` (new) | fail | 0 | 51 | +51 |
+| `ci-artefacts-attached` (new) | unknown | 0 | 97 | +97 |
+| `ci-artefacts-attached` (new) | exempt | 0 | 6 | +6 |
+| `ci-artefacts-attached` (new) | not_in_force | 0 | 32,206 | +32,206 |
+
+32,376 commits scored (`apache/cassandra`, all tracked branches), real data, 2026-09-28. `reviewer-present`'s
+`exempt` count barely moved (420 -> 414: `commit-then-review`'s docs-only-paths detector catches almost the
+same commits `ninja` used to, since most self-declared "ninja" fixes were themselves docs-only) but its
+composition changed completely -- v1's 420 were mostly `ninja`-pattern matches; v2's 414 are entirely
+`commit-then-review` (docs-only-change) and `release-process`, since `ninja` is gone. `jira-ticket-referenced`
+`exempt` dropped sharply (879 -> 241) because v1's `release-housekeeping` group (which included the
+`submodule-repin` pattern) matched more commits by regex than v2's dated `release-process` sub-patterns do --
+`submodule-repin` had no official source and its commits now fall through to `pass`/`unknown` based on whether
+they reference an issue key, which is why `jira-ticket-referenced`'s `pass`/`unknown` both rose.
+`pre-commit-ci-evidence`'s new `exempt` count (414) is entirely the `not-code`/`release-process` exemptions v1
+never had (v1 scored docs-only commits as `unknown`, same as any other commit with no CI comment).
+`ci-artefacts-attached`'s 164 commits scored so far (attachment backfill is budgeted/incremental, D14/D15 --
+`unknown` will keep falling in later runs as the backlog clears) since it went into force on 2026-08-19: 16
+pass, 51 fail, 97 unknown, 6 exempt. Live spot-checks of 3 real fails against the JIRA attachments API
+surfaced a genuine, reported-not-fixed naming gap (docs/spec/GOVERNANCE.md §"Approved v2" item 8, D24): real
+`.build/run-ci` attachments are sometimes named `result_details.tar.gz` (no "s") rather than the docs'
+`results_details*`, and sometimes prefixed `<ISSUE-KEY>-<branch>-ci_summary.html` rather than a bare
+`ci_summary*` -- both cases the sourced check_method's literal regex correctly does not match, producing an
+honest `fail` under the policy's own wording rather than an implementation bug.
+
+Governance page: each rule's row now shows its `source_type` and `source_quote` linked to `source_url`; a
+small note lists the exemptions removed in v2 with the reason; the new rule's trend/headline card renders via
+the existing `SCORED_CHECK_IDS`-generic drift/headline machinery (issue #69), no page-specific code needed.
+
+Closes #93.
+
 ## 2026-09-26
 
 ### scoring_version 1.0.0 (new): baseline statuses + versioned composite health score

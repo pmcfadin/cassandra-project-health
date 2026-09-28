@@ -56,7 +56,7 @@ def test_build_commit_compliance_rows_shape(policy):
     for row in rows:
         assert row["sha"] == "a" * 40
         assert row["branch"] == "trunk"
-        assert row["policy_version"] == 1
+        assert row["policy_version"] == 2
         assert row["reviewers"] == ["Bob"]
         assert row["jira_keys"] == ["CASSANDRA-100"]
         assert row["is_merge"] is False
@@ -115,6 +115,7 @@ def test_build_commit_facts_rows():
             "changes_txt_touched": True,
             "news_txt_touched": False,
             "test_touched": False,
+            "ninja_declared": False,
         }
     ]
 

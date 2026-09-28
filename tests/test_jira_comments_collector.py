@@ -15,6 +15,35 @@ from project_health.collectors.jira_comments import (
 )
 
 
+def _issue_evidence_transport(issues: dict[str, dict]) -> httpx.MockTransport:
+    """v2 (issue #93): mocks `GET /rest/api/2/issue/{key}?fields=comment,attachment`.
+    `issues` maps issue_key -> {"comments": [...], "attachments": [...]}."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        key = request.url.path.split("/")[-1]
+        if key not in issues:
+            return httpx.Response(404, json={"errorMessages": ["not found"]})
+        data = issues[key]
+        return httpx.Response(
+            200,
+            json={
+                "fields": {
+                    "comment": {
+                        "comments": data.get("comments", []),
+                        "total": len(data.get("comments", [])),
+                    },
+                    "attachment": data.get("attachments", []),
+                }
+            },
+        )
+
+    return httpx.MockTransport(handler)
+
+
+def _attachment(attachment_id: str, filename: str, created: str) -> dict:
+    return {"id": attachment_id, "filename": filename, "created": created}
+
+
 def _transport(comments_by_issue: dict[str, list[dict]]) -> httpx.MockTransport:
     def handler(request: httpx.Request) -> httpx.Response:
         # path: <base_url path prefix>/rest/api/2/issue/{key}/comment -- the
@@ -273,3 +302,77 @@ class TestFetchCommentMetadata:
         with _collector(comments) as collector:
             rows = collector.fetch_comment_metadata("CASSANDRA-1")
         assert [r["comment_id"] for r in rows] == ["2"]
+
+
+class TestFetchIssueEvidence:
+    def test_returns_none_when_issue_not_found(self):
+        collector = JiraCommentsCollector(
+            "https://issues.apache.org/jira",
+            transport=_issue_evidence_transport({}),
+            min_request_interval=0,
+            sleep_fn=lambda _seconds: None,
+        )
+        with collector:
+            assert collector.fetch_issue_evidence("CASSANDRA-999") is None
+
+    def test_one_call_returns_both_comment_and_attachment_evidence(self):
+        issues = {
+            "CASSANDRA-1": {
+                "comments": [
+                    _comment("1", "alice", "2024-06-01T00:00:00.000+0000", "ran circleci here"),
+                ],
+                "attachments": [
+                    _attachment("10", "ci_summary_x86.txt", "2024-05-31T00:00:00.000+0000"),
+                    _attachment("11", "results_details_x86.txt", "2024-05-31T00:00:00.000+0000"),
+                    _attachment("12", "patch.diff", "2024-05-30T00:00:00.000+0000"),
+                ],
+            }
+        }
+        collector = JiraCommentsCollector(
+            "https://issues.apache.org/jira",
+            transport=_issue_evidence_transport(issues),
+            min_request_interval=0,
+            sleep_fn=lambda _seconds: None,
+        )
+        with collector:
+            evidence = collector.fetch_issue_evidence("CASSANDRA-1")
+        assert evidence is not None
+        assert evidence.issue_key == "CASSANDRA-1"
+        assert evidence.ci_comment is not None
+        assert evidence.ci_comment.matched_term == "circleci"
+        assert len(evidence.attachments) == 3
+        filenames = {a.filename for a in evidence.attachments}
+        assert filenames == {"ci_summary_x86.txt", "results_details_x86.txt", "patch.diff"}
+        # Exactly one HTTP call for both evidence sources.
+        assert collector.call_count == 1
+
+    def test_no_comment_match_and_no_attachments_is_legitimate_empty_result(self):
+        issues = {"CASSANDRA-2": {"comments": [], "attachments": []}}
+        collector = JiraCommentsCollector(
+            "https://issues.apache.org/jira",
+            transport=_issue_evidence_transport(issues),
+            min_request_interval=0,
+            sleep_fn=lambda _seconds: None,
+        )
+        with collector:
+            evidence = collector.fetch_issue_evidence("CASSANDRA-2")
+        assert evidence is not None
+        assert evidence.ci_comment is None
+        assert evidence.attachments == ()
+
+    def test_attachment_missing_created_is_skipped(self):
+        issues = {
+            "CASSANDRA-3": {
+                "comments": [],
+                "attachments": [{"id": "1", "filename": "x.txt", "created": None}],
+            }
+        }
+        collector = JiraCommentsCollector(
+            "https://issues.apache.org/jira",
+            transport=_issue_evidence_transport(issues),
+            min_request_interval=0,
+            sleep_fn=lambda _seconds: None,
+        )
+        with collector:
+            evidence = collector.fetch_issue_evidence("CASSANDRA-3")
+        assert evidence.attachments == ()

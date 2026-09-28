@@ -10,10 +10,12 @@ from datetime import datetime, timezone
 import pytest
 
 from project_health.governance.checks import (
+    AttachmentEvidence,
     CheckstyleEvidence,
     CIEvidence,
     CommitFacts,
     build_commit_facts_row,
+    score_ci_artefacts_attached,
     score_code_style_checkstyle,
     score_jira_ticket_referenced,
     score_pre_commit_ci_evidence,
@@ -85,14 +87,43 @@ class TestReviewerPresent:
         result = score_reviewer_present(rule, commit)
         assert result.result == "unknown"
 
-    def test_exempt_ninja_never_fails_even_with_issue_key_and_no_reviewer(self, policy):
+    def test_ninja_no_longer_exempt_in_v2_scores_normally(self, policy):
+        """D24/issue #93: v2 removed the unsourced `ninja` exemption -- a
+        self-declared ninja commit is now scored exactly like any other
+        commit (here: fail, since it has an issue key, no reviewer, no
+        exemption match, and no review wording)."""
         rule = policy.rule("reviewer-present")
         commit = _commit(
             trailer_reviewers=(), message="ninjafix quick change for CASSANDRA-100"
         )
         result = score_reviewer_present(rule, commit)
+        assert result.result == "fail"
+
+    def test_commit_then_review_exempts_docs_only_change(self, policy):
+        """v2's replacement for the old ninja/release-housekeeping pattern
+        exemptions: a docs-only change (every changed path covered by the
+        policy's `docs_only_paths`) is exempt under Commit Then Review,
+        regardless of message wording."""
+        rule = policy.rule("reviewer-present")
+        commit = _commit(
+            trailer_reviewers=(),
+            message="Fix typo in contributing guide",
+            changed_paths=("CONTRIBUTING.md",),
+        )
+        result = score_reviewer_present(rule, commit)
         assert result.result == "exempt"
-        assert "ninja" in result.evidence
+        assert "commit-then-review" in result.evidence
+
+    def test_commit_then_review_requires_every_path_docs_only(self, policy):
+        rule = policy.rule("reviewer-present")
+        commit = _commit(
+            trailer_reviewers=(),
+            message="typo fix",
+            issue_keys=(),
+            changed_paths=("README.md", "src/java/Foo.java"),
+        )
+        result = score_reviewer_present(rule, commit)
+        assert result.result != "exempt"
 
     def test_exempt_release_housekeeping(self, policy):
         rule = policy.rule("reviewer-present")
@@ -198,21 +229,53 @@ class TestJiraTicketReferenced:
 
 
 class TestPreCommitCiEvidence:
-    def test_pass_when_ci_comment_evidence_found(self, policy):
+    def test_pass_when_ci_comment_evidence_found_at_or_before_commit(self, policy):
         rule = policy.rule("pre-commit-ci-evidence")
         evidence = {
-            "CASSANDRA-100": CIEvidence(
-                issue_key="CASSANDRA-100",
-                comment_id="123",
-                comment_author="alice",
-                comment_created_at="2024-06-01T00:00:00.000+0000",
-                matched_term="circleci",
-                matched_url="https://circleci.com/build/1",
-            )
+            "CASSANDRA-100": [
+                CIEvidence(
+                    issue_key="CASSANDRA-100",
+                    source="jira_comment_ci_mention",
+                    created_at=datetime(2024, 5, 31, tzinfo=timezone.utc),
+                    description="JIRA comment 123 matched CI term 'circleci'",
+                    url="https://circleci.com/build/1",
+                )
+            ]
         }
         result = score_pre_commit_ci_evidence(rule, _commit(), evidence)
         assert result.result == "pass"
         assert result.evidence_url == "https://circleci.com/build/1"
+
+    def test_pass_when_ci_attachment_evidence_found_at_or_before_commit(self, policy):
+        rule = policy.rule("pre-commit-ci-evidence")
+        evidence = {
+            "CASSANDRA-100": [
+                CIEvidence(
+                    issue_key="CASSANDRA-100",
+                    source="jira_attachment_ci_artefact",
+                    created_at=datetime(2024, 6, 1, tzinfo=timezone.utc),
+                    description="attachment 'ci_summary_1.txt' (id 42)",
+                )
+            ]
+        }
+        result = score_pre_commit_ci_evidence(rule, _commit(), evidence)
+        assert result.result == "pass"
+
+    def test_unknown_distinct_text_when_evidence_found_only_after_commit(self, policy):
+        rule = policy.rule("pre-commit-ci-evidence")
+        evidence = {
+            "CASSANDRA-100": [
+                CIEvidence(
+                    issue_key="CASSANDRA-100",
+                    source="jira_comment_ci_mention",
+                    created_at=datetime(2024, 6, 2, tzinfo=timezone.utc),  # after commit_date
+                    description="JIRA comment 999 matched CI term 'jenkins'",
+                )
+            ]
+        }
+        result = score_pre_commit_ci_evidence(rule, _commit(), evidence)
+        assert result.result == "unknown"
+        assert "AFTER the commit" in result.evidence
 
     def test_unknown_when_no_ci_evidence(self, policy):
         rule = policy.rule("pre-commit-ci-evidence")
@@ -232,6 +295,125 @@ class TestPreCommitCiEvidence:
         rule = policy.rule("pre-commit-ci-evidence")
         result = score_pre_commit_ci_evidence(rule, _commit(), None)
         assert result.result == "unknown"
+
+    def test_exempt_not_code_docs_only_change(self, policy):
+        rule = policy.rule("pre-commit-ci-evidence")
+        commit = _commit(changed_paths=("doc/source/foo.adoc",))
+        result = score_pre_commit_ci_evidence(rule, commit, {})
+        assert result.result == "exempt"
+        assert "not-code" in result.evidence
+
+    def test_exempt_release_process_via_same_as(self, policy):
+        rule = policy.rule("pre-commit-ci-evidence")
+        commit = _commit(issue_keys=(), message="Prepare debian changelog for 3.11.19")
+        result = score_pre_commit_ci_evidence(rule, commit, {})
+        assert result.result == "exempt"
+        assert "release-process" in result.evidence
+
+
+_CI_ARTEFACTS_COMMIT_DATE = datetime(2026, 9, 1, tzinfo=timezone.utc)  # >= effective_from
+
+
+class TestCiArtefactsAttached:
+    def test_pass_when_both_artefacts_attached_at_or_before_commit(self, policy):
+        rule = policy.rule("ci-artefacts-attached")
+        attachments = {
+            "CASSANDRA-100": [
+                AttachmentEvidence(
+                    issue_key="CASSANDRA-100",
+                    attachment_id="1",
+                    filename="ci_summary_x86.txt",
+                    created_at=datetime(2026, 8, 31, tzinfo=timezone.utc),
+                ),
+                AttachmentEvidence(
+                    issue_key="CASSANDRA-100",
+                    attachment_id="2",
+                    filename="results_details_x86.txt",
+                    created_at=datetime(2026, 8, 31, tzinfo=timezone.utc),
+                ),
+            ]
+        }
+        commit = _commit(commit_date=_CI_ARTEFACTS_COMMIT_DATE)
+        result = score_ci_artefacts_attached(
+            rule, commit, attachments, fetched_issue_keys={"CASSANDRA-100"}
+        )
+        assert result.result == "pass"
+
+    def test_unknown_when_attachments_not_fetched(self, policy):
+        rule = policy.rule("ci-artefacts-attached")
+        commit = _commit(commit_date=_CI_ARTEFACTS_COMMIT_DATE)
+        result = score_ci_artefacts_attached(rule, commit, {}, fetched_issue_keys=set())
+        assert result.result == "unknown"
+        assert "backfill budget" in result.evidence
+
+    def test_fail_when_fetched_and_missing_one_artefact(self, policy):
+        rule = policy.rule("ci-artefacts-attached")
+        attachments = {
+            "CASSANDRA-100": [
+                AttachmentEvidence(
+                    issue_key="CASSANDRA-100",
+                    attachment_id="1",
+                    filename="ci_summary_x86.txt",
+                    created_at=datetime(2026, 8, 31, tzinfo=timezone.utc),
+                ),
+            ]
+        }
+        commit = _commit(commit_date=_CI_ARTEFACTS_COMMIT_DATE)
+        result = score_ci_artefacts_attached(
+            rule, commit, attachments, fetched_issue_keys={"CASSANDRA-100"}
+        )
+        assert result.result == "fail"
+        assert "results_details missing" in result.evidence
+
+    def test_fail_names_artefact_attached_later(self, policy):
+        rule = policy.rule("ci-artefacts-attached")
+        attachments = {
+            "CASSANDRA-100": [
+                AttachmentEvidence(
+                    issue_key="CASSANDRA-100",
+                    attachment_id="1",
+                    filename="ci_summary_x86.txt",
+                    created_at=datetime(2026, 8, 31, tzinfo=timezone.utc),
+                ),
+                AttachmentEvidence(
+                    issue_key="CASSANDRA-100",
+                    attachment_id="2",
+                    filename="results_details_x86.txt",
+                    created_at=datetime(2026, 9, 2, tzinfo=timezone.utc),  # after commit
+                ),
+            ]
+        }
+        commit = _commit(commit_date=_CI_ARTEFACTS_COMMIT_DATE)
+        result = score_ci_artefacts_attached(
+            rule, commit, attachments, fetched_issue_keys={"CASSANDRA-100"}
+        )
+        assert result.result == "fail"
+        assert "attached later" in result.evidence
+
+    def test_unknown_when_no_issue_key(self, policy):
+        rule = policy.rule("ci-artefacts-attached")
+        commit = _commit(issue_keys=(), commit_date=_CI_ARTEFACTS_COMMIT_DATE)
+        result = score_ci_artefacts_attached(rule, commit, {}, fetched_issue_keys=set())
+        assert result.result == "unknown"
+        assert "no issue key" in result.evidence
+
+    def test_not_in_force_before_2026_08_19(self, policy):
+        rule = policy.rule("ci-artefacts-attached")
+        commit = _commit(commit_date=datetime(2026, 1, 1, tzinfo=timezone.utc))
+        result = score_ci_artefacts_attached(rule, commit, {}, fetched_issue_keys=set())
+        assert result.result == "not_in_force"
+
+    def test_exempt_not_code_via_same_as(self, policy):
+        rule = policy.rule("ci-artefacts-attached")
+        commit = _commit(
+            commit_date=datetime(2026, 9, 1, tzinfo=timezone.utc),
+            changed_paths=("doc/source/foo.adoc",),
+        )
+        result = score_ci_artefacts_attached(rule, commit, {}, fetched_issue_keys=set())
+        assert result.result == "exempt"
+
+    def test_fail_allowed(self, policy):
+        assert policy.rule("ci-artefacts-attached").fail_allowed is True
 
 
 class TestCodeStyleCheckstyle:

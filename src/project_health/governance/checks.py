@@ -1,4 +1,4 @@
-"""Per-check scoring functions (issue #36).
+"""Per-check scoring functions (issue #36; v2, D24, issue #93).
 
 Each `score_*` function is a pure function: `Rule` (the policy's typed view
 of one `governance-policy.yaml` rule, `policy.py`) plus this commit's
@@ -14,18 +14,45 @@ Scoring order, identical across every scored rule (D14/D15):
    If not, return `None` — no row, not even `not_in_force`.
 2. Is the rule in force on this commit's date (`Rule.in_force_on`)? If not,
    `not_in_force`.
-3. Does an exemption match (ninja / release-housekeeping)? If so, `exempt` —
-   unconditionally, regardless of any other evidence.
+3. Does an exemption match (`commit-then-review` / `release-process`, v2)? If
+   so, `exempt` — unconditionally, regardless of any other evidence. No
+   check here special-cases any exemption id: exemptions are entirely
+   policy-driven (`Rule.matching_exemption`, `policy.py`), which is what
+   guarantees no code hard-codes the old, now-removed `ninja` exemption
+   (D24, issue #93) — v2's `governance-policy.yaml` simply no longer lists
+   it, so `matching_exemption` can never return it.
 4. Rule-specific pass/fail/unknown logic.
 
 `reviewer-present` is the one rule with a `fail_allowed: true` guarded by the
 `review_wording_check` (D15's false-fail protection, docs/spec/GOVERNANCE.md
 §8): `fail` requires *all* of (a) an issue key referenced, (b) no reviewer
 found by either evidence source, (c) no exemption matched, (d) no review
-wording anywhere in the message. `code-style-checkstyle` is the other
-`fail_allowed: true` rule, but its fail condition is a direct, unambiguous
-red check-run — no wording guard needed (governance-policy.yaml comment:
-"this is direct, unambiguous evidence, fail is allowed").
+wording anywhere in the message. `code-style-checkstyle` and (v2)
+`ci-artefacts-attached` are the other `fail_allowed: true` rules; both have
+direct, unambiguous fail evidence (a red check-run; a JIRA attachment list
+that was actually fetched and is missing an artefact) so neither needs a
+wording guard.
+
+## v2 evidence changes (D24, issue #93)
+
+- `pre-commit-ci-evidence` now scores from **both** JIRA-comment CI mentions
+  and JIRA attachments (`ci_summary*`/`results_details*`), and requires the
+  matching evidence to be dated **at or before the commit** — evidence dated
+  only after the commit gets its own, distinct `unknown` evidence string
+  rather than being indistinguishable from "no evidence found at all".
+  MEASUREMENT (ours, D24): "at or before" compares two already-UTC-aware
+  timestamps directly (`CommitFacts.commit_date` and `CIEvidence.created_at`)
+  — no separate timezone normalization is needed because both this module's
+  callers (`collectors/jira.py`'s `_parse_jira_timestamp`,
+  `collectors/governance_git.py`) already produce UTC-aware datetimes.
+- `ci-artefacts-attached` (new rule) requires **both** artefacts attached to
+  the same referenced issue at or before the commit; it is `fail_allowed`
+  because a JIRA issue's attachment list, once fetched, is complete — an
+  absence there is real evidence, not a `pre-commit-ci-evidence`-style gap.
+  It only ever fails an issue whose attachment list has actually been
+  fetched this run or a prior one (`fetched_issue_keys`) — an unfetched
+  issue is `unknown`, never `fail` (the JIRA attachment backfill is
+  budgeted and incremental, `pipeline.py`).
 """
 
 from __future__ import annotations
@@ -41,6 +68,7 @@ from project_health.governance.policy import Rule
 REVIEWER_PRESENT = "reviewer-present"
 JIRA_TICKET_REFERENCED = "jira-ticket-referenced"
 PRE_COMMIT_CI_EVIDENCE = "pre-commit-ci-evidence"
+CI_ARTEFACTS_ATTACHED = "ci-artefacts-attached"
 CODE_STYLE_CHECKSTYLE = "code-style-checkstyle"
 
 # `reviewer-present`'s fail condition is anchored specifically to "the
@@ -74,6 +102,26 @@ CHECKSTYLE_RUN_NAMES = frozenset({"ant-check-jdk11", "ant-check-jdk17"})
 # `unknown`, never `fail`).
 _FAILING_CONCLUSIONS = frozenset({"failure", "timed_out", "cancelled", "action_required"})
 
+# `ci-artefacts-attached.check_method` (governance-policy.yaml, v2, issue
+# #93): the exact two filename patterns the official docs (patches.html,
+# ci.html) name — `(?i)^ci_summary` and `(?i)^results_details`. Kept as code
+# constants for the same reason `pre-commit-ci-evidence`'s CI_EVIDENCE_TERMS
+# (`collectors/jira_comments.py`) is: the policy's `check_method.detail` is
+# prose, not a structured list, and a filename-pattern change here is a
+# scoring-behavior change that should be reviewed as one.
+_CI_SUMMARY_RE = re.compile(r"(?i)^ci_summary")
+_RESULTS_DETAILS_RE = re.compile(r"(?i)^results_details")
+
+
+def is_ci_artefact_filename(filename: str) -> bool:
+    """True if `filename` matches either of `ci-artefacts-attached`'s two
+    artefact patterns (`ci_summary*` or `results_details*`). Used both by
+    `score_ci_artefacts_attached` (which requires *both* patterns matched,
+    each on its own attachment) and by `pipeline.py`'s evidence-building for
+    `pre-commit-ci-evidence` (where *either* one, as an attachment, counts
+    as CI evidence alongside a JIRA comment mention)."""
+    return bool(_CI_SUMMARY_RE.match(filename) or _RESULTS_DETAILS_RE.match(filename))
+
 
 @dataclass(frozen=True)
 class CommitFacts:
@@ -94,17 +142,40 @@ class CommitFacts:
 
 @dataclass(frozen=True)
 class CIEvidence:
-    """One JIRA-comment CI-evidence match for an issue key
-    (`collectors/jira_comments.py`) — comment metadata plus the matched CI
-    URL only, never the comment body (issue #36 scope: "store comment
-    metadata plus the matched CI URL only, never comment bodies")."""
+    """One CI-evidence match for `pre-commit-ci-evidence` (v2, issue #93):
+    either a JIRA-comment CI mention or a JIRA attachment matching
+    `ci_summary*`/`results_details*` on one of the commit's referenced
+    issues. Never carries the comment body or attachment content — only
+    metadata (issue #36 scope, extended to attachments by issue #93: "never
+    content").
+
+    `source` is `'jira_comment_ci_mention'` or `'jira_attachment_ci_artefact'`
+    (`governance-policy.yaml pre-commit-ci-evidence.check_method`'s two
+    `evidence_source` values). `created_at` is this evidence's own UTC-aware
+    timestamp (the comment's or attachment's `created` field, already
+    parsed) — required so scoring can implement "dated at or before the
+    commit" (D24).
+    """
 
     issue_key: str
-    comment_id: str
-    comment_author: str | None
-    comment_created_at: str | None
-    matched_term: str
-    matched_url: str | None = None
+    source: str
+    created_at: datetime
+    description: str
+    url: str | None = None
+
+
+@dataclass(frozen=True)
+class AttachmentEvidence:
+    """One JIRA attachment's metadata (v2, issue #93) — filename, created
+    timestamp and attachment id **only, never content** (issue scope: "never
+    content"). Feeds `ci-artefacts-attached`'s scoring, and (filtered to
+    `ci_summary*`/`results_details*`) `pre-commit-ci-evidence`'s attachment
+    evidence source."""
+
+    issue_key: str
+    attachment_id: str
+    filename: str
+    created_at: datetime  # UTC-aware
 
 
 @dataclass(frozen=True)
@@ -152,7 +223,7 @@ def score_reviewer_present(
     if not rule.in_force_on(commit.commit_date.date()):
         return _not_in_force(rule, commit)
 
-    exemption = rule.matching_exemption(commit.message)
+    exemption = rule.matching_exemption(commit.message, commit.changed_paths)
     if exemption is not None:
         return CheckResult(rule.id, "exempt", f"matched exemption: {exemption.id}")
 
@@ -187,7 +258,7 @@ def score_jira_ticket_referenced(rule: Rule, commit: CommitFacts) -> CheckResult
     if not rule.in_force_on(commit.commit_date.date()):
         return _not_in_force(rule, commit)
 
-    exemption = rule.matching_exemption(commit.message)
+    exemption = rule.matching_exemption(commit.message, commit.changed_paths)
     if exemption is not None:
         return CheckResult(rule.id, "exempt", f"matched exemption: {exemption.id}")
 
@@ -197,46 +268,161 @@ def score_jira_ticket_referenced(rule: Rule, commit: CommitFacts) -> CheckResult
 
 
 def score_pre_commit_ci_evidence(
-    rule: Rule, commit: CommitFacts, ci_evidence_by_issue: dict[str, CIEvidence] | None = None
+    rule: Rule, commit: CommitFacts, ci_evidence_by_issue: dict[str, list[CIEvidence]] | None = None
 ) -> CheckResult | None:
-    """`pre-commit-ci-evidence` — pass/unknown only (`fail_allowed: false`
-    in v1; issue #36 live-tests whether a v2 could add `fail_allowed` via
-    the ci-cassandra.apache.org Jenkins API, see `jenkins_probe.py` — this
-    function only ever implements the *shipped* v1 scoring, never the
-    unverified Jenkins path).
+    """`pre-commit-ci-evidence` (v2, D24, issue #93) — pass/unknown only
+    (`fail_allowed: false`; CI results may legitimately be provided
+    somewhere this check cannot see, so their absence is never read as a
+    fail).
 
-    Only the JIRA-comment CI-evidence source is used for scoring — the
-    GitHub-check-runs evidence source documented in the policy is
-    explicitly "NOT a substitute" for this rule (it measures the GitHub
-    Actions checkstyle surface, not pre-commit Jenkins), so it is never
-    consulted here.
+    `ci_evidence_by_issue` is `issue_key -> [CIEvidence, ...]`, covering both
+    evidence sources the policy names (`jira_comment_ci_mention`,
+    `jira_attachment_ci_artefact`; `collectors/jira_comments.py`). A match is
+    only `pass` evidence when it is dated at or before the commit
+    (`CIEvidence.created_at <= commit.commit_date`, both UTC-aware); a match
+    that exists only *after* the commit is real evidence CI happened
+    eventually, but not evidence it happened *before* commit, so it produces
+    its own distinct `unknown` text rather than being folded into "no
+    evidence found at all" (issue #93 scope item 2).
     """
     if not rule.applies_to_branch(commit.branch):
         return None
     if not rule.in_force_on(commit.commit_date.date()):
         return _not_in_force(rule, commit)
 
+    exemption = rule.matching_exemption(commit.message, commit.changed_paths)
+    if exemption is not None:
+        return CheckResult(rule.id, "exempt", f"matched exemption: {exemption.id}")
+
     ci_evidence_by_issue = ci_evidence_by_issue or {}
+    at_or_before: list[CIEvidence] = []
+    after_commit: list[CIEvidence] = []
     for issue_key in commit.issue_keys:
-        evidence = ci_evidence_by_issue.get(issue_key)
-        if evidence is not None:
-            return CheckResult(
-                rule.id,
-                "pass",
-                f"JIRA comment {evidence.comment_id} on {issue_key} matched CI term "
-                f"{evidence.matched_term!r}",
-                evidence.matched_url,
-            )
+        for item in ci_evidence_by_issue.get(issue_key, []):
+            if item.created_at <= commit.commit_date:
+                at_or_before.append(item)
+            else:
+                after_commit.append(item)
+
+    if at_or_before:
+        earliest = min(at_or_before, key=lambda i: i.created_at)
+        return CheckResult(
+            rule.id,
+            "pass",
+            f"{earliest.source} on {earliest.issue_key}: {earliest.description} "
+            f"(dated {earliest.created_at.isoformat()}, at or before the commit)",
+            earliest.url,
+        )
+
+    if after_commit:
+        earliest_after = min(after_commit, key=lambda i: i.created_at)
+        return CheckResult(
+            rule.id,
+            "unknown",
+            f"CI evidence found on {earliest_after.issue_key} ({earliest_after.description}) but "
+            f"dated {earliest_after.created_at.isoformat()}, AFTER the commit -- not evidence CI "
+            "ran before commit",
+        )
 
     if commit.issue_keys:
         return CheckResult(
             rule.id,
             "unknown",
-            f"no JIRA-comment CI evidence found on {', '.join(commit.issue_keys)}",
+            f"no JIRA comment or attachment CI evidence found on {', '.join(commit.issue_keys)}",
         )
     return CheckResult(
-        rule.id, "unknown", "no issue key referenced; cannot check JIRA comments for CI evidence"
+        rule.id, "unknown", "no issue key referenced; cannot check JIRA for CI evidence"
     )
+
+
+def score_ci_artefacts_attached(
+    rule: Rule,
+    commit: CommitFacts,
+    attachments_by_issue: dict[str, list[AttachmentEvidence]] | None = None,
+    fetched_issue_keys: frozenset[str] | set[str] = frozenset(),
+) -> CheckResult | None:
+    """`ci-artefacts-attached` (new in v2, D24, issue #93) — `fail_allowed:
+    true`. Requires *both* `ci_summary*` and `results_details*` attachments
+    on the same referenced issue, each dated at or before the commit.
+
+    `fetched_issue_keys` is the set of issue keys whose full attachment list
+    has actually been fetched (this run or a prior one) — this is what lets
+    "not fetched yet" (`unknown`, backfill budget) stay distinct from
+    "fetched, and it's missing" (`fail`): a JIRA issue's attachment list is
+    complete once fetched (governance-policy.yaml: "the attachment list of
+    an issue is complete... which is what makes a fail state honest here"),
+    so only a *fetched* issue can ever produce `fail`. MEASUREMENT (ours):
+    when a commit references more than one issue key, this scores against
+    the first referenced key whose attachments have been fetched (in
+    `commit.issue_keys` order) — see docs/spec/GOVERNANCE.md for the
+    documented choice.
+    """
+    if not rule.applies_to_branch(commit.branch):
+        return None
+    if not rule.in_force_on(commit.commit_date.date()):
+        return _not_in_force(rule, commit)
+
+    exemption = rule.matching_exemption(commit.message, commit.changed_paths)
+    if exemption is not None:
+        return CheckResult(rule.id, "exempt", f"matched exemption: {exemption.id}")
+
+    if not commit.issue_keys:
+        return CheckResult(rule.id, "unknown", "no issue key referenced")
+
+    attachments_by_issue = attachments_by_issue or {}
+    fetched_keys = [key for key in commit.issue_keys if key in fetched_issue_keys]
+    if not fetched_keys:
+        return CheckResult(
+            rule.id,
+            "unknown",
+            f"attachment list not yet fetched for {', '.join(commit.issue_keys)} "
+            "(backfill budget)",
+        )
+
+    for key in fetched_keys:
+        attachments = attachments_by_issue.get(key, [])
+        ci_summary_hits = [
+            a
+            for a in attachments
+            if _CI_SUMMARY_RE.match(a.filename) and a.created_at <= commit.commit_date
+        ]
+        results_details_hits = [
+            a
+            for a in attachments
+            if _RESULTS_DETAILS_RE.match(a.filename) and a.created_at <= commit.commit_date
+        ]
+        if ci_summary_hits and results_details_hits:
+            return CheckResult(
+                rule.id,
+                "pass",
+                f"{key}: {ci_summary_hits[0].filename!r} and {results_details_hits[0].filename!r} "
+                "both attached at or before the commit",
+            )
+
+    # No fetched key had both artefacts at or before the commit -- fail,
+    # naming what's missing (and whether it was attached later) on the
+    # first fetched key.
+    key = fetched_keys[0]
+    attachments = attachments_by_issue.get(key, [])
+    ci_summary_any = [a for a in attachments if _CI_SUMMARY_RE.match(a.filename)]
+    results_details_any = [a for a in attachments if _RESULTS_DETAILS_RE.match(a.filename)]
+    ci_summary_ok = any(a.created_at <= commit.commit_date for a in ci_summary_any)
+    results_details_ok = any(a.created_at <= commit.commit_date for a in results_details_any)
+
+    parts = []
+    if not ci_summary_ok:
+        if ci_summary_any:
+            attached_at = min(a.created_at for a in ci_summary_any).isoformat()
+            parts.append(f"ci_summary missing at commit time (attached later, {attached_at})")
+        else:
+            parts.append("ci_summary missing")
+    if not results_details_ok:
+        if results_details_any:
+            attached_at = min(a.created_at for a in results_details_any).isoformat()
+            parts.append(f"results_details missing at commit time (attached later, {attached_at})")
+        else:
+            parts.append("results_details missing")
+    return CheckResult(rule.id, "fail", f"{key}: " + "; ".join(parts))
 
 
 def score_code_style_checkstyle(
@@ -314,15 +500,23 @@ class CommitFactsRow:
     changes_txt_touched: bool
     news_txt_touched: bool
     test_touched: bool
+    # v2 (issue #93): feeds the descriptive-only ninja-count-trend (see
+    # `is_ninja_declared` below) -- computed here, alongside the other
+    # `scored: false` per-commit facts, since it's the same kind of thing
+    # (a plain fact about the commit, never a pass/fail/unknown verdict) and
+    # `commit_fact` is already the table the site reads to build display-only
+    # per-commit signals.
+    ninja_declared: bool
 
 
 def build_commit_facts_row(commit: CommitFacts) -> CommitFactsRow:
     """The three `scored: false` facts (governance-policy.yaml
     `changes-txt-entry`, `news-txt-entry`, `test-touched`), derived from
     `commit.changed_paths` (`git show --name-only`, per each rule's
-    `check_method`). `changed_paths=None` (not collected) reads as "no"
-    for all three rather than raising -- these are advisory display facts,
-    never a scored result.
+    `check_method`), plus the descriptive `ninja_declared` fact (v2, issue
+    #93) derived from `commit.message`. `changed_paths=None` (not collected)
+    reads as "no" for the three path-based facts rather than raising --
+    these are advisory display facts, never a scored result.
     """
     paths = commit.changed_paths or ()
     return CommitFactsRow(
@@ -332,4 +526,32 @@ def build_commit_facts_row(commit: CommitFacts) -> CommitFactsRow:
         changes_txt_touched="CHANGES.txt" in paths,
         news_txt_touched="NEWS.txt" in paths,
         test_touched=any(p == "test" or p.startswith("test/") for p in paths),
+        ninja_declared=is_ninja_declared(commit.message),
     )
+
+
+# --- Descriptive, unscored ninja-count trend (governance-policy.yaml
+# `reviewer-present.descriptive_signal[0]`, id `ninja-count-trend`) ---------
+#
+# v2 (D24, issue #93) removes `ninja` as an *exemption* -- it has no official
+# source, so a self-declared ninja commit is now scored like any other
+# commit. The policy nonetheless keeps a purely descriptive count "of
+# commits whose message self-declares 'ninja'" next to the rule, never fed
+# into scoring. Since v2's `governance-policy.yaml` no longer carries this
+# pattern anywhere (the old `ninja` exemption entry, pattern included, only
+# still exists in git history -- see `removed_in_v2`), this constant is the
+# one place in this codebase that keeps it, so the trend can still be
+# computed: MEASUREMENT (ours) -- this is a display-only signal with no
+# official source, not a rule or exemption, so D24's "no source, no
+# pass/fail" restriction doesn't apply to it (the policy file's own
+# `descriptive_signal.scored: false` says so explicitly); reusing the
+# retired v1 pattern verbatim, rather than inventing a new one, keeps the
+# trend comparable across the v1/v2 boundary.
+NINJA_COUNT_TREND_PATTERN = re.compile(r"(?i)\bninja(fix)?\b")
+
+
+def is_ninja_declared(message: str) -> bool:
+    """True if `message` self-declares "ninja"/"ninjafix" by the retired v1
+    exemption pattern (see `NINJA_COUNT_TREND_PATTERN`) -- descriptive only,
+    never used for scoring in v2."""
+    return NINJA_COUNT_TREND_PATTERN.search(message) is not None

@@ -2,10 +2,10 @@
   "git": "17137ce34bd2fa89bc296e2d61d59eac9957b787",
   "git:file_change_event": "17137ce34bd2fa89bc296e2d61d59eac9957b787",
   "git:review_event_parser_version": "2",
-  "github": "{\"apache/cassandra\": \"Y3Vyc29yOnYyOpK0MjAyNi0wOS0yOFQyMDo1MjoyNFrPAAAAARAkmLY=\", \"apache/cassandra-accord\": \"Y3Vyc29yOnYyOpK0MjAyNi0wOS0yOFQxMzo0MDoxNVrO-JVKVg==\", \"apache/cassandra-analytics\": \"Y3Vyc29yOnYyOpK0MjAyNi0wOS0yOFQyMDo1OTo1M1rPAAAAARZPGOE=\", \"apache/cassandra-dtest\": \"Y3Vyc29yOnYyOpK0MjAyNi0wOC0yNlQxNDo1MDo1NlrPAAAAAQRcyR8=\", \"apache/cassandra-java-driver\": \"Y3Vyc29yOnYyOpK0MjAyNi0wOS0yM1QyMToxNjoyN1rPAAAAARNL5KE=\", \"apache/cassandra-sidecar\": \"Y3Vyc29yOnYyOpK0MjAyNi0wOS0yNlQwMTowODowNlrPAAAAARCB_Q8=\", \"apache/cassandra-website\": \"Y3Vyc29yOnYyOpK0MjAyNi0wOS0yMlQxOToxNDowMFrPAAAAAQXf4ic=\"}",
+  "github": "{\"apache/cassandra\": \"Y3Vyc29yOnYyOpK0MjAyNi0wOS0yOFQyMjowNDozNlrPAAAAAQxBB2g=\", \"apache/cassandra-accord\": \"Y3Vyc29yOnYyOpK0MjAyNi0wOS0yOFQxMzo0MDoxNVrO-JVKVg==\", \"apache/cassandra-analytics\": \"Y3Vyc29yOnYyOpK0MjAyNi0wOS0yOFQyMDo1OTo1M1rPAAAAARZPGOE=\", \"apache/cassandra-dtest\": \"Y3Vyc29yOnYyOpK0MjAyNi0wOC0yNlQxNDo1MDo1NlrPAAAAAQRcyR8=\", \"apache/cassandra-java-driver\": \"Y3Vyc29yOnYyOpK0MjAyNi0wOS0yM1QyMToxNjoyN1rPAAAAARNL5KE=\", \"apache/cassandra-sidecar\": \"Y3Vyc29yOnYyOpK0MjAyNi0wOS0yNlQwMTowODowNlrPAAAAARCB_Q8=\", \"apache/cassandra-website\": \"Y3Vyc29yOnYyOpK0MjAyNi0wOS0yMlQxOToxNDowMFrPAAAAAQXf4ic=\"}",
   "github_commit_authors:github_commit_author": "17137ce34bd2fa89bc296e2d61d59eac9957b787 32375",
   "governance_git": "17137ce34bd2fa89bc296e2d61d59eac9957b787",
   "governance_git:commit_record_parser_version": "2",
-  "jira": "2026-09-28T20:56:49+00:00",
+  "jira": "2026-09-28T21:45:23+00:00",
   "ponymail": "{\"dev\": \"2026-08\", \"user\": \"2026-08\"}"
 }

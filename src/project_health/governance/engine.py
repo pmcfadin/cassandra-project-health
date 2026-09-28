@@ -39,6 +39,7 @@ from project_health.governance.checks import (
     PRE_COMMIT_CI_EVIDENCE,
     REVIEWER_PRESENT,
     build_commit_facts_row,
+    result_state,
     score_ci_artefacts_attached,
     score_code_style_checkstyle,
     score_jira_ticket_referenced,
@@ -87,7 +88,10 @@ def score_commit(
         results.append(jira_result)
 
     ci_result = score_pre_commit_ci_evidence(
-        policy.rule(PRE_COMMIT_CI_EVIDENCE), commit, ci_evidence_by_issue
+        policy.rule(PRE_COMMIT_CI_EVIDENCE),
+        commit,
+        ci_evidence_by_issue,
+        fetched_attachment_issue_keys,
     )
     if ci_result is not None:
         results.append(ci_result)
@@ -125,6 +129,23 @@ def _union_reviewers(commit: CommitFacts, jira_reviewers: tuple[str, ...]) -> tu
     return tuple(seen)
 
 
+def _reviewer_detail_rows(
+    commit: CommitFacts, jira_reviewers: tuple[str, ...]
+) -> list[dict[str, str]]:
+    """`[{"name": ..., "source": ...}, ...]` for every reviewer found on this
+    commit by either evidence source (issue #97, design doc "Data": "for the
+    reviewer requirement, reviewer names with their source") -- same
+    de-duplication order as `_union_reviewers` (trailer wins the source label
+    when a name appears in both), duplicated onto every one of this commit's
+    check rows, exactly like `reviewers`/`jira_keys` already are."""
+    seen: dict[str, str] = {}
+    for name in commit.trailer_reviewers:
+        seen.setdefault(name, "trailer")
+    for name in jira_reviewers:
+        seen.setdefault(name, "jira_field")
+    return [{"name": name, "source": source} for name, source in seen.items()]
+
+
 def _apply_override(row: dict, override: Override | None) -> dict:
     if override is None:
         return row
@@ -134,6 +155,18 @@ def _apply_override(row: dict, override: Override | None) -> dict:
         f"(original result: {row['result']!r}, original evidence: {row['evidence']!r})"
     )
     row["result"] = override.result
+    # Structured evidence (issue #97) tracks the override too: `state` is
+    # re-derived from the corrected `result`, and the old evidence_kind/
+    # evidence_label/evidence_at/lead_time_seconds no longer describe what
+    # actually happened, so they're cleared rather than left pointing at the
+    # pre-override evidence. `reason` becomes the correction's own reason,
+    # same discipline as `evidence` above.
+    row["state"] = result_state(override.result)
+    row["evidence_kind"] = "override"
+    row["evidence_label"] = None
+    row["evidence_at"] = None
+    row["lead_time_seconds"] = None
+    row["reason"] = f"OVERRIDDEN by {override.reviewer}: {override.reason}"
     return row
 
 
@@ -177,6 +210,7 @@ def build_commit_compliance_rows(
         )
         checkstyle_runs = checkstyle_runs_by_sha.get(commit.sha, ())
         reviewers = _union_reviewers(commit, jira_reviewers)
+        reviewer_detail = _reviewer_detail_rows(commit, jira_reviewers)
 
         for result in score_commit(
             policy,
@@ -194,6 +228,7 @@ def build_commit_compliance_rows(
                 "commit_date": commit.commit_date,
                 "author": commit.author,
                 "committer": commit.committer,
+                "subject": commit.message.splitlines()[0] if commit.message else "",
                 "is_merge": commit.is_merge,
                 "reviewers": list(reviewers),
                 "jira_keys": list(commit.issue_keys),
@@ -202,6 +237,18 @@ def build_commit_compliance_rows(
                 "result": result.result,
                 "evidence": result.evidence,
                 "evidence_url": result.evidence_url,
+                # Structured evidence (issue #97) -- purely additive, derived
+                # from the same `CheckResult` the four columns above already
+                # come from; see `checks.CheckResult`'s docstring for why
+                # this can never change the scored pass/fail/unknown/exempt/
+                # not_in_force counts.
+                "state": result_state(result.result),
+                "evidence_kind": result.evidence_kind,
+                "evidence_label": result.evidence_label,
+                "evidence_at": result.evidence_at,
+                "lead_time_seconds": result.lead_time_seconds,
+                "reason": result.reason,
+                "reviewer_detail": reviewer_detail,
             }
             override = overrides_index.get((commit.sha, result.check_id))
             rows.append(_apply_override(row, override))

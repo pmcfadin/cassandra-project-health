@@ -551,7 +551,7 @@ M0_METRICS: dict[str, MetricMeta] = {
 GOVERNANCE_METRICS: dict[str, MetricMeta] = {
     "governance_reviewer_present_pass_rate": MetricMeta(
         metric_id="governance_reviewer_present_pass_rate",
-        name="Reviewer Present — Pass Rate",
+        name="Commits with a named reviewer",
         dimension="governance",
         tier="established",
         direction_of_good="higher",
@@ -561,7 +561,7 @@ GOVERNANCE_METRICS: dict[str, MetricMeta] = {
     ),
     "governance_jira_ticket_referenced_pass_rate": MetricMeta(
         metric_id="governance_jira_ticket_referenced_pass_rate",
-        name="JIRA Ticket Referenced — Pass Rate",
+        name="Commits referencing a ticket",
         dimension="governance",
         tier="established",
         direction_of_good="higher",
@@ -571,7 +571,7 @@ GOVERNANCE_METRICS: dict[str, MetricMeta] = {
     ),
     "governance_pre_commit_ci_evidence_pass_rate": MetricMeta(
         metric_id="governance_pre_commit_ci_evidence_pass_rate",
-        name="Pre-Commit CI Evidence — Pass Rate",
+        name="Commits with CI evidence on JIRA before commit",
         dimension="governance",
         tier="proxy",
         direction_of_good="higher",
@@ -581,7 +581,7 @@ GOVERNANCE_METRICS: dict[str, MetricMeta] = {
     ),
     "governance_ci_artefacts_attached_pass_rate": MetricMeta(
         metric_id="governance_ci_artefacts_attached_pass_rate",
-        name="CI Artefacts Attached — Pass Rate",
+        name="Commits with both CI artefacts attached",
         dimension="governance",
         tier="proxy",
         direction_of_good="higher",
@@ -591,7 +591,7 @@ GOVERNANCE_METRICS: dict[str, MetricMeta] = {
     ),
     "governance_code_style_checkstyle_pass_rate": MetricMeta(
         metric_id="governance_code_style_checkstyle_pass_rate",
-        name="Checkstyle — Pass Rate",
+        name="Commits with a successful checkstyle run",
         dimension="governance",
         tier="established",
         direction_of_good="higher",
@@ -641,8 +641,8 @@ PAGES: dict[str, PageMeta] = {
         page_id="governance",
         title="Governance",
         path="governance/",
-        summary="What the public record shows for each commit: reviewers, CI evidence, checkstyle.",
-        empty_message="Governance policy in development — no compliance results yet.",
+        summary="Per-commit facts from the public record — reviewers, CI evidence, checkstyle.",
+        empty_message="No commit history collected yet.",
     ),
 }
 

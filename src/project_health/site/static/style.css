@@ -240,21 +240,6 @@ main {
   color: var(--fg-muted);
 }
 
-/* A governance headline card's pass/unknown/fail shares (issue #69) --
-   longer than a bare percentage, so it gets its own smaller size and wraps
-   at narrow widths instead of overflowing the card. */
-.gov-headline {
-  display: block;
-  font-size: 1.05rem;
-  line-height: 1.5;
-}
-.gov-headline-share {
-  white-space: nowrap;
-}
-.gov-headline-sep {
-  color: var(--fg-muted);
-  font-weight: 400;
-}
 .badge--backfill-pending {
   border-color: var(--warn);
   color: var(--warn);
@@ -547,21 +532,19 @@ main {
   color: var(--accent);
 }
 
-/* --- Governance: policy header, backfill banner, fails, trends, commits -- */
-/* (issue #37, D14/D15) --------------------------------------------------- */
+/* --- Governance: backfill banner, trends, commit history table ---------- */
+/* (issue #37, D14/D15; rebuilt fact-only by issue #97) -------------------- */
 
-.governance-policy,
 .governance-backfill,
-.governance-fails,
 .governance-trends,
-.governance-commits {
+.governance-commits,
+.governance-references {
   margin: 2rem 0;
 }
-.governance-policy h2,
 .governance-backfill h2,
-.governance-fails h2,
 .governance-trends h2,
-.governance-commits h2 {
+.governance-commits h2,
+.governance-references h2 {
   border-bottom: 1px solid var(--border);
   padding-bottom: 0.5rem;
 }
@@ -572,26 +555,46 @@ main {
   padding: 0.75rem 1rem;
   font-size: 0.9rem;
 }
-.policy-rules {
-  margin-top: 0.75rem;
+.governance-reference-list {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 1rem;
 }
-.policy-rules summary {
-  cursor: pointer;
-  font-weight: 600;
+.governance-reference-list li {
+  padding: 0.3rem 0;
+  border-bottom: 1px solid var(--border);
+}
+.governance-reference-list a {
   color: var(--accent);
 }
 
-.badge--result {
-  text-transform: none;
-}
-.badge--result-fail {
-  border-color: var(--bad);
-  color: var(--bad);
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 
-.gov-fails-table td,
+.gov-toggle {
+  display: inline-flex !important;
+  flex-direction: row !important;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.85rem;
+  margin-right: 1rem;
+}
+
 .gov-commits-table td {
   font-size: 0.85rem;
+}
+.gov-author {
+  color: var(--fg-muted);
+  font-size: 0.8rem;
 }
 
 .gov-filters {
@@ -607,26 +610,15 @@ main {
   font-size: 0.8rem;
   color: var(--fg-muted);
 }
-.gov-filters select {
+.gov-filters select,
+.gov-filters input[type="text"],
+.gov-filters input[type="date"] {
   padding: 0.35rem 0.5rem;
   border-radius: 6px;
   border: 1px solid var(--border);
   background: var(--bg);
   color: var(--fg);
-}
-
-.gov-load-all {
-  border: 1px solid var(--accent);
-  background: transparent;
-  color: var(--accent);
-  border-radius: 6px;
-  padding: 0.15rem 0.5rem;
   font: inherit;
-  cursor: pointer;
-}
-.gov-load-all:disabled {
-  opacity: 0.6;
-  cursor: default;
 }
 
 .gov-status {
@@ -641,26 +633,62 @@ main {
   min-width: 60rem;
 }
 
-.gov-result {
-  white-space: nowrap;
-  max-width: 16rem;
-  overflow: hidden;
-  text-overflow: ellipsis;
+/* Sortable column headers (keyboard + aria-sort, issue #97). */
+.gov-commits-table th[data-gov-sort] {
+  cursor: pointer;
+  user-select: none;
+  position: relative;
+  padding-right: 1.25rem;
 }
-.gov-result--pass {
-  color: var(--ok);
+.gov-commits-table th[data-gov-sort]:hover,
+.gov-commits-table th[data-gov-sort]:focus-visible {
+  color: var(--accent);
 }
-.gov-result--fail {
-  color: var(--bad);
+.gov-commits-table th[data-gov-sort]::after {
+  content: "";
+  position: absolute;
+  right: 0.4rem;
+  opacity: 0.4;
+}
+.gov-commits-table th[aria-sort="ascending"]::after {
+  content: "\2191";
+  opacity: 1;
+}
+.gov-commits-table th[aria-sort="descending"]::after {
+  content: "\2193";
+  opacity: 1;
+}
+
+.gov-expand-cell {
+  width: 2rem;
+}
+.gov-expand-btn {
+  border: 1px solid var(--border);
+  background: var(--bg-alt);
+  color: var(--fg);
+  border-radius: 4px;
+  width: 1.5rem;
+  height: 1.5rem;
+  line-height: 1;
+  cursor: pointer;
+  font: inherit;
+}
+.gov-row-detail td {
+  background: var(--bg-alt);
+}
+.gov-evidence-trail {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.25rem 1rem;
+  margin: 0;
+  font-size: 0.85rem;
+}
+.gov-evidence-trail dt {
+  color: var(--fg-muted);
   font-weight: 600;
 }
-.gov-result--unknown {
-  color: var(--warn);
-}
-.gov-result--exempt,
-.gov-result--not_in_force,
-.gov-result--na {
-  color: var(--fg-muted);
+.gov-evidence-trail dd {
+  margin: 0;
 }
 
 .gov-pagination {
@@ -681,6 +709,53 @@ main {
 .gov-pagination button:disabled {
   opacity: 0.5;
   cursor: default;
+}
+
+/* Mobile cards (design doc "Performance and mobile"): each row collapses to
+   a labeled-line card instead of a horizontally-scrolling table. */
+@media (max-width: 640px) {
+  .gov-commits-table {
+    min-width: 0;
+  }
+  .gov-commits-table thead {
+    display: none;
+  }
+  .gov-commits-table,
+  .gov-commits-table tbody,
+  .gov-commits-table tr {
+    display: block;
+    width: 100%;
+  }
+  .gov-commits-table tr {
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    margin-bottom: 0.75rem;
+    padding: 0.5rem 0.75rem;
+  }
+  .gov-commits-table tr.gov-row-detail {
+    border-top: none;
+    margin-top: -0.75rem;
+  }
+  .gov-commits-table td {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 0.75rem;
+    text-align: right;
+    padding: 0.3rem 0;
+    border-bottom: none;
+  }
+  .gov-commits-table td.gov-expand-cell {
+    justify-content: flex-end;
+    width: auto;
+  }
+  .gov-commits-table td[data-label]::before {
+    content: attr(data-label);
+    color: var(--fg-muted);
+    font-weight: 600;
+    text-align: left;
+    margin-right: auto;
+  }
 }
 
 /* --- Governance: Security section (OpenSSF Scorecard + advisories, #55) - */

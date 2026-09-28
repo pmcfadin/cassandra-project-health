@@ -576,6 +576,12 @@ COMMIT_COMPLIANCE = pa.schema(
         pa.field("commit_date", TIMESTAMP_UTC, nullable=False),
         pa.field("author", pa.string(), nullable=False),
         pa.field("committer", pa.string(), nullable=False),
+        # The commit message's first line (issue #97: the commit-history
+        # table's "Commit" column shows the subject line under the short
+        # SHA/author, and free-text search matches against it) — denormalized
+        # onto every check_id row for the commit, same convention as
+        # `author`/`committer` above.
+        pa.field("subject", pa.string(), nullable=False),
         # True for a merge commit (>=2 parents) — always scored (GOVERNANCE.md
         # §3), but excluded from `governance/metrics.py`'s aggregate-rate
         # denominators, which is why this flag travels with every row rather
@@ -591,8 +597,59 @@ COMMIT_COMPLIANCE = pa.schema(
         # result: 'pass' | 'fail' | 'unknown' | 'exempt' | 'not_in_force'
         # (governance-policy.yaml top-level `result_states`)
         pa.field("result", pa.string(), nullable=False),
+        # `evidence`/`evidence_url` are the original free-text evidence
+        # columns (issue #36) -- kept unchanged for compatibility (issue #97:
+        # "keep the existing free-text evidence column for compatibility").
         pa.field("evidence", pa.string(), nullable=False),
         pa.field("evidence_url", pa.string(), nullable=True),
+        # --- Structured evidence (issue #97, docs/plans/2026-09-28-commit-
+        # history-table-design.md "Data") -- additive columns, derived from
+        # the same `checks.CheckResult` `evidence`/`evidence_url` above come
+        # from, so they never change what `result` a commit scores.
+        #
+        # `state`: the design doc's four-value display state for `result`
+        # ('met' | 'missing' | 'unverified' | 'not_required' --
+        # `checks.result_state`).
+        pa.field("state", pa.string(), nullable=False),
+        # `evidence_kind`: which evidence_source this result is based on
+        # (e.g. 'trailer', 'jira_field', 'jira_comment_ci_mention',
+        # 'jira_attachment_ci_artefact', 'github_check_run',
+        # 'commit_message', 'policy_exempt', 'not_in_force', 'override');
+        # null when no evidence was found.
+        pa.field("evidence_kind", pa.string(), nullable=True),
+        # `evidence_label`: a short label for a 'met' result, e.g.
+        # "S. Tunnicliffe (trailer)" or "ant-check-jdk11 green" -- distinct
+        # from the full `evidence` sentence.
+        pa.field("evidence_label", pa.string(), nullable=True),
+        # `evidence_at`: the evidence's own timestamp (a JIRA comment's or
+        # attachment's `created_at`), when the evidence source carries one.
+        pa.field("evidence_at", TIMESTAMP_UTC, nullable=True),
+        # `lead_time_seconds`: `commit_date - evidence_at` in whole seconds
+        # when `evidence_at` is known; positive means the evidence predates
+        # the commit, negative means it came after.
+        pa.field("lead_time_seconds", pa.int64(), nullable=True),
+        # `reason`: the design doc's short "why" text for a
+        # missing/unverified/not_required result (e.g. "no reviewer named",
+        # "ticket not checked yet (backfill)", "release process"); null for
+        # a 'met' result.
+        pa.field("reason", pa.string(), nullable=True),
+        # `reviewer_detail`: every reviewer name found on this commit by
+        # either evidence source, each with the source it came from
+        # ('trailer' | 'jira_field') -- design doc "Data": "for the reviewer
+        # requirement, reviewer names with their source". Duplicated onto
+        # every check_id row for the commit, exactly like `reviewers` above.
+        pa.field(
+            "reviewer_detail",
+            pa.list_(
+                pa.struct(
+                    [
+                        pa.field("name", pa.string(), nullable=False),
+                        pa.field("source", pa.string(), nullable=False),
+                    ]
+                )
+            ),
+            nullable=False,
+        ),
     ]
 )
 

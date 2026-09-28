@@ -1,13 +1,13 @@
 (function () {
   "use strict";
 
-  // Per-commit table: fetches the governance page's JSON data file(s)
-  // (`site/governance_page.py`'s `governance-commits-recent.json` /
-  // `-full.json`), then filters/paginates entirely client-side (issue #37).
-  // Only the *recent* file (last N months) is fetched on load, so a project
-  // with 32k+ scored commits never ships that whole history to a first
-  // paint; "load full history" is an explicit, on-demand fetch of the
-  // larger file.
+  // Commit-history table (issue #97): fetches the default-range commit
+  // facts file (from 2020-06-25 on), lazily fetches the older-history file
+  // only when that toggle is switched on, then filters/sorts/paginates
+  // entirely client-side. Every row is a *fact*, never a pass/fail verdict
+  // (see `site/governance_page.py`'s module docstring) -- this file renders
+  // exactly the text/bucket values the server already computed, and never
+  // recomputes or re-labels them as compliant/non-compliant.
 
   var PAGE_SIZE = 50;
 
@@ -16,27 +16,28 @@
     return;
   }
 
-  var table = section.querySelector("[data-gov-table]");
   var tbody = section.querySelector("[data-gov-tbody]");
   var statusEl = section.querySelector("[data-gov-status]");
   var pageLabel = section.querySelector("[data-gov-page-label]");
   var prevBtn = section.querySelector("[data-gov-prev]");
   var nextBtn = section.querySelector("[data-gov-next]");
-  var loadAllBtn = section.querySelector("[data-gov-load-all]");
+  var olderToggle = section.querySelector("[data-gov-older-toggle]");
+  var mergesToggle = section.querySelector("[data-gov-merges-toggle]");
+  var exportButtons = Array.prototype.slice.call(section.querySelectorAll("[data-gov-export]"));
   var filterInputs = Array.prototype.slice.call(section.querySelectorAll("[data-gov-filter]"));
+  var sortHeaders = Array.prototype.slice.call(section.querySelectorAll("[data-gov-sort]"));
 
-  var checkIds = (table.getAttribute("data-gov-checks") || "")
-    .split(",")
-    .map(function (s) {
-      return s.trim();
-    })
-    .filter(Boolean);
+  var CHECKBOX_FILTERS = ["docs_only", "release_process", "ninja", "changes_txt", "news_txt"];
 
   var state = {
-    rows: [],
+    defaultRows: [],
+    olderRows: [],
+    olderLoaded: false,
     filtered: [],
     page: 0,
-    loadedScope: null, // "recent" | "full"
+    sortField: "commit_date",
+    sortDir: "desc",
+    expanded: {},
   };
 
   function escapeHtml(value) {
@@ -54,96 +55,296 @@
     });
   }
 
-  function monthOf(isoDate) {
-    return isoDate ? isoDate.slice(0, 7) : "";
+  // --- URL state (filters + sort + toggles kept in the query string, so a
+  // view can be shared) --------------------------------------------------
+
+  function readUrlState() {
+    var params = new URLSearchParams(window.location.search);
+    filterInputs.forEach(function (el) {
+      var key = el.getAttribute("data-gov-filter");
+      if (!params.has(key)) {
+        return;
+      }
+      if (el.type === "checkbox") {
+        el.checked = params.get(key) === "1";
+      } else {
+        el.value = params.get(key);
+      }
+    });
+    if (params.has("sort")) {
+      state.sortField = params.get("sort");
+    }
+    if (params.has("dir")) {
+      state.sortDir = params.get("dir");
+    }
+    if (params.get("merges") === "1" && mergesToggle) {
+      mergesToggle.checked = true;
+    }
+    if (params.get("older") === "1" && olderToggle) {
+      olderToggle.checked = true;
+    }
   }
+
+  function writeUrlState() {
+    var params = new URLSearchParams();
+    filterInputs.forEach(function (el) {
+      var key = el.getAttribute("data-gov-filter");
+      if (el.type === "checkbox") {
+        if (el.checked) {
+          params.set(key, "1");
+        }
+      } else if (el.value) {
+        params.set(key, el.value);
+      }
+    });
+    params.set("sort", state.sortField);
+    params.set("dir", state.sortDir);
+    if (mergesToggle && mergesToggle.checked) {
+      params.set("merges", "1");
+    }
+    if (olderToggle && olderToggle.checked) {
+      params.set("older", "1");
+    }
+    var newUrl = window.location.pathname + "?" + params.toString();
+    window.history.replaceState(null, "", newUrl);
+  }
+
+  // --- Filtering -----------------------------------------------------------
 
   function currentFilters() {
     var values = {};
     filterInputs.forEach(function (el) {
-      values[el.getAttribute("data-gov-filter")] = el.value;
+      var key = el.getAttribute("data-gov-filter");
+      values[key] = el.type === "checkbox" ? el.checked : el.value.trim();
     });
+    values._showMerges = !!(mergesToggle && mergesToggle.checked);
     return values;
   }
 
-  function rowMatches(row, filters) {
-    if (filters.month && monthOf(row.commit_date) !== filters.month) {
+  function rowMatches(row, f) {
+    if (!f._showMerges && row.is_merge) {
       return false;
     }
-    if (filters.branch && row.branch !== filters.branch) {
+    if (f.branch && row.branch !== f.branch) {
       return false;
     }
-    if (filters.check) {
-      var check = row.checks[filters.check];
-      if (!check) {
+    if (f.reviewer === "yes" && !row.reviewer.named) {
+      return false;
+    }
+    if (f.reviewer === "no" && row.reviewer.named) {
+      return false;
+    }
+    if (f.ci_evidence && row.ci_evidence.bucket !== f.ci_evidence) {
+      return false;
+    }
+    if (f.ci_artefacts && row.ci_artefacts.bucket !== f.ci_artefacts) {
+      return false;
+    }
+    if (f.checkstyle && row.checkstyle.bucket !== f.checkstyle) {
+      return false;
+    }
+    if (f.date_from && row.commit_date.slice(0, 10) < f.date_from) {
+      return false;
+    }
+    if (f.date_to && row.commit_date.slice(0, 10) > f.date_to) {
+      return false;
+    }
+    if (f.author && row.author.toLowerCase().indexOf(f.author.toLowerCase()) === -1) {
+      return false;
+    }
+    if (f.search) {
+      var needle = f.search.toLowerCase();
+      var haystack = (
+        row.sha + " " + row.jira_keys.join(" ") + " " + (row.subject || "")
+      ).toLowerCase();
+      if (haystack.indexOf(needle) === -1) {
         return false;
       }
-      if (filters.result && check.result !== filters.result) {
-        return false;
+    }
+    for (var i = 0; i < CHECKBOX_FILTERS.length; i++) {
+      var key = CHECKBOX_FILTERS[i];
+      if (!f[key]) {
+        continue;
       }
-    } else if (filters.result) {
-      var anyMatches = Object.keys(row.checks).some(function (id) {
-        return row.checks[id].result === filters.result;
-      });
-      if (!anyMatches) {
+      var actual =
+        key === "changes_txt"
+          ? row.changes_txt_touched
+          : key === "news_txt"
+            ? row.news_txt_touched
+            : row.tags[key];
+      if (!actual) {
         return false;
       }
     }
     return true;
   }
 
-  function applyFilters() {
-    var filters = currentFilters();
-    state.filtered = state.rows.filter(function (row) {
-      return rowMatches(row, filters);
+  // --- Sorting ---------------------------------------------------------------
+
+  var SORT_ACCESSORS = {
+    commit_date: function (r) {
+      return r.commit_date;
+    },
+    sha: function (r) {
+      return r.sha;
+    },
+    jira: function (r) {
+      return r.jira_keys.join(",");
+    },
+    reviewer: function (r) {
+      return r.reviewer.text;
+    },
+    ci_evidence: function (r) {
+      return r.ci_evidence.bucket + " " + (r.ci_evidence.text || "");
+    },
+    ci_artefacts: function (r) {
+      return r.ci_artefacts.bucket + " " + (r.ci_artefacts.text || "");
+    },
+    checkstyle: function (r) {
+      return r.checkstyle.bucket + " " + (r.checkstyle.text || "");
+    },
+    changes_txt: function (r) {
+      return r.changes_txt_touched ? 1 : 0;
+    },
+    news_txt: function (r) {
+      return r.news_txt_touched ? 1 : 0;
+    },
+  };
+
+  function applySort(rows) {
+    var accessor = SORT_ACCESSORS[state.sortField] || SORT_ACCESSORS.commit_date;
+    var dir = state.sortDir === "asc" ? 1 : -1;
+    return rows.slice().sort(function (a, b) {
+      var av = accessor(a);
+      var bv = accessor(b);
+      if (av < bv) return -1 * dir;
+      if (av > bv) return 1 * dir;
+      return 0;
     });
-    state.page = 0;
-    render();
   }
 
-  function checkCellHtml(row, checkId) {
-    var check = row.checks[checkId];
-    if (!check) {
-      return '<td class="gov-result gov-result--na">n/a</td>';
+  function updateSortHeaders() {
+    sortHeaders.forEach(function (th) {
+      var field = th.getAttribute("data-gov-sort");
+      if (field === state.sortField) {
+        th.setAttribute("aria-sort", state.sortDir === "asc" ? "ascending" : "descending");
+      } else {
+        th.setAttribute("aria-sort", "none");
+      }
+    });
+  }
+
+  // --- Rendering ---------------------------------------------------------------
+
+  function allRows() {
+    var rows = state.defaultRows;
+    if (olderToggle && olderToggle.checked && state.olderLoaded) {
+      rows = rows.concat(state.olderRows);
     }
-    var title = escapeHtml(check.evidence || "");
-    var evidenceLink = check.evidence_url
-      ? ' <a href="' + escapeHtml(check.evidence_url) + '">evidence</a>'
-      : "";
-    return (
-      '<td class="gov-result gov-result--' +
-      escapeHtml(check.result) +
-      '" title="' +
-      title +
-      '">' +
-      escapeHtml(check.result) +
-      evidenceLink +
-      "</td>"
-    );
+    return rows;
   }
 
-  function rowHtml(row) {
+  function factCellHtml(fact, label) {
+    var text = escapeHtml(fact.text || "");
+    var link = fact.url ? ' <a href="' + escapeHtml(fact.url) + '">link</a>' : "";
+    return '<td data-label="' + escapeHtml(label) + '">' + text + link + "</td>";
+  }
+
+  function evidenceTrailHtml(row) {
+    var parts = [];
+    parts.push("<dt>Reviewed by</dt><dd>" + escapeHtml(row.reviewer.text) + "</dd>");
+    parts.push(
+      "<dt>CI evidence</dt><dd>" +
+        escapeHtml(row.ci_evidence.text || "") +
+        (row.ci_evidence.evidence_at
+          ? " (" + escapeHtml(row.ci_evidence.evidence_at) + ")"
+          : "") +
+        (row.ci_evidence.url
+          ? ' — <a href="' + escapeHtml(row.ci_evidence.url) + '">evidence</a>'
+          : "") +
+        "</dd>"
+    );
+    parts.push(
+      "<dt>CI artefacts on JIRA</dt><dd>" +
+        escapeHtml(row.ci_artefacts.text || "") +
+        (row.ci_artefacts.evidence_at
+          ? " (" + escapeHtml(row.ci_artefacts.evidence_at) + ")"
+          : "") +
+        "</dd>"
+    );
+    parts.push(
+      "<dt>Checkstyle</dt><dd>" +
+        escapeHtml(row.checkstyle.text || "") +
+        (row.checkstyle.url
+          ? ' — <a href="' + escapeHtml(row.checkstyle.url) + '">check-run</a>'
+          : "") +
+        "</dd>"
+    );
+    parts.push(
+      "<dt>CHANGES.txt</dt><dd>" + (row.changes_txt_touched ? "included" : "—") + "</dd>"
+    );
+    parts.push("<dt>NEWS.txt</dt><dd>" + (row.news_txt_touched ? "included" : "—") + "</dd>");
+    var tags = [];
+    if (row.tags.docs_only) tags.push("docs-only change");
+    if (row.tags.release_process) tags.push("release-process commit");
+    if (row.tags.ninja) tags.push('declares "ninja"');
+    if (tags.length) {
+      parts.push("<dt>Tags</dt><dd>" + tags.map(escapeHtml).join(", ") + "</dd>");
+    }
+    return '<dl class="gov-evidence-trail">' + parts.join("") + "</dl>";
+  }
+
+  function rowHtml(row, index) {
     var jira = row.jira_keys
       .map(function (key, i) {
         return '<a href="' + escapeHtml(row.jira_urls[i]) + '">' + escapeHtml(key) + "</a>";
       })
       .join(", ");
-    var reviewers = row.reviewers.length ? escapeHtml(row.reviewers.join(", ")) : "—";
     var date = row.commit_date ? row.commit_date.slice(0, 10) : "";
+    var detailId = "gov-detail-" + index;
+    var expanded = !!state.expanded[row.sha];
     var cells = [
-      '<td><a href="' + escapeHtml(row.commit_url) + '"><code>' + escapeHtml(row.short_sha) + "</code></a></td>",
-      "<td>" + escapeHtml(date) + "</td>",
-      "<td>" + escapeHtml(row.branch) + "</td>",
-      "<td>" + (jira || "—") + "</td>",
-      "<td>" + escapeHtml(row.author) + "</td>",
-      "<td>" + escapeHtml(row.committer) + "</td>",
-      "<td>" + reviewers + "</td>",
+      '<td class="gov-expand-cell"><button type="button" class="gov-expand-btn" data-gov-expand="' +
+        escapeHtml(row.sha) +
+        '" aria-expanded="' +
+        (expanded ? "true" : "false") +
+        '" aria-controls="' +
+        detailId +
+        '">' +
+        (expanded ? "−" : "+") +
+        '<span class="visually-hidden"> details</span></button></td>',
+      '<td data-label="Date">' + escapeHtml(date) + "</td>",
+      '<td data-label="Commit"><a href="' +
+        escapeHtml(row.commit_url) +
+        '"><code>' +
+        escapeHtml(row.short_sha) +
+        "</code></a><br>" +
+        escapeHtml(row.subject) +
+        '<br><span class="gov-author">' +
+        escapeHtml(row.author) +
+        "</span></td>",
+      '<td data-label="Ticket">' + (jira || "—") + "</td>",
+      '<td data-label="Reviewed by">' + escapeHtml(row.reviewer.text) + "</td>",
     ];
-    checkIds.forEach(function (id) {
-      cells.push(checkCellHtml(row, id));
-    });
-    cells.push('<td><a href="' + escapeHtml(row.correction_url) + '">correct</a></td>');
-    return "<tr>" + cells.join("") + "</tr>";
+    cells.push(factCellHtml(row.ci_evidence, "CI evidence"));
+    cells.push(factCellHtml(row.ci_artefacts, "CI artefacts on JIRA"));
+    cells.push(factCellHtml(row.checkstyle, "Checkstyle"));
+    cells.push(
+      '<td data-label="CHANGES.txt">' + (row.changes_txt_touched ? "included" : "—") + "</td>"
+    );
+    cells.push(
+      '<td data-label="NEWS.txt">' + (row.news_txt_touched ? "included" : "—") + "</td>"
+    );
+    var html = "<tr>" + cells.join("") + "</tr>";
+    if (expanded) {
+      html +=
+        '<tr class="gov-row-detail" id="' +
+        detailId +
+        '"><td colspan="10">' +
+        evidenceTrailHtml(row) +
+        "</td></tr>";
+    }
+    return html;
   }
 
   function render() {
@@ -158,23 +359,96 @@
     prevBtn.disabled = state.page <= 0;
     nextBtn.disabled = state.page >= pageCount - 1;
 
-    var scopeLabel = state.loadedScope === "full" ? "full history" : "last months";
-    statusEl.textContent =
-      "Loaded " + state.rows.length + " commit(s) (" + scopeLabel + "); " + total + " match the current filters.";
+    var loadedCount = allRows().length;
+    statusEl.textContent = "Loaded " + loadedCount + " commit(s); " + total + " match the current filters.";
+    updateSortHeaders();
   }
 
-  function loadScope(url, scope) {
-    statusEl.textContent = "Loading commits…";
-    return fetchJson(url).then(function (payload) {
-      state.rows = payload.rows || [];
-      state.loadedScope = scope;
-      applyFilters();
+  function applyFiltersAndSort() {
+    var filters = currentFilters();
+    var matching = allRows().filter(function (row) {
+      return rowMatches(row, filters);
+    });
+    state.filtered = applySort(matching);
+    state.page = 0;
+    writeUrlState();
+    render();
+  }
+
+  // --- Row expansion -----------------------------------------------------------
+
+  tbody.addEventListener("click", function (evt) {
+    var btn = evt.target.closest ? evt.target.closest("[data-gov-expand]") : null;
+    if (!btn) {
+      return;
+    }
+    var sha = btn.getAttribute("data-gov-expand");
+    state.expanded[sha] = !state.expanded[sha];
+    render();
+  });
+
+  // --- Sorting interaction (mouse + keyboard, per aria-sort) --------------------
+
+  function toggleSort(field) {
+    if (state.sortField === field) {
+      state.sortDir = state.sortDir === "asc" ? "desc" : "asc";
+    } else {
+      state.sortField = field;
+      state.sortDir = "asc";
+    }
+    applyFiltersAndSort();
+  }
+
+  sortHeaders.forEach(function (th) {
+    var field = th.getAttribute("data-gov-sort");
+    th.addEventListener("click", function () {
+      toggleSort(field);
+    });
+    th.addEventListener("keydown", function (evt) {
+      if (evt.key === "Enter" || evt.key === " " || evt.key === "Spacebar") {
+        evt.preventDefault();
+        toggleSort(field);
+      }
+    });
+  });
+
+  // --- Filters / toggles ----------------------------------------------------
+
+  filterInputs.forEach(function (el) {
+    el.addEventListener("change", applyFiltersAndSort);
+  });
+  if (mergesToggle) {
+    mergesToggle.addEventListener("change", applyFiltersAndSort);
+  }
+
+  function loadOlderHistory() {
+    if (state.olderLoaded) {
+      applyFiltersAndSort();
+      return;
+    }
+    statusEl.textContent = "Loading older history…";
+    fetchJson(section.getAttribute("data-older-href"))
+      .then(function (payload) {
+        state.olderRows = payload.rows || [];
+        state.olderLoaded = true;
+        applyFiltersAndSort();
+      })
+      .catch(function () {
+        statusEl.textContent = "Could not load older history — try again.";
+      });
+  }
+
+  if (olderToggle) {
+    olderToggle.addEventListener("change", function () {
+      if (olderToggle.checked) {
+        loadOlderHistory();
+      } else {
+        applyFiltersAndSort();
+      }
     });
   }
 
-  filterInputs.forEach(function (el) {
-    el.addEventListener("change", applyFilters);
-  });
+  // --- Pagination -----------------------------------------------------------
 
   prevBtn.addEventListener("click", function () {
     if (state.page > 0) {
@@ -187,23 +461,113 @@
     render();
   });
 
-  if (loadAllBtn) {
-    loadAllBtn.addEventListener("click", function () {
-      loadAllBtn.disabled = true;
-      loadAllBtn.textContent = "Loading full history…";
-      loadScope(section.getAttribute("data-full-href"), "full")
-        .then(function () {
-          loadAllBtn.textContent = "Full history loaded";
-        })
-        .catch(function () {
-          loadAllBtn.disabled = false;
-          loadAllBtn.textContent = "load full history";
-          statusEl.textContent = "Could not load full history — try again, or use the CSV download.";
-        });
-    });
+  // --- Export (CSV/JSON of the currently filtered set) --------------------------
+
+  var CSV_COLUMNS = [
+    "sha",
+    "branch",
+    "commit_date",
+    "subject",
+    "author",
+    "committer",
+    "jira_keys",
+    "reviewer",
+    "ci_evidence",
+    "ci_artefacts",
+    "checkstyle",
+    "changes_txt",
+    "news_txt",
+    "docs_only",
+    "release_process",
+    "ninja",
+  ];
+
+  function csvEscape(value) {
+    var s = String(value == null ? "" : value);
+    if (/[",\n]/.test(s)) {
+      return '"' + s.replace(/"/g, '""') + '"';
+    }
+    return s;
   }
 
-  loadScope(section.getAttribute("data-recent-href"), "recent").catch(function () {
-    statusEl.textContent = "Could not load commit data — use the CSV/JSON downloads instead.";
+  function rowToCsvValues(row) {
+    return [
+      row.sha,
+      row.branch,
+      row.commit_date,
+      row.subject,
+      row.author,
+      row.committer,
+      row.jira_keys.join(";"),
+      row.reviewer.text,
+      row.ci_evidence.bucket + ": " + (row.ci_evidence.text || ""),
+      row.ci_artefacts.bucket + ": " + (row.ci_artefacts.text || ""),
+      row.checkstyle.bucket + ": " + (row.checkstyle.text || ""),
+      row.changes_txt_touched,
+      row.news_txt_touched,
+      row.tags.docs_only,
+      row.tags.release_process,
+      row.tags.ninja,
+    ];
+  }
+
+  function download(filename, contents, mime) {
+    var blob = new Blob([contents], { type: mime });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
+  function exportCsv() {
+    var lines = [CSV_COLUMNS.map(csvEscape).join(",")];
+    state.filtered.forEach(function (row) {
+      lines.push(rowToCsvValues(row).map(csvEscape).join(","));
+    });
+    download("governance-commits-filtered.csv", lines.join("\n"), "text/csv");
+  }
+
+  function exportJson() {
+    download(
+      "governance-commits-filtered.json",
+      JSON.stringify({ row_count: state.filtered.length, rows: state.filtered }, null, 0),
+      "application/json"
+    );
+  }
+
+  exportButtons.forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      var kind = btn.getAttribute("data-gov-export");
+      if (kind === "csv") {
+        exportCsv();
+      } else {
+        exportJson();
+      }
+    });
   });
+
+  // --- Boot -----------------------------------------------------------------
+
+  readUrlState();
+
+  var needsOlder = olderToggle && olderToggle.checked;
+
+  fetchJson(section.getAttribute("data-default-href"))
+    .then(function (payload) {
+      state.defaultRows = payload.rows || [];
+      if (needsOlder) {
+        return fetchJson(section.getAttribute("data-older-href")).then(function (olderPayload) {
+          state.olderRows = olderPayload.rows || [];
+          state.olderLoaded = true;
+        });
+      }
+    })
+    .then(applyFiltersAndSort)
+    .catch(function () {
+      statusEl.textContent = "Could not load commit data.";
+    });
 })();

@@ -212,6 +212,86 @@ class CheckResult:
     result: str
     evidence: str
     evidence_url: str | None = None
+    # --- Structured evidence (issue #97, docs/plans/2026-09-28-commit-
+    # history-table-design.md "Data") -- purely additive alongside
+    # `result`/`evidence`/`evidence_url` above: every score_* function still
+    # decides `result` (and composes `evidence`) exactly as it did before
+    # this issue, so the scored pass/fail/unknown/exempt/not_in_force counts
+    # are provably unchanged (see tests/test_governance_scoring_unchanged.py).
+    # These fields exist so the site can render one of the design's four
+    # cell states (met/missing/unverified/not_required) and its wording
+    # without re-parsing `evidence`'s free text.
+    #
+    # `evidence_kind`: which evidence_source (governance-policy.yaml
+    # `check_method[].evidence_source`) this result is based on, e.g.
+    # `'trailer'`, `'jira_field'`, `'jira_comment_ci_mention'`,
+    # `'jira_attachment_ci_artefact'`, `'github_check_run'`,
+    # `'commit_message'`; `None` when no evidence was found.
+    evidence_kind: str | None = None
+    # `evidence_label`: a short human label for a `met` result (the design's
+    # "the evidence itself", e.g. `"S. Tunnicliffe (trailer)"`,
+    # `"ant-check-jdk11 green"`) -- distinct from the full `evidence`
+    # sentence, meant for a table cell rather than a tooltip.
+    evidence_label: str | None = None
+    # `evidence_at`: the evidence's own UTC-aware timestamp (a JIRA
+    # comment/attachment's `created_at`), when the evidence source carries
+    # one. `None` for evidence sources with no independent timestamp
+    # (a commit trailer, a JIRA field, or when no evidence was found).
+    evidence_at: datetime | None = None
+    # `lead_time_seconds`: `(commit.commit_date - evidence_at)` in whole
+    # seconds when `evidence_at` is known -- positive means the evidence
+    # predates the commit (a lead time), negative means it came after.
+    lead_time_seconds: int | None = None
+    # `reason`: the design's short "why" text for a missing/unverified/
+    # not_required result (e.g. `"no reviewer named"`,
+    # `"ticket not checked yet (backfill)"`, `"release process"`). `None`
+    # for a `met` result, where `evidence_label`/`evidence` already say what
+    # was found.
+    reason: str | None = None
+    # `reviewer_detail`: `((name, source), ...)` -- only populated by
+    # `score_reviewer_present`; `None` for every other check.
+    reviewer_detail: tuple[tuple[str, str], ...] | None = None
+
+
+# design doc "Cell states": every `result` maps to exactly one of the four
+# display states -- `met` (pass), `missing` (fail), `unverified` (unknown),
+# `not_required` (exempt or not_in_force, both "the policy reason this
+# commit isn't judged" per the design's `Not required` examples).
+_STATE_BY_RESULT: dict[str, str] = {
+    "pass": "met",
+    "fail": "missing",
+    "unknown": "unverified",
+    "exempt": "not_required",
+    "not_in_force": "not_required",
+}
+
+
+def result_state(result: str) -> str:
+    """The design doc's four-state display value for a raw `result`
+    (issue #97) -- a pure, total mapping (`KeyError` on an unrecognized
+    `result` rather than silently guessing)."""
+    return _STATE_BY_RESULT[result]
+
+
+# design doc's exemption "Not required" wording, e.g. "Commit Then Review
+# (docs-only)", "release process" -- MEASUREMENT (ours): a short display
+# label per known exemption id, distinct from the exemption's full
+# `description` (policy.py `Exemption`). Falls back to a title-cased id for
+# an exemption this map doesn't yet name, so a future exemption never
+# renders blank.
+_EXEMPTION_REASON_TEXT: dict[str, str] = {
+    "commit-then-review": "Commit Then Review (docs-only)",
+    "release-process": "release process",
+    "not-code": "not code (docs-only)",
+}
+
+
+def _exemption_reason(exemption_id: str) -> str:
+    return _EXEMPTION_REASON_TEXT.get(exemption_id, exemption_id.replace("-", " "))
+
+
+def _lead_time_seconds(commit_date: datetime, evidence_at: datetime) -> int:
+    return int((commit_date - evidence_at).total_seconds())
 
 
 def _not_in_force(rule: Rule, commit: CommitFacts) -> CheckResult:
@@ -221,6 +301,12 @@ def _not_in_force(rule: Rule, commit: CommitFacts) -> CheckResult:
         evidence=(
             f"commit date {commit.commit_date.isoformat()} is before rule effective_from "
             f"{rule.effective_from.isoformat() if rule.effective_from else '?'}"
+        ),
+        evidence_kind="not_in_force",
+        reason=(
+            f"not in force before {rule.effective_from.isoformat()}"
+            if rule.effective_from
+            else "not in force"
         ),
     )
 
@@ -242,7 +328,13 @@ def score_reviewer_present(
 
     exemption = rule.matching_exemption(commit.message, commit.changed_paths)
     if exemption is not None:
-        return CheckResult(rule.id, "exempt", f"matched exemption: {exemption.id}")
+        return CheckResult(
+            rule.id,
+            "exempt",
+            f"matched exemption: {exemption.id}",
+            evidence_kind=f"policy_exempt:{exemption.id}",
+            reason=_exemption_reason(exemption.id),
+        )
 
     trailer_found = bool(commit.trailer_reviewers)
     jira_found = bool(jira_reviewers)
@@ -252,7 +344,19 @@ def score_reviewer_present(
             parts.append(f"commit trailer reviewer(s): {', '.join(commit.trailer_reviewers)}")
         if jira_found:
             parts.append(f"JIRA reviewer field: {', '.join(jira_reviewers)}")
-        return CheckResult(rule.id, "pass", "; ".join(parts))
+        detail = _reviewer_detail(commit.trailer_reviewers, jira_reviewers)
+        evidence_kind = "trailer+jira_field" if (trailer_found and jira_found) else (
+            "trailer" if trailer_found else "jira_field"
+        )
+        evidence_label = ", ".join(f"{name} ({source})" for name, source in detail)
+        return CheckResult(
+            rule.id,
+            "pass",
+            "; ".join(parts),
+            evidence_kind=evidence_kind,
+            evidence_label=evidence_label,
+            reviewer_detail=detail,
+        )
 
     has_issue_key = _has_cassandra_issue_key(commit.issue_keys)
     review_wording = rule.review_wording_present(commit.message)
@@ -262,10 +366,38 @@ def score_reviewer_present(
             "fail",
             "CASSANDRA-N key referenced; no reviewer found in commit trailer or JIRA reviewer "
             "field(s); no exemption matched; no review wording present",
+            reason="no reviewer named",
         )
     if review_wording:
-        return CheckResult(rule.id, "unknown", "review text present but unparsed")
-    return CheckResult(rule.id, "unknown", "no issue key referenced and no reviewer found")
+        return CheckResult(
+            rule.id,
+            "unknown",
+            "review text present but unparsed",
+            reason="review text present but unparsed",
+        )
+    return CheckResult(
+        rule.id,
+        "unknown",
+        "no issue key referenced and no reviewer found",
+        reason="no ticket referenced",
+    )
+
+
+def _reviewer_detail(
+    trailer_reviewers: tuple[str, ...], jira_reviewers: tuple[str, ...]
+) -> tuple[tuple[str, str], ...]:
+    """`(name, source)` pairs for every reviewer found on this commit, trailer
+    reviewers first (`source='trailer'`), then any JIRA-field reviewer not
+    already named by the trailer (`source='jira_field'`) -- same
+    de-duplication order as `engine._union_reviewers`'s `reviewers` column,
+    just carrying the source alongside each name (design doc "Data": "for the
+    reviewer requirement, reviewer names with their source")."""
+    seen: dict[str, str] = {}
+    for name in trailer_reviewers:
+        seen.setdefault(name, "trailer")
+    for name in jira_reviewers:
+        seen.setdefault(name, "jira_field")
+    return tuple(seen.items())
 
 
 def score_jira_ticket_referenced(rule: Rule, commit: CommitFacts) -> CheckResult | None:
@@ -277,15 +409,35 @@ def score_jira_ticket_referenced(rule: Rule, commit: CommitFacts) -> CheckResult
 
     exemption = rule.matching_exemption(commit.message, commit.changed_paths)
     if exemption is not None:
-        return CheckResult(rule.id, "exempt", f"matched exemption: {exemption.id}")
+        return CheckResult(
+            rule.id,
+            "exempt",
+            f"matched exemption: {exemption.id}",
+            evidence_kind=f"policy_exempt:{exemption.id}",
+            reason=_exemption_reason(exemption.id),
+        )
 
     if commit.issue_keys:
-        return CheckResult(rule.id, "pass", f"issue key(s) found: {', '.join(commit.issue_keys)}")
-    return CheckResult(rule.id, "unknown", "no issue key found and no exemption matched")
+        return CheckResult(
+            rule.id,
+            "pass",
+            f"issue key(s) found: {', '.join(commit.issue_keys)}",
+            evidence_kind="commit_message",
+            evidence_label=", ".join(commit.issue_keys),
+        )
+    return CheckResult(
+        rule.id,
+        "unknown",
+        "no issue key found and no exemption matched",
+        reason="no ticket referenced",
+    )
 
 
 def score_pre_commit_ci_evidence(
-    rule: Rule, commit: CommitFacts, ci_evidence_by_issue: dict[str, list[CIEvidence]] | None = None
+    rule: Rule,
+    commit: CommitFacts,
+    ci_evidence_by_issue: dict[str, list[CIEvidence]] | None = None,
+    fetched_issue_keys: frozenset[str] | set[str] = frozenset(),
 ) -> CheckResult | None:
     """`pre-commit-ci-evidence` (v2, D24, issue #93) — pass/unknown only
     (`fail_allowed: false`; CI results may legitimately be provided
@@ -301,6 +453,14 @@ def score_pre_commit_ci_evidence(
     eventually, but not evidence it happened *before* commit, so it produces
     its own distinct `unknown` text rather than being folded into "no
     evidence found at all" (issue #93 scope item 2).
+
+    `fetched_issue_keys` (issue #97) is the same "has this issue's JIRA
+    evidence actually been fetched" set `score_ci_artefacts_attached` already
+    takes (`pipeline.py`'s combined comment+attachment fetch covers both
+    checks' evidence in one pass) — used only to make the `reason` text tell
+    "checked, nothing found" apart from "not checked yet (backfill)" for the
+    site's fact buckets; never changes `result`, which stays `unknown`
+    either way (`fail_allowed: false`).
     """
     if not rule.applies_to_branch(commit.branch):
         return None
@@ -309,7 +469,13 @@ def score_pre_commit_ci_evidence(
 
     exemption = rule.matching_exemption(commit.message, commit.changed_paths)
     if exemption is not None:
-        return CheckResult(rule.id, "exempt", f"matched exemption: {exemption.id}")
+        return CheckResult(
+            rule.id,
+            "exempt",
+            f"matched exemption: {exemption.id}",
+            evidence_kind=f"policy_exempt:{exemption.id}",
+            reason=_exemption_reason(exemption.id),
+        )
 
     ci_evidence_by_issue = ci_evidence_by_issue or {}
     at_or_before: list[CIEvidence] = []
@@ -329,27 +495,59 @@ def score_pre_commit_ci_evidence(
             f"{earliest.source} on {earliest.issue_key}: {earliest.description} "
             f"(dated {earliest.created_at.isoformat()}, at or before the commit)",
             earliest.url,
+            evidence_kind=earliest.source,
+            evidence_label=(
+                f"{earliest.description}, "
+                f"{_format_lead_time(commit.commit_date, earliest.created_at)} before commit"
+            ),
+            evidence_at=earliest.created_at,
+            lead_time_seconds=_lead_time_seconds(commit.commit_date, earliest.created_at),
         )
 
     if after_commit:
         earliest_after = min(after_commit, key=lambda i: i.created_at)
+        lead = _lead_time_seconds(commit.commit_date, earliest_after.created_at)
         return CheckResult(
             rule.id,
             "unknown",
             f"CI evidence found on {earliest_after.issue_key} ({earliest_after.description}) but "
             f"dated {earliest_after.created_at.isoformat()}, AFTER the commit -- not evidence CI "
             "ran before commit",
+            evidence_kind=earliest_after.source,
+            evidence_at=earliest_after.created_at,
+            lead_time_seconds=lead,
+            reason=(
+                "evidence posted "
+                f"{_format_lead_time(earliest_after.created_at, commit.commit_date)} after commit"
+            ),
         )
 
     if commit.issue_keys:
+        checked = any(key in fetched_issue_keys for key in commit.issue_keys)
         return CheckResult(
             rule.id,
             "unknown",
             f"no JIRA comment or attachment CI evidence found on {', '.join(commit.issue_keys)}",
+            reason="no CI evidence found" if checked else "ticket not checked yet (backfill)",
         )
     return CheckResult(
-        rule.id, "unknown", "no issue key referenced; cannot check JIRA for CI evidence"
+        rule.id,
+        "unknown",
+        "no issue key referenced; cannot check JIRA for CI evidence",
+        reason="no ticket referenced",
     )
+
+
+def _format_lead_time(later: datetime, earlier: datetime) -> str:
+    """A short human duration for `later - earlier` (design doc examples:
+    "5 h before commit", "evidence posted 2 days after commit") --
+    MEASUREMENT (ours): whole hours under a day, otherwise whole days."""
+    seconds = max(0, int((later - earlier).total_seconds()))
+    if seconds < 86400:
+        hours = max(1, round(seconds / 3600))
+        return f"{hours} h"
+    days = round(seconds / 86400)
+    return f"{days} day{'s' if days != 1 else ''}"
 
 
 def score_ci_artefacts_attached(
@@ -381,10 +579,18 @@ def score_ci_artefacts_attached(
 
     exemption = rule.matching_exemption(commit.message, commit.changed_paths)
     if exemption is not None:
-        return CheckResult(rule.id, "exempt", f"matched exemption: {exemption.id}")
+        return CheckResult(
+            rule.id,
+            "exempt",
+            f"matched exemption: {exemption.id}",
+            evidence_kind=f"policy_exempt:{exemption.id}",
+            reason=_exemption_reason(exemption.id),
+        )
 
     if not commit.issue_keys:
-        return CheckResult(rule.id, "unknown", "no issue key referenced")
+        return CheckResult(
+            rule.id, "unknown", "no issue key referenced", reason="no ticket referenced"
+        )
 
     attachments_by_issue = attachments_by_issue or {}
     fetched_keys = [key for key in commit.issue_keys if key in fetched_issue_keys]
@@ -394,6 +600,7 @@ def score_ci_artefacts_attached(
             "unknown",
             f"attachment list not yet fetched for {', '.join(commit.issue_keys)} "
             "(backfill budget)",
+            reason="ticket not checked yet (backfill)",
         )
 
     for key in fetched_keys:
@@ -409,11 +616,18 @@ def score_ci_artefacts_attached(
             if _RESULTS_DETAILS_RE.search(a.filename) and a.created_at <= commit.commit_date
         ]
         if ci_summary_hits and results_details_hits:
+            evidence_at = max(ci_summary_hits[0].created_at, results_details_hits[0].created_at)
             return CheckResult(
                 rule.id,
                 "pass",
                 f"{key}: {ci_summary_hits[0].filename!r} and {results_details_hits[0].filename!r} "
                 "both attached at or before the commit",
+                evidence_kind="jira_attachment_ci_artefact",
+                evidence_label=(
+                    f"ci_summary + results_details attached ({evidence_at.strftime('%m-%d')})"
+                ),
+                evidence_at=evidence_at,
+                lead_time_seconds=_lead_time_seconds(commit.commit_date, evidence_at),
             )
 
     # No fetched key had both artefacts at or before the commit -- fail,
@@ -429,15 +643,25 @@ def score_ci_artefacts_attached(
 
     if not ci_summary_any and not results_details_any:
         evidence = "no CI artefacts attached"
+        reason = "no CI artefacts attached"
     elif not ci_summary_ok and not results_details_ok:
         # Something relevant exists, but nothing of either kind is dated at
         # or before the commit -- distinct from "nothing attached at all".
         evidence = "artefacts attached only after commit"
+        reason = "artefacts attached only after commit"
     elif ci_summary_ok and not results_details_ok:
         evidence = "results_details missing (ci_summary attached)"
+        attached_at = min(
+            a.created_at for a in ci_summary_any if a.created_at <= commit.commit_date
+        )
+        reason = f"results_details missing (ci_summary attached {attached_at.date().isoformat()})"
     else:
         evidence = "ci_summary missing (results_details attached)"
-    return CheckResult(rule.id, "fail", f"{key}: {evidence}")
+        attached_at = min(
+            a.created_at for a in results_details_any if a.created_at <= commit.commit_date
+        )
+        reason = f"ci_summary missing (results_details attached {attached_at.date().isoformat()})"
+    return CheckResult(rule.id, "fail", f"{key}: {evidence}", reason=reason)
 
 
 def score_code_style_checkstyle(
@@ -469,9 +693,17 @@ def score_code_style_checkstyle(
     if not checkstyle_runs:
         if retention_cutoff is not None and commit.commit_date < retention_cutoff:
             return CheckResult(
-                rule.id, "unknown", "check-run history outside GitHub retention"
+                rule.id,
+                "unknown",
+                "check-run history outside GitHub retention",
+                reason="check-run older than GitHub retention",
             )
-        return CheckResult(rule.id, "unknown", "no GitHub check-run recorded for this commit sha")
+        return CheckResult(
+            rule.id,
+            "unknown",
+            "no GitHub check-run recorded for this commit sha",
+            reason="no check-run recorded for this commit",
+        )
 
     failing = [r for r in checkstyle_runs if r.conclusion in _FAILING_CONCLUSIONS]
     if failing:
@@ -481,19 +713,30 @@ def score_code_style_checkstyle(
             "fail",
             f"check-run {run.check_run_name!r} concluded {run.conclusion!r}",
             run.html_url,
+            evidence_kind="github_check_run",
+            evidence_label=f"{run.check_run_name} failure",
+            reason=f"{run.check_run_name} concluded {run.conclusion}",
         )
 
     succeeded = [r for r in checkstyle_runs if r.conclusion == "success"]
     if succeeded and len(succeeded) == len(checkstyle_runs):
         run = succeeded[0]
         names = ", ".join(sorted({r.check_run_name for r in checkstyle_runs}))
-        return CheckResult(rule.id, "pass", f"check-run(s) {names} all succeeded", run.html_url)
+        return CheckResult(
+            rule.id,
+            "pass",
+            f"check-run(s) {names} all succeeded",
+            run.html_url,
+            evidence_kind="github_check_run",
+            evidence_label=f"{names} success",
+        )
 
     conclusions = sorted({str(r.conclusion) for r in checkstyle_runs})
     return CheckResult(
         rule.id,
         "unknown",
         f"check-run(s) present but not concluded success/failure: {conclusions}",
+        reason=f"check-run(s) not concluded: {', '.join(conclusions)}",
     )
 
 

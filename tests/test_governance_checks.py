@@ -16,6 +16,7 @@ from project_health.governance.checks import (
     CommitFacts,
     build_commit_facts_row,
     is_ci_artefact_filename,
+    result_state,
     score_ci_artefacts_attached,
     score_code_style_checkstyle,
     score_jira_ticket_referenced,
@@ -641,3 +642,150 @@ class TestCommitFactsRow:
         assert fact.changes_txt_touched is False
         assert fact.news_txt_touched is False
         assert fact.test_touched is False
+
+
+# --- Structured evidence (issue #97, docs/plans/2026-09-28-commit-history-
+# table-design.md "Data") -- these fields are purely additive alongside
+# `result`/`evidence`/`evidence_url`, and every test in this file above
+# still asserts the exact same `result` values it always did (proof by
+# construction that adding these fields never changed what a commit scores,
+# in addition to the dedicated count-regression test in
+# tests/test_governance_scoring_unchanged.py). This class checks that the
+# new fields are populated sensibly for a representative sample covering
+# every one of the four display states (met/missing/unverified/
+# not_required, `checks.result_state`) across each scored rule.
+
+
+def test_result_state_maps_every_result_to_the_right_display_state():
+    assert result_state("pass") == "met"
+    assert result_state("fail") == "missing"
+    assert result_state("unknown") == "unverified"
+    assert result_state("exempt") == "not_required"
+    assert result_state("not_in_force") == "not_required"
+
+
+class TestStructuredEvidenceReviewerPresent:
+    def test_met_from_trailer_has_reviewer_detail(self, policy):
+        rule = policy.rule("reviewer-present")
+        result = score_reviewer_present(rule, _commit())
+        assert result_state(result.result) == "met"
+        assert result.reviewer_detail == (("Bob", "trailer"),)
+        assert "Bob" in result.evidence_label
+        assert result.evidence_kind == "trailer"
+
+    def test_met_unions_trailer_and_jira_field_sources(self, policy):
+        rule = policy.rule("reviewer-present")
+        commit = _commit(trailer_reviewers=("Bob",))
+        result = score_reviewer_present(rule, commit, jira_reviewers=("Carol",))
+        assert dict(result.reviewer_detail) == {"Bob": "trailer", "Carol": "jira_field"}
+        assert result.evidence_kind == "trailer+jira_field"
+
+    def test_missing_has_a_short_reason(self, policy):
+        rule = policy.rule("reviewer-present")
+        commit = _commit(trailer_reviewers=(), message="Fix a bug for CASSANDRA-100")
+        result = score_reviewer_present(rule, commit)
+        assert result_state(result.result) == "missing"
+        assert result.reason == "no reviewer named"
+
+    def test_unverified_has_a_short_reason(self, policy):
+        rule = policy.rule("reviewer-present")
+        commit = _commit(trailer_reviewers=(), issue_keys=(), message="tidy up")
+        result = score_reviewer_present(rule, commit)
+        assert result_state(result.result) == "unverified"
+        assert result.reason == "no ticket referenced"
+
+    def test_not_required_when_exempt_has_a_plain_reason(self, policy):
+        rule = policy.rule("reviewer-present")
+        commit = _commit(
+            trailer_reviewers=(), message="Fix typo", changed_paths=("README.md",)
+        )
+        result = score_reviewer_present(rule, commit)
+        assert result_state(result.result) == "not_required"
+        assert result.reason == "Commit Then Review (docs-only)"
+        assert result.evidence_kind == "policy_exempt:commit-then-review"
+
+    def test_not_required_when_not_in_force_names_the_date(self, policy):
+        rule = policy.rule("reviewer-present")
+        commit = _commit(commit_date=datetime(2019, 1, 1, tzinfo=timezone.utc))
+        result = score_reviewer_present(rule, commit)
+        assert result_state(result.result) == "not_required"
+        assert result.reason == "not in force before 2020-06-25"
+
+
+class TestStructuredEvidenceCiArtefactsAttached:
+    def test_met_has_evidence_at_and_lead_time(self, policy):
+        rule = policy.rule("ci-artefacts-attached")
+        commit = _commit(commit_date=datetime(2026, 9, 1, tzinfo=timezone.utc))
+        attachments = {
+            "CASSANDRA-100": [
+                AttachmentEvidence(
+                    issue_key="CASSANDRA-100",
+                    attachment_id="1",
+                    filename="ci_summary.html",
+                    created_at=datetime(2026, 8, 31, tzinfo=timezone.utc),
+                ),
+                AttachmentEvidence(
+                    issue_key="CASSANDRA-100",
+                    attachment_id="2",
+                    filename="results_details.tar.gz",
+                    created_at=datetime(2026, 8, 31, tzinfo=timezone.utc),
+                ),
+            ]
+        }
+        result = score_ci_artefacts_attached(
+            rule, commit, attachments, fetched_issue_keys={"CASSANDRA-100"}
+        )
+        assert result_state(result.result) == "met"
+        assert result.evidence_at is not None
+        assert result.lead_time_seconds is not None and result.lead_time_seconds > 0
+        assert "ci_summary" in result.evidence_label
+
+    def test_unverified_when_not_yet_fetched(self, policy):
+        rule = policy.rule("ci-artefacts-attached")
+        commit = _commit(commit_date=datetime(2026, 9, 1, tzinfo=timezone.utc))
+        result = score_ci_artefacts_attached(rule, commit, {}, fetched_issue_keys=set())
+        assert result_state(result.result) == "unverified"
+        assert result.reason == "ticket not checked yet (backfill)"
+
+    def test_missing_partial_names_which_artefact(self, policy):
+        rule = policy.rule("ci-artefacts-attached")
+        commit = _commit(commit_date=datetime(2026, 9, 1, tzinfo=timezone.utc))
+        attachments = {
+            "CASSANDRA-100": [
+                AttachmentEvidence(
+                    issue_key="CASSANDRA-100",
+                    attachment_id="1",
+                    filename="ci_summary.html",
+                    created_at=datetime(2026, 8, 31, tzinfo=timezone.utc),
+                ),
+            ]
+        }
+        result = score_ci_artefacts_attached(
+            rule, commit, attachments, fetched_issue_keys={"CASSANDRA-100"}
+        )
+        assert result_state(result.result) == "missing"
+        assert "results_details missing" in result.reason
+
+
+class TestStructuredEvidenceCheckstyle:
+    def test_met_evidence_label_says_success(self, policy):
+        rule = policy.rule("code-style-checkstyle")
+        runs = (
+            CheckstyleEvidence(
+                sha="a" * 40, check_run_name="ant-check-jdk11", conclusion="success"
+            ),
+        )
+        result = score_code_style_checkstyle(rule, _commit(), runs)
+        assert result_state(result.result) == "met"
+        assert result.evidence_label == "ant-check-jdk11 success"
+
+    def test_missing_evidence_label_says_failure(self, policy):
+        rule = policy.rule("code-style-checkstyle")
+        runs = (
+            CheckstyleEvidence(
+                sha="a" * 40, check_run_name="ant-check-jdk11", conclusion="failure"
+            ),
+        )
+        result = score_code_style_checkstyle(rule, _commit(), runs)
+        assert result_state(result.result) == "missing"
+        assert result.evidence_label == "ant-check-jdk11 failure"

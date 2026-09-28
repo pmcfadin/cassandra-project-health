@@ -152,12 +152,15 @@ def _build_site(tmp_path: Path, rows: list[dict] | None = None, **manifest_kwarg
 
 
 def _commit_compliance_row(**overrides) -> dict:
+    from project_health.governance.checks import result_state
+
     row = {
         "sha": "1111111111111111111111111111111111aaaa",
         "branch": "trunk",
         "commit_date": datetime(2026, 8, 10, 12, 0, tzinfo=UTC),
         "author": "Jane Author",
         "committer": "Jane Author",
+        "subject": "Fix a bug",
         "is_merge": False,
         "reviewers": [],
         "jira_keys": ["CASSANDRA-90001"],
@@ -169,8 +172,15 @@ def _commit_compliance_row(**overrides) -> dict:
             "reviewer field(s); no exemption matched; no review wording present"
         ),
         "evidence_url": None,
+        "evidence_kind": None,
+        "evidence_label": None,
+        "evidence_at": None,
+        "lead_time_seconds": None,
+        "reason": None,
+        "reviewer_detail": [],
     }
     row.update(overrides)
+    row.setdefault("state", result_state(row["result"]))
     return row
 
 
@@ -245,50 +255,69 @@ def _write_governance_snapshot(
 
 
 def _default_governance_compliance_rows() -> list[dict]:
-    """Two commits covering fail/pass/unknown/exempt/n-a (D15's every
-    result state, plus a check simply absent from one commit)."""
+    """Two commits covering every fact bucket (D15/issue #97): commit 1 has
+    no reviewer found, a not-yet-checked CI-evidence ticket, and a
+    successful checkstyle run; commit 2 is a docs-only commit (exempt under
+    the unchanged backend policy) whose reviewer requirement is a fact, not
+    a verdict, on this page."""
     return [
         _commit_compliance_row(
             check_id="reviewer-present",
             result="fail",
+            reason="no reviewer named",
         ),
         _commit_compliance_row(
             check_id="jira-ticket-referenced",
             result="pass",
             evidence="issue key(s) found: CASSANDRA-90001",
+            evidence_kind="commit_message",
+            evidence_label="CASSANDRA-90001",
         ),
         _commit_compliance_row(
             check_id="pre-commit-ci-evidence",
             result="unknown",
-            evidence="no JIRA-comment CI evidence found on CASSANDRA-90001",
+            evidence="attachment list not yet fetched for CASSANDRA-90001 (backfill budget)",
+            reason="ticket not checked yet (backfill)",
+        ),
+        _commit_compliance_row(
+            check_id="ci-artefacts-attached",
+            result="unknown",
+            evidence="attachment list not yet fetched for CASSANDRA-90001 (backfill budget)",
+            reason="ticket not checked yet (backfill)",
         ),
         _commit_compliance_row(
             check_id="code-style-checkstyle",
             result="pass",
             evidence="check-run(s) ant-check-jdk11 all succeeded",
             evidence_url="https://github.com/apache/cassandra/runs/1",
+            evidence_kind="github_check_run",
+            evidence_label="ant-check-jdk11 success",
         ),
         _commit_compliance_row(
             sha="2222222222222222222222222222222222bbbb",
             commit_date=datetime(2026, 8, 12, 9, 0, tzinfo=UTC),
-            author="Ninja Author",
-            committer="Ninja Author",
+            author="Docs Author",
+            committer="Docs Author",
             reviewers=[],
             jira_keys=[],
             check_id="reviewer-present",
             result="exempt",
-            evidence="matched exemption: ninja",
+            evidence="matched exemption: commit-then-review",
+            evidence_kind="policy_exempt:commit-then-review",
+            reason="Commit Then Review (docs-only)",
         ),
         _commit_compliance_row(
             sha="2222222222222222222222222222222222bbbb",
             commit_date=datetime(2026, 8, 12, 9, 0, tzinfo=UTC),
-            author="Ninja Author",
-            committer="Ninja Author",
+            author="Docs Author",
+            committer="Docs Author",
             reviewers=[],
             jira_keys=[],
             check_id="jira-ticket-referenced",
             result="exempt",
-            evidence="matched exemption: ninja",
+            evidence="matched exemption: commit-then-review",
+            evidence_kind="policy_exempt:commit-then-review",
+            reason="Commit Then Review (docs-only)",
         ),
     ]
 
@@ -564,7 +593,8 @@ def test_governance_page_is_a_placeholder_linking_to_decisions(tmp_path):
     assert "D15" in html_text
 
 
-# --- Governance per-commit compliance (issue #37, D14/D15) ------------------
+# --- Governance commit history (issue #37, D14/D15; rebuilt as facts-only
+# by issue #97, owner's 2026-09-28 "informational stance" decision) --------
 
 
 def test_governance_page_publishes_no_policy_or_verdict_list(tmp_path):
@@ -579,6 +609,126 @@ def test_governance_page_publishes_no_policy_or_verdict_list(tmp_path):
     assert 'id="fails-heading"' not in html_text
     assert "Currently failing" not in html_text
     assert "does not judge compliance" in html_text
+
+
+def test_governance_page_shows_intro_and_references_never_a_policy_header(tmp_path):
+    out_dir, _ = _build_site_with_governance(tmp_path)
+    html_text = _page_html(out_dir, "governance/")
+
+    assert "does not judge compliance" in html_text
+    assert "maintainers set and interpret their own rules" in html_text
+    assert "References" in html_text
+    assert (
+        'href="https://cwiki.apache.org/confluence/display/CASSANDRA/Cassandra+Project+Governance"'
+        in html_text
+    )
+    assert 'href="https://cassandra.apache.org/_/development/patches.html"' in html_text
+    assert 'href="https://cassandra.apache.org/_/development/ci.html"' in html_text
+    # The old verdict-framed policy header is gone.
+    assert "Policy v2" not in html_text
+    assert "approved by" not in html_text.lower()
+
+
+def test_governance_page_never_renders_verdict_vocabulary(tmp_path):
+    """Owner decision (2026-09-28): the page reports facts, never a
+    pass/fail/unknown/exempt/not_in_force verdict, no "Currently failing"
+    section, no correction-request framing tied to a verdict, and no
+    "backfill pending"/"can fail" language about verdicts. The page's own
+    mandated intro sentence ("It does not judge compliance...") is the one
+    sanctioned, negating use of "compliance" and is excluded before scanning."""
+    out_dir, _ = _build_site_with_governance(tmp_path)
+    html_text = _page_html(out_dir, "governance/")
+    scan_text = html_text.replace("It does not judge compliance", "")
+    text = _visible_text(scan_text).lower()
+
+    for banned in ("fail", "failing", "pass rate", "exempt", "not in force", "compliance"):
+        assert re.search(rf"\b{re.escape(banned)}\b", text) is None, banned
+
+    assert "currently failing" not in text
+    assert "request a correction" not in text
+
+
+def test_governance_page_writes_default_and_older_history_json(tmp_path):
+    out_dir, _ = _build_site_with_governance(tmp_path)
+
+    default_path = out_dir / "data" / "governance-commits-default.json"
+    older_path = out_dir / "data" / "governance-commits-older.json"
+    assert default_path.is_file()
+    assert older_path.is_file()
+
+    payload = json.loads(default_path.read_text())
+    assert payload["row_count"] == 2
+    by_sha = {row["sha"]: row for row in payload["rows"]}
+    commit = by_sha["1111111111111111111111111111111111aaaa"]
+    # Facts only -- never a raw pass/fail/unknown/exempt/not_in_force value
+    # anywhere in the exported row.
+    assert "result" not in commit
+    assert "state" not in commit
+    assert commit["reviewer"] == {"named": False, "names": [], "text": "none named"}
+    assert commit["ci_evidence"]["bucket"] == "not_checked"
+    assert commit["commit_url"] == (
+        "https://github.com/apache/cassandra/commit/1111111111111111111111111111111111aaaa"
+    )
+    assert commit["jira_urls"] == ["https://issues.apache.org/jira/browse/CASSANDRA-90001"]
+
+    ninja_commit = by_sha["2222222222222222222222222222222222bbbb"]
+    assert ninja_commit["tags"]["docs_only"] is True
+
+
+def test_governance_page_older_history_split_at_default_range_start(tmp_path):
+    old_row = _commit_compliance_row(
+        sha="3333333333333333333333333333333333cccc",
+        commit_date=datetime(2018, 1, 1, tzinfo=UTC),
+        check_id="reviewer-present",
+        result="unknown",
+        reason="no ticket referenced",
+        jira_keys=[],
+    )
+    rows = _default_governance_compliance_rows() + [old_row]
+    out_dir, _ = _build_site_with_governance(tmp_path, compliance_rows=rows)
+
+    default_payload = json.loads((out_dir / "data" / "governance-commits-default.json").read_text())
+    older_payload = json.loads((out_dir / "data" / "governance-commits-older.json").read_text())
+
+    default_shas = {r["sha"] for r in default_payload["rows"]}
+    older_shas = {r["sha"] for r in older_payload["rows"]}
+    assert "3333333333333333333333333333333333cccc" not in default_shas
+    assert "3333333333333333333333333333333333cccc" in older_shas
+
+
+def test_governance_page_filters_present_with_branch_and_fact_options(tmp_path):
+    out_dir, _ = _build_site_with_governance(tmp_path)
+    html_text = _page_html(out_dir, "governance/")
+
+    assert 'data-gov-filter="branch"' in html_text
+    assert 'data-gov-filter="reviewer"' in html_text
+    assert 'data-gov-filter="ci_evidence"' in html_text
+    assert 'data-gov-filter="ci_artefacts"' in html_text
+    assert 'data-gov-filter="checkstyle"' in html_text
+    assert 'data-gov-filter="date_from"' in html_text
+    assert 'data-gov-filter="date_to"' in html_text
+    assert 'data-gov-filter="author"' in html_text
+    assert 'data-gov-filter="search"' in html_text
+    assert 'data-gov-filter="docs_only"' in html_text
+    assert 'data-gov-filter="release_process"' in html_text
+    assert 'data-gov-filter="ninja"' in html_text
+    assert '<option value="trunk">trunk</option>' in html_text
+    assert "governance.js" in html_text
+    assert "Include commits before 2020-06-25" in html_text
+    assert "Show forward-merge commits" in html_text
+
+
+def test_governance_page_shows_neutral_trend_cards_and_ninja_trend(tmp_path):
+    out_dir, _ = _build_site_with_governance(tmp_path)
+    html_text = _page_html(out_dir, "governance/")
+
+    assert "Monthly rates" in html_text
+    assert 'Declares "ninja"' in html_text
+    assert "descriptive only" in html_text
+    spec = _extract_vega_spec(html_text, "Monthly rate for reviewer-present")
+    for value in spec["data"]["values"]:
+        assert "state" not in value
+        assert set(value) <= {"month", "share", "n", "flag", "low_n"}
 
 
 def test_governance_page_backfill_partial_status_shown_honestly(tmp_path):
@@ -616,153 +766,6 @@ def test_governance_page_backfill_ok_status_shown(tmp_path):
     html_text = _page_html(out_dir, "governance/")
 
     assert "Backfill complete for this run" in html_text
-
-
-def test_governance_page_writes_commit_json_and_csv_downloads(tmp_path):
-    out_dir, _ = _build_site_with_governance(tmp_path)
-
-    recent_path = out_dir / "data" / "governance-commits-recent.json"
-    full_json_path = out_dir / "data" / "governance-commits-full.json"
-    full_csv_path = out_dir / "data" / "governance-commits-full.csv"
-    assert recent_path.is_file()
-    assert full_json_path.is_file()
-    assert full_csv_path.is_file()
-
-    payload = json.loads(full_json_path.read_text())
-    assert payload["policy_version"] == 2
-    assert payload["row_count"] == 2
-    by_sha = {row["sha"]: row for row in payload["rows"]}
-    failing = by_sha["1111111111111111111111111111111111aaaa"]
-    assert failing["checks"]["reviewer-present"]["result"] == "fail"
-    assert failing["jira_urls"] == ["https://issues.apache.org/jira/browse/CASSANDRA-90001"]
-    assert failing["commit_url"] == (
-        "https://github.com/apache/cassandra/commit/1111111111111111111111111111111111aaaa"
-    )
-    assert failing["correction_url"].startswith(
-        "https://github.com/pmcfadin/cassandra-project-health/issues/new?"
-    )
-    # commit 2 never got a pre-commit-ci-evidence/code-style-checkstyle row
-    # in the fixture -- absence must stay absent (n/a), never turn into a
-    # fabricated "unknown".
-    ninja_commit = by_sha["2222222222222222222222222222222222bbbb"]
-    assert "pre-commit-ci-evidence" not in ninja_commit["checks"]
-
-    csv_text = full_csv_path.read_text()
-    assert "reviewer-present_result" in csv_text.splitlines()[0]
-    assert "1111111111111111111111111111111111aaaa" in csv_text
-
-
-def test_governance_page_filters_present_with_month_branch_check_result_options(tmp_path):
-    out_dir, _ = _build_site_with_governance(tmp_path)
-    html_text = _page_html(out_dir, "governance/")
-
-    assert 'data-gov-filter="month"' in html_text
-    assert 'data-gov-filter="branch"' in html_text
-    assert 'data-gov-filter="check"' in html_text
-    assert 'data-gov-filter="result"' in html_text
-    assert '<option value="2026-08">2026-08</option>' in html_text
-    assert '<option value="trunk">trunk</option>' in html_text
-    assert '<option value="reviewer-present">reviewer-present</option>' in html_text
-    assert '<option value="fail">fail</option>' in html_text
-    assert "governance.js" in html_text
-    assert "load full history" in html_text
-
-
-def test_governance_page_shows_compliance_trend_charts_and_ninja_trend(tmp_path):
-    out_dir, _ = _build_site_with_governance(tmp_path)
-    html_text = _page_html(out_dir, "governance/")
-
-    assert "Compliance trends" in html_text
-    assert "Ninja exemptions" in html_text
-    assert "descriptive only" in html_text
-    spec = _extract_vega_spec(html_text, "Compliance trend for reviewer-present")
-    states = {v["state"] for v in spec["data"]["values"]}
-    assert states == {"pass", "fail", "unknown", "exempt"}
-
-
-def test_governance_page_headline_shows_pass_unknown_fail_shares(tmp_path):
-    """Issue #69: every governance headline card shows the pass/unknown/fail
-    shares together (not just the bare pass rate), computed over the exact
-    same scored (pass+fail+unknown) denominator as the pass rate itself --
-    the fixture's counts (pass=5, fail=1, unknown=2, scored=8) give
-    62.5%/25.0%/12.5%."""
-    out_dir, _ = _build_site_with_governance(tmp_path)
-    text = _visible_text(_page_html(out_dir, "governance/"))
-
-    combined = "62.5% pass · 25.0% unknown · 12.5% fail"
-    assert text.count(combined) == 4  # one per scored check card
-    assert "62.5%" in text  # the bare pass-rate value is unchanged
-
-
-def test_governance_page_headline_tags_backfill_pending_when_partial_and_unknown_high(tmp_path):
-    """A 'backfill pending' tag appears when the manifest's governance
-    status is `partial` *and* the check's unknown share is >= 25% (issue
-    #69) -- the fixture's unknown share is exactly 25%, the threshold."""
-    out_dir, _ = _build_site_with_governance(
-        tmp_path,
-        governance={
-            "status": "partial",
-            "commits_scored": 2,
-            "compliance_rows": 6,
-            "policy_version": 1,
-            "ci_evidence": {"checked": 3, "pending": 7, "calls_made": 3},
-            "check_runs": {"checked": 1, "pending": 4, "calls_made": 1},
-        },
-    )
-    html_text = _page_html(out_dir, "governance/")
-
-    assert html_text.count("backfill pending") == 4  # one per scored check card
-
-
-def test_governance_page_headline_omits_backfill_pending_tag_when_status_ok(tmp_path):
-    """The same high (25%) unknown share never earns the tag when this
-    run's backfill status is `ok`, not `partial` (issue #69)."""
-    out_dir, _ = _build_site_with_governance(
-        tmp_path,
-        governance={
-            "status": "ok",
-            "commits_scored": 2,
-            "compliance_rows": 6,
-            "policy_version": 1,
-            "ci_evidence": {"checked": 1, "pending": 0, "calls_made": 1},
-            "check_runs": {"checked": 1, "pending": 0, "calls_made": 1},
-        },
-    )
-    html_text = _page_html(out_dir, "governance/")
-
-    assert "backfill pending" not in html_text
-
-
-def test_governance_page_headline_omits_backfill_pending_tag_below_unknown_threshold(tmp_path):
-    """A `partial` backfill status alone doesn't earn the tag -- the
-    check's own unknown share must be at least 25% (issue #69); here it's
-    10% (1 of 10 scored)."""
-    counts = {"pass": 9, "fail": 0, "unknown": 1, "exempt": 0, "not_in_force": 0}
-    metric_rows = [
-        _governance_metric_row(check_id, date(2026, 7, 1), date(2026, 7, 31), counts)
-        for check_id in (
-            "reviewer-present",
-            "jira-ticket-referenced",
-            "pre-commit-ci-evidence",
-            "code-style-checkstyle",
-        )
-    ]
-    out_dir, _ = _build_site_with_governance(
-        tmp_path,
-        metric_rows=metric_rows,
-        governance={
-            "status": "partial",
-            "commits_scored": 2,
-            "compliance_rows": 6,
-            "policy_version": 1,
-            "ci_evidence": {"checked": 3, "pending": 7, "calls_made": 3},
-            "check_runs": {"checked": 1, "pending": 4, "calls_made": 1},
-        },
-    )
-    text = _visible_text(_page_html(out_dir, "governance/"))
-
-    assert "backfill pending" not in text
-    assert text.count("90.0% pass · 10.0% unknown · 0.0% fail") == 4
 
 
 def test_governance_page_has_no_data_state_when_engine_never_ran(tmp_path):
@@ -1858,15 +1861,17 @@ def test_conversations_page_has_chart_window_toggle(tmp_path):
 
 
 def test_governance_trend_charts_are_windowed_and_show_n_and_flag(tmp_path):
-    """Issue #28 explicitly calls out governance's multi-series compliance
-    trend charts: the same recent-window default, n/flag tooltip and low-n
-    de-emphasis apply there too, without breaking the per-check
-    pass/fail/unknown/exempt color-coded lines (issue #36/#69)."""
+    """Issue #28 explicitly calls out governance's compliance trend charts:
+    the same recent-window default, n/flag tooltip and low-n de-emphasis
+    apply there too. Issue #97 (owner's 2026-09-28 decision) replaced the
+    old multi-series pass/fail/unknown/exempt color-coded lines with one
+    neutral, single-series monthly share -- no `state` field, no color
+    encoding."""
     out_dir, _ = _build_site_with_governance(tmp_path)
     html_text = _page_html(out_dir, "governance/")
 
     assert "data-chart-window-toggle" in html_text
-    spec = _extract_vega_spec(html_text, "Compliance trend for reviewer-present")
+    spec = _extract_vega_spec(html_text, "Monthly rate for reviewer-present")
 
     assert "usermeta" in spec
     assert len(spec["layer"]) == 2
@@ -1876,14 +1881,14 @@ def test_governance_trend_charts_are_windowed_and_show_n_and_flag(tmp_path):
     assert tooltip_by_field["flag"]["title"] == "Flag"
 
     values = spec["data"]["values"]
-    states = {v["state"] for v in values}
-    assert states == {"pass", "fail", "unknown", "exempt"}
+    assert all("state" not in v for v in values)
     # The fixture's scored n (pass=5, fail=1, unknown=2 -> n=8) is below the
-    # display floor, so every state's record for that month is low_n.
+    # display floor, so the single share record for that month is low_n.
     assert all(v["n"] == 8 and v["low_n"] is True for v in values)
 
-    # Multi-series color-by-result-state still works (issue #36/#69).
-    assert spec["encoding"]["color"]["field"] == "state"
+    # No color-by-result-state encoding any more (issue #97: no good/bad
+    # colors, no verdict breakdown).
+    assert "color" not in spec["encoding"]
 
 
 def test_y_axis_format_matches_metric_value_kind(tmp_path):

@@ -802,15 +802,6 @@ def _card_context(
     }
 
 
-def _format_share(share: float) -> str:
-    """A pass/fail/unknown share as a percentage, one decimal place --
-    matching `MetricMeta.format_value`'s own `value_kind == "percent"`
-    formatting (`metrics_meta.py`) so a governance headline's three shares
-    read consistently with every other percent metric on the site (issue
-    #69)."""
-    return f"{share * 100:.1f}%"
-
-
 def _headline_metric_context(series: MetricSeries, last_completed_month: date) -> dict[str, Any]:
     """A metric's home-page summary-card row: name, latest value, month —
     no chart, no tier badge (D13: "headline metrics (latest value, month)
@@ -997,12 +988,13 @@ def _render_pages(
     )
     # Each scored check gets one card: the same latest-value/tier/JSON-CSV
     # card shell every M0 metric uses (`_card_context`, keyed by this
-    # check's `governance_*_pass_rate` metric_id), but with its chart swapped
-    # for the compliance-trend module's per-check pass/fail/unknown/exempt
-    # breakdown (`governance_context.compliance_trends`) instead of the
-    # generic single-line pass-rate chart -- the breakdown is strictly more
-    # informative (D15: "every result showing its evidence" extends to the
-    # aggregate view never hiding fail/unknown/exempt behind a bare rate).
+    # check's `governance_*_pass_rate` metric_id), with its chart swapped for
+    # the compliance-trend module's single, neutral monthly-share line
+    # (`governance_context.compliance_trends`). issue #97 (owner's
+    # 2026-09-28 "informational stance" decision): no pass/fail/unknown/
+    # exempt breakdown, no color-coding, no "backfill pending" tag tied to a
+    # verdict share -- `MetricMeta.name` (`metrics_meta.py`) is already
+    # neutral ("Commits with a named reviewer", not "... -- Pass Rate").
     governance_cards_by_metric = {
         s.meta.metric_id: _card_context(s, SUBPAGE_BASE_PREFIX, last_completed_month, manifest)
         for s in series_by_page["governance"]
@@ -1010,28 +1002,16 @@ def _render_pages(
     governance_trend_cards = []
     for chart in governance_context.compliance_trends:
         card = governance_cards_by_metric.get(metric_id_for_check(chart["check_id"]))
-        # The pass/fail/unknown shares beside the headline pass rate (issue
-        # #69) -- same scored (pass+fail+unknown) denominator the pass rate
-        # itself is computed over (`governance_page._latest_scored_shares`),
-        # never a re-derived total, so a card never shows numbers that don't
-        # add up to the metric it's displaying.
-        shares = chart["latest_shares"]
         governance_trend_cards.append(
             {
                 "check_id": chart["check_id"],
                 "name": card["name"] if card else chart["check_id"],
-                "tier": card["tier"] if card else None,
                 "latest_value_display": card["latest_value_display"] if card else None,
                 "latest_month_label": card["latest_month_label"] if card else None,
-                "latest_pass_share_display": _format_share(shares["pass"]) if shares else None,
-                "latest_unknown_share_display": (
-                    _format_share(shares["unknown"]) if shares else None
-                ),
-                "latest_fail_share_display": _format_share(shares["fail"]) if shares else None,
-                "backfill_pending": chart["backfill_pending"],
                 # issue #86: the check's own card already computed its
                 # staleness badge(s) from `MetricMeta.sources` -- reuse it
-                # rather than recomputing.
+                # rather than recomputing. This is about data freshness, not
+                # a compliance verdict.
                 "staleness_badges": card["staleness_badges"] if card else [],
                 "json_href": card["json_href"] if card else None,
                 "csv_href": card["csv_href"] if card else None,

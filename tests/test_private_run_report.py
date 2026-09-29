@@ -285,6 +285,65 @@ class TestRenderReportMarkdown:
         assert markdown.index("PARTIAL RUN") < markdown.index("Trend summary")
         assert markdown.index("PARTIAL RUN") < markdown.index("Frame definition")
 
+    def test_partial_run_shows_truncated_and_skipped_counts(self):
+        """Issue #115: the coverage section is where truncated/skipped
+        per-message counts belong."""
+        aggregates = _aggregates(
+            partial_run={
+                "status": "paused_no_credits",
+                "messages_sampled": 5,
+                "messages_classified": 2,
+                "messages_truncated": 3,
+                "messages_skipped": 1,
+                "skip_reasons": {"skipped_too_long": 1},
+                "coverage_by_stratum": [
+                    {
+                        "venue": "mailing_list",
+                        "quarter": "2024Q1",
+                        "messages_sampled": 3,
+                        "messages_classified": 2,
+                        "coverage": 2 / 3,
+                    },
+                ],
+            }
+        )
+        markdown = render_report_markdown(aggregates)
+        assert "Truncated to fit Jev's per-request length budget: 3" in markdown
+        skipped_line = next(
+            line for line in markdown.splitlines() if line.startswith("- Skipped")
+        )
+        assert skipped_line.endswith(": 1")
+
+    def test_fully_classified_but_truncated_run_still_shows_coverage_section(self):
+        """Truncation alone doesn't reduce `messages_classified` below
+        `messages_sampled` -- the section must still render (and must not
+        falsely claim messages were missed) when every sampled message was
+        classified but some needed truncation."""
+        aggregates = _aggregates(
+            partial_run={
+                "status": "completed",
+                "messages_sampled": 5,
+                "messages_classified": 5,
+                "messages_truncated": 2,
+                "messages_skipped": 0,
+                "skip_reasons": {},
+                "coverage_by_stratum": [
+                    {
+                        "venue": "mailing_list",
+                        "quarter": "2024Q1",
+                        "messages_sampled": 5,
+                        "messages_classified": 5,
+                        "coverage": 1.0,
+                    },
+                ],
+            }
+        )
+        markdown = render_report_markdown(aggregates)
+        assert "PARTIAL RUN" in markdown
+        assert "did not classify every sampled message" not in markdown
+        assert "Truncated to fit Jev's per-request length budget: 2" in markdown
+        assert "Skipped (never classified" in markdown
+
     def test_partial_run_coverage_none_renders_as_na(self):
         aggregates = _aggregates(
             partial_run={

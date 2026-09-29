@@ -29,6 +29,16 @@ updated by `docs/spec/DECISIONS.md` D17 (provider) and D10 (cost cap), issue #45
   `run_async` catches it, never retries it (it's an account-level failure, not a
   transient one), and returns whatever was already classified rather than letting
   the exception crash the whole batch.
+- A single oversized message no longer aborts the run either (issue #115):
+  `classify`/`run_async` first truncate `message.text`/`context.text` to a safe
+  length budget (`preprocess.truncate_for_length_budget`) before hashing/sending,
+  which keeps `input_hash` unchanged for every message already under that budget
+  (the existing cache stays valid). If TypeSafe still returns 400
+  `max_tokens_exceeded` for a message despite that, `run_async` retries it once
+  with a halved budget; if it fails again it's recorded as skipped
+  (`RunResult.skip_reasons["skipped_too_long"]`), never raised. Any other 400 is
+  recorded as skipped with its own error type and never retried. Either way the
+  run keeps going -- `RunResult.truncated`/`RunResult.skipped` count both.
 
 Everything here that talks to TypeSafe is fully offline-testable: `JevClassifier`
 accepts injectable `httpx2.BaseTransport`/`httpx2.AsyncBaseTransport` instances (see
@@ -46,7 +56,7 @@ import subprocess
 import sys
 import uuid
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal, Protocol, runtime_checkable
@@ -69,6 +79,7 @@ except ImportError as exc:  # pragma: no cover - exercised only when the dep is 
         "pyproject.toml dependencies)."
     ) from exc
 
+from project_health.classify.preprocess import TEXT_BUDGET_CHARS, truncate_for_length_budget
 from project_health.classify.questions import (
     EXPECTED_MODEL,
     MESSAGE_LEVEL_LABELS,
@@ -577,6 +588,17 @@ class RunResult:
     input_tokens_used: int
     output_tokens_used: int
     estimated_cost_usd: float
+    # Issue #115: how many messages needed `preprocess.truncate_for_length_budget`
+    # (including the halved-budget 400 retry below) and how many were skipped
+    # entirely (never got a `ClassificationRecord`) rather than crashing the run.
+    # Both default to 0 so every pre-#115 `RunResult(...)` call site (this
+    # project's and any caller's) still constructs without change.
+    truncated: int = 0
+    skipped: int = 0
+    # `{reason: count}` -- `"skipped_too_long"` for a `max_tokens_exceeded` that
+    # still failed after the halved-budget retry, `f"skipped_400_{error_type}"`
+    # for any other 400 (never retried).
+    skip_reasons: dict[str, int] = field(default_factory=dict)
 
 
 # --- JevClassifier -------------------------------------------------------------------
@@ -601,6 +623,38 @@ DEFAULT_RETRYABLE_STATUSES: frozenset[int] = frozenset({429, 529, *range(500, 60
 # catching it happens after the SDK's own retry loop has already given up
 # (or, under the default policy, never started).
 NO_CREDITS_STATUS = 402
+
+# HTTP 400: TypeSafe rejected the request outright -- issue #115's own crash
+# (`TypeSafeBadRequestError: 400 {"detail":{"error_type":"max_tokens_exceeded"}}`).
+# Also not in `DEFAULT_RETRYABLE_STATUSES` (a 400 is a request-shape problem, never
+# a transient server condition, so the SDK's own retry loop never touches it
+# either): `run_async`'s worker below always handles it itself -- one halved-budget
+# retry for `max_tokens_exceeded` specifically (never for any other 400 reason),
+# then a clean, never-raised skip (`RunResult.skipped`/`skip_reasons`) rather than
+# aborting the run, the same "never raise, keep going" contract 402 already uses.
+BAD_REQUEST_STATUS = 400
+
+# The `detail.error_type` value TypeSafe's 400 body uses for an over-length
+# request (issue #115's crash report: `{"detail": {"error_type":
+# "max_tokens_exceeded"}}`) -- the one 400 reason that gets a halved-budget retry
+# before being skipped; every other 400 reason is skipped immediately, no retry.
+MAX_TOKENS_EXCEEDED_ERROR_TYPE = "max_tokens_exceeded"
+
+
+def _extract_error_type(body: Any) -> str | None:
+    """`body["detail"]["error_type"]` from a TypeSafe 400 error body, or `None`
+    if `body` isn't shaped that way (issue #115: the SDK's `TypeSafeAPIError.body`
+    is "the server's JSON error body, plain response text, or `None`" -- this
+    project only knows the one `{"detail": {"error_type": ...}}` shape its own
+    real 400 crash reported, so anything else is treated as "reason unknown"
+    rather than guessed at)."""
+    if not isinstance(body, dict):
+        return None
+    detail = body.get("detail")
+    if not isinstance(detail, dict):
+        return None
+    error_type = detail.get("error_type")
+    return error_type if isinstance(error_type, str) else None
 
 
 def _default_retry_policy() -> "RetryPolicy":
@@ -679,7 +733,10 @@ class JevClassifier:
                 this message, and D10's cost cap is already exceeded.
         """
         _validate_normalized_message(message)
-        state = build_state(message.text, message.source, context.text)
+        message_text, parent_text, _truncated = truncate_for_length_budget(
+            message.text, context.text
+        )
+        state = build_state(message_text, message.source, parent_text)
         input_hash = compute_input_hash(state, self.question_set_version, self.model_id)
 
         if use_cache:
@@ -722,6 +779,9 @@ class JevClassifier:
         cache_hits = 0
         input_tokens_used = 0
         output_tokens_used = 0
+        truncated = 0
+        skipped = 0
+        skip_reasons: dict[str, int] = {}
         # None | "cost_cap" | "no_credits" -- issue #110 fixup round 2 adds the
         # second reason alongside D10's existing cost-cap pause; both share the
         # same "stop dispatching, never raise" contract below.
@@ -736,12 +796,24 @@ class JevClassifier:
             async def worker(
                 index: int, message: NormalizedMessage, context: ParentContext
             ) -> None:
-                nonlocal calls_made, cache_hits, input_tokens_used, output_tokens_used, pause_reason
+                nonlocal calls_made, cache_hits, input_tokens_used, output_tokens_used
+                nonlocal pause_reason, truncated, skipped
                 async with semaphore:
                     if pause_reason is not None:
                         return
                     _validate_normalized_message(message)
-                    state = build_state(message.text, message.source, context.text)
+
+                    # Issue #115: truncate to the length budget before hashing/
+                    # sending -- a message already under budget comes back
+                    # byte-for-byte unchanged (`truncated=False`), so its
+                    # `input_hash` is identical to before this change and any
+                    # existing cache entry for it still hits.
+                    message_text, parent_text, was_truncated = truncate_for_length_budget(
+                        message.text, context.text
+                    )
+                    if was_truncated:
+                        truncated += 1
+                    state = build_state(message_text, message.source, parent_text)
                     input_hash = compute_input_hash(state, self.question_set_version, self.model_id)
                     cached = self._cache.get(input_hash)
                     if cached is not None:
@@ -751,33 +823,77 @@ class JevClassifier:
                     if self._cost_cap is not None and self._cost_cap.exceeded:
                         pause_reason = "cost_cap"
                         return
-                    try:
-                        response = await client.system_one(
-                            state=state, questions=self._questions, model=self.model_id
-                        )
-                    except TypeSafeAPIError as exc:
-                        if exc.status != NO_CREDITS_STATUS:
-                            raise
-                        # Non-retryable by construction: this is an
-                        # account-level failure (no TypeSafe API credits
-                        # left), not a transient one, so nothing about
-                        # retrying it could ever succeed. Whether the SDK's
-                        # own retry loop already tried and gave up, or never
-                        # tried at all (402 isn't in
-                        # `DEFAULT_RETRYABLE_STATUSES`), this is always the
-                        # last word on this call: end the run cleanly, the
-                        # same "never raise, keep what's cached" contract
-                        # D10's cost cap already uses.
-                        if pause_reason is None:  # print the notice exactly once
-                            pause_reason = "no_credits"
-                            print(
-                                "project_health.classify.classifier: TypeSafe API returned "
-                                "402 (no available API credits) -- pausing this run cleanly. "
-                                "Everything already classified stays cached; add credits to "
-                                "your TypeSafe organization and re-run to resume.",
-                                file=sys.stderr,
+
+                    retried_for_length = False
+                    while True:
+                        try:
+                            response = await client.system_one(
+                                state=state, questions=self._questions, model=self.model_id
                             )
-                        return
+                        except TypeSafeAPIError as exc:
+                            if exc.status == NO_CREDITS_STATUS:
+                                # Non-retryable by construction: this is an
+                                # account-level failure (no TypeSafe API credits
+                                # left), not a transient one, so nothing about
+                                # retrying it could ever succeed. Whether the
+                                # SDK's own retry loop already tried and gave up,
+                                # or never tried at all (402 isn't in
+                                # `DEFAULT_RETRYABLE_STATUSES`), this is always
+                                # the last word on this call: end the run
+                                # cleanly, the same "never raise, keep what's
+                                # cached" contract D10's cost cap already uses.
+                                if pause_reason is None:  # print the notice once
+                                    pause_reason = "no_credits"
+                                    print(
+                                        "project_health.classify.classifier: TypeSafe API "
+                                        "returned 402 (no available API credits) -- pausing "
+                                        "this run cleanly. Everything already classified "
+                                        "stays cached; add credits to your TypeSafe "
+                                        "organization and re-run to resume.",
+                                        file=sys.stderr,
+                                    )
+                                return
+                            if exc.status == BAD_REQUEST_STATUS:
+                                error_type = _extract_error_type(exc.body)
+                                if (
+                                    error_type == MAX_TOKENS_EXCEEDED_ERROR_TYPE
+                                    and not retried_for_length
+                                ):
+                                    # One retry, from the *original* (not
+                                    # already-truncated) text, at half the
+                                    # budget -- our own budget estimate was
+                                    # apparently still not conservative enough
+                                    # for this particular message.
+                                    retried_for_length = True
+                                    if not was_truncated:
+                                        truncated += 1
+                                        was_truncated = True
+                                    message_text, parent_text, _ = truncate_for_length_budget(
+                                        message.text,
+                                        context.text,
+                                        budget_chars=TEXT_BUDGET_CHARS // 2,
+                                    )
+                                    state = build_state(message_text, message.source, parent_text)
+                                    input_hash = compute_input_hash(
+                                        state, self.question_set_version, self.model_id
+                                    )
+                                    continue
+                                # Either `max_tokens_exceeded` again after the
+                                # halved retry, or a 400 for some other reason
+                                # entirely -- either way, never abort the run:
+                                # skip this one message and keep going.
+                                reason = (
+                                    "skipped_too_long"
+                                    if error_type == MAX_TOKENS_EXCEEDED_ERROR_TYPE
+                                    else f"skipped_400_{error_type or 'unknown'}"
+                                )
+                                skipped += 1
+                                skip_reasons[reason] = skip_reasons.get(reason, 0) + 1
+                                return
+                            raise
+                        else:
+                            break
+
                     record = self._record_from_response(message, input_hash, response)
                     self._cache.append(record)
                     calls_made += 1
@@ -809,6 +925,9 @@ class JevClassifier:
             input_tokens_used=input_tokens_used,
             output_tokens_used=output_tokens_used,
             estimated_cost_usd=estimated_cost_usd,
+            truncated=truncated,
+            skipped=skipped,
+            skip_reasons=skip_reasons,
         )
 
     # -- Response -> record ----------------------------------------------------------

@@ -22,15 +22,32 @@ threshold) -- the best-performing public calibration wins. This is a
 parsing choice, not a hardcoded number, so a future `public-v1.md` update
 (a new dataset, a re-run with different sample draws) is picked up
 automatically the next time `private-run` runs, with no code change.
+
+Issue #110 fixup round 1: each picked threshold now also records **which
+dataset it came from** (the `## <dataset name>` markdown heading the
+qualifying row appeared under), so a reader of the private report can see
+"this cutoff is calibrated against dataset X", not just a bare number --
+and whether that cutoff is *permissive* (a low threshold flags more
+messages as "present", i.e. counts more of the classifier's raw output as
+a positive), so a low, dataset-calibrated cutoff (e.g. `personal_attack`'s
+0.15, from the LKML Ferreira set) isn't mistaken for a strict one.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import re
 from pathlib import Path
 
 # D23, verbatim: "strong for personal_attack, hostility and sarcasm."
 STRONG_GATING_LABELS: frozenset[str] = frozenset({"personal_attack", "hostility", "sarcasm"})
+
+# A cutoff below this is flagged "permissive" in the report (module
+# docstring): an explicit, documented, if inherently somewhat arbitrary,
+# line -- a threshold below 0.3 counts a message as "present" at less than
+# 30% Jev-assessed probability, which reads as a low bar relative to the
+# 0.5/0.7/0.9 fixed cutoffs every label is also reported at (aggregate.py).
+PERMISSIVE_THRESHOLD_MAX = 0.3
 
 # src/project_health/private_run/sensitivity.py -> private_run -> project_health
 # -> src -> <repo root> -- same depth/convention as
@@ -41,6 +58,19 @@ DEFAULT_PUBLIC_BENCHMARK_PATH = (
 
 _LABEL_CELL_RE = re.compile(r"^`([a-z_]+)`$")
 _LEADING_FLOAT_RE = re.compile(r"[-+]?\d+\.\d+|[-+]?\d+")
+_HEADING_RE = re.compile(r"^##\s+(.+?)\s*$")
+
+
+@dataclasses.dataclass(frozen=True)
+class SensitivityThreshold:
+    label_id: str
+    threshold: float
+    f1: float
+    dataset_name: str
+
+    @property
+    def permissive(self) -> bool:
+        return self.threshold < PERMISSIVE_THRESHOLD_MAX
 
 
 def _parse_table_row(line: str) -> list[str] | None:
@@ -52,18 +82,30 @@ def _parse_table_row(line: str) -> list[str] | None:
     return [cell.strip() for cell in stripped[1:-1].split("|")]
 
 
-def parse_gating_thresholds(markdown: str) -> dict[str, float]:
-    """`{label_id: threshold}` for every label in `STRONG_GATING_LABELS`
-    that has at least one `strong` + `gating` row in `markdown`'s per-
-    dataset tables (module docstring's tie-break rule). A label with no
-    such row at all (e.g. `public-v1.md` hasn't been (re)generated, or a
-    future benchmark drops a dataset) is simply absent from the result --
-    callers must treat a missing key as "no sensitivity threshold
-    available for this label yet", never as `0.0`.
+def parse_gating_thresholds(markdown: str) -> dict[str, SensitivityThreshold]:
+    """`{label_id: SensitivityThreshold}` for every label in
+    `STRONG_GATING_LABELS` that has at least one `strong` + `gating` row in
+    `markdown`'s per-dataset tables (module docstring's tie-break rule). A
+    label with no such row at all (e.g. `public-v1.md` hasn't been
+    (re)generated, or a future benchmark drops a dataset) is simply absent
+    from the result -- callers must treat a missing key as "no sensitivity
+    threshold available for this label yet", never as `0.0`.
+
+    `dataset_name` is read from the nearest preceding `## <heading>`
+    markdown heading (`public-v1.md`'s own per-dataset section headings,
+    e.g. "Ferreira, Cheng & Adams -- LKML incivility... (2021)") -- tracked
+    by a single forward scan, so a row's dataset is whichever section it
+    physically appears under in the file.
     """
-    # label -> [(f1, threshold), ...] across every qualifying row found.
-    candidates: dict[str, list[tuple[float, float]]] = {}
+    # label -> [(f1, threshold, dataset_name), ...] across every qualifying row.
+    candidates: dict[str, list[tuple[float, float, str]]] = {}
+    current_heading = ""
     for line in markdown.splitlines():
+        heading_match = _HEADING_RE.match(line)
+        if heading_match is not None:
+            current_heading = heading_match.group(1)
+            continue
+
         cells = _parse_table_row(line)
         if cells is None or len(cells) < 7:
             continue
@@ -86,15 +128,18 @@ def parse_gating_thresholds(markdown: str) -> dict[str, float]:
             continue
         f1 = float(f1_match.group())
         threshold = float(threshold_match.group())
-        candidates.setdefault(label, []).append((f1, threshold))
+        candidates.setdefault(label, []).append((f1, threshold, current_heading))
 
-    return {
-        label: max(entries, key=lambda entry: (entry[0], -entry[1]))[1]
-        for label, entries in candidates.items()
-    }
+    result: dict[str, SensitivityThreshold] = {}
+    for label, entries in candidates.items():
+        best_f1, best_threshold, best_dataset = max(entries, key=lambda e: (e[0], -e[1]))
+        result[label] = SensitivityThreshold(
+            label_id=label, threshold=best_threshold, f1=best_f1, dataset_name=best_dataset
+        )
+    return result
 
 
-def load_gating_thresholds(path: str | Path | None = None) -> dict[str, float]:
+def load_gating_thresholds(path: str | Path | None = None) -> dict[str, SensitivityThreshold]:
     """`parse_gating_thresholds` over the file at `path` (default:
     `docs/benchmark/public-v1.md`). Returns `{}` (never raises) if the file
     doesn't exist yet -- a private run before `benchmark-public` has ever

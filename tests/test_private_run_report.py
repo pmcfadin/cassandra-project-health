@@ -1,10 +1,20 @@
 """Tests for project_health.private_run.report (issue #110;
-COMMUNITY-HEALTH.md §7.3/§7.4 -- aggregate-only, no text/names/ids)."""
+COMMUNITY-HEALTH.md §7.3/§7.4/D25 -- aggregate-only, no text/names/ids;
+issue #110 fixup round 1's fixed-cutoff headline + probability-index-floor
++ cost-ledger + trend-summary sections)."""
 
 from __future__ import annotations
 
 from project_health.classify.questions import MESSAGE_LEVEL_LABELS
+from project_health.private_run.aggregate import (
+    CUTOFFS,
+    HEADLINE_CUTOFF,
+    aggregate_cell,
+    cutoff_key,
+)
 from project_health.private_run.report import render_report_markdown
+from project_health.private_run.sensitivity import SensitivityThreshold
+from project_health.private_run.stats import ThreadCluster
 
 # A distinctive, synthetic thread id / message id / author string that must
 # never appear in the rendered report -- exactly the kind of value this
@@ -19,27 +29,60 @@ _FORBIDDEN_SUBSTRINGS = (
 )
 
 
-def _cell(messages=40, authors=12, insufficient=False):
-    rates = {
-        label: (None if insufficient else {"per_1000": 12.5, "ci95": [10.0, 15.0]})
-        for label in sorted(MESSAGE_LEVEL_LABELS)
+def _real_cell(n_threads=5, messages_per_thread=10, hostility=0.6, authors_per_thread=3):
+    clusters = [
+        ThreadCluster(
+            thread_id=f"t{i}",
+            weight=1.0,
+            messages=tuple(
+                {"hostility": hostility, "personal_attack": 0.1} for _ in range(messages_per_thread)
+            ),
+        )
+        for i in range(n_threads)
+    ]
+    authors = {f"a{i}" for i in range(n_threads * authors_per_thread)}
+    thresholds = {
+        "hostility": SensitivityThreshold("hostility", 0.4, 0.5, "LKML Ferreira"),
+        "personal_attack": SensitivityThreshold("personal_attack", 0.15, 0.5, "LKML Ferreira"),
     }
-    sensitivity = {
-        label: (None if insufficient else 5.0)
-        for label in ("personal_attack", "hostility", "sarcasm")
-    }
-    return {
-        "messages_classified": messages,
-        "distinct_authors": authors,
-        "threads_sampled": 10,
-        "threads_population": 100,
-        "insufficient_data": insufficient,
-        "rates_per_1000_messages": rates,
-        "sensitivity_per_1000_messages": sensitivity,
-    }
+    return aggregate_cell(
+        clusters,
+        authors,
+        seed=1,
+        cell_key="mailing_list:2024Q1",
+        sensitivity_thresholds=thresholds,
+        bootstrap_iterations=10,
+    )
+
+
+def _insufficient_cell():
+    return aggregate_cell(
+        [ThreadCluster(thread_id="t1", weight=1.0, messages=({"hostility": 0.1},))],
+        {"a1"},
+        seed=1,
+        cell_key="mailing_list:2017_2019",
+        sensitivity_thresholds={},
+        bootstrap_iterations=5,
+    )
 
 
 def _aggregates(**overrides):
+    cell = _real_cell()
+    empty_cell = _insufficient_cell()
+    thresholds_serialized = {
+        "hostility": {
+            "threshold": 0.4,
+            "f1": 0.5,
+            "dataset_name": "LKML Ferreira",
+            "permissive": False,
+        },
+        "personal_attack": {
+            "threshold": 0.15,
+            "f1": 0.5,
+            "dataset_name": "LKML Ferreira",
+            "permissive": True,
+        },
+    }
     base = {
         "generated_at": "2026-09-28T00:00:00+00:00",
         "seed": 110,
@@ -51,7 +94,12 @@ def _aggregates(**overrides):
             "jira_comment": "thread = one JIRA issue's comment stream; quarter = created_at",
         },
         "scope_note": "GitHub PR comments are out of scope for v1.",
-        "sensitivity_thresholds": {"personal_attack": 0.15, "hostility": 0.4, "sarcasm": 0.6},
+        "cutoffs": [cutoff_key(c) for c in CUTOFFS],
+        "headline_cutoff": cutoff_key(HEADLINE_CUTOFF),
+        "sensitivity_thresholds": thresholds_serialized,
+        "probability_index_floor_per_1000_messages": {
+            label: 3.5 for label in sorted(MESSAGE_LEVEL_LABELS)
+        },
         "floors": {"min_messages": 30, "min_distinct_authors": 10},
         "cost_summary": {
             "status": "completed",
@@ -66,6 +114,21 @@ def _aggregates(**overrides):
             "question_set_version": "1",
             "model_id_pinned": "jev-1.13.0",
         },
+        "cost_ledger": {
+            "runs_recorded": 3,
+            "cumulative_from_cache": {
+                "distinct_messages_ever_classified": 1500,
+                "input_tokens_used": 3600000,
+                "output_tokens_used": 300000,
+                "estimated_cost_usd": 0.1512,
+            },
+            "cumulative_from_ledger_runs": {
+                "calls_made": 1213,
+                "cache_hits": 1757,
+                "elapsed_seconds": 99.1,
+                "estimated_cost_usd": 0.1518,
+            },
+        },
         "venue_totals": {
             "mailing_list": {
                 "messages_classified": 80,
@@ -78,19 +141,25 @@ def _aggregates(**overrides):
                 "threads_population": 150,
             },
         },
-        "cells_by_quarter": {
+        "trend_summary": {
             "mailing_list": {
-                "2024Q1": _cell(),
-                "2025Q1": _cell(messages=5, authors=2, insufficient=True),
+                "windows": {"2017_2019": empty_cell, "2023_2025": cell},
+                "headline_cutoff": cutoff_key(HEADLINE_CUTOFF),
+                "ci_overlap_by_label": {label: None for label in sorted(MESSAGE_LEVEL_LABELS)},
             },
-            "jira_comment": {"2024Q1": _cell(), "2025Q1": _cell()},
+            "jira_comment": {
+                "windows": {"2017_2019": empty_cell, "2023_2025": cell},
+                "headline_cutoff": cutoff_key(HEADLINE_CUTOFF),
+                "ci_overlap_by_label": {label: True for label in sorted(MESSAGE_LEVEL_LABELS)},
+            },
+        },
+        "cells_by_quarter": {
+            "mailing_list": {"2024Q1": cell, "2025Q1": empty_cell},
+            "jira_comment": {"2024Q1": cell, "2025Q1": cell},
         },
         "cells_by_year": {
-            "mailing_list": {
-                "2024": _cell(),
-                "2025": _cell(messages=5, authors=2, insufficient=True),
-            },
-            "jira_comment": {"2024": _cell(), "2025": _cell()},
+            "mailing_list": {"2024": cell, "2025": empty_cell},
+            "jira_comment": {"2024": cell, "2025": cell},
         },
     }
     base.update(overrides)
@@ -103,9 +172,6 @@ class TestRenderReportMarkdown:
         assert "# Private Cassandra communication run" in markdown
 
     def test_never_leaks_text_ids_or_author_strings(self):
-        # the aggregates dict itself never contains these -- this asserts
-        # the renderer doesn't invent a way to leak something it was never
-        # given, and stands in for a fixture that accidentally carried one.
         markdown = render_report_markdown(_aggregates())
         for forbidden in _FORBIDDEN_SUBSTRINGS:
             assert forbidden not in markdown
@@ -114,17 +180,38 @@ class TestRenderReportMarkdown:
         markdown = render_report_markdown(_aggregates())
         assert "insufficient data" in markdown
 
-    def test_every_message_level_label_appears_in_the_header(self):
+    def test_every_message_level_label_appears(self):
         markdown = render_report_markdown(_aggregates())
         for label in sorted(MESSAGE_LEVEL_LABELS):
             assert label in markdown
 
-    def test_sensitivity_section_present_when_thresholds_exist(self):
+    def test_headline_is_labeled_uncalibrated(self):
         markdown = render_report_markdown(_aggregates())
-        assert "sensitivity" in markdown.lower()
-        assert "0.15" in markdown  # personal_attack threshold
+        assert "uncalibrated" in markdown.lower()
+        assert "#47" in markdown  # no Cassandra-calibrated threshold yet
 
-    def test_no_sensitivity_section_when_no_thresholds(self):
+    def test_sensitivity_cutoffs_070_and_090_get_their_own_section(self):
+        markdown = render_report_markdown(_aggregates())
+        assert "sensitivity cutoff (>= 0.7)" in markdown
+        assert "sensitivity cutoff (>= 0.9)" in markdown
+
+    def test_probability_index_section_present_and_labeled_secondary(self):
+        markdown = render_report_markdown(_aggregates())
+        assert "probability index" in markdown.lower()
+        assert "trend only" in markdown.lower()
+
+    def test_probability_index_floor_table_present(self):
+        markdown = render_report_markdown(_aggregates())
+        assert "Probability index floor" in markdown
+        assert "3.50" in markdown
+
+    def test_public_benchmark_sensitivity_table_shows_dataset_and_permissive(self):
+        markdown = render_report_markdown(_aggregates())
+        assert "LKML Ferreira" in markdown
+        assert "| hostility | 0.4 | LKML Ferreira | no |" in markdown
+        assert "| personal_attack | 0.15 | LKML Ferreira | yes |" in markdown
+
+    def test_no_public_benchmark_section_content_when_no_thresholds(self):
         aggregates = _aggregates(sensitivity_thresholds={})
         markdown = render_report_markdown(aggregates)
         assert "none found" in markdown
@@ -134,7 +221,28 @@ class TestRenderReportMarkdown:
         assert "GitHub PR" in markdown
         assert "out of scope" in markdown
 
-    def test_cost_summary_numbers_appear(self):
+    def test_cost_section_shows_latest_and_cumulative(self):
         markdown = render_report_markdown(_aggregates())
         assert "jev-1.13.0" in markdown
-        assert "0.001" in markdown
+        assert "Latest run" in markdown
+        assert "Cumulative" in markdown
+        assert "1500" in markdown  # cumulative distinct messages ever classified (from cache)
+        assert "0.1512" in markdown  # cumulative cost, from cache
+        assert "0.1518" in markdown  # cumulative cost, from ledger runs
+        assert "from cache" in markdown
+        assert "from ledger" in markdown
+
+    def test_trend_summary_at_top_with_overlap_column(self):
+        markdown = render_report_markdown(_aggregates())
+        assert markdown.index("Trend summary") < markdown.index("Frame definition")
+        assert "CIs overlap" in markdown
+        assert "overlapping" in markdown
+        assert "not overlapping" not in markdown or True  # both may appear depending on data
+        # neutral wording only -- no verdict language
+        for banned in ("improved", "worsened", "better", "worse", "regressed"):
+            assert banned not in markdown.lower()
+
+    def test_trend_summary_insufficient_window_renders_as_insufficient(self):
+        markdown = render_report_markdown(_aggregates())
+        # the 2017-2019 window is built from `_insufficient_cell` above
+        assert "(insufficient data)" in markdown

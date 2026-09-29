@@ -29,6 +29,8 @@ project doing a nonparametric bootstrap, and both keep it pure Python.
 from __future__ import annotations
 
 import random
+import statistics
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 
 DEFAULT_BOOTSTRAP_ITERATIONS = 1000
@@ -122,3 +124,74 @@ def bootstrap_weighted_rate_ci(
         resampled = [clusters[rng.randrange(n)] for _ in range(n)]
         rates.append(weighted_rate_per_1000(resampled, label_id))
     return percentile_interval(rates, alpha)
+
+
+def bootstrap_multi_metric_ci(
+    clusters: list[ThreadCluster],
+    label_id: str,
+    thresholds: Sequence[float],
+    *,
+    seed: int,
+    iterations: int = DEFAULT_BOOTSTRAP_ITERATIONS,
+    alpha: float = 0.05,
+) -> dict[str, tuple[float, float]]:
+    """The weighted-mean rate's CI *and* every `thresholds` cutoff rate's
+    CI for `label_id`, all from **one shared bootstrap resample per
+    iteration** (issue #110 fixup round 1: reporting fixed-cutoff counts at
+    0.5/0.7/0.9 *and* the mean-probability "probability index" for every
+    label would otherwise mean 4 independent bootstraps per label per cell
+    -- generating the resampled thread list is the expensive part, so
+    computing all 4 statistics from the same resample cuts that back to 1x,
+    with no loss of validity: each statistic is still evaluated
+    independently over each resample, exactly as `bootstrap_weighted_rate_
+    ci` does for one metric at a time).
+
+    Returns `{"mean": (lo, hi), "<cutoff>": (lo, hi), ...}` -- cutoffs are
+    stringified (`f"{t:.1f}"`) so the result is directly JSON-serializable
+    without a float-key workaround. `(0.0, 0.0)` everywhere with zero
+    clusters.
+    """
+    n = len(clusters)
+    empty = (0.0, 0.0)
+    if n == 0:
+        return {"mean": empty, **{f"{t:.1f}": empty for t in thresholds}}
+    rng = random.Random(seed)
+    mean_samples: list[float] = []
+    cutoff_samples: dict[float, list[float]] = {t: [] for t in thresholds}
+    for _ in range(iterations):
+        resampled = [clusters[rng.randrange(n)] for _ in range(n)]
+        mean_samples.append(weighted_rate_per_1000(resampled, label_id))
+        for threshold in thresholds:
+            cutoff_samples[threshold].append(
+                weighted_sensitivity_rate_per_1000(resampled, label_id, threshold)
+            )
+    return {
+        "mean": percentile_interval(mean_samples, alpha),
+        **{
+            f"{threshold:.1f}": percentile_interval(samples, alpha)
+            for threshold, samples in cutoff_samples.items()
+        },
+    }
+
+
+def median_probability_per_1000(clusters: list[ThreadCluster], label_id: str) -> float:
+    """The **unweighted** median of every message's raw `label_id`
+    probability across `clusters`, x1000 -- issue #110 fixup round 1's
+    "probability index floor": how much of the (weighted) probability-index
+    secondary metric is just the classifier's typical baseline output for
+    this label, not real prevalence signal. Deliberately unweighted, unlike
+    every other statistic in this module: this is a diagnostic about the
+    classifier's raw output distribution, not a population estimate, so
+    survey inclusion weights would only obscure "what does a typical
+    message's probability actually look like". `0.0` if no message in
+    `clusters` carries `label_id` at all.
+    """
+    probabilities = [
+        message[label_id]
+        for cluster in clusters
+        for message in cluster.messages
+        if label_id in message
+    ]
+    if not probabilities:
+        return 0.0
+    return statistics.median(probabilities) * 1000.0

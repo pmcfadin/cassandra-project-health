@@ -611,3 +611,157 @@ class TestRunPrivateRunEndToEnd:
         assert manifest["jira_comment"]["2024Q1"]["population"] == 1
         assert result.run_result is None
         assert result.report_path is None
+
+    def test_cost_ledger_persists_across_runs_and_cumulative_reflects_lifetime_spend(
+        self, tmp_path
+    ):
+        """Issue #110 fixup round 1: a cache-only re-run's own `calls_made
+        == 0`/`$0.00` must not erase the record of what this --out
+        directory has really cost over its lifetime."""
+        config = _project_config(tmp_path)
+        data_dir, ponymail_months, jira_comments = _small_fixture(tmp_path)
+        out_dir = tmp_path / "out"
+
+        result1 = run_private_run(
+            project_config=config,
+            data_dir=data_dir,
+            out_dir=out_dir,
+            quarters=["2024Q1"],
+            api_key="test-key",
+            monthly_cap_usd=1000.0,
+            bootstrap_iterations=5,
+            ponymail_transport=_ponymail_transport(ponymail_months),
+            jira_transport=_jira_paginating_transport(jira_comments),
+            jev_async_transport=_jev_transport(probability=0.6),
+        )
+        assert (out_dir / "cost_ledger.jsonl").is_file()
+        ledger_lines_1 = (out_dir / "cost_ledger.jsonl").read_text().splitlines()
+        assert len(ledger_lines_1) == 1
+
+        first_cost = result1.aggregates["cost_ledger"]["cumulative_from_cache"][
+            "estimated_cost_usd"
+        ]
+        assert first_cost > 0.0
+        assert result1.aggregates["cost_ledger"]["runs_recorded"] == 1
+        assert (
+            result1.aggregates["cost_ledger"]["cumulative_from_cache"][
+                "distinct_messages_ever_classified"
+            ]
+            == 5
+        )
+
+        # re-run: 0 new Jev calls (fully cached), but the ledger gains a
+        # second entry and cumulative cost is NOT reset to 0.
+        result2 = run_private_run(
+            project_config=config,
+            data_dir=data_dir,
+            out_dir=out_dir,
+            quarters=["2024Q1"],
+            api_key="test-key",
+            monthly_cap_usd=1000.0,
+            bootstrap_iterations=5,
+            ponymail_transport=_ponymail_transport(ponymail_months),
+            jira_transport=_jira_paginating_transport(jira_comments),
+            jev_async_transport=_jev_transport(probability=0.6),
+        )
+        assert result2.run_result.calls_made == 0
+        assert result2.aggregates["cost_summary"]["estimated_cost_usd"] == 0.0
+
+        ledger_lines_2 = (out_dir / "cost_ledger.jsonl").read_text().splitlines()
+        assert len(ledger_lines_2) == 2
+
+        cumulative_2 = result2.aggregates["cost_ledger"]["cumulative_from_cache"]
+        assert cumulative_2["estimated_cost_usd"] == first_cost  # unchanged, not zeroed
+        assert cumulative_2["distinct_messages_ever_classified"] == 5
+        assert result2.aggregates["cost_ledger"]["runs_recorded"] == 2
+
+        # the ledger-summed cost is exact per recorded run: run 1 paid for
+        # 5 real calls, run 2 paid for 0 (fully cached) -- summed, it must
+        # equal exactly what run 1 alone billed.
+        ledger_runs_2 = result2.aggregates["cost_ledger"]["cumulative_from_ledger_runs"]
+        assert ledger_runs_2["calls_made"] == 5
+        assert (
+            ledger_runs_2["estimated_cost_usd"]
+            == result1.aggregates["cost_summary"]["estimated_cost_usd"]
+        )
+
+    def test_trend_summary_structure_and_headline_cutoff(self, tmp_path):
+        config = _project_config(tmp_path)
+        data_dir, ponymail_months, jira_comments = _small_fixture(tmp_path)
+        out_dir = tmp_path / "out"
+
+        # 2024Q1 falls inside the "2023_2025" recent trend window; nothing
+        # in this fixture falls in "2017_2019", so that window must render
+        # as insufficient data end-to-end.
+        result = run_private_run(
+            project_config=config,
+            data_dir=data_dir,
+            out_dir=out_dir,
+            quarters=["2024Q1"],
+            api_key="test-key",
+            monthly_cap_usd=1000.0,
+            bootstrap_iterations=5,
+            ponymail_transport=_ponymail_transport(ponymail_months),
+            jira_transport=_jira_paginating_transport(jira_comments),
+            jev_async_transport=_jev_transport(probability=0.6),
+        )
+        trend = result.aggregates["trend_summary"]
+        assert set(trend) == {"mailing_list", "jira_comment"}
+        mailing_list_trend = trend["mailing_list"]
+        assert mailing_list_trend["headline_cutoff"] == "0.5"
+        assert set(mailing_list_trend["windows"]) == {"2017_2019", "2023_2025"}
+
+        early = mailing_list_trend["windows"]["2017_2019"]
+        assert early["insufficient_data"] is True
+        assert early["messages_classified"] == 0
+
+        recent = mailing_list_trend["windows"]["2023_2025"]
+        assert recent["messages_classified"] == 3  # same 3 mail messages as 2024Q1
+
+        # early window is empty -> overlap is undecidable (None) for every label
+        assert all(v is None for v in mailing_list_trend["ci_overlap_by_label"].values())
+
+        report_text = result.report_path.read_text(encoding="utf-8")
+        assert "Trend summary" in report_text
+        assert report_text.index("Trend summary") < report_text.index("Frame definition")
+
+    def test_sensitivity_thresholds_carry_dataset_name_and_permissive_flag(self, tmp_path):
+        config = _project_config(tmp_path)
+        data_dir, ponymail_months, jira_comments = _small_fixture(tmp_path)
+        out_dir = tmp_path / "out"
+
+        benchmark_path = tmp_path / "public-v1.md"
+        benchmark_path.write_text(
+            "## LKML Ferreira Set (2021)\n\n"
+            "| Our label | Strength | Gate role | Best-F1 threshold | Precision (95% CI) | "
+            "Recall (95% CI) | F1 (95% CI) | Sample prevalence | Population prevalence | Notes |\n"
+            "|---|---|---|---|---|---|---|---|---|---|\n"
+            "| `personal_attack` | strong | gating | 0.15 | 0.5 [0.4,0.6] | 0.5 [0.4,0.6] | "
+            "0.479 [0.4,0.6] | 10/100 = 0.1 | 100/1000 = 0.1 | note |\n",
+            encoding="utf-8",
+        )
+
+        result = run_private_run(
+            project_config=config,
+            data_dir=data_dir,
+            out_dir=out_dir,
+            quarters=["2024Q1"],
+            api_key="test-key",
+            monthly_cap_usd=1000.0,
+            bootstrap_iterations=5,
+            ponymail_transport=_ponymail_transport(ponymail_months),
+            jira_transport=_jira_paginating_transport(jira_comments),
+            jev_async_transport=_jev_transport(probability=0.6),
+            public_benchmark_path=benchmark_path,
+        )
+        thresholds = result.aggregates["sensitivity_thresholds"]
+        assert thresholds == {
+            "personal_attack": {
+                "threshold": 0.15,
+                "f1": 0.479,
+                "dataset_name": "LKML Ferreira Set (2021)",
+                "permissive": True,
+            }
+        }
+        report_text = result.report_path.read_text(encoding="utf-8")
+        assert "LKML Ferreira Set (2021)" in report_text

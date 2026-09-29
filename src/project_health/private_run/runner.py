@@ -49,11 +49,12 @@ from project_health.classify.text_fetch import (
     RawJiraComment,
     build_state,
 )
+from project_health.classify.questions import MESSAGE_LEVEL_LABELS
 from project_health.config import ProjectConfig
 from project_health.private_run import aggregate, frame, report, sensitivity
 from project_health.private_run.quarters import quarter_bounds  # noqa: F401  (re-exported for callers)
 from project_health.private_run.sample import DEFAULT_K, DEFAULT_SEED, StratumSample, sample_stratum
-from project_health.private_run.stats import ThreadCluster
+from project_health.private_run.stats import ThreadCluster, median_probability_per_1000
 
 # "Cap 60 messages/thread, earliest first" (issue #110) -- distinct from
 # `sample.DEFAULT_K` (60 *threads* per stratum); both default to 60, which
@@ -67,10 +68,24 @@ DEFAULT_CACHE_FILENAME = "jev_cache.jsonl"
 DEFAULT_AGGREGATES_FILENAME = "aggregates.json"
 DEFAULT_REPORT_FILENAME = "report.md"
 DEFAULT_SAMPLE_MANIFEST_FILENAME = "sample_manifest.json"
+# Issue #110 fixup round 1: an append-only, per-run cost/latency audit
+# trail, so a cache-only re-run's own $0.00 doesn't read as "this run cost
+# nothing, ever" (see `_append_cost_ledger_entry`/`_cumulative_from_cache`).
+DEFAULT_COST_LEDGER_FILENAME = "cost_ledger.jsonl"
 
 MAILING_LIST_VENUE = "mailing_list"
 JIRA_COMMENT_VENUE = "jira_comment"
 VENUES: tuple[str, ...] = (MAILING_LIST_VENUE, JIRA_COMMENT_VENUE)
+
+# Issue #110 fixup round 1's trend-summary windows: pooled early vs. recent
+# years, per venue, at the headline (0.5) cutoff only. Plain calendar-year
+# choices, not tied to any Cassandra-specific event.
+TREND_EARLY_YEARS: tuple[str, ...] = ("2017", "2018", "2019")
+TREND_RECENT_YEARS: tuple[str, ...] = ("2023", "2024", "2025")
+TREND_WINDOWS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("2017_2019", TREND_EARLY_YEARS),
+    ("2023_2025", TREND_RECENT_YEARS),
+)
 
 
 # --- Working state (in-memory only; never written to disk verbatim) --------
@@ -314,6 +329,175 @@ def _build_sample_manifest(
     }
 
 
+# --- Sensitivity thresholds (JSON-serializable form) -------------------------
+
+
+def _serialize_sensitivity_thresholds(
+    sensitivity_thresholds: dict[str, sensitivity.SensitivityThreshold],
+) -> dict[str, Any]:
+    return {
+        label_id: {
+            "threshold": t.threshold,
+            "f1": t.f1,
+            "dataset_name": t.dataset_name,
+            "permissive": t.permissive,
+        }
+        for label_id, t in sensitivity_thresholds.items()
+    }
+
+
+# --- Trend summary (issue #110 fixup round 1) ---------------------------------
+
+
+def _pool_clusters_for_years(
+    clusters_by_cell: dict[tuple[str, str], list[ThreadCluster]],
+    authors_by_cell: dict[tuple[str, str], set[str]],
+    quarters: list[str],
+    venue: str,
+    years: tuple[str, ...],
+) -> tuple[list[ThreadCluster], set[str]]:
+    """Pool every sampled quarter's clusters/authors for `venue` whose year
+    falls in `years` -- the same clusters already built for
+    `cells_by_quarter`, just grouped into a wider window rather than a
+    single quarter (module docstring's "Trend summary" windows).
+    """
+    pooled_clusters: list[ThreadCluster] = []
+    pooled_authors: set[str] = set()
+    for quarter in quarters:
+        if quarter[:4] not in years:
+            continue
+        pooled_clusters += clusters_by_cell.get((venue, quarter), [])
+        pooled_authors |= authors_by_cell.get((venue, quarter), set())
+    return pooled_clusters, pooled_authors
+
+
+def _ci_overlap(a: tuple[float, float] | None, b: tuple[float, float] | None) -> bool | None:
+    """Whether two 95% CIs overlap, or `None` if either is unavailable
+    (`insufficient data`). Deliberately not a verdict about direction or
+    magnitude (D25: neutral, no characterization of "better"/"worse") --
+    just whether the two intervals share any point."""
+    if a is None or b is None:
+        return None
+    return not (a[1] < b[0] or b[1] < a[0])
+
+
+def _compute_trend_summary(
+    clusters_by_cell: dict[tuple[str, str], list[ThreadCluster]],
+    authors_by_cell: dict[tuple[str, str], set[str]],
+    strata_by_venue: dict[str, dict[str, StratumSample]],
+    quarters: list[str],
+    *,
+    seed: int,
+    sensitivity_thresholds: dict[str, sensitivity.SensitivityThreshold],
+    bootstrap_iterations: int,
+) -> dict[str, Any]:
+    """Per venue, per trend window (`TREND_WINDOWS`): the same full cell
+    aggregate `aggregate_cell` computes for a single quarter/year, but
+    pooled across the window's years -- issue #110 fixup round 1's "Trend
+    summary" table (report.py renders only the 0.5-cutoff headline rate +
+    CI + overlap from this; the full pooled cell, including 0.7/0.9 and the
+    probability index, is kept here for audit).
+    """
+    result: dict[str, Any] = {}
+    for venue in VENUES:
+        strata = strata_by_venue[venue]
+        windows: dict[str, Any] = {}
+        for window_name, years in TREND_WINDOWS:
+            pooled_clusters, pooled_authors = _pool_clusters_for_years(
+                clusters_by_cell, authors_by_cell, quarters, venue, years
+            )
+            window_quarters = [q for q in quarters if q[:4] in years]
+            windows[window_name] = aggregate.aggregate_cell(
+                pooled_clusters,
+                pooled_authors,
+                seed=seed,
+                cell_key=f"trend:{venue}:{window_name}",
+                sensitivity_thresholds=sensitivity_thresholds,
+                bootstrap_iterations=bootstrap_iterations,
+                threads_population=sum(strata[q].population for q in window_quarters),
+                threads_sampled=sum(len(strata[q].sampled_ids) for q in window_quarters),
+            )
+
+        headline_cutoff_key = aggregate.cutoff_key(aggregate.HEADLINE_CUTOFF)
+        early_cell = windows["2017_2019"]
+        recent_cell = windows["2023_2025"]
+        overlap_by_label: dict[str, bool | None] = {}
+        for label_id in sorted(MESSAGE_LEVEL_LABELS):
+            # `cutoff_rates_per_1000_messages[label_id]` is always a dict
+            # keyed by cutoff (never None at the label level -- see
+            # `aggregate.aggregate_cell`); only the per-cutoff *value* is
+            # `None` below the §5.1 floor.
+            early_entry = early_cell["cutoff_rates_per_1000_messages"][label_id].get(
+                headline_cutoff_key
+            )
+            recent_entry = recent_cell["cutoff_rates_per_1000_messages"][label_id].get(
+                headline_cutoff_key
+            )
+            early_ci = tuple(early_entry["ci95"]) if early_entry else None
+            recent_ci = tuple(recent_entry["ci95"]) if recent_entry else None
+            overlap_by_label[label_id] = _ci_overlap(early_ci, recent_ci)
+
+        result[venue] = {
+            "windows": windows,
+            "headline_cutoff": headline_cutoff_key,
+            "ci_overlap_by_label": overlap_by_label,
+        }
+    return result
+
+
+# --- Cost ledger (issue #110 fixup round 1) -----------------------------------
+
+
+def _append_cost_ledger_entry(out_dir: Path, entry: dict[str, Any]) -> None:
+    """Append one line to `--out/cost_ledger.jsonl` -- an audit trail of
+    every `private-run` invocation's own calls/tokens/cost/elapsed, so the
+    history of real spend survives even once every message that run
+    touched is fully cached (module docstring: a cache-only re-run's own
+    `calls_made=0`/`$0.00` no longer reads as "this has never cost
+    anything"). Never rewritten in place -- append-only, same convention as
+    `label/store.py`'s label JSONL."""
+    path = out_dir / DEFAULT_COST_LEDGER_FILENAME
+    with open(path, "a", encoding="utf-8") as fh:
+        fh.write(json.dumps(entry, sort_keys=True) + "\n")
+
+
+def _read_cost_ledger(out_dir: Path) -> list[dict[str, Any]]:
+    path = out_dir / DEFAULT_COST_LEDGER_FILENAME
+    if not path.is_file():
+        return []
+    entries: list[dict[str, Any]] = []
+    with open(path, encoding="utf-8") as fh:
+        for line in fh:
+            stripped = line.strip()
+            if stripped:
+                entries.append(json.loads(stripped))
+    return entries
+
+
+def _cumulative_from_cache(cache: ClassificationCache, cost_cap: CostCap) -> dict[str, Any]:
+    """Lifetime totals computed directly from every record in `cache` --
+    the durable source of truth for cumulative spend in this `--out`
+    directory (issue #110 fixup round 1), independent of the ledger: a
+    `ClassificationCache` never drops a record once written (D22), so
+    summing every cached record's token usage recovers **true lifetime
+    cost even for runs that happened before the ledger existed** (e.g. a
+    run under a pre-fixup version of this code, or a ledger file lost/
+    reset) -- something the ledger alone, being append-only from whenever
+    it was first created, cannot do on its own.
+    """
+    total_input = 0
+    total_output = 0
+    for record in cache.records():
+        total_input += record.usage.input_tokens
+        total_output += record.usage.output_tokens
+    return {
+        "distinct_messages_ever_classified": len(cache),
+        "input_tokens_used": total_input,
+        "output_tokens_used": total_output,
+        "estimated_cost_usd": cost_cap.estimate_cost_usd(total_input),
+    }
+
+
 # --- Result -------------------------------------------------------------------
 
 
@@ -513,6 +697,27 @@ def run_private_run(
             "threads_population": sum(s.population for s in strata.values()),
         }
 
+    # Run-wide probability-index floor (issue #110 fixup round 1): pooled
+    # from `cells_by_quarter`'s own clusters only, never `cells_by_year`'s
+    # -- the year cells reuse the exact same `ThreadCluster` objects
+    # (`year_clusters` above just extends the same lists), so pooling from
+    # both would double-count every message.
+    all_clusters = [c for clusters in clusters_by_cell.values() for c in clusters]
+    probability_index_floor = {
+        label_id: median_probability_per_1000(all_clusters, label_id)
+        for label_id in sorted(MESSAGE_LEVEL_LABELS)
+    }
+
+    trend_summary = _compute_trend_summary(
+        clusters_by_cell,
+        authors_by_cell,
+        strata_by_venue,
+        quarters,
+        seed=seed,
+        sensitivity_thresholds=sensitivity_thresholds,
+        bootstrap_iterations=bootstrap_iterations,
+    )
+
     mean_latency = elapsed_seconds / run_result.calls_made if run_result.calls_made else None
     cost_summary = {
         "status": run_result.status,
@@ -526,6 +731,37 @@ def run_private_run(
         "classifier_version": classifier.classifier_version,
         "question_set_version": classifier.question_set_version,
         "model_id_pinned": classifier.model_id,
+    }
+
+    ledger_entry = {
+        "run_at": clock().isoformat(),
+        "quarters": quarters,
+        **{k: v for k, v in cost_summary.items() if k not in ("classifier_version",)},
+    }
+    _append_cost_ledger_entry(out_dir, ledger_entry)
+    ledger_entries = _read_cost_ledger(out_dir)
+    cost_ledger_summary = {
+        "runs_recorded": len(ledger_entries),
+        "latest": cost_summary,
+        "cumulative_from_cache": _cumulative_from_cache(cache, cost_cap),
+        "cumulative_from_ledger_runs": {
+            "calls_made": sum(e.get("calls_made", 0) for e in ledger_entries),
+            "cache_hits": sum(e.get("cache_hits", 0) for e in ledger_entries),
+            "elapsed_seconds": sum(e.get("elapsed_seconds", 0.0) for e in ledger_entries),
+            # Exact for every run *recorded in the ledger* (each entry's own
+            # cost is `run_result.estimated_cost_usd`, billed on the calls
+            # that run actually made) -- unlike `cumulative_from_cache`,
+            # this is never affected by `JevClassifier.run_async`'s known
+            # concurrent-duplicate-input race (two workers can both send a
+            # request for the same not-yet-cached input hash before either
+            # finishes; both get billed, but only one record survives to be
+            # persisted, so `cumulative_from_cache` can slightly *undercount*
+            # lifetime spend). Its own limitation: it only covers runs made
+            # after the ledger file existed, so it starts at 0 for an --out
+            # directory with pre-existing cache entries from before this
+            # feature (report.py surfaces both numbers with this caveat).
+            "estimated_cost_usd": sum(e.get("estimated_cost_usd", 0.0) for e in ledger_entries),
+        },
     }
 
     aggregates: dict[str, Any] = {
@@ -554,14 +790,19 @@ def run_private_run(
             "GitHub PR comments are out of scope for v1 (DECISIONS.md D7) -- only "
             "dev@ and JIRA comments are covered by this run."
         ),
-        "sensitivity_thresholds": sensitivity_thresholds,
+        "sensitivity_thresholds": _serialize_sensitivity_thresholds(sensitivity_thresholds),
+        "cutoffs": [aggregate.cutoff_key(c) for c in aggregate.CUTOFFS],
+        "headline_cutoff": aggregate.cutoff_key(aggregate.HEADLINE_CUTOFF),
+        "probability_index_floor_per_1000_messages": probability_index_floor,
         "floors": {
             "min_messages": aggregate.MIN_MESSAGES,
             "min_distinct_authors": aggregate.MIN_DISTINCT_AUTHORS,
         },
         "truncated_thread_counts": truncated_thread_counts,
         "cost_summary": cost_summary,
+        "cost_ledger": cost_ledger_summary,
         "venue_totals": venue_totals,
+        "trend_summary": trend_summary,
         "cells_by_quarter": cells_by_quarter,
         "cells_by_year": cells_by_year,
     }

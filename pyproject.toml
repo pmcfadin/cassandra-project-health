@@ -11,6 +11,14 @@ license = {text = "Apache License 2.0"}
 requires-python = ">=3.12"
 dependencies = [
     "duckdb>=1.0.0",
+    # issue #102: DuckDB's Python client needs pytz at runtime to construct
+    # timezone-aware `datetime` objects when a query result column is fetched
+    # (`.fetchall()`) as `TIMESTAMPTZ` -- every other metric in this project
+    # avoids this by only ever fetching a `DATE`-truncated or `epoch()`-diffed
+    # column, but `metrics/review_responsiveness.py` fetches raw `changed_at`/
+    # `created_at`/`submitted_at` values directly for its own Python-side
+    # submission reconstruction, which triggers DuckDB's internal pytz import.
+    "pytz>=2024.1",
     "polars>=0.20.0",
     "pyarrow>=14.0.0",
     "jinja2>=3.1.0",

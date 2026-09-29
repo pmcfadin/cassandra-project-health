@@ -113,11 +113,18 @@ from project_health.collectors.github import GitHubCollector, resolve_github_tok
 from project_health.collectors.reviewer_trailer import PARSER_VERSION
 from project_health.collectors.github_commit_authors import GitHubCommitAuthorCollector
 from project_health.collectors.github_profile import GitHubProfileCollector
-from project_health.collectors.jira import JiraCollector, _parse_jira_timestamp
+from project_health.collectors.jira import (
+    JiraCollector,
+    _normalize_changelog,
+    _normalize_comments,
+    _normalize_issue,
+    _parse_jira_timestamp,
+    _rows_to_table,
+)
 from project_health.collectors.ponymail import PonyMailCollector
 from project_health.collectors.security import SecurityCollector
 from project_health.config import ProjectConfig
-from project_health.metrics import METRIC_IDS, compute_all
+from project_health.metrics import METRIC_IDS, compute_all, compute_review_responsiveness
 from project_health.normalize.affiliation import (
     DEFAULT_GITHUB_COMPANY_LOOKBACK_MONTHS,
     build_affiliation_periods,
@@ -211,6 +218,16 @@ DEFAULT_GOVERNANCE_MAX_JIRA_CALLS_PER_RUN = 300
 # estimate. Configurable via `projects/<id>.yaml`'s
 # `jira_comment_backfill.max_issues_per_run` (`_jira_comment_backfill_budget`).
 DEFAULT_JIRA_COMMENT_BACKFILL_MAX_ISSUES_PER_RUN = 1000
+
+# issue #102: budgeted, resumable page-cursor backfill of `status`/`assignee`
+# changelog history (plus, as a side effect, `issue_comment`/`issue.resolution`)
+# for every issue that ever entered `Patch Available` -- ~11,754 issues at
+# `collectors.jira.BACKFILL_PAGE_SIZE` (100)/page = ~118 pages total. At 40
+# pages/night (this default) that's `ceil(118 / 40) = 3` nights to reach full
+# coverage, matching the issue's own "~3 nights" estimate. Configurable via
+# `projects/<id>.yaml`'s `jira_patch_available_backfill.max_pages_per_run`
+# (`_jira_patch_available_backfill_budget`).
+DEFAULT_JIRA_PATCH_AVAILABLE_BACKFILL_MAX_PAGES_PER_RUN = 40
 
 # `code-style-checkstyle`'s GitHub check-run re-fetch window (issue #36
 # fixup cycle 1): a check-run that's still pending/absent is only worth
@@ -539,6 +556,50 @@ def _dedupe_issue_comment_rows(table: pa.Table) -> pa.Table:
     for row in table.to_pylist():
         best.setdefault(row["comment_id"], row)
     kept = sorted(best.values(), key=lambda r: r["comment_id"])
+    return pa.Table.from_pylist(kept, schema=table.schema)
+
+
+def _dedupe_pr_comment_rows(table: pa.Table) -> pa.Table:
+    """Keep one row per `comment_id` (issue #102) -- same natural-key dedupe
+    as `_dedupe_issue_comment_rows`/`_dedupe_pr_review_rows`; needed once
+    `pr_comment` is read for review-responsiveness's blended first-response
+    detection (a re-fetched PR re-emits its entire comment list)."""
+    if table.num_rows == 0:
+        return table
+    best: dict[str, dict[str, Any]] = {}
+    for row in table.to_pylist():
+        best.setdefault(row["comment_id"], row)
+    kept = sorted(best.values(), key=lambda r: r["comment_id"])
+    return pa.Table.from_pylist(kept, schema=table.schema)
+
+
+def _dedupe_jira_changelog_rows(table: pa.Table) -> pa.Table:
+    """Keep one row per distinct changelog history item (issue #102).
+
+    `jira_changelog.event_id` is a freshly minted `uuid4()` on every fetch
+    (`collectors/jira.py::_normalize_changelog`), so — like
+    `_dedupe_jira_review_events` above — it can't be used as the dedup key: a
+    re-fetched issue (the ordinary incremental watermark's overlap margin, or
+    the Patch-Available backfill re-covering ground the incremental fetch
+    also reached) re-emits its *entire* changelog. A history item's own
+    content is immutable once JIRA records it, so `(issue_key, changed_at,
+    field, from_value, to_value, actor_raw_value)` is a stable natural key —
+    any one occurrence is as good as another.
+    """
+    if table.num_rows == 0:
+        return table
+    best: dict[tuple, dict[str, Any]] = {}
+    for row in table.to_pylist():
+        key = (
+            row["issue_key"],
+            row["changed_at"],
+            row["field"],
+            row["from_value"],
+            row["to_value"],
+            row["actor_raw_value"],
+        )
+        best.setdefault(key, row)
+    kept = sorted(best.values(), key=lambda r: (r["issue_key"], r["changed_at"], r["field"]))
     return pa.Table.from_pylist(kept, schema=table.schema)
 
 
@@ -945,6 +1006,224 @@ def _collect_jira_comment_backfill(
     return stats
 
 
+def _jira_patch_available_backfill_budget(config: ProjectConfig) -> int:
+    """`max_pages_per_run` for the Patch-Available changelog backfill (issue
+    #102) from `projects/<id>.yaml`'s optional `jira_patch_available_backfill:`
+    block, defaulting to `DEFAULT_JIRA_PATCH_AVAILABLE_BACKFILL_MAX_PAGES_PER_RUN`
+    -- same "arbitrary extra top-level key, read defensively" pattern as
+    `_jira_comment_backfill_budget` (`ProjectConfig`'s own `extra="allow"`)."""
+    raw = getattr(config, "jira_patch_available_backfill", None)
+    if not isinstance(raw, dict):
+        raw = {}
+    return int(
+        raw.get(
+            "max_pages_per_run", DEFAULT_JIRA_PATCH_AVAILABLE_BACKFILL_MAX_PAGES_PER_RUN
+        )
+    )
+
+
+def _collect_jira_patch_available_backfill(
+    data_dir: Path,
+    run_id: str,
+    started_at: datetime,
+    max_pages: int,
+    config: ProjectConfig,
+    collector_factory: Callable[[ProjectConfig], JiraCollector] | None,
+) -> dict[str, Any]:
+    """Budgeted, resumable, page-cursor backfill of `status`/`assignee`
+    changelog history (issue #102) for every issue that ever entered `Patch
+    Available` -- a paged `project=<key> AND status WAS "Patch Available" AND
+    key > <cursor> ORDER BY key ASC` search (`collectors.jira.
+    build_patch_available_backfill_jql`), `expand=changelog`, 100 issues/page
+    (`collectors.jira.BACKFILL_PAGE_SIZE`), up to `max_pages` pages this run.
+
+    Also emits `issue_comment` metadata (issue #102: "speeds up the existing
+    comment backfill") for any touched issue not already marked checked
+    (`_jira_comment_backfill_checked_keys`) -- an issue this backfill covers
+    is also marked checked (`checked_via='backfill'`, same table/shape
+    `_record_jira_comment_checked` writes), so `_collect_jira_comment_
+    backfill`'s own eligible-set never re-fetches it. And re-emits `issue`
+    rows carrying `resolution` (needed by `patch_committed_within_365d_share`,
+    METRICS.md) -- `_dedupe_issue_rows` already picks the freshest by
+    `updated_at` at read time, so this never needs its own reconciliation.
+
+    The cursor (last issue key processed) is persisted via
+    `storage.write_watermark(..., table="patch_available_backfill_cursor")`,
+    the same watermark mechanism every other backfill in this module uses
+    (issue #53's "give a new table its own key" pattern) -- so a run that
+    fails partway through simply resumes from wherever the last *successful*
+    page's cursor was written, rather than losing progress or re-walking
+    already-covered issues. Never raises and never marks the `jira` source
+    `'failed'` on its own account, matching `_collect_jira_comment_backfill`'s
+    isolation contract.
+    """
+    stats: dict[str, Any] = {
+        "pages_fetched": 0,
+        "issues_processed": 0,
+        "changelog_rows": 0,
+        "comment_rows": 0,
+        "done": False,
+    }
+    if max_pages <= 0:
+        return stats
+
+    cursor = storage.read_watermark(data_dir, "jira", table="patch_available_backfill_cursor")
+    # issue #102 coverage tracking (site's "history still loading (x of y
+    # issues)" note): `patch_available_backfill_total` is captured once, the
+    # first time this backfill ever runs (`cursor is None`), from that
+    # unfiltered JQL's own `total` -- the whole Patch-Available population at
+    # that moment. It is deliberately NOT refreshed on every run (a `key >
+    # cursor`-filtered page's `total` only reflects the *remaining* backlog,
+    # not the whole population) -- a small, disclosed staleness (new issues
+    # reaching Patch-Available after the first run slowly grow the true
+    # population beyond this snapshot) is preferable to a shrinking,
+    # confusing denominator. `patch_available_backfill_covered` accumulates
+    # across runs so the site can show real progress without re-deriving it
+    # from the raw `jira_changelog`/`issue` tables at render time.
+    total_before_run = storage.read_watermark(
+        data_dir, "jira", table="patch_available_backfill_total"
+    )
+    covered_before_run = storage.read_watermark(
+        data_dir, "jira", table="patch_available_backfill_covered"
+    )
+    covered_so_far = int(covered_before_run) if covered_before_run else 0
+
+    try:
+        collector = (collector_factory or JiraCollector)(config)
+    except Exception as exc:  # noqa: BLE001 - an evidence source's outage must not abort the run.
+        _log("jira_patch_available_backfill_failed", error=str(exc))
+        return stats
+
+    already_checked = _jira_comment_backfill_checked_keys(data_dir)
+    checked_at = datetime.now(timezone.utc)
+    snapshot_id = f"{run_id}:jira_patch_available_backfill"
+
+    issue_rows: list[dict[str, Any]] = []
+    changelog_rows: list[dict[str, Any]] = []
+    comment_rows: list[dict[str, Any]] = []
+    checked_rows: list[dict[str, Any]] = []
+    last_key = cursor
+    done = False
+
+    try:
+        start_at = 0
+        while stats["pages_fetched"] < max_pages:
+            try:
+                payload = collector.fetch_patch_available_backfill_page(cursor, start_at)
+            except Exception as exc:  # noqa: BLE001 - one bad page must not abort the run.
+                _log(
+                    "jira_patch_available_backfill_page_failed", error=str(exc), cursor=cursor
+                )
+                break
+            issues = payload.get("issues", [])
+            total = payload.get("total", 0)
+            if cursor is None and total_before_run is None:
+                total_before_run = str(total)
+            stats["pages_fetched"] += 1
+            for raw_issue in issues:
+                key = raw_issue["key"]
+                last_key = key
+                issue_rows.append(_normalize_issue(raw_issue, snapshot_id))
+                changelog_rows.extend(_normalize_changelog(raw_issue, snapshot_id))
+                # issue #102: never re-emit comment rows for an issue already
+                # covered by the ordinary incremental fetch or the dedicated
+                # comment backfill -- `issue_comment` is deduped on
+                # `comment_id` at read time regardless, but skipping here
+                # avoids writing (and later discarding) redundant rows.
+                if key not in already_checked:
+                    found = _normalize_comments(raw_issue, snapshot_id)
+                    comment_rows.extend(found)
+                    checked_rows.append(
+                        {
+                            "issue_key": key,
+                            "checked_at": checked_at,
+                            "comment_count": len(found),
+                            "checked_via": "backfill",
+                            "source_snapshot_id": snapshot_id,
+                        }
+                    )
+                    already_checked.add(key)
+                stats["issues_processed"] += 1
+            start_at += len(issues)
+            if not issues or start_at >= total:
+                done = True
+                break
+    finally:
+        collector.close()
+
+    stats["changelog_rows"] = len(changelog_rows)
+    stats["comment_rows"] = len(comment_rows)
+    stats["done"] = done
+
+    # Separate `run_id` suffix (matches `_collect_jira_comment_backfill`'s own
+    # `f"{run_id}-comment-backfill"`) -- this run's ordinary incremental fetch
+    # already wrote a `part-<run_id>.parquet` partition for `issue`/
+    # `jira_changelog`/`issue_comment`; reusing plain `run_id` here would
+    # collide with `storage.write_partition`'s never-overwrite guarantee.
+    backfill_run_id = f"{run_id}-patch-available-backfill"
+    partition_date = started_at.date()
+    if issue_rows:
+        issue_table = _governance_validate(
+            "issue", _rows_to_table(issue_rows, _governance_get_schema("issue"))
+        )
+        storage.write_partition(
+            data_dir, "jira", "issue", partition_date, backfill_run_id, issue_table
+        )
+    if changelog_rows:
+        changelog_table = _governance_validate(
+            "jira_changelog",
+            _rows_to_table(changelog_rows, _governance_get_schema("jira_changelog")),
+        )
+        storage.write_partition(
+            data_dir, "jira", "jira_changelog", partition_date, backfill_run_id, changelog_table
+        )
+    if comment_rows:
+        comment_table = _governance_validate(
+            "issue_comment", _rows_to_table(comment_rows, _governance_get_schema("issue_comment"))
+        )
+        storage.write_partition(
+            data_dir, "jira", "issue_comment", partition_date, backfill_run_id, comment_table
+        )
+    if checked_rows:
+        checked_table = pa.Table.from_pylist(
+            checked_rows, schema=_governance_get_schema("comment_backfill_checked")
+        )
+        storage.write_partition(
+            data_dir,
+            "jira",
+            "comment_backfill_checked",
+            partition_date,
+            backfill_run_id,
+            checked_table,
+        )
+
+    if last_key and last_key != cursor:
+        storage.write_watermark(
+            data_dir, "jira", last_key, table="patch_available_backfill_cursor"
+        )
+    if total_before_run is not None:
+        storage.write_watermark(
+            data_dir, "jira", total_before_run, table="patch_available_backfill_total"
+        )
+    new_covered = covered_so_far + stats["issues_processed"]
+    storage.write_watermark(
+        data_dir, "jira", str(new_covered), table="patch_available_backfill_covered"
+    )
+    stats["n_covered"] = new_covered
+    stats["n_total"] = int(total_before_run) if total_before_run is not None else None
+
+    _log(
+        "jira_patch_available_backfill_completed",
+        run_id=run_id,
+        pages_fetched=stats["pages_fetched"],
+        issues_processed=stats["issues_processed"],
+        changelog_rows=stats["changelog_rows"],
+        comment_rows=stats["comment_rows"],
+        done=stats["done"],
+    )
+    return stats
+
+
 def _collect_jira(
     config: ProjectConfig,
     data_dir: Path,
@@ -953,6 +1232,7 @@ def _collect_jira(
     max_issues: int | None,
     collector_factory: Callable[[ProjectConfig], JiraCollector] | None,
     jira_comment_backfill_factory: Callable[[str], object] | None = None,
+    jira_patch_available_backfill_factory: Callable[[ProjectConfig], JiraCollector] | None = None,
 ) -> dict[str, Any]:
     watermark = storage.read_watermark(data_dir, "jira")
     snapshot_id = f"{run_id}:jira"
@@ -973,6 +1253,11 @@ def _collect_jira(
         # calls beyond what this source already spends.
         storage.write_partition(
             data_dir, "jira", "issue_comment", partition_date, run_id, result.comments
+        )
+        # issue #102: status/assignee changelog rides along on the same
+        # search request too (`expand=changelog`, zero extra API calls).
+        storage.write_partition(
+            data_dir, "jira", "jira_changelog", partition_date, run_id, result.changelog
         )
         # issue #79: every issue this run fetched (regardless of comment
         # count) is now current on comments -- record that so the historical
@@ -1030,6 +1315,19 @@ def _collect_jira(
         _jira_comment_backfill_budget(config),
         jira_base_url,
         jira_comment_backfill_factory,
+    )
+    # issue #102: the budgeted, resumable Patch-Available changelog backfill --
+    # same never-fail isolation as the comment backfill above (its own
+    # try/except means a hiccup here can't turn an otherwise-successful
+    # ordinary fetch into a `'failed'` jira source, and a partial backfill
+    # never marks this run degraded).
+    source_result["patch_available_backfill"] = _collect_jira_patch_available_backfill(
+        data_dir,
+        run_id,
+        started_at,
+        _jira_patch_available_backfill_budget(config),
+        config,
+        jira_patch_available_backfill_factory or collector_factory,
     )
     return source_result
 
@@ -2723,6 +3021,23 @@ def _write_metrics_snapshot(data_dir: Path, run_id: str, metrics_table: pa.Table
     return path
 
 
+def _write_review_responsiveness_snapshot(
+    data_dir: Path, run_id: str, table: pa.Table
+) -> Path:
+    """`snapshots/<run_id>/review_responsiveness_metric_value.parquet` (issue
+    #102) -- a sibling file to `metrics.parquet`, deliberately not merged
+    into it: `metrics/review_responsiveness.py`'s module docstring explains
+    why these metrics stay outside `metrics/registry.py::METRIC_IDS` and the
+    scored/composite system, the same "own snapshot file" treatment
+    `governance/fact_metrics.py`'s output gets (`governance_metric_value.
+    parquet`)."""
+    snapshot_dir = Path(data_dir) / "snapshots" / run_id
+    snapshot_dir.mkdir(parents=True, exist_ok=True)
+    path = snapshot_dir / "review_responsiveness_metric_value.parquet"
+    pq.write_table(table, path)
+    return path
+
+
 def _write_leaderboard_snapshot(data_dir: Path, run_id: str, leaderboard_table: pa.Table) -> Path:
     """`snapshots/<run_id>/leaderboard.parquet` (D19, issue #56) — a sibling
     file to `metrics.parquet`, deliberately not merged into it: the
@@ -2788,6 +3103,12 @@ def run_pipeline(
     # object]` shape as `governance_jira_comments_factory` below, since both
     # construct the same collector class from just a base URL.
     jira_comment_backfill_factory: Callable[[str], object] | None = None,
+    # issue #102: injects an offline-testable stand-in for `JiraCollector`
+    # into the Patch-Available changelog backfill (`_collect_jira_patch_
+    # available_backfill`) -- defaults to `jira_collector_factory` (or plain
+    # `JiraCollector`) when omitted, since both construct the same class from
+    # `config`.
+    jira_patch_available_backfill_factory: Callable[[ProjectConfig], JiraCollector] | None = None,
     github_collector_factory: Callable[[ProjectConfig], GitHubCollector] | None = None,
     asf_roster_collector_factory: Callable[[ProjectConfig], AsfRosterCollector] | None = None,
     ponymail_collector_factory: Callable[[ProjectConfig], PonyMailCollector] | None = None,
@@ -2875,6 +3196,7 @@ def run_pipeline(
             max_jira_issues,
             jira_collector_factory,
             jira_comment_backfill_factory,
+            jira_patch_available_backfill_factory or jira_collector_factory,
         )
     if "github" in active_sources:
         source_results["github"] = _collect_github(
@@ -2938,6 +3260,11 @@ def run_pipeline(
     # check only ever needs `EXISTS(issue_key)`, which a duplicate row across
     # partitions can't change.
     comment_backfill_checked = storage.read_table(data_dir, "jira", "comment_backfill_checked")
+    # issue #102: status/assignee changelog history, for review-responsiveness's
+    # patch-author reconstruction and status-transition first-response detection.
+    jira_changelog = _dedupe_jira_changelog_rows(
+        storage.read_table(data_dir, "jira", "jira_changelog")
+    )
     roster_raw = storage.read_table(data_dir, "asf_roster", "roster_entry")
     roster_entry = _dedupe_roster_entries(roster_raw)
     # issue #35: dev@/user@ message metadata (D3 -- always recomputed from
@@ -2949,11 +3276,13 @@ def run_pipeline(
         json.loads(ponymail_raw_watermark) if ponymail_raw_watermark else {}
     )
     # issue #54: GitHub PR/review data for metrics/dev_metrics.py's six
-    # metrics. `pr_comment` is collected (governance/site provenance) but not
-    # read here -- none of the issue #54 metrics need PR comment bodies or
-    # metadata, only pr/pr_review.
+    # metrics.
     pr = _dedupe_pr_rows(storage.read_table(data_dir, "github", "pr"))
     pr_review = _dedupe_pr_review_rows(storage.read_table(data_dir, "github", "pr_review"))
+    # issue #102: PR comment metadata is now also read -- review-responsiveness's
+    # blended first-response detection needs a PR comment (not just a review) as
+    # a qualifying GitHub-side event.
+    pr_comment = _dedupe_pr_comment_rows(storage.read_table(data_dir, "github", "pr_comment"))
 
     overrides = []
     if identity_overrides_path is not None and Path(identity_overrides_path).is_file():
@@ -3023,8 +3352,10 @@ def run_pipeline(
                 "message": message,
                 "pr": pr,
                 "pr_review": pr_review,
+                "pr_comment": pr_comment,
                 "issue_comment": issue_comment,
                 "comment_backfill_checked": comment_backfill_checked,
+                "jira_changelog": jira_changelog,
             },
             as_of=started_at.date(),
             run_id=run_id,
@@ -3071,6 +3402,34 @@ def run_pipeline(
         run_status = "degraded"
     else:
         run_status = "ok"
+
+    # issue #102: review-responsiveness metrics -- a separate, independent
+    # step (mirrors the governance compliance engine below): never gates the
+    # M0 run's exit code or `status`, since it's deliberately outside
+    # `metrics/registry.py::METRIC_IDS` (see `metrics/review_responsiveness.
+    # py`'s module docstring). A computation failure here is logged and
+    # skipped rather than failing the whole run.
+    try:
+        review_responsiveness_table = compute_review_responsiveness(
+            {
+                "contribution_event": contribution_event,
+                "review_event": review_event,
+                "issue": issue,
+                "issue_comment": issue_comment,
+                "jira_changelog": jira_changelog,
+                "pr": pr,
+                "pr_review": pr_review,
+                "pr_comment": pr_comment,
+                "identity_link": identity_link,
+            },
+            as_of=started_at.date(),
+            run_id=run_id,
+            computed_at=started_at,
+            config=config,
+        )
+        _write_review_responsiveness_snapshot(data_dir, run_id, review_responsiveness_table)
+    except Exception as exc:  # noqa: BLE001 - an informational section must never fail the run.
+        _log("review_responsiveness_computation_failed", error=f"{type(exc).__name__}: {exc}")
 
     manifest = build_manifest(
         run_id=run_id,

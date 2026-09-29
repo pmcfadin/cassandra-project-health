@@ -132,6 +132,8 @@ def issues(rows: list[dict]) -> pa.Table:
             "reporter_raw": row.get("reporter_raw"),
             "assignee_identity_id": None,
             "assignee_raw": row.get("assignee_raw"),
+            # issue #102: null on an unresolved issue.
+            "resolution": row.get("resolution"),
             "source_snapshot_id": row.get("source_snapshot_id", "snap-1"),
         }
         for row in rows
@@ -160,6 +162,8 @@ def prs(rows: list[dict]) -> pa.Table:
             "author_raw_type": "github_login",
             "author_raw_value": row.get("author_raw_value", "alice-dev"),
             "title_hash": row.get("title_hash", f"hash-{i}"),
+            # issue #102: every `CASSANDRA-NNNNN`-style key named in the title.
+            "linked_issue_keys": row.get("linked_issue_keys"),
             "created_at": row["created_at"],
             "updated_at": row.get("updated_at", row["created_at"]),
             "closed_at": row.get("closed_at"),
@@ -220,6 +224,58 @@ def issue_comments(rows: list[dict]) -> pa.Table:
     ]
     schema = get_schema("issue_comment")
     return validate("issue_comment", pa.Table.from_pylist(built, schema=schema))
+
+
+def jira_changelog(rows: list[dict]) -> pa.Table:
+    """Build a `jira_changelog` table (issue #102).
+
+    Required per row: `issue_key`, `changed_at`, `field` (`'status'` |
+    `'assignee'`). Optional: `from_value`, `to_value`, `actor_raw_value`,
+    `event_id`, `source_snapshot_id`.
+    """
+    built = [
+        {
+            "event_id": row.get("event_id", f"changelog-{i}"),
+            "issue_key": row["issue_key"],
+            "changed_at": row["changed_at"],
+            "field": row["field"],
+            "from_value": row.get("from_value"),
+            "to_value": row.get("to_value"),
+            "actor_identity_id": None,
+            "actor_raw_type": "jira_username",
+            "actor_raw_value": row.get("actor_raw_value"),
+            "source_snapshot_id": row.get("source_snapshot_id", "snap-1"),
+        }
+        for i, row in enumerate(rows)
+    ]
+    schema = get_schema("jira_changelog")
+    return validate("jira_changelog", pa.Table.from_pylist(built, schema=schema))
+
+
+def pr_comments(rows: list[dict]) -> pa.Table:
+    """Build a `pr_comment` table (issue #102).
+
+    Required per row: `repo`, `pr_number`, `created_at`. Optional:
+    `comment_id`, `review_id`, `comment_type` (default `'issue_comment'`),
+    `author_raw_value`, `source_snapshot_id`.
+    """
+    built = [
+        {
+            "comment_id": row.get("comment_id", f"pr-comment-{i}"),
+            "repo": row["repo"],
+            "pr_number": row["pr_number"],
+            "review_id": row.get("review_id"),
+            "comment_type": row.get("comment_type", "issue_comment"),
+            "author_identity_id": None,
+            "author_raw_type": "github_login",
+            "author_raw_value": row.get("author_raw_value", "carol-dev"),
+            "created_at": row["created_at"],
+            "source_snapshot_id": row.get("source_snapshot_id", "snap-1"),
+        }
+        for i, row in enumerate(rows)
+    ]
+    schema = get_schema("pr_comment")
+    return validate("pr_comment", pa.Table.from_pylist(built, schema=schema))
 
 
 def comment_backfill_checked(rows: list[dict]) -> pa.Table:

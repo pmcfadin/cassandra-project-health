@@ -5,14 +5,20 @@ configured under `pull_requests.repos` (`projects/<id>.yaml`), via the GitHub
 GraphQL API — no PR body or comment text is ever fetched into a persisted
 column. A PR's title is hashed (`pr.title_hash`, sha256 hex) immediately on
 receipt and the raw string is discarded; nothing downstream of
-`_normalize_pr` ever sees it. This mirrors DECISIONS.md D1: PR/comment
-*bodies* are Phase 2a (classification) territory, not Phase 1.
+`_normalize_pr` ever sees it, except a structured extraction of any
+`CASSANDRA-NNNNN`-style ticket key it names (`pr.linked_issue_keys`, issue
+#102) -- a small, non-content fact (the same kind of thing
+`collectors/reviewer_trailer.py::extract_issue_keys` already pulls out of a
+git commit message), not the title text. This mirrors DECISIONS.md D1:
+PR/comment *bodies* are Phase 2a (classification) territory, not Phase 1.
 
 Emits three normalized tables (ARCHITECTURE.md §3, `schema/tables.py`):
 
 - ``pr`` — one row per pull request, `author_raw_type='github_login'` /
   `author_raw_value` carrying the raw GitHub login (`*_identity_id` left
-  `null` for identity resolution, #6, to fill in later).
+  `null` for identity resolution, #6, to fill in later); `linked_issue_keys`
+  (issue #102) is the JIRA ticket key(s) the title named, used by
+  review-responsiveness to find "PRs whose title names the ticket."
 - ``pr_review`` — one row per `PullRequestReview` node, `reviewer_raw_value`
   = the reviewing user's login.
 - ``pr_comment`` — one row per comment, either a general PR-conversation
@@ -94,6 +100,7 @@ import httpx
 import pyarrow as pa
 
 from project_health.collectors.retry import exponential_backoff, is_transient_body_error
+from project_health.collectors.reviewer_trailer import extract_issue_keys
 from project_health.config import BotPattern, ProjectConfig
 from project_health.schema import get_schema, validate
 
@@ -249,6 +256,7 @@ def _normalize_pr(node: dict, repo_label: str, source_snapshot_id: str) -> dict:
     author = node.get("author") or {}
     closed_at = node.get("closedAt")
     merged_at = node.get("mergedAt")
+    title = node.get("title") or ""
     return {
         "repo": repo_label,
         "number": node["number"],
@@ -258,7 +266,13 @@ def _normalize_pr(node: dict, repo_label: str, source_snapshot_id: str) -> dict:
         "author_identity_id": None,
         "author_raw_type": "github_login",
         "author_raw_value": author.get("login"),
-        "title_hash": _hash_title(node.get("title") or ""),
+        "title_hash": _hash_title(title),
+        # issue #102: every `CASSANDRA-NNNNN`-style ticket key named in the
+        # title, extracted before the raw title is discarded (see module
+        # docstring and schema/tables.py `PR.linked_issue_keys`) -- reuses the
+        # same regex the git-commit-trailer parser already uses so a PR title
+        # and a commit trailer's "for CASSANDRA-N" clause parse identically.
+        "linked_issue_keys": list(extract_issue_keys(title)),
         "created_at": _parse_gh_timestamp(node["createdAt"]),
         "updated_at": _parse_gh_timestamp(node["updatedAt"]),
         "closed_at": _parse_gh_timestamp(closed_at) if closed_at else None,

@@ -1057,3 +1057,121 @@ apply to — see that module's docstring).
 | `governance_commits_with_ci_evidence_before_commit_share` | Commits with CI evidence on JIRA before commit | monthly | ticketed commits whose ticket's JIRA evidence has actually been checked (`details_json.n_not_checked` reports the rest) |
 | `governance_commits_with_both_ci_artefacts_share` | Commits with both CI artefacts attached | monthly | same checked/not-yet-checked rule as above |
 | `governance_commits_with_checkstyle_success_share` | Commits with a successful checkstyle run | monthly | commits with at least one recorded GitHub check-run |
+
+---
+
+## 10. Review responsiveness (descriptive only, not in the Summary Table)
+
+Registered separately from every metric above (`metrics/review_responsiveness.py`, v1.0, issue #102) —
+deliberately outside the Summary Table, `metrics/registry.py`'s `METRIC_IDS`, and the scored/composite
+system (SCORING.md): no dimension, no `role`, no `key`/`supporting` classification, same treatment
+§9's governance fact metrics get, for an analogous reason (see "Composite scoring" below). Answers, from
+data, the question this project's Community page poses: do new contributors have a hard time getting
+their patches reviewed, and is it getting worse? Neutral facts only (D25) — no thresholds, no verdicts.
+
+### Submission unit and author tier
+
+A **patch submission** is one JIRA issue that ever entered `Patch Available` (via the new `jira_changelog`
+table's `status` history, §10.1 below), together with any GitHub PRs whose title names the ticket.
+
+- `submitted_at` = `min(first Patch-Available transition, earliest linked PR created_at)`.
+- `patch_author` = the JIRA assignee at the moment of that first transition, reconstructed from
+  `jira_changelog`'s `assignee` history: the prior assignee (`from_value`) named in the first assignee
+  change *after* the transition; falling back to the issue's *current* assignee when no such later change
+  exists (or when that `from_value` is itself null — the ticket had no assignee yet at PA time); falling
+  back to whoever performed the Patch-Available transition when the issue has never had an assignee at
+  all. Tier `proxy`: a defensible stand-in for contributor identity, not a verified identity link (§0.5).
+- **Author tier** at submission: the number of *earlier* submissions by the same `patch_author`, counted
+  over the entire reconstructed history sorted by `submitted_at` — `first` (0 earlier), `2-5` (1-4
+  earlier), `6+` (5+ earlier). This is a global, cumulative count, not per-year, so the backfill (§10.1)
+  must be complete before tiers are fully trustworthy — see "Coverage" below.
+
+### Blended first-visible-response
+
+Earliest qualifying event at or after `submitted_at`, from someone other than the patch author (and, for
+a GitHub event, other than that PR's own author or any other linked PR's author on the same issue),
+excluding bots (`bot_patterns`, same identity-exclusion convention as every other M0 metric, §0.5):
+
+- a JIRA comment (`issue_comment`, existing table);
+- a JIRA status transition to `Review In Progress` or `Ready to Commit` (`jira_changelog`);
+- a GitHub PR review (`pr_review`) or PR comment (`pr_comment`) on a linked PR.
+
+No fixed priority across sources — whichever qualifying event has the earliest timestamp wins; the
+source is recorded (`jira_comment` | `jira_status` | `gh_review` | `gh_comment`) for audit (D2 rule 3).
+
+### Metrics (5, each split by tier, each reported calendar-year and trailing-12-month)
+
+1. `review_first_response_median_days` — median days from `submitted_at` to first visible response,
+   among submissions with one.
+2. `review_response_within_7d_share` / `review_response_within_30d_share` — share of submissions
+   responded to within 7/30 days; denominator is right-censored to only submissions at least 7/30 days
+   old at the run's `as_of` date (a fresh submission is excluded from the denominator entirely, never
+   counted as a miss).
+3. `review_no_visible_response_share` — share of submissions ≥30 days old with no qualifying event at
+   all. Caption/copy always says "no *visible* review" — review may have happened somewhere this project
+   doesn't track (a private message, an in-person conversation), and this metric cannot see that.
+4. `patch_committed_within_365d_share` — share of submissions ≥365 days old whose issue resolved `Fixed`
+   within 365 days of `submitted_at`.
+5. `first_patch_submissions` — count of `first`-tier submissions (newcomer volume); a plain headcount, no
+   §0.6 sample-size floor (same exemption `active_contributors_monthly`/`new_contributors_monthly`/
+   `unique_reviewers_monthly` get, issue #27 — a raw count is already the complete statistic at any n).
+
+**Direction of good:** lower for `review_first_response_median_days`/`review_no_visible_response_share`;
+higher for the two share metrics and `first_patch_submissions` — stated here for a reader's own
+interpretation, but (per "Composite scoring" below) never fed into this project's scored status/composite
+system, so no `role`/`key`/`supporting` classification is assigned.
+
+**Windows:** every stat above ships twice — dense calendar-year rows (Jan 1 – Dec 31, completed years
+only) and dense trailing-12-calendar-month rows (one per completed month) — encoded into the metric_id
+itself (`_yearly`/`_trailing12m` suffix, plus a `_first`/`_tier_2_5`/`_tier_6plus` tier suffix), since
+`metric_value` has no dedicated tier/window-kind column and a December-ending trailing-12m window would
+otherwise collide with the same year's calendar-year window on `(window_start, window_end)`. Trailing-12m
+exists because first-patch volume is small enough (~30-50/year) that a monthly window would be unreadably
+noisy, but a rolling trailing-12m view still shows trend movement between full calendar years — the
+Community page's own chart uses it for `review_response_within_30d_share` specifically.
+
+### Composite scoring: **no**, by design
+
+Three reasons this project's own registry (`scoring/registry.py`) never includes these metric ids, an
+explicit "no" rather than an oversight:
+
+1. **Coverage changes run over run.** Author tiers only mean what they claim once the Patch-Available
+   changelog backfill (§10.1) has walked the full history; a metric a composite score depends on should
+   not change meaning purely because a backfill made more progress overnight.
+2. **`patch_author` is a proxy, not a verified identity** (see above) — a composite score should not rest
+   on an unconfirmed identity signal.
+3. **Small per-year, per-tier n** (~30-50/year for `first`) — thin enough that a composite built on top
+   would swing on a handful of submissions, which is exactly the over-precision D2 rule 5 warns against.
+
+If/when the backfill completes and stabilizes across a couple of full runs, promoting
+`review_response_within_30d_share` for the `first` tier (the dimension's most direct "are newcomers being
+left waiting" read) to the scored registry is a reasonable future issue — not done here.
+
+### §10.1 New table: `jira_changelog`
+
+`status`/`assignee` changelog history items only — nothing else from a JIRA issue's changelog is ever
+stored (columns: `issue_key`, `changed_at`, `field`, `from_value`, `to_value`, `actor_raw_type`/
+`actor_raw_value`, `source_snapshot_id`). Two writers:
+
+- **Nightly:** the existing `/rest/api/2/search` request now always requests `expand=changelog` — zero
+  extra HTTP calls, since a search response embeds each issue's changelog inline and JIRA histories are
+  not paginated separately. Verified for this project: max 508 histories on one issue, 0 truncated across
+  11,754 Patch-Available issues (issue #102 research).
+- **Backfill:** a budgeted, resumable, page-cursor backfill (`project=<key> AND status WAS "Patch
+  Available" AND key > <cursor> ORDER BY key ASC`, `expand=changelog`, 100 issues/page) for the
+  ~11.7k pre-existing issues the ordinary incremental fetch's watermark will never revisit. Also emits
+  `issue_comment` metadata from the same pages (speeds up the existing comment backfill) and refreshed
+  `issue` rows carrying `resolution` (needed by `patch_committed_within_365d_share`). Comment bodies are
+  never read past normalization (D1) by either writer. Default budget: 40 pages/night → complete in
+  `ceil(11754 / 100 / 40) = 3` nights.
+
+**Coverage:** until the backfill completes, the Community page's review-responsiveness section shows a
+"history still loading (x of y issues)" note rather than presenting tiers as fully settled.
+
+### §10.2 Schema note: `pr.linked_issue_keys`
+
+A GitHub PR's title is otherwise hashed (`pr.title_hash`) and the raw string discarded (D1). This feature
+adds a structured extraction, done at the same moment: every `CASSANDRA-NNNNN`-style ticket key found in
+the title (the same regex the git-commit-trailer parser already uses), stored as `pr.linked_issue_keys` —
+never the title text itself. This is the only way to join a GitHub PR back to the JIRA issue it names
+once the raw title is gone.

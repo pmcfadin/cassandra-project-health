@@ -212,6 +212,11 @@ def _connect(tables: dict[str, pa.Table]) -> duckdb.DuckDBPyConnection:
         # `time_to_first_response_jira`'s per-month `backfill_in_progress`
         # coverage check (metrics/dev_metrics.py).
         "comment_backfill_checked",
+        # issue #102 (metrics/review_responsiveness.py): status/assignee
+        # changelog history, and PR comment metadata (previously registered
+        # nowhere -- issue #54's dev_metrics.py never needed PR comments).
+        "jira_changelog",
+        "pr_comment",
     ):
         con.register(name, _table_or_empty(tables, name))
     con.execute(

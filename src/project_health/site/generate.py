@@ -58,6 +58,7 @@ from project_health.site import chart_spec
 from project_health.site.manifest import RunManifest, load_manifest
 from project_health.site.governance_page import build_governance_page_context
 from project_health.site.leaderboard_page import build_leaderboard_page_context
+from project_health.site.review_responsiveness_page import build_review_responsiveness_context
 from project_health.site.scoring_page import build_scoring_page_context
 from project_health.site.staleness import source_staleness_badges
 from project_health.site.metrics_meta import (
@@ -956,11 +957,17 @@ def _render_pages(
     leaderboard_context = build_leaderboard_page_context(
         data_dir, run_id, out_dir, base_prefix=SUBPAGE_BASE_PREFIX, manifest=manifest
     )
+    # Review responsiveness (issue #102) -- deliberately outside the
+    # dimension-grouped metric_value/METRIC_IDS grid above (see
+    # `metrics/review_responsiveness.py`'s module docstring for why), same
+    # "own small additive call" pattern as the leaderboard immediately above.
+    review_responsiveness_context = build_review_responsiveness_context(data_dir, run_id)
     community_html = env.get_template("community.html").render(
         current_page="community",
         base_prefix=SUBPAGE_BASE_PREFIX,
         dimensions=community_dimensions,
         leaderboard=leaderboard_context,
+        review_responsiveness=review_responsiveness_context,
         **common_ctx,
     )
     _write_subpage(out_dir, "community", community_html)

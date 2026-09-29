@@ -725,6 +725,157 @@ def test_governance_page_never_renders_verdict_vocabulary(tmp_path):
     assert "request a correction" not in text
 
 
+def _review_responsiveness_row(
+    metric_id: str, window_start: date, window_end: date, value: float | None, n: int, details: dict
+) -> dict:
+    return _metric_value_row(
+        metric_id,
+        window_start,
+        window_end,
+        value,
+        n,
+        "ok" if value is not None else "insufficient_data",
+        details_json=json.dumps(details),
+    )
+
+
+def _default_review_responsiveness_rows() -> list[dict]:
+    """A small, realistic slice (issue #102): one completed year (2024) for
+    the `first` tier, enough to exercise the section's table, chart and
+    source-breakdown rendering paths."""
+    from project_health.metrics.review_responsiveness import (
+        TIER_FIRST,
+        WINDOW_TRAILING12M,
+        WINDOW_YEARLY,
+        metric_id as rr_metric_id,
+    )
+
+    rows = [
+        _review_responsiveness_row(
+            rr_metric_id("review_first_response_median_days", WINDOW_YEARLY, TIER_FIRST),
+            date(2024, 1, 1),
+            date(2024, 12, 31),
+            0.4,
+            30,
+            {"n_submitted": 30, "source_breakdown": {"jira_comment": 20, "gh_review": 10}},
+        ),
+        _review_responsiveness_row(
+            rr_metric_id("review_response_within_7d_share", WINDOW_YEARLY, TIER_FIRST),
+            date(2024, 1, 1),
+            date(2024, 12, 31),
+            0.8,
+            30,
+            {"n_hit": 24, "n_denominator": 30},
+        ),
+        _review_responsiveness_row(
+            rr_metric_id("review_response_within_30d_share", WINDOW_YEARLY, TIER_FIRST),
+            date(2024, 1, 1),
+            date(2024, 12, 31),
+            0.9,
+            30,
+            {"n_hit": 27, "n_denominator": 30},
+        ),
+        _review_responsiveness_row(
+            rr_metric_id("review_no_visible_response_share", WINDOW_YEARLY, TIER_FIRST),
+            date(2024, 1, 1),
+            date(2024, 12, 31),
+            0.05,
+            30,
+            {"n_hit": 2, "n_denominator": 30},
+        ),
+        _review_responsiveness_row(
+            rr_metric_id("patch_committed_within_365d_share", WINDOW_YEARLY, TIER_FIRST),
+            date(2024, 1, 1),
+            date(2024, 12, 31),
+            0.7,
+            30,
+            {"n_hit": 21, "n_denominator": 30},
+        ),
+        _review_responsiveness_row(
+            rr_metric_id("first_patch_submissions", WINDOW_YEARLY, None),
+            date(2024, 1, 1),
+            date(2024, 12, 31),
+            30.0,
+            30,
+            {},
+        ),
+        _review_responsiveness_row(
+            rr_metric_id("review_response_within_30d_share", WINDOW_TRAILING12M, TIER_FIRST),
+            date(2024, 1, 1),
+            date(2024, 12, 31),
+            0.9,
+            30,
+            {"n_hit": 27, "n_denominator": 30},
+        ),
+    ]
+    return rows
+
+
+def _write_review_responsiveness_snapshot(data_dir: Path, run_id: str, rows: list[dict]) -> None:
+    table = _metric_value_table(rows)
+    snapshot_dir = data_dir / "snapshots" / run_id
+    snapshot_dir.mkdir(parents=True, exist_ok=True)
+    pq.write_table(table, snapshot_dir / "review_responsiveness_metric_value.parquet")
+
+
+def _build_site_with_review_responsiveness(
+    tmp_path: Path, *, rows: list[dict] | None = None
+) -> tuple[Path, Path]:
+    data_dir = tmp_path / "data"
+    out_dir = tmp_path / "out"
+    _write_snapshot(data_dir, RUN_ID, _default_rows())
+    _write_review_responsiveness_snapshot(
+        data_dir,
+        RUN_ID,
+        _default_review_responsiveness_rows() if rows is None else rows,
+    )
+    _write_manifest(data_dir, RUN_ID, completed_at=BUILD_TIME - timedelta(hours=1))
+    generate(data_dir, RUN_ID, out_dir, now=BUILD_TIME)
+    return out_dir, data_dir
+
+
+def test_community_page_renders_review_responsiveness_section(tmp_path):
+    out_dir, _ = _build_site_with_review_responsiveness(tmp_path)
+    html_text = _community_html(out_dir)
+    assert 'id="review-responsiveness-heading"' in html_text
+    assert "First-time submitters" in html_text
+    assert "2024" in html_text
+    assert "30" in html_text  # n_submitted
+    # The trailing-12m chart spec embeds successfully; raw metric_id strings
+    # are never rendered as visible text.
+    assert "review_response_within_30d_share_trailing12m_first" not in html_text
+    assert "data-vega-spec=" in html_text
+
+
+def test_community_page_honest_empty_state_without_review_responsiveness_data(tmp_path):
+    out_dir = _build_site(tmp_path)
+    html_text = _community_html(out_dir)
+    assert 'id="review-responsiveness-heading"' in html_text
+    assert "isn&#39;t published yet" in html_text or "isn't published yet" in html_text
+
+
+def test_community_page_never_renders_verdict_vocabulary(tmp_path):
+    """D25 applies site-wide, not just to the Governance page: the new
+    review-responsiveness section must never use pass/fail/threshold/
+    verdict/compliance-style language -- rates, medians and counts only."""
+    out_dir, _ = _build_site_with_review_responsiveness(tmp_path)
+    html_text = _community_html(out_dir)
+    text = _visible_text(html_text).lower()
+
+    for banned in (
+        "fail",
+        "failing",
+        "pass rate",
+        "exempt",
+        "not in force",
+        "verdict",
+        "threshold",
+        "healthy",
+        "unhealthy",
+    ):
+        assert re.search(rf"\b{re.escape(banned)}\b", text) is None, banned
+
+
 def test_no_policy_leak_words_in_json_and_rendered_page(tmp_path):
     """Orchestrator review of 127bd5a: the CI evidence/CI artefacts columns
     leaked governance-policy.yaml's own vocabulary -- "not applicable

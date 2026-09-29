@@ -163,6 +163,16 @@ ISSUE = pa.schema(
         pa.field("reporter_raw", pa.string(), nullable=True),
         pa.field("assignee_identity_id", pa.string(), nullable=True),
         pa.field("assignee_raw", pa.string(), nullable=True),
+        # `resolution` (issue #102, additive/nullable): JIRA's `fields.resolution.name`
+        # (e.g. 'Fixed', "Won't Fix", 'Duplicate'), never present on an unresolved
+        # issue. Added for `review_first_response`/`patch_committed_within_365d_share`
+        # (METRICS.md's review-responsiveness section), which needs to distinguish a
+        # ticket actually fixed from one closed some other way -- `resolved_at` alone
+        # can't do that. Populated by both the ordinary incremental fetch
+        # (`_STANDARD_FIELDS`) and the Patch-Available changelog backfill
+        # (`pipeline._collect_jira_patch_available_backfill`), so historical issues the
+        # incremental watermark will never revisit again still get it filled in.
+        pa.field("resolution", pa.string(), nullable=True),
         pa.field("source_snapshot_id", pa.string(), nullable=False),
     ]
 )
@@ -192,6 +202,55 @@ ISSUE_COMMENT = pa.schema(
         # null when JIRA returns a comment with no author (deleted account)
         pa.field("author_raw_value", pa.string(), nullable=True),
         pa.field("created_at", TIMESTAMP_UTC, nullable=False),
+        pa.field("source_snapshot_id", pa.string(), nullable=False),
+    ]
+)
+
+# `JIRA_CHANGELOG` (issue #102, METRICS.md review-responsiveness section):
+# `status`/`assignee` changelog history items only -- nothing else from a JIRA
+# issue's changelog is ever stored (D1 stays satisfied: a changelog history item
+# never carries a comment/description body, only structured field-transition
+# metadata, but this project still scopes it down to exactly the two fields the
+# review-responsiveness metrics need, "Ready to Commit"/"Review In Progress"
+# transitions and assignee-at-submission reconstruction, rather than the full
+# changelog which JIRA can also carry for fields like `Fix Version`, labels, etc).
+#
+# Two writers populate this table with the same shape:
+# - the ordinary nightly `/rest/api/2/search` fetch (`collectors/jira.py`), which
+#   now always requests `expand=changelog` on that same request -- zero extra HTTP
+#   calls, since JIRA histories are not paginated separately and are not truncated
+#   in practice for this project (verified: max 508 histories on one issue, 0
+#   truncated across 11,754 Patch-Available issues, docs research for issue #102);
+# - the budgeted, resumable historical backfill
+#   (`pipeline._collect_jira_patch_available_backfill`), a paged
+#   `project=<key> AND status WAS "Patch Available" AND key > <cursor> ORDER BY
+#   key ASC` search (also `expand=changelog`) that walks the ~11.7k pre-existing
+#   Patch-Available issues the ordinary incremental fetch's watermark will never
+#   revisit.
+#
+# No natural single-column id exists for a JIRA changelog history item (JIRA
+# doesn't expose one) -- `event_id` is a synthetic uuid, matching `REVIEW_EVENT`'s
+# own synthetic-id convention, and downstream readers dedupe on
+# `(issue_key, changed_at, field, from_value, to_value)` if the same history item
+# is ever re-fetched by both writers (the same "downstream dedupe, not a smarter
+# watermark" convention `collectors/jira.py`'s own module docstring already
+# documents for the `issue` table).
+JIRA_CHANGELOG = pa.schema(
+    [
+        pa.field("event_id", pa.string(), nullable=False),
+        pa.field("issue_key", pa.string(), nullable=False),
+        pa.field("changed_at", TIMESTAMP_UTC, nullable=False),
+        # field: 'status' | 'assignee' -- the only two changelog item fields stored.
+        pa.field("field", pa.string(), nullable=False),
+        pa.field("from_value", pa.string(), nullable=True),
+        pa.field("to_value", pa.string(), nullable=True),
+        # raw actor identifier, same `*_raw_type`/`*_raw_value` convention as every
+        # other fact table (`ISSUE.reporter_raw`, `ISSUE_COMMENT.author_raw_value`) --
+        # a changelog history entry's `author` can be null (rare, but JIRA allows it
+        # for some system-generated transitions).
+        pa.field("actor_identity_id", pa.string(), nullable=True),
+        pa.field("actor_raw_type", pa.string(), nullable=False),
+        pa.field("actor_raw_value", pa.string(), nullable=True),
         pa.field("source_snapshot_id", pa.string(), nullable=False),
     ]
 )
@@ -499,6 +558,18 @@ PR = pa.schema(
         pa.field("author_raw_value", pa.string(), nullable=True),
         # sha256 hex digest of the PR title -- metadata only, never the raw title
         pa.field("title_hash", pa.string(), nullable=False),
+        # `linked_issue_keys` (issue #102, additive/nullable): every `CASSANDRA-NNNNN`
+        # -style ticket key found in the PR title (`collectors/reviewer_trailer.
+        # extract_issue_keys`, the same regex the git-commit-trailer parser already
+        # uses), extracted immediately alongside `title_hash` -- before the raw title
+        # string is discarded -- and never the title text itself. This is the only way
+        # to join a GitHub PR back to the JIRA issue it names once the raw title is
+        # gone (review-responsiveness's blended JIRA+GitHub first-response detection
+        # needs "PRs whose title names the ticket"). Empty list, never null, for a PR
+        # collected after this field existed; null only for a partition written before
+        # this column was added (`storage._backfill_missing_columns`) -- callers must
+        # treat null the same as an empty list, never as "not yet checked."
+        pa.field("linked_issue_keys", pa.list_(pa.string()), nullable=True),
         pa.field("created_at", TIMESTAMP_UTC, nullable=False),
         pa.field("updated_at", TIMESTAMP_UTC, nullable=False),
         pa.field("closed_at", TIMESTAMP_UTC, nullable=True),
@@ -1070,6 +1141,7 @@ TABLE_SCHEMAS: dict[str, pa.Schema] = {
     "review_event": REVIEW_EVENT,
     "issue": ISSUE,
     "issue_comment": ISSUE_COMMENT,
+    "jira_changelog": JIRA_CHANGELOG,
     "comment_backfill_checked": COMMENT_BACKFILL_CHECKED,
     "roster_entry": ROSTER_ENTRY,
     "message": MESSAGE,

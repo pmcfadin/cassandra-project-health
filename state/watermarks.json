@@ -7,8 +7,8 @@
   "governance_git": "17137ce34bd2fa89bc296e2d61d59eac9957b787",
   "governance_git:commit_record_parser_version": "2",
   "jira": "2026-09-29T00:47:03+00:00",
-  "jira:patch_available_backfill_covered": "4000",
-  "jira:patch_available_backfill_cursor": "CASSANDRA-7275",
+  "jira:patch_available_backfill_covered": "8000",
+  "jira:patch_available_backfill_cursor": "CASSANDRA-15410",
   "jira:patch_available_backfill_total": "11754",
   "ponymail": "{\"dev\": \"2026-08\", \"user\": \"2026-08\"}"
 }

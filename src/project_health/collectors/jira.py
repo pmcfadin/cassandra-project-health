@@ -1,15 +1,12 @@
 """ASF JIRA collector (ARCHITECTURE.md §2.2 `IssueTrackerAdapter`, M0 subset).
 
-M0 scope is issues (plus comment *metadata*, issue #54) — no changelog yet
-(that would extend this module without changing its shape, per
-ARCHITECTURE.md §2.2's Protocol split).
-
-Emits three normalized tables (ARCHITECTURE.md §3, `schema/tables.py`):
+Emits four normalized tables (ARCHITECTURE.md §3, `schema/tables.py`):
 
 - ``issue`` — one row per fetched issue, with ``reporter_raw``/``assignee_raw``
   carrying the raw JIRA username (``fields.reporter.name`` /
   ``fields.assignee.name``) and ``*_identity_id`` left ``null`` for identity
-  resolution (#6) to fill in later.
+  resolution (#6) to fill in later. ``resolution`` (issue #102) carries
+  ``fields.resolution.name`` (e.g. ``'Fixed'``), null on an unresolved issue.
 - ``review_event`` — one row per reviewer named in either of the two
   configured JIRA custom fields (``reviewer_extraction.jira_fields`` in
   ``projects/<id>.yaml`` — field ids are never hard-coded here), with
@@ -26,8 +23,20 @@ Emits three normalized tables (ARCHITECTURE.md §3, `schema/tables.py`):
   row growth per issue (earliest comments kept, since "first response" only
   ever needs the earliest ones) rather than storing an unbounded comment
   history this project has no other use for yet.
+- ``jira_changelog`` (issue #102) — `status`/`assignee` changelog history
+  items only, nothing else (`schema/tables.py` `JIRA_CHANGELOG` docstring).
+  This *also* rides along on the same `/rest/api/2/search` request: every
+  call now requests `expand=changelog`, which is zero extra HTTP calls (a
+  search response embeds each issue's changelog inline; JIRA histories are
+  not paginated separately from the issue search, and empirically are not
+  truncated for this project — max 508 histories seen on one issue, 0
+  truncated across 11,754 Patch-Available issues, per issue #102's own
+  research). Used by the review-responsiveness metrics
+  (METRICS.md) to reconstruct the patch author at submission time and to
+  detect a `Review In Progress`/`Ready to Commit` status transition as a
+  qualifying first-response event.
 
-All three tables are returned already validated against their declared
+All four tables are returned already validated against their declared
 schema (``project_health.schema.validate``).
 
 ## Watermark strategy — why it isn't a naive `max(updated)`
@@ -102,7 +111,18 @@ _STANDARD_FIELDS = (
     # (see module docstring) -- `fields.comment.comments[]` gives
     # `author`/`created` for `issue_comment` without a second endpoint.
     "comment",
+    # issue #102: `fields.resolution.name` (e.g. 'Fixed'), null on an
+    # unresolved issue -- needed by `patch_committed_within_365d_share`,
+    # which `resolutiondate` alone can't answer ("resolved" isn't "fixed").
+    "resolution",
 )
+
+# issue #102: `expand=changelog` embeds each issue's changelog histories
+# inline in the same `/rest/api/2/search` response -- zero extra HTTP calls.
+# `_normalize_changelog` below keeps only `status`/`assignee` history items
+# (`schema/tables.py` `JIRA_CHANGELOG` docstring).
+_EXPAND_CHANGELOG = "changelog"
+_CHANGELOG_FIELDS = frozenset({"status", "assignee"})
 
 # issue #54: a per-issue cap on how many of an issue's earliest comments are
 # stored as `issue_comment` rows. `time_to_first_response_jira` only ever
@@ -125,6 +145,9 @@ class JiraCollectionResult:
     # issue #54: comment metadata rows (author, created -- never the body),
     # capped per issue at `MAX_COMMENTS_PER_ISSUE_STORED`.
     comments: pa.Table
+    # issue #102: status/assignee changelog history rows (schema/tables.py
+    # `JIRA_CHANGELOG`).
+    changelog: pa.Table
     # Full-precision ISO 8601 string of max(updated) seen this run, or the
     # input watermark unchanged if no issues were fetched. `None` only when
     # there was no prior watermark and nothing was fetched. Callers persist
@@ -135,6 +158,7 @@ class JiraCollectionResult:
     issue_count: int
     review_event_count: int
     comment_count: int
+    changelog_count: int
 
 
 # --- Timestamp / JQL helpers -------------------------------------------------
@@ -149,6 +173,37 @@ def _parse_jira_timestamp(value: str) -> datetime:
     in the fractional-second digits.
     """
     return datetime.strptime(value, "%Y-%m-%dT%H:%M:%S.%f%z").astimezone(timezone.utc)
+
+
+# issue #102: fields requested by the Patch-Available changelog backfill's
+# dedicated search -- narrower than `_STANDARD_FIELDS` (no `summary`,
+# `reporter`, `priority`, `issuetype`) since the backfill only needs enough
+# to reconstruct `issue.resolution`/`resolved_at` and to emit `jira_changelog`/
+# `issue_comment` rows; `updated` is included (beyond the issue's own literal
+# field list) purely so a backfilled `issue` row can satisfy `ISSUE.updated_at`
+# `nullable=False` -- it costs nothing extra (still one field in the same
+# request) and changes no behavior the issue's spec cares about.
+BACKFILL_FIELDS = "comment,assignee,created,resolution,resolutiondate,status,updated"
+
+# issue #102: page size for the Patch-Available changelog backfill.
+BACKFILL_PAGE_SIZE = 100
+
+
+def build_patch_available_backfill_jql(project_key: str, cursor: str | None) -> str:
+    """JQL for the budgeted, resumable Patch-Available changelog backfill
+    (issue #102): every issue that ever entered `Patch Available`, walked in
+    ascending `key` order so a page-cursor (the last issue key processed)
+    can resume exactly where the previous run left off.
+
+    `cursor` is `None` on the very first run (no `key >` clause -- start from
+    the beginning of the project); otherwise a prior run's last-processed
+    issue key.
+    """
+    jql = f'project={project_key} AND status WAS "Patch Available"'
+    if cursor:
+        jql += f' AND key > "{cursor}"'
+    jql += " ORDER BY key ASC"
+    return jql
 
 
 def build_jql(project_key: str, watermark: str | None) -> str:
@@ -191,6 +246,7 @@ def _normalize_issue(raw: dict, source_snapshot_id: str) -> dict:
     status = fields.get("status") or {}
     priority = fields.get("priority") or {}
     issuetype = fields.get("issuetype") or {}
+    resolution = fields.get("resolution") or {}
 
     resolutiondate = fields.get("resolutiondate")
 
@@ -208,6 +264,8 @@ def _normalize_issue(raw: dict, source_snapshot_id: str) -> dict:
         "reporter_raw": reporter.get("name"),
         "assignee_identity_id": None,
         "assignee_raw": assignee.get("name"),
+        # issue #102: null when the issue has never been resolved.
+        "resolution": resolution.get("name"),
         "source_snapshot_id": source_snapshot_id,
     }
 
@@ -322,6 +380,49 @@ def _normalize_comments(raw: dict, source_snapshot_id: str) -> list[dict]:
                 "source_snapshot_id": source_snapshot_id,
             }
         )
+    return rows
+
+
+def _normalize_changelog(raw: dict, source_snapshot_id: str) -> list[dict]:
+    """Build `jira_changelog` rows (schema/tables.py `JIRA_CHANGELOG`, issue
+    #102) for one issue's `changelog.histories[].items[]` (present only when
+    the request used `expand=changelog`) -- kept to `status`/`assignee`
+    history items only, per `_CHANGELOG_FIELDS`; nothing else from the
+    changelog (e.g. `Fix Version`, labels, `resolution`) is stored.
+
+    A history entry's `author` can be null for some system-generated
+    transitions; `actor_raw_value` is then null, matching `ISSUE_COMMENT`'s
+    same nullable-author convention.
+    """
+    issue_key = raw["key"]
+    changelog = raw.get("changelog") or {}
+    histories = changelog.get("histories") or []
+    rows = []
+    for history in histories:
+        created = history.get("created")
+        if not created:
+            continue
+        author = history.get("author") or {}
+        actor_raw_value = author.get("name")
+        changed_at = _parse_jira_timestamp(created)
+        for item in history.get("items") or []:
+            field = item.get("field")
+            if field not in _CHANGELOG_FIELDS:
+                continue
+            rows.append(
+                {
+                    "event_id": str(uuid.uuid4()),
+                    "issue_key": issue_key,
+                    "changed_at": changed_at,
+                    "field": field,
+                    "from_value": item.get("fromString"),
+                    "to_value": item.get("toString"),
+                    "actor_identity_id": None,
+                    "actor_raw_type": "jira_username",
+                    "actor_raw_value": actor_raw_value,
+                    "source_snapshot_id": source_snapshot_id,
+                }
+            )
     return rows
 
 
@@ -476,6 +577,11 @@ class JiraCollector:
         `max_issues`, when set, stops iteration early (used by the live
         smoke check, issue #5, to stay at or under 200 issues) without
         requesting a page beyond what's needed.
+
+        Always requests `expand=changelog` (issue #102) -- a search response
+        embeds each issue's changelog histories inline, so this costs zero
+        extra HTTP calls; `_normalize_changelog` keeps only the
+        `status`/`assignee` history items.
         """
         jql = build_jql(self._project_key, watermark)
         fields_param = self._fields_param()
@@ -488,6 +594,7 @@ class JiraCollector:
                 "startAt": start_at,
                 "maxResults": self._page_size,
                 "fields": fields_param,
+                "expand": _EXPAND_CHANGELOG,
             }
             response = self._get_with_retry("/rest/api/2/search", params)
             payload = response.json()
@@ -502,6 +609,27 @@ class JiraCollector:
             if len(issues) < self._page_size:
                 return
             start_at += len(issues)
+
+    def fetch_patch_available_backfill_page(
+        self, cursor: str | None, start_at: int, page_size: int = BACKFILL_PAGE_SIZE
+    ) -> dict:
+        """Fetch one raw `/rest/api/2/search` page for the Patch-Available
+        changelog backfill (issue #102): `build_patch_available_backfill_jql`,
+        `expand=changelog`, `BACKFILL_FIELDS`. Returns the raw JSON payload
+        (`issues`, `total`) so the caller (`pipeline._collect_jira_patch_
+        available_backfill`) can drive its own page-budget loop and persist
+        the resulting cursor.
+        """
+        jql = build_patch_available_backfill_jql(self._project_key, cursor)
+        params = {
+            "jql": jql,
+            "startAt": start_at,
+            "maxResults": page_size,
+            "fields": BACKFILL_FIELDS,
+            "expand": _EXPAND_CHANGELOG,
+        }
+        response = self._get_with_retry("/rest/api/2/search", params)
+        return response.json()
 
     def collect(
         self,
@@ -522,6 +650,7 @@ class JiraCollector:
         issue_rows: list[dict] = []
         review_rows: list[dict] = []
         comment_rows: list[dict] = []
+        changelog_rows: list[dict] = []
         max_updated: datetime | None = None
 
         for raw_issue in self.fetch_issues(watermark=watermark, max_issues=max_issues):
@@ -537,6 +666,7 @@ class JiraCollector:
                 )
             )
             comment_rows.extend(_normalize_comments(raw_issue, snapshot_id))
+            changelog_rows.extend(_normalize_changelog(raw_issue, snapshot_id))
 
         issues_table = validate("issue", _rows_to_table(issue_rows, get_schema("issue")))
         review_table = validate(
@@ -545,6 +675,9 @@ class JiraCollector:
         comments_table = validate(
             "issue_comment", _rows_to_table(comment_rows, get_schema("issue_comment"))
         )
+        changelog_table = validate(
+            "jira_changelog", _rows_to_table(changelog_rows, get_schema("jira_changelog"))
+        )
 
         next_watermark = max_updated.isoformat() if max_updated is not None else watermark
 
@@ -552,8 +685,10 @@ class JiraCollector:
             issues=issues_table,
             review_events=review_table,
             comments=comments_table,
+            changelog=changelog_table,
             next_watermark=next_watermark,
             issue_count=len(issue_rows),
             review_event_count=len(review_rows),
             comment_count=len(comment_rows),
+            changelog_count=len(changelog_rows),
         )

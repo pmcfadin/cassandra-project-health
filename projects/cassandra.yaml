@@ -218,3 +218,13 @@ governance:
 # backlog in roughly 2-3 weeks.
 jira_comment_backfill:
   max_issues_per_run: 1000
+
+# Patch-Available changelog backfill (issue #102, review-responsiveness
+# metrics): a paged `project=CASSANDRA AND status WAS "Patch Available" AND
+# key > <cursor> ORDER BY key ASC` search (`expand=changelog`), 100 issues
+# per page (`collectors.jira.BACKFILL_PAGE_SIZE`), for the ~11,754
+# pre-existing Patch-Available issues the ordinary incremental fetch's
+# watermark will never revisit. `max_pages_per_run` pages/night -> at the
+# default, `ceil(11754 / 100 / 40) = 3` nights to reach full coverage.
+jira_patch_available_backfill:
+  max_pages_per_run: 40

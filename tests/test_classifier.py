@@ -21,7 +21,9 @@ import pytest
 from typesafe_sdk import RetryPolicy
 
 from project_health.classify.classifier import (
+    BAD_REQUEST_STATUS,
     DEFAULT_RETRYABLE_STATUSES,
+    MAX_TOKENS_EXCEEDED_ERROR_TYPE,
     NO_CREDITS_STATUS,
     PAUSED_STATUSES,
     ClassificationCache,
@@ -39,11 +41,13 @@ from project_health.classify.classifier import (
     load_jev_key_from_dotenv,
     load_pricing_config,
 )
+from project_health.classify.preprocess import TEXT_BUDGET_CHARS
 from project_health.classify.questions import (
     EXPECTED_MODEL,
     MESSAGE_LEVEL_LABELS,
     load_question_set,
 )
+from project_health.classify.text_fetch import build_state
 from project_health.schema import get_schema
 
 FIXED_NOW = datetime(2026, 9, 25, 12, 0, 0, tzinfo=timezone.utc)
@@ -804,6 +808,209 @@ class TestNoCreditsPause:
     def test_no_credits_status_constant_is_402(self):
         assert NO_CREDITS_STATUS == 402
         assert NO_CREDITS_STATUS not in DEFAULT_RETRYABLE_STATUSES
+
+
+# --- Length budget + 400 max_tokens_exceeded, issue #115 ----------------------------
+
+
+def _max_tokens_exceeded_body() -> dict:
+    """The exact 400 body issue #115's real crash report showed:
+    `TypeSafeBadRequestError: 400 {"detail":{"error_type":"max_tokens_exceeded"}}`."""
+    return {"detail": {"error_type": "max_tokens_exceeded"}}
+
+
+class TestLengthBudgetHashStability:
+    """The change's own load-bearing guarantee: a message already under the
+    length budget must be sent, and hashed, byte-for-byte exactly as it was
+    before this change -- otherwise the existing ~27k-record cache would go
+    cold for every message it already covers."""
+
+    def test_under_budget_message_produces_the_same_state_and_hash_as_before(
+        self, tmp_path: Path
+    ):
+        call_log: list[dict] = []
+        transport = _mock_transport(
+            fixed_response={"model": EXPECTED_MODEL, "usage": _usage(), "answers": _full_answers()},
+            call_log=call_log,
+        )
+        classifier = _classifier(tmp_path, transport=transport)
+        message = NormalizedMessage("m1", "t1", "mailing_list", "a short, ordinary message")
+        context = ParentContext(text="a short parent")
+
+        record = classifier.classify(message, context, use_cache=False)
+
+        # The exact request body / hash the pre-#115 code would have sent and
+        # computed: `build_state`/`compute_input_hash` over the message's own
+        # (untouched) text, with no truncation step in between.
+        expected_state = build_state(message.text, message.source, context.text)
+        expected_hash = compute_input_hash(
+            expected_state, classifier.question_set_version, classifier.model_id
+        )
+        assert call_log[0]["state"] == expected_state
+        assert record.input_hash == expected_hash
+
+    def test_under_budget_message_in_run_also_keeps_the_same_hash(self, tmp_path: Path):
+        call_log: list[dict] = []
+        transport = _mock_transport(
+            fixed_response={"model": EXPECTED_MODEL, "usage": _usage(), "answers": _full_answers()},
+            call_log=call_log,
+        )
+        classifier = _classifier(tmp_path, async_transport=transport)
+        message = NormalizedMessage("m1", "t1", "mailing_list", "a short, ordinary message")
+        context = ParentContext(text="a short parent")
+
+        result = classifier.run([(message, context)])
+
+        expected_state = build_state(message.text, message.source, context.text)
+        expected_hash = compute_input_hash(
+            expected_state, classifier.question_set_version, classifier.model_id
+        )
+        assert call_log[0]["state"] == expected_state
+        assert result.records[0].input_hash == expected_hash
+        assert result.truncated == 0
+
+
+class TestLengthBudgetTruncationInRun:
+    def test_oversized_message_is_truncated_before_being_sent_and_still_classified(
+        self, tmp_path: Path
+    ):
+        call_log: list[dict] = []
+        transport = _mock_transport(
+            fixed_response={"model": EXPECTED_MODEL, "usage": _usage(), "answers": _full_answers()},
+            call_log=call_log,
+        )
+        classifier = _classifier(tmp_path, async_transport=transport)
+        oversized_text = "word " * ((TEXT_BUDGET_CHARS // 5) + 2_000)  # well over budget
+        message = NormalizedMessage("m1", "t1", "mailing_list", oversized_text)
+
+        result = classifier.run([(message, ParentContext())])
+
+        assert result.status == "completed"
+        assert result.truncated == 1
+        assert result.skipped == 0
+        assert len(result.records) == 1
+        sent_text = call_log[0]["state"]["message"]["text"]
+        assert len(sent_text) <= TEXT_BUDGET_CHARS
+        assert "truncated" in sent_text  # TRUNCATION_MARKER
+
+    def test_normal_sized_messages_in_the_same_batch_are_not_marked_truncated(
+        self, tmp_path: Path
+    ):
+        call_log: list[dict] = []
+        transport = _mock_transport(
+            fixed_response={"model": EXPECTED_MODEL, "usage": _usage(), "answers": _full_answers()},
+            call_log=call_log,
+        )
+        classifier = _classifier(tmp_path, async_transport=transport, concurrency=1)
+        oversized_text = "word " * ((TEXT_BUDGET_CHARS // 5) + 2_000)
+        items = [
+            (NormalizedMessage("m1", "t1", "mailing_list", oversized_text), ParentContext()),
+            (NormalizedMessage("m2", "t1", "mailing_list", "a short message"), ParentContext()),
+        ]
+
+        result = classifier.run(items)
+
+        assert result.truncated == 1  # only m1
+        assert len(result.records) == 2
+
+
+class TestBadRequestNeverAbortsTheRun:
+    def test_max_tokens_exceeded_then_success_on_halved_budget_retry(self, tmp_path: Path):
+        responses = [
+            (400, _max_tokens_exceeded_body()),
+            (200, {"model": EXPECTED_MODEL, "usage": _usage(), "answers": _full_answers(0.7)}),
+        ]
+        transport = _mock_transport(responses=responses)
+        classifier = _classifier(tmp_path, async_transport=transport, concurrency=1)
+        message = NormalizedMessage("m1", "t1", "mailing_list", "a short message")
+
+        result = classifier.run([(message, ParentContext())])
+
+        assert result.status == "completed"
+        assert result.skipped == 0
+        assert result.skip_reasons == {}
+        assert result.truncated == 1  # the halved-budget retry counts as truncated
+        assert result.calls_made == 1
+        assert len(result.records) == 1
+        assert result.records[0].message_id == "m1"
+        assert result.records[0].labels["technical_disagreement"].probability == pytest.approx(0.7)
+
+    def test_max_tokens_exceeded_twice_is_skipped_not_raised_and_the_run_continues(
+        self, tmp_path: Path
+    ):
+        responses = [
+            (400, _max_tokens_exceeded_body()),  # m0, first attempt
+            (400, _max_tokens_exceeded_body()),  # m0, halved-budget retry
+            (200, {"model": EXPECTED_MODEL, "usage": _usage(), "answers": _full_answers(0.4)}),
+        ]
+        transport = _mock_transport(responses=responses)
+        classifier = _classifier(tmp_path, async_transport=transport, concurrency=1)
+        items = [
+            (
+                NormalizedMessage("m0", "t1", "mailing_list", "too long, apparently"),
+                ParentContext(),
+            ),
+            (NormalizedMessage("m1", "t1", "mailing_list", "a fine message"), ParentContext()),
+        ]
+
+        result = classifier.run(items)  # must not raise
+
+        assert result.status == "completed"
+        assert result.skipped == 1
+        assert result.skip_reasons == {"skipped_too_long": 1}
+        assert result.calls_made == 1
+        assert len(result.records) == 1
+        assert result.records[0].message_id == "m1"
+
+    def test_a_different_400_reason_is_skipped_immediately_with_no_retry(self, tmp_path: Path):
+        call_log: list[dict] = []
+        responses = [(400, {"detail": {"error_type": "invalid_state"}})]
+        transport = _mock_transport(responses=responses, call_log=call_log)
+        classifier = _classifier(tmp_path, async_transport=transport, concurrency=1)
+        message = NormalizedMessage("m1", "t1", "mailing_list", "text")
+
+        result = classifier.run([(message, ParentContext())])
+
+        assert result.status == "completed"
+        assert result.skipped == 1
+        assert result.skip_reasons == {"skipped_400_invalid_state": 1}
+        assert result.truncated == 0
+        assert result.records == []
+        assert len(call_log) == 1  # never retried
+
+    def test_a_400_with_no_recognizable_error_type_is_skipped_as_unknown(self, tmp_path: Path):
+        responses = [(400, {"error": "something about the request was invalid"})]
+        transport = _mock_transport(responses=responses)
+        classifier = _classifier(tmp_path, async_transport=transport, concurrency=1)
+        message = NormalizedMessage("m1", "t1", "mailing_list", "text")
+
+        result = classifier.run([(message, ParentContext())])
+
+        assert result.skipped == 1
+        assert result.skip_reasons == {"skipped_400_unknown": 1}
+
+    def test_bad_request_status_constant_is_400(self):
+        assert BAD_REQUEST_STATUS == 400
+        assert BAD_REQUEST_STATUS not in DEFAULT_RETRYABLE_STATUSES
+
+    def test_max_tokens_exceeded_error_type_constant(self):
+        assert MAX_TOKENS_EXCEEDED_ERROR_TYPE == "max_tokens_exceeded"
+
+
+class TestRunResultDefaults:
+    def test_truncated_skipped_and_skip_reasons_default_to_empty(self):
+        result = RunResult(
+            status="completed",
+            records=[],
+            calls_made=0,
+            cache_hits=0,
+            input_tokens_used=0,
+            output_tokens_used=0,
+            estimated_cost_usd=0.0,
+        )
+        assert result.truncated == 0
+        assert result.skipped == 0
+        assert result.skip_reasons == {}
 
 
 # --- Retries (429/529) ----------------------------------------------------------------

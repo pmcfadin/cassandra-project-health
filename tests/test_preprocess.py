@@ -11,6 +11,8 @@ from __future__ import annotations
 from project_health.classify.preprocess import (
     CODE_PLACEHOLDER,
     STACKTRACE_PLACEHOLDER,
+    TEXT_BUDGET_CHARS,
+    TRUNCATION_MARKER,
     collapse_log_dumps,
     is_automated_sender,
     normalize_whitespace,
@@ -21,6 +23,7 @@ from project_health.classify.preprocess import (
     strip_quoted_text,
     strip_signature,
     strip_stack_traces,
+    truncate_for_length_budget,
 )
 
 
@@ -384,3 +387,98 @@ class TestIsAutomatedSender:
 
     def test_no_patterns_never_matches(self):
         assert is_automated_sender("anyone@example.com", []) is False
+
+
+# --- truncate_for_length_budget (issue #115) -----------------------------------------
+
+
+class TestTruncateForLengthBudget:
+    def test_short_message_and_parent_pass_through_unchanged(self):
+        message_text, parent_text, truncated = truncate_for_length_budget(
+            "a short message", "a short parent"
+        )
+        assert message_text == "a short message"
+        assert parent_text == "a short parent"
+        assert truncated is False
+
+    def test_short_message_with_no_parent_passes_through_unchanged(self):
+        message_text, parent_text, truncated = truncate_for_length_budget("a short message", None)
+        assert message_text == "a short message"
+        assert parent_text is None
+        assert truncated is False
+
+    def test_message_under_budget_produces_byte_identical_output(self):
+        """The exact requirement issue #115 hangs cache stability on: a
+        message (with or without a parent) whose combined length is already
+        under the budget must come back completely untouched, so
+        `classifier.compute_input_hash` -- computed from this same text --
+        is unchanged from before this change, for every already-cached
+        record."""
+        message_text = "x" * (TEXT_BUDGET_CHARS - 100)
+        parent_text = "y" * 50
+        result = truncate_for_length_budget(message_text, parent_text)
+        assert result == (message_text, parent_text, False)
+
+    def test_parent_is_trimmed_before_the_message_is_touched(self):
+        message_text = "m" * 100
+        parent_text = "p" * (TEXT_BUDGET_CHARS)  # combined pushes well over budget
+        new_message, new_parent, truncated = truncate_for_length_budget(
+            message_text, parent_text, budget_chars=1_000
+        )
+        assert new_message == message_text  # message untouched
+        assert truncated is True
+        assert new_parent is not None
+        assert len(new_parent) < len(parent_text)
+        assert new_parent.endswith(TRUNCATION_MARKER)
+        assert len(new_message) + len(new_parent) == 1_000
+
+    def test_parent_dropped_entirely_when_no_room_remains(self):
+        message_text = "m" * 999
+        parent_text = "p" * 500
+        new_message, new_parent, truncated = truncate_for_length_budget(
+            message_text, parent_text, budget_chars=1_000
+        )
+        assert new_message == message_text
+        assert new_parent is None
+        assert truncated is True
+
+    def test_message_alone_over_budget_is_truncated_and_parent_dropped(self):
+        message_text = "m" * 5_000
+        parent_text = "some parent context"
+        new_message, new_parent, truncated = truncate_for_length_budget(
+            message_text, parent_text, budget_chars=1_000
+        )
+        assert truncated is True
+        assert new_parent is None
+        assert len(new_message) == 1_000
+        assert new_message.endswith(TRUNCATION_MARKER)
+        assert new_message.startswith("m" * 10)  # head of the message is kept
+
+    def test_message_alone_over_budget_with_no_parent(self):
+        message_text = "m" * 5_000
+        new_message, new_parent, truncated = truncate_for_length_budget(
+            message_text, None, budget_chars=1_000
+        )
+        assert truncated is True
+        assert new_parent is None
+        assert len(new_message) == 1_000
+        assert new_message.endswith(TRUNCATION_MARKER)
+
+    def test_deterministic_same_input_same_output(self):
+        message_text = "m" * 5_000
+        parent_text = "p" * 5_000
+        first = truncate_for_length_budget(message_text, parent_text, budget_chars=2_000)
+        second = truncate_for_length_budget(message_text, parent_text, budget_chars=2_000)
+        assert first == second
+
+    def test_smaller_budget_param_truncates_further_than_default(self):
+        """Exercises the exact knob `classifier.py`'s halved-budget 400
+        retry uses -- a smaller `budget_chars` on the same original text
+        produces a shorter (or equally truncated) result."""
+        message_text = "m" * 60_000
+        parent_text = "p" * 5_000
+        default_message, _, _ = truncate_for_length_budget(message_text, parent_text)
+        halved_message, _, _ = truncate_for_length_budget(
+            message_text, parent_text, budget_chars=TEXT_BUDGET_CHARS // 2
+        )
+        assert len(halved_message) < len(default_message)

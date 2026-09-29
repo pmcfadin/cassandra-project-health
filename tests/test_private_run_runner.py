@@ -22,6 +22,7 @@ import pyarrow as pa
 import yaml
 
 from project_health import storage
+from project_health.classify.preprocess import TEXT_BUDGET_CHARS
 from project_health.classify.questions import EXPECTED_MODEL, MESSAGE_LEVEL_LABELS
 from project_health.config import ProjectConfig, load_project
 from project_health.private_run.runner import (
@@ -976,3 +977,52 @@ class TestRunPrivateRunEndToEnd:
         )
         assert result.aggregates["partial_run"] is None
         assert "PARTIAL RUN" not in result.report_path.read_text(encoding="utf-8")
+
+
+class TestOversizedMessageCoverage:
+    """Issue #115: a message long enough to need the length-budget truncation
+    (or, in the real world, to crash the run outright without it) must still
+    get classified, and its truncated/skipped counts must show up in the
+    report's coverage section -- not silently disappear."""
+
+    def test_oversized_message_is_truncated_classified_and_reported_in_coverage(
+        self, tmp_path
+    ):
+        config = _project_config(tmp_path)
+        data_dir, ponymail_months, jira_comments = _small_fixture(tmp_path)
+        # issue #115's real failure: one long pasted body, well over the
+        # documented Jev length budget, sent whole.
+        oversized_body = "word " * ((TEXT_BUDGET_CHARS // 5) + 2_000)
+        ponymail_months["2024-01"]["emails"][0]["body"] = oversized_body
+        out_dir = tmp_path / "out"
+
+        result = run_private_run(
+            project_config=config,
+            data_dir=data_dir,
+            out_dir=out_dir,
+            quarters=["2024Q1"],
+            api_key="test-key",
+            monthly_cap_usd=1000.0,
+            bootstrap_iterations=5,
+            ponymail_transport=_ponymail_transport(ponymail_months),
+            jira_transport=_jira_paginating_transport(jira_comments),
+            jev_async_transport=_jev_transport(probability=0.6),
+        )
+
+        # Every sampled message still got classified -- the whole point of
+        # #115 is that this no longer crashes the run.
+        assert result.aggregates["venue_totals"]["mailing_list"]["messages_classified"] == 3
+
+        partial = result.aggregates["partial_run"]
+        assert partial is not None  # coverage section renders even though fully classified
+        # 2, not 1: m1's own oversized text is truncated, *and* m2 (a reply
+        # to m1) carries m1's oversized text as its parent context, which is
+        # also over budget and gets trimmed.
+        assert partial["messages_truncated"] == 2
+        assert partial["messages_skipped"] == 0
+        assert partial["messages_classified"] == partial["messages_sampled"]
+
+        report_text = result.report_path.read_text(encoding="utf-8")
+        assert "PARTIAL RUN" in report_text
+        assert "Truncated to fit Jev's per-request length budget: 2" in report_text
+        assert "Skipped (never classified" in report_text

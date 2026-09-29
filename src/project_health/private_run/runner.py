@@ -40,7 +40,11 @@ from project_health.classify.classifier import (
     RunResult,
     compute_input_hash,
 )
-from project_health.classify.preprocess import is_automated_sender, preprocess_text
+from project_health.classify.preprocess import (
+    is_automated_sender,
+    preprocess_text,
+    truncate_for_length_budget,
+)
 from project_health.classify.text_fetch import (
     JiraCommentRef,
     JiraCommentTextFetcher,
@@ -262,10 +266,23 @@ def _fan_out_by_call_id(
     message's id to reach that hash -- looking records up by `record.
     message_id` would silently drop every later duplicate from
     aggregation.
+
+    Issue #115: `classifier.classify`/`run_async` truncate `message.text`/
+    `context.text` to the length budget *before* hashing, so this function
+    must recompute the identical, truncated state to land on the same hash
+    the classifier actually stored under -- recomputing from the raw,
+    untruncated text here would silently "lose" every truncated message's
+    record. A message that needed the classifier's halved-budget 400 retry
+    (rather than being caught by this default-budget truncation on the
+    first attempt) is the one case this can still miss -- a narrow,
+    documented gap, not the common path.
     """
     result: dict[str, ClassificationRecord] = {}
     for pm in pending:
-        state = build_state(pm.normalized.text, pm.normalized.source, pm.context.text)
+        message_text, parent_text, _truncated = truncate_for_length_budget(
+            pm.normalized.text, pm.context.text
+        )
+        state = build_state(message_text, pm.normalized.source, parent_text)
         input_hash = compute_input_hash(state, classifier.question_set_version, classifier.model_id)
         record = cache.get(input_hash)
         if record is not None:
@@ -676,8 +693,14 @@ def run_private_run(
 
     total_sampled = len(pending)
     total_classified = len(records_by_call_id)
+    # Issue #115: a truncated-but-still-classified message never makes
+    # `total_classified` fall below `total_sampled` on its own (truncation
+    # doesn't drop the message, only shortens it), so the coverage section
+    # below also renders whenever this run's classify step truncated or
+    # skipped anything -- not only when messages are missing outright -- since
+    # that's the section those per-message counts belong in.
     partial_run: dict[str, Any] | None = None
-    if total_classified < total_sampled:
+    if total_classified < total_sampled or run_result.truncated or run_result.skipped:
         coverage_by_stratum = []
         for venue in VENUES:
             for quarter in quarters:
@@ -696,6 +719,9 @@ def run_private_run(
             "status": run_result.status,
             "messages_sampled": total_sampled,
             "messages_classified": total_classified,
+            "messages_truncated": run_result.truncated,
+            "messages_skipped": run_result.skipped,
+            "skip_reasons": dict(run_result.skip_reasons),
             "coverage_by_stratum": coverage_by_stratum,
         }
 

@@ -160,20 +160,44 @@ def _partial_run_lines(aggregates: dict[str, Any]) -> list[str]:
     TypeSafe returning HTTP 402/no credits), `--no-classify` was pointed at
     a not-yet-complete cache, or the cache was already incomplete for some
     other reason. Returns `[]` (no section at all) when every sampled
-    message was classified.
+    message was classified and nothing needed truncating or skipping.
+
+    Issue #115 also renders this section (with an accurate, non-alarming
+    intro line, not the "did not classify every sampled message" claim)
+    whenever a run truncated or skipped any message but still classified
+    every sampled one -- the coverage section is where those per-message
+    counts belong (`runner.py`'s own `partial_run` trigger condition).
     """
     partial = aggregates.get("partial_run")
     if not partial:
         return []
-    lines = [
-        "## PARTIAL RUN",
-        "",
-        f"**This run did not classify every sampled message.** Status: "
-        f"`{partial['status']}`. **{partial['messages_classified']} of "
-        f"{partial['messages_sampled']} sampled messages were classified**; every "
-        "number below reflects only what was classified so far. Already-classified "
-        "messages are cached and are never re-sent -- re-run (with TypeSafe credits "
-        "added, a higher --monthly-cap-usd, or without --no-classify) to continue.",
+    sampled = partial["messages_sampled"]
+    classified = partial["messages_classified"]
+    truncated = partial.get("messages_truncated", 0)
+    skipped = partial.get("messages_skipped", 0)
+
+    lines = ["## PARTIAL RUN", ""]
+    if classified < sampled:
+        lines += [
+            f"**This run did not classify every sampled message.** Status: "
+            f"`{partial['status']}`. **{classified} of "
+            f"{sampled} sampled messages were classified**; every "
+            "number below reflects only what was classified so far. Already-classified "
+            "messages are cached and are never re-sent -- re-run (with TypeSafe credits "
+            "added, a higher --monthly-cap-usd, or without --no-classify) to continue.",
+            "",
+        ]
+    else:
+        lines += [
+            f"Status: `{partial['status']}`. **{classified} of {sampled} sampled "
+            "messages were classified** -- every sampled message got a record, but "
+            "at least one needed the length-budget/skip handling below (issue #115).",
+            "",
+        ]
+    lines += [
+        f"- Truncated to fit Jev's per-request length budget: {truncated}",
+        f"- Skipped (never classified -- a non-retryable 400, or `max_tokens_exceeded` "
+        f"again after a halved-budget retry): {skipped}",
         "",
         "### Strata coverage",
         "",

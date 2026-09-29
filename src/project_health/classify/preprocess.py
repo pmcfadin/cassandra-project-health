@@ -35,6 +35,15 @@ Pipeline (`preprocess_text`), in order:
 8. `normalize_whitespace` -- collapse blank-line runs and trailing
    whitespace.
 
+`truncate_for_length_budget` is a separate, final step (issue #115), applied by
+`classify/classifier.py` to `preprocess_text`'s own output right before it is hashed
+and sent -- not part of `preprocess_text` itself, since it is about Jev's per-request
+length limit, not about text normalization. A long pasted log/patch/stack trace (or a
+long parent) that this module's structural stripping above doesn't happen to catch
+(e.g. an inline, unfenced diff) can otherwise exceed that limit and crash the whole
+classification batch with an unhandled 400 `max_tokens_exceeded` (issue #115, same
+failure class as the 402 fixed in #110/#113).
+
 `is_automated_sender` is a separate, standalone check (not part of the text
 pipeline itself): it is applied by the caller, and by
 `classify/text_fetch.py`'s fetch-and-preprocess helpers, to a message's
@@ -393,6 +402,81 @@ def preprocess_text(raw_text: str, source: str) -> str:
         text = strip_jira_wiki_markup(text)
     text = normalize_whitespace(text)
     return text
+
+
+# --- Length budget (issue #115) ---------------------------------------------
+
+# Documented limit (docs.typesafe.ai/models.md, "Current models", jev-1.13.0):
+# "64k tokens per request; 32k tokens for `state` plus the longest question... the
+# 64k budget covers the `state` plus all questions combined; the 32k budget applies
+# to the `state` plus the single longest question." `state` here is
+# `text_fetch.build_state`'s `{"message": {"text", "source"}, "parent": {"text"} |
+# None}` -- i.e. `message.text` + `parent.text` combined (the `source`/key overhead
+# is negligible).
+#
+# This project's `questions_v1.yaml` sends all 13 questions (12 Nouls + the
+# tone_intensity Score) together in one `system_one` call. Measuring that file
+# directly: the single longest question (`tone_intensity`) is ~1,382 characters
+# (~345 tokens at a plain-English ~4 chars/token); all 13 combined are ~10,361
+# characters (~2,590 tokens). The *tighter* of the two documented budgets binds:
+# 32,000 - 345 ~= 31,655 tokens available for `state` text alone (the 64k-minus-
+# all-questions budget leaves far more room and is never the binding one here).
+#
+# `TEXT_BUDGET_CHARS` below is deliberately far under that 31,655-token ceiling,
+# not a tight fit against it: it assumes a conservative 2 characters/token (denser
+# than plain English, to safely cover the code/log/diff-heavy text that actually
+# caused issue #115's crash) and targets roughly 20,000 tokens -- about 37% of
+# margin below the documented ceiling for tokenizer variance and the fixed cost of
+# sending 13 questions rather than exactly one.
+TEXT_BUDGET_CHARS = 40_000
+
+TRUNCATION_MARKER = "\n\n[... truncated: exceeded Jev's per-request length budget]"
+
+
+def truncate_for_length_budget(
+    message_text: str, parent_text: str | None, *, budget_chars: int = TEXT_BUDGET_CHARS
+) -> tuple[str, str | None, bool]:
+    """Deterministically truncate `message_text`/`parent_text` (both already run
+    through `preprocess_text`) so their combined length fits `budget_chars`
+    characters (issue #115).
+
+    `parent_text` is trimmed first -- down to `None` if necessary -- since it is
+    strictly secondary context (COMMUNITY-HEALTH.md §4.1: "one message plus
+    immediate parent"). `message_text`'s head is always kept: it is left untouched
+    whenever it alone fits the budget, and only truncated (still keeping its head)
+    when the message text alone already exceeds `budget_chars`, in which case
+    `parent_text` is dropped entirely (there is no budget left for it at all).
+    Either truncated field gets `TRUNCATION_MARKER` appended, so a truncated
+    message is never silently indistinguishable from a short one.
+
+    A pair that already fits under `budget_chars` combined is returned
+    byte-for-byte unchanged, with `truncated=False` -- this is what keeps
+    `classifier.compute_input_hash` stable for every message under budget: the
+    same, untouched text produces the exact hash it always has, so the existing
+    cache of already-classified records stays valid for them.
+
+    `budget_chars` is overridable so a caller (`classifier.py`'s 400
+    `max_tokens_exceeded` retry) can re-truncate the same original text at a
+    smaller budget without this function needing to know anything about retries.
+
+    Returns `(message_text, parent_text, truncated)`.
+    """
+    if parent_text is None:
+        if len(message_text) <= budget_chars:
+            return message_text, None, False
+    elif len(message_text) + len(parent_text) <= budget_chars:
+        return message_text, parent_text, False
+
+    if len(message_text) > budget_chars:
+        head = max(budget_chars - len(TRUNCATION_MARKER), 0)
+        return message_text[:head] + TRUNCATION_MARKER, None, True
+
+    remaining = budget_chars - len(message_text)
+    if parent_text is None:
+        return message_text, None, False
+    if remaining <= len(TRUNCATION_MARKER):
+        return message_text, None, True
+    return message_text, parent_text[: remaining - len(TRUNCATION_MARKER)] + TRUNCATION_MARKER, True
 
 
 # --- Automated senders -------------------------------------------------------

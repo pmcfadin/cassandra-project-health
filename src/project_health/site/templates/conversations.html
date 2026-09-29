@@ -1,6 +1,336 @@
 {% extends "base.html" %}
 {% block title %}Conversations — Cassandra Project Health{% endblock %}
 {% block content %}
+{% if conversation_patterns.available %}
+<section class="conversation-patterns" id="conversation-patterns" aria-labelledby="conversation-patterns-heading">
+  <h2 id="conversation-patterns-heading">Conversation patterns <span class="badge badge--tier badge--tier-classified">classified</span></h2>
+
+  <div class="banner banner--preliminary" role="status">
+    <strong>Preliminary.</strong> Classified by the pinned TypeSafe Jev model
+    <code>{{ conversation_patterns.model_id_pinned }}</code> (classifier
+    <code>{{ conversation_patterns.classifier_version }}</code>, question set
+    <code>{{ conversation_patterns.question_set_version }}</code>). Cutoffs are fixed and
+    <strong>not yet calibrated</strong> for Cassandra (production-threshold calibration is
+    tracked in issue #47). This section has <strong>not yet been reviewed by the Cassandra
+    PMC</strong> (<a href="{{ conversation_patterns.community_health_url }}">COMMUNITY-HEALTH.md
+    §7.8</a>) — it is published preliminary, clearly labeled as such, per
+    <a href="{{ conversation_patterns.decisions_url }}#{{ conversation_patterns.decisions_d26_anchor }}">DECISIONS.md
+    D26</a>. <a href="{{ conversation_patterns.feedback_url }}">Send feedback on this section</a>.
+  </div>
+
+  <p class="page-intro">
+    Classified patterns in dev@ mailing-list and JIRA-comment messages and threads —
+    escalation, constructive resolution, newcomer treatment and message-level patterns,
+    2017–2025. Counts and rates only, at the project level; no per-person data, no
+    quotations, and no links from any number below back to an individual message
+    (COMMUNITY-HEALTH.md §7.3/§7.4).
+  </p>
+
+  <nav class="conv-patterns-jump" aria-label="Jump to venue">
+    Jump to:
+    {% for venue in conversation_patterns.venues %}
+    <a href="#conv-venue-{{ venue.id }}">{{ venue.label }}</a>{% if not loop.last %} &middot; {% endif %}
+    {% endfor %}
+  </nav>
+
+  <section class="conv-summary" id="conv-summary" aria-labelledby="conv-summary-heading">
+    <h3 id="conv-summary-heading">Summary: 2017–2019 vs. 2023–2025</h3>
+    <p class="governance-note">
+      Counts per 1,000 classified messages at the headline (0.5 probability) cutoff, pooled
+      and weighted across each window's sampled quarters, with thread-level bootstrap 95%
+      confidence intervals. "CIs overlap" states only whether the two windows' intervals
+      overlap — it does not characterize any difference as an improvement or a decline.
+    </p>
+    {% for venue in conversation_patterns.summary_by_venue %}
+    <h4 id="conv-venue-{{ venue.venue }}">{{ venue.label }}</h4>
+    <p class="card-status">
+      2017-2019: {{ venue.early_n }} messages, {{ venue.early_authors }} authors &middot;
+      2023-2025: {{ venue.recent_n }} messages, {{ venue.recent_authors }} authors
+    </p>
+    <div class="conv-patterns-table-wrap">
+      <table class="security-table conv-patterns-table">
+        <thead>
+          <tr>
+            <th scope="col">Label</th>
+            <th scope="col">2017-2019 (per 1,000)</th>
+            <th scope="col">2023-2025 (per 1,000)</th>
+            <th scope="col">CIs overlap</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in venue.rows %}
+          <tr>
+            <td>{{ row.label }}</td>
+            <td>{{ row.early }}</td>
+            <td>{{ row.recent }}</td>
+            <td>{{ row.overlap }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% endfor %}
+  </section>
+
+  <section class="conv-newcomer" id="conv-newcomer" aria-labelledby="conv-newcomer-heading">
+    <h3 id="conv-newcomer-heading">Newcomer treatment</h3>
+    <p class="governance-note">
+      How messages directed at a newcomer (fewer than {{ conversation_patterns.method.newcomer_n }}
+      prior messages in that venue at message time) are classified — constructive
+      (acknowledgment/compromise offer/resolution marker) and dismissive/hostile responses are
+      reported as two separate rates, never netted into one number.
+    </p>
+    {% for venue in conversation_patterns.newcomer_by_venue %}
+    <h4>{{ venue.label }}</h4>
+    <div class="conv-patterns-table-wrap">
+      <table class="security-table conv-patterns-table">
+        <thead>
+          <tr>
+            <th scope="col">Window</th>
+            <th scope="col">Newcomer-directed messages</th>
+            <th scope="col">Distinct newcomers</th>
+            <th scope="col">Constructive response rate</th>
+            <th scope="col">Dismissive/hostile response rate</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in venue.rows %}
+          <tr>
+            <td>{{ row.window }}</td>
+            <td>{{ row.messages }}</td>
+            <td>{{ row.distinct }}</td>
+            <td>{{ row.constructive }}</td>
+            <td>{{ row.hostile }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% endfor %}
+  </section>
+
+  <section class="conv-disagreement" id="conv-disagreement" aria-labelledby="conv-disagreement-heading">
+    <h3 id="conv-disagreement-heading">How disagreements go</h3>
+    <p class="governance-note">
+      Thread-level rates, derived deterministically from message-level classifications
+      (COMMUNITY-HEALTH.md §2.3) — escalation, constructive resolution, abandonment after
+      friction, and pile-on. A rate renders as "insufficient data" below its own minimum
+      sample floor (§5.1/§5.2), which is expected for the rarer pile-on rate.
+    </p>
+    {% for venue in conversation_patterns.disagreement_by_venue %}
+    <h4>{{ venue.label }}</h4>
+    <div class="conv-patterns-table-wrap">
+      <table class="security-table conv-patterns-table">
+        <thead>
+          <tr>
+            <th scope="col">Window</th>
+            <th scope="col">Escalation rate</th>
+            <th scope="col">Constructive resolution rate</th>
+            <th scope="col">Abandonment after friction</th>
+            <th scope="col">Pile-on rate</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in venue.rows %}
+          <tr>
+            <td>{{ row.window }}</td>
+            <td>{{ row.escalation }}</td>
+            <td>{{ row.resolution }}</td>
+            <td>{{ row.abandonment }}</td>
+            <td>{{ row.pile_on }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% endfor %}
+  </section>
+
+  <section class="conv-message-patterns" id="conv-message-patterns" aria-labelledby="conv-message-patterns-heading">
+    <h3 id="conv-message-patterns-heading">Message patterns by year</h3>
+    <p class="governance-note">
+      Counts per 1,000 classified messages at the headline (0.5) cutoff, one panel per label,
+      with a shaded 95% confidence interval band. Constructive and negative labels are shown
+      as separate small-multiple groups so they are never visually netted against each other.
+      Tables below each chart are the same data in full, as a no-JavaScript fallback.
+    </p>
+    {% for venue in conversation_patterns.message_patterns_by_venue %}
+    <h4>{{ venue.label }}</h4>
+
+    <h5>Constructive labels</h5>
+    {% if venue.constructive_chart_spec %}
+    <div class="chart conv-facet-chart" data-vega-spec='{{ venue.constructive_chart_spec }}' role="img" aria-label="Constructive label counts by year, {{ venue.label }}">
+      <noscript>Enable JavaScript to see this chart, or use the table below.</noscript>
+    </div>
+    {% endif %}
+    <div class="conv-patterns-table-wrap">
+      <table class="security-table conv-patterns-table">
+        <thead>
+          <tr>
+            <th scope="col">Year</th>
+            <th scope="col">Messages</th>
+            <th scope="col">Authors</th>
+            {% for label in venue.constructive_labels %}
+            <th scope="col">{{ label }}</th>
+            {% endfor %}
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in venue.table_rows %}
+          <tr>
+            <td>{{ row.year }}</td>
+            <td>{{ row.messages }}</td>
+            <td>{{ row.authors }}</td>
+            {% for label in venue.constructive_labels %}
+            <td>{{ row.values[label] }}</td>
+            {% endfor %}
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+
+    <h5>Negative labels</h5>
+    {% if venue.negative_chart_spec %}
+    <div class="chart conv-facet-chart" data-vega-spec='{{ venue.negative_chart_spec }}' role="img" aria-label="Negative label counts by year, {{ venue.label }}">
+      <noscript>Enable JavaScript to see this chart, or use the table below.</noscript>
+    </div>
+    {% endif %}
+    <div class="conv-patterns-table-wrap">
+      <table class="security-table conv-patterns-table">
+        <thead>
+          <tr>
+            <th scope="col">Year</th>
+            <th scope="col">Messages</th>
+            <th scope="col">Authors</th>
+            {% for label in venue.negative_labels %}
+            <th scope="col">{{ label }}</th>
+            {% endfor %}
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in venue.table_rows %}
+          <tr>
+            <td>{{ row.year }}</td>
+            <td>{{ row.messages }}</td>
+            <td>{{ row.authors }}</td>
+            {% for label in venue.negative_labels %}
+            <td>{{ row.values[label] }}</td>
+            {% endfor %}
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% endfor %}
+  </section>
+
+  <section class="conv-method" id="conv-method" aria-labelledby="conv-method-heading">
+    <h3 id="conv-method-heading">Method &amp; limits</h3>
+    <ul>
+      <li>
+        Thread sampling: {{ conversation_patterns.method.k }} threads per (venue, quarter)
+        stratum, sampler seed {{ conversation_patterns.method.seed }}, weighted by inclusion
+        probability; {{ conversation_patterns.method.quarters_count }} quarters covered
+        ({{ conversation_patterns.method.quarters_start }}–{{ conversation_patterns.method.quarters_end }}).
+      </li>
+      {% for venue in conversation_patterns.method.frame_definition %}
+      <li><strong>{{ venue.venue }}</strong>: {{ venue.text }}</li>
+      {% endfor %}
+      <li>
+        Headline probability cutoff: {{ conversation_patterns.method.headline_cutoff }};
+        sensitivity cutoffs: {{ conversation_patterns.method.sensitivity_cutoffs | join(", ") }}.
+        Thread-derivation headline cutoff: {{ conversation_patterns.method.thread_derive_headline_cutoff }}.
+        A newcomer is anyone with fewer than {{ conversation_patterns.method.newcomer_n }} prior
+        messages in that venue at message time.
+      </li>
+      <li>
+        Minimum sample floors: &ge;{{ conversation_patterns.method.floors.min_messages }}
+        messages and &ge;{{ conversation_patterns.method.floors.min_distinct_authors }} distinct
+        authors per cell, else "insufficient data" (COMMUNITY-HEALTH.md §5.1); thread-level rates
+        use their own §5.2 floors (30 qualifying threads / 5 distinct participants, or 5 distinct
+        targets for pile-on).
+      </li>
+      <li>{{ conversation_patterns.method.scope_note }}</li>
+      <li>
+        Venues not covered by this snapshot: {{ conversation_patterns.method.venues_not_covered | join(", ") }}.
+      </li>
+    </ul>
+
+    <h4>Probability index floor (run-wide, uncalibrated)</h4>
+    <p class="governance-note">
+      Every message carries a small residual probability for every label, so the (secondary,
+      trend-only) probability index has a floor even where a label essentially never applies.
+      This is that floor — the unweighted median message probability per label, times 1,000,
+      computed once across the whole run.
+    </p>
+    <div class="conv-patterns-table-wrap">
+      <table class="security-table conv-patterns-table">
+        <thead>
+          <tr><th scope="col">Label</th><th scope="col">Floor (per 1,000)</th></tr>
+        </thead>
+        <tbody>
+          {% for row in conversation_patterns.method.probability_index_floor %}
+          <tr><td>{{ row.label }}</td><td>{{ "%.2f"|format(row.value) if row.value is not none else "n/a" }}</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+
+    {% if conversation_patterns.method.benchmark_thresholds %}
+    <h4>Public-benchmark sensitivity thresholds</h4>
+    <p class="governance-note">
+      Applied only to labels with a strong public mapping, each calibrated against a specific
+      public dataset's best-F1 threshold — see
+      <a href="{{ conversation_patterns.benchmark_public_url }}">docs/benchmark/public-v1.md</a>.
+    </p>
+    <div class="conv-patterns-table-wrap">
+      <table class="security-table conv-patterns-table">
+        <thead>
+          <tr><th scope="col">Label</th><th scope="col">Threshold</th><th scope="col">Dataset</th><th scope="col">Permissive</th></tr>
+        </thead>
+        <tbody>
+          {% for row in conversation_patterns.method.benchmark_thresholds %}
+          <tr>
+            <td>{{ row.label }}</td>
+            <td>{{ row.threshold }}</td>
+            <td>{{ row.dataset_name }}</td>
+            <td>{{ "yes" if row.permissive else "no" }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% endif %}
+
+    {% if conversation_patterns.method.partial_run %}
+    <h4>Coverage</h4>
+    <p class="governance-note">
+      {{ conversation_patterns.method.partial_run.messages_classified }} of
+      {{ conversation_patterns.method.partial_run.messages_sampled }} sampled messages were
+      classified for this run. Truncated to fit the classifier's per-request length budget:
+      {{ conversation_patterns.method.partial_run.messages_truncated }}. Skipped (never
+      classified): {{ conversation_patterns.method.partial_run.messages_skipped }}.
+    </p>
+    {% endif %}
+
+    <p class="card-status">
+      Total classification cost for this run: ${{ "%.2f"|format(conversation_patterns.method.cost_total_usd.latest_run_usd) if conversation_patterns.method.cost_total_usd.latest_run_usd is not none else "n/a" }};
+      cumulative: ${{ "%.2f"|format(conversation_patterns.method.cost_total_usd.cumulative_usd) if conversation_patterns.method.cost_total_usd.cumulative_usd is not none else "n/a" }}.
+    </p>
+
+    <h4>What is not published</h4>
+    <ul>
+      <li>No per-person data of any kind, at any aggregation tier (COMMUNITY-HEALTH.md §7.3).</li>
+      <li>No quotations, and no link from any number above back to a specific message (§7.3/§7.4).</li>
+      <li>Any cell, rate, or label below its own §5.1/§5.2 minimum sample floor — shown as "insufficient data", never silently omitted.</li>
+      <li>No composite or blended "interaction health" score (§5.1).</li>
+      <li>No causal commentary on why any year's numbers differ from another's (§8).</li>
+    </ul>
+  </section>
+</section>
+{% endif %}
+
 <p class="page-intro">Mailing-list metrics, computed from metadata only — sender, timestamp and thread structure — never message content.</p>
 
 {% if dimensions %}

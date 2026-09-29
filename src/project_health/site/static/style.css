@@ -854,3 +854,64 @@ main {
     max-width: 100%;
   }
 }
+
+/* --- Conversation patterns (issue #118, D26) ---------------------------- */
+
+.banner--preliminary {
+  background: var(--bg-alt);
+  border: 1px solid var(--warn);
+  color: var(--fg);
+  max-width: none;
+  margin: 1rem 0 1.5rem;
+}
+.banner--preliminary a {
+  color: var(--accent);
+}
+
+.badge--preliminary {
+  border-color: var(--warn);
+  color: var(--warn);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.conversation-patterns h3,
+.conversation-patterns h4 {
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 0.35rem;
+  margin-top: 2rem;
+}
+.conversation-patterns h5 {
+  margin: 1rem 0 0.5rem;
+  color: var(--fg-muted);
+}
+
+.conv-patterns-jump {
+  font-size: 0.9rem;
+  margin: 0.5rem 0 1.5rem;
+}
+.conv-patterns-jump a {
+  color: var(--accent);
+}
+
+/* Full-width, horizontally-scrollable tables on narrow screens -- the
+   per-label tables here can run to 12+ data columns (one per message-level
+   label), well beyond a 390px phone's viewport, same reasoning as the
+   Security section's own `.security-table` scroll wrapper above. */
+.conv-patterns-table-wrap {
+  overflow-x: auto;
+  max-width: 100%;
+  margin-bottom: 1.5rem;
+}
+.conv-patterns-table {
+  min-width: 40rem;
+}
+@media (max-width: 640px) {
+  .conv-patterns-table {
+    min-width: 32rem;
+  }
+}
+
+.conv-facet-chart {
+  min-height: 260px;
+}

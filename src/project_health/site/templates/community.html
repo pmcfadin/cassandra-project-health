@@ -159,6 +159,41 @@
   {% endif %}
 </section>
 
+<section class="conversation-patterns-summary" aria-labelledby="conversation-patterns-summary-heading">
+  <h2 id="conversation-patterns-summary-heading">Conversation patterns</h2>
+  {% if conversation_patterns.available %}
+  <div class="card-grid">
+    <article class="card card--summary">
+      <header class="card-header">
+        <h3><a href="{{ base_prefix }}conversations/#conversation-patterns">Conversation patterns</a></h3>
+        <span class="badge badge--tier badge--tier-classified">classified</span>
+      </header>
+      <p class="card-staleness"><span class="badge badge--preliminary" role="status">preliminary</span></p>
+      <p class="card-summary-blurb">
+        Classified dev@ mailing-list and JIRA-comment patterns — escalation, constructive
+        resolution, newcomer treatment and message-level patterns, 2017–2025. Uncalibrated
+        cutoffs, not yet reviewed by the PMC
+        (<a href="{{ conversation_patterns.decisions_url }}#{{ conversation_patterns.decisions_d26_anchor }}">D26</a>).
+      </p>
+      <ul class="headline-metrics">
+        {% for row in conversation_patterns.community_card_metrics %}
+        <li>
+          <span class="headline-metric-name">{{ row.name }}</span>
+          <span class="headline-metric-value">{{ row.value }}</span>
+        </li>
+        {% endfor %}
+      </ul>
+      <p class="card-more"><a href="{{ base_prefix }}conversations/#conversation-patterns">See the full page &rarr;</a></p>
+    </article>
+  </div>
+  {% else %}
+  <p class="card-empty-state">
+    Conversation patterns aren't published yet — they appear once a preliminary classified
+    run has been sanitized and published (DECISIONS.md D26).
+  </p>
+  {% endif %}
+</section>
+
 <section class="leaderboard" aria-labelledby="leaderboard-heading">
   <h2 id="leaderboard-heading">Contributor leaderboard</h2>
   {% if leaderboard.staleness_badges %}

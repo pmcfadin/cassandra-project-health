@@ -999,6 +999,31 @@ Phase 2a ships (any change is itself a scoring-rule version bump per `SCORING.md
 All four are tier `classified` and cannot ship until `COMMUNITY-HEALTH.md`'s validation gates (inter-rater
 agreement, precision/recall against a frozen benchmark corpus, classifier-version provenance) are met, per D1.
 
+### 7.1 D26 preliminary publication (issue #118) — not the four metrics above
+
+DECISIONS.md D26 (owner, 2026-09-29) publishes a **different, wider** set of classified
+aggregates on `/conversations/`, explicitly marked **Preliminary**, ahead of the gates above
+and ahead of #47's production-threshold calibration — this is a deliberate, clearly-labeled
+exception (COMMUNITY-HEALTH.md §6.4/§7.8), not a claim that the four metrics above have
+shipped. All entries below are tier `classified`; every formula is COMMUNITY-HEALTH.md §5.2,
+verbatim, reported at the fixed 0.5 headline probability cutoff (0.7/0.9 as sensitivity), per
+venue (dev@ mailing list, JIRA comments only — D7 scope), per year/quarter and pooled into a
+2017–2019 vs. 2023–2025 trend window:
+
+- Twelve message-level per-1,000-messages counts, one per COMMUNITY-HEALTH.md §1.2 label
+  (`technical_disagreement`, `constructive_counterargument`, `evidence_based_argument`,
+  `compromise_offer`, `acknowledgment`, `resolution_marker`, `personal_attack`, `hostility`,
+  `dismissiveness`, `sarcasm`, `gatekeeping`, `status_authority_invocation`), plus each
+  label's secondary, uncalibrated probability index and its run-wide floor.
+- `escalation_rate`, `constructive_resolution_rate`, `thread_abandonment_rate_post_friction`,
+  `pile_on_rate` (§5.2's four thread-level rates).
+- `newcomer_constructive_response_rate` / `newcomer_dismissive_hostile_response_rate` (§5.2,
+  reported as two separate rates, never netted).
+
+Every number is subject to the same §5.1/§5.2 minimum-sample floors as everywhere else in
+this document; below floor it renders as `insufficient data`. Direction of good is
+deliberately not stated for any of these (D25: this site is informational, not a verdict).
+
 ---
 
 ## 8. Sources referenced

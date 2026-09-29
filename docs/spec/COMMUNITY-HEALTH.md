@@ -767,6 +767,13 @@ caveat" or at reduced confidence. §4's structured-output design and §6.1's fro
 corpus exist specifically so this is a testable yes/no per label, not a judgment call at
 launch time.
 
+**D26 exception (owner, 2026-09-29).** The `/conversations/` "Conversation patterns"
+section publishes the private run's (#110/#114) aggregates ahead of these gates, at the
+fixed, uncalibrated 0.5/0.7/0.9 cutoffs the private run itself used — not a value that has
+cleared a precision/recall floor here. This is allowed only because the section is marked
+**Preliminary** everywhere it renders and every other §7 rule (no per-person data, no
+quotes, §5.1/§5.2 floors, no verdicts) still applies; see DECISIONS.md D26.
+
 ### 6.5 Calibration
 
 Reliability diagrams (predicted confidence bucket vs. empirical precision within that
@@ -938,6 +945,13 @@ Concrete, enumerated mechanisms (not aspirations):
 - The PMC (or its designee) should be offered a standing channel to request a review under
   §7.6 or to request that a specific metric be paused pending investigation — this project
   does not treat PMC oversight as a one-time launch gate but as ongoing.
+
+**D26 exception (owner, 2026-09-29).** The `/conversations/` "Conversation patterns"
+section publishes before this section's "before Phase 2a publishes anything" preview and
+acknowledgment step, explicitly labeled **Preliminary** with a standing feedback link
+(DECISIONS.md D26). This does not waive the requirement above — the preview/acknowledgment
+step to `dev@cassandra.apache.org` is still owed before Phase 2a is considered fully
+published, and the page says so.
 
 ---
 

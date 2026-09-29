@@ -1,0 +1,49 @@
+name: Conversation patterns feedback
+description: >-
+  Feedback on the preliminary, classified /conversations/ "Conversation
+  patterns" numbers (DECISIONS.md D26). This is a preliminary publish, ahead
+  of PMC review (COMMUNITY-HEALTH.md §7.8) and production-threshold
+  calibration (issue #47) -- feedback here is exactly what the owner is
+  asking for before either of those happen.
+title: "Conversation patterns feedback: "
+labels:
+  - conversation-patterns-feedback
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this form for feedback on the
+        [`/conversations/`](https://pmcfadin.github.io/cassandra-project-health/conversations/#conversation-patterns)
+        page's "Conversation patterns" section -- classified message/thread
+        patterns from dev@ and JIRA comments, published preliminary and
+        uncalibrated per
+        [DECISIONS.md D26](https://github.com/pmcfadin/cassandra-project-health/blob/main/docs/spec/DECISIONS.md#d26-publish-conversation-patterns-page-preliminary-classified-aggregates).
+
+        This is aggregate-only data (COMMUNITY-HEALTH.md §7.3) -- there is
+        nothing here to "take down" for an individual, since no output
+        names one. If your feedback is about a specific thread's
+        contribution to a published aggregate, describe the thread (venue,
+        approximate date, topic) rather than linking to it -- see
+        COMMUNITY-HEALTH.md §7.6.
+  - type: dropdown
+    id: section
+    attributes:
+      label: Which part of the page?
+      options:
+        - Summary (2017-2019 vs 2023-2025)
+        - Newcomer treatment
+        - How disagreements go
+        - Message patterns by year
+        - Method & limits
+        - Not sure / other
+    validations:
+      required: false
+  - type: textarea
+    id: feedback
+    attributes:
+      label: Feedback
+      description: >-
+        What's wrong, unclear, or concerning -- and, if you have one, what
+        you'd expect instead.
+    validations:
+      required: true

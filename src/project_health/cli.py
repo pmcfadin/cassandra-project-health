@@ -15,8 +15,10 @@ Registered as a `console_scripts`-style entry point in `pyproject.toml`
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 import webbrowser
+from datetime import date
 from pathlib import Path
 
 from project_health.benchmark_public.evaluate import DEFAULT_SEED as BENCHMARK_PUBLIC_DEFAULT_SEED
@@ -68,6 +70,7 @@ from project_health.private_run.quarters import parse_quarters_arg
 from project_health.private_run.runner import DEFAULT_MONTHLY_CAP_USD as PRIVATE_RUN_DEFAULT_CAP
 from project_health.private_run.runner import run_private_run
 from project_health.private_run.newcomer import DEFAULT_NEWCOMER_N
+from project_health.private_run.publish import SanitizeError, write_conversation_patterns_snapshot
 from project_health.private_run.sample import DEFAULT_K as PRIVATE_RUN_DEFAULT_K
 from project_health.private_run.sample import DEFAULT_SEED as PRIVATE_RUN_DEFAULT_SEED
 
@@ -513,6 +516,37 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    publish_conv_parser = subparsers.add_parser(
+        "publish-conversation-aggregates",
+        help=(
+            "D26 (issue #118): sanitize one private-run aggregates.json (issue #110/#114) "
+            "through an allowlist and publish it to "
+            "snapshots/conversation_patterns/<run date>.json on a data-branch checkout -- "
+            "the one bridge from the owner-only private run to the public site. Refuses to "
+            "publish (nonzero exit, nothing written) if anything looks like it could "
+            "identify a message or a person, or if a number is published below its "
+            "COMMUNITY-HEALTH.md §5.1/§5.2 floor."
+        ),
+    )
+    publish_conv_parser.add_argument(
+        "--from",
+        dest="from_path",
+        required=True,
+        help="Path to the private run's aggregates.json (private_run/runner.py output)",
+    )
+    publish_conv_parser.add_argument(
+        "--data-dir",
+        required=True,
+        help="Root of a data-branch checkout to write "
+        "snapshots/conversation_patterns/<run date>.json into",
+    )
+    publish_conv_parser.add_argument(
+        "--run-date",
+        default=None,
+        help="Override the snapshot filename's date (YYYY-MM-DD); default: the date "
+        "portion of the aggregates' own generated_at",
+    )
+
     return parser
 
 
@@ -837,6 +871,27 @@ def _cmd_private_run(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_publish_conversation_aggregates(args: argparse.Namespace) -> int:
+    from_path = Path(args.from_path)
+    if not from_path.is_file():
+        print(f"error: --from {from_path} not found", file=sys.stderr)
+        return 2
+
+    aggregates = json.loads(from_path.read_text(encoding="utf-8"))
+    run_date = date.fromisoformat(args.run_date) if args.run_date else None
+
+    try:
+        out_path = write_conversation_patterns_snapshot(
+            aggregates, args.data_dir, run_date=run_date
+        )
+    except SanitizeError as exc:
+        print(f"error: refusing to publish -- {exc}", file=sys.stderr)
+        return 2
+
+    print(f"publish-conversation-aggregates: wrote {out_path}", file=sys.stderr)
+    return 0
+
+
 def _cmd_verify_policy_sources(args: argparse.Namespace) -> int:
     results = verify_policy_sources(args.policy)
     failed = [r for r in results if not r.ok]
@@ -874,6 +929,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_verify_policy_sources(args)
     if args.command == "private-run":
         return _cmd_private_run(args)
+    if args.command == "publish-conversation-aggregates":
+        return _cmd_publish_conversation_aggregates(args)
     parser.error(f"unknown command {args.command!r}")
     return 2
 

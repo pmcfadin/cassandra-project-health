@@ -2510,3 +2510,171 @@ def test_chart_tooltip_uses_precomputed_display_string_for_days_metrics(tmp_path
     tooltip_fields = {t["field"] for t in devlist_spec["encoding"]["tooltip"]}
     assert "value_display" in tooltip_fields
     assert "43 min" in json.dumps(devlist_spec["data"]["values"])
+
+
+# --- Conversation patterns (issue #118, DECISIONS.md D26) -------------------
+#
+# Fixtures reuse `tests.test_private_run_publish._sample_aggregates` +
+# `sanitize_aggregates` so the synthetic snapshot on disk here is produced
+# by the *real* sanitizer, not a hand-rolled shape that could drift from
+# what `publish.py` actually writes -- never the real private
+# aggregates.json (that stays under `~/project-health-private/`, read-only).
+
+from project_health.private_run.publish import sanitize_aggregates  # noqa: E402
+
+from tests.test_private_run_publish import _sample_aggregates  # noqa: E402
+
+CONV_PATTERNS_RUN_DATE = "2026-09-28"
+
+
+def _write_conversation_patterns_snapshot(data_dir: Path, aggregates: dict | None = None) -> None:
+    sanitized = sanitize_aggregates(aggregates if aggregates is not None else _sample_aggregates())
+    snapshot_dir = data_dir / "snapshots" / "conversation_patterns"
+    snapshot_dir.mkdir(parents=True, exist_ok=True)
+    (snapshot_dir / f"{CONV_PATTERNS_RUN_DATE}.json").write_text(json.dumps(sanitized))
+
+
+def _build_site_with_conversation_patterns(
+    tmp_path: Path, *, aggregates: dict | None = None
+) -> tuple[Path, Path]:
+    data_dir = tmp_path / "data"
+    out_dir = tmp_path / "out"
+    _write_snapshot(data_dir, RUN_ID, _default_rows())
+    _write_conversation_patterns_snapshot(data_dir, aggregates)
+    _write_manifest(data_dir, RUN_ID, completed_at=BUILD_TIME - timedelta(hours=1))
+    generate(data_dir, RUN_ID, out_dir, now=BUILD_TIME)
+    return out_dir, data_dir
+
+
+def _conversations_html(out_dir: Path) -> str:
+    return _page_html(out_dir, "conversations/")
+
+
+def _conversation_patterns_section_html(html_text: str) -> str:
+    """The new section's own HTML fragment, isolated from the rest of
+    `/conversations/` (the pre-existing D16 metadata section and "what's
+    coming" phase cards below it) -- so a verdict-vocabulary scan checks
+    only what issue #118 actually added, not pre-existing D16-era prose
+    this task didn't touch."""
+    start = html_text.index('<section class="conversation-patterns"')
+    end = html_text.index('<p class="page-intro">Mailing-list metrics')
+    return html_text[start:end]
+
+
+def test_conversations_page_renders_conversation_patterns_section(tmp_path):
+    out_dir, _ = _build_site_with_conversation_patterns(tmp_path)
+    html_text = _conversations_html(out_dir)
+
+    assert 'id="conversation-patterns"' in html_text
+    assert "dev@ mailing list" in html_text
+    assert "JIRA comments" in html_text
+    assert "Preliminary" in html_text
+    assert "jev-1.13.0" in html_text
+    assert "1.0.0" in html_text  # classifier_version
+    assert 'badge--tier-classified">classified' in html_text
+    assert "hostility" in html_text  # a message-level label
+    assert "overlapping" in html_text or "insufficient data" in html_text
+
+
+def test_conversations_page_honest_state_without_conversation_patterns_snapshot(tmp_path):
+    """D26: "no snapshot -> no page, no error" -- the new section simply
+    doesn't render; the pre-existing D16 metadata section and "what's
+    coming" cards still do, with no crash."""
+    out_dir = _build_site(tmp_path)
+    html_text = _conversations_html(out_dir)
+
+    assert 'id="conversation-patterns"' not in html_text
+    assert "Phase 2a" in html_text  # the pre-existing "what's coming" section
+
+
+def test_conversations_page_reads_latest_of_multiple_snapshots(tmp_path):
+    """Snapshot filenames are `<run date>.json`; the latest (lexicographically
+    greatest, since they're ISO dates) file wins."""
+    data_dir = tmp_path / "data"
+    out_dir = tmp_path / "out"
+    _write_snapshot(data_dir, RUN_ID, _default_rows())
+    snapshot_dir = data_dir / "snapshots" / "conversation_patterns"
+    snapshot_dir.mkdir(parents=True, exist_ok=True)
+
+    older = sanitize_aggregates(_sample_aggregates(generated_at="2026-01-01T00:00:00+00:00"))
+    newer = sanitize_aggregates(
+        _sample_aggregates(
+            generated_at="2026-09-28T00:00:00+00:00",
+            cost_summary={
+                **_sample_aggregates()["cost_summary"],
+                "classifier_version": "2.0.0",
+            },
+        )
+    )
+    (snapshot_dir / "2026-01-01.json").write_text(json.dumps(older))
+    (snapshot_dir / "2026-09-28.json").write_text(json.dumps(newer))
+
+    _write_manifest(data_dir, RUN_ID, completed_at=BUILD_TIME - timedelta(hours=1))
+    generate(data_dir, RUN_ID, out_dir, now=BUILD_TIME)
+
+    html_text = _conversations_html(out_dir)
+    assert "2.0.0" in html_text
+
+
+def test_conversation_patterns_never_renders_verdict_vocabulary(tmp_path):
+    """D25/issue #118: the new section reports plain rates, counts and
+    "insufficient data"/"overlapping" -- never a pass/fail/verdict framing.
+    "threshold" is deliberately excluded from this section's banned list
+    (unlike the Community/Governance pages' own verdict tests): D23's
+    public-benchmark best-F1 threshold is this section's own legitimate,
+    necessary methodology term (COMMUNITY-HEALTH.md §6.4), not a
+    compliance verdict -- `report.py` and COMMUNITY-HEALTH.md itself use
+    "threshold" the same way."""
+    out_dir, _ = _build_site_with_conversation_patterns(tmp_path)
+    html_text = _conversations_html(out_dir)
+    section_html = _conversation_patterns_section_html(html_text)
+    text = _visible_text(section_html).lower()
+
+    for banned in (
+        "fail",
+        "failing",
+        "pass rate",
+        "exempt",
+        "not in force",
+        "verdict",
+        "compliance",
+        "healthy",
+        "unhealthy",
+    ):
+        assert re.search(rf"\b{re.escape(banned)}\b", text) is None, banned
+
+
+def test_community_page_renders_conversation_patterns_card(tmp_path):
+    out_dir, _ = _build_site_with_conversation_patterns(tmp_path)
+    html_text = _community_html(out_dir)
+
+    assert 'id="conversation-patterns-summary-heading"' in html_text
+    assert "../conversations/#conversation-patterns" in html_text
+    assert "preliminary" in html_text.lower()
+    # D19: this card appears directly after the review-responsiveness
+    # section, before the leaderboard section.
+    rr_index = html_text.index('id="review-responsiveness-heading"')
+    conv_index = html_text.index('id="conversation-patterns-summary-heading"')
+    leaderboard_index = html_text.index('id="leaderboard-heading"')
+    assert rr_index < conv_index < leaderboard_index
+
+
+def test_community_page_honest_empty_state_without_conversation_patterns(tmp_path):
+    out_dir = _build_site(tmp_path)
+    html_text = _community_html(out_dir)
+    assert "aren&#39;t published yet" in html_text or "aren't published yet" in html_text
+
+
+def test_conversation_patterns_summary_shows_ci_overlap_column(tmp_path):
+    out_dir, _ = _build_site_with_conversation_patterns(tmp_path)
+    html_text = _conversations_html(out_dir)
+    assert "CIs overlap" in html_text
+
+
+def test_conversation_patterns_shows_insufficient_data_for_pile_on(tmp_path):
+    """Issue #118's own expectation: pile-on renders as "insufficient
+    data" given the synthetic fixture's rarity (`_pile_on_entry`'s default
+    is `insufficient=True`)."""
+    out_dir, _ = _build_site_with_conversation_patterns(tmp_path)
+    html_text = _conversations_html(out_dir)
+    assert "insufficient data" in html_text

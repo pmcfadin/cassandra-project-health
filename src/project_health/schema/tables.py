@@ -619,6 +619,32 @@ PR_COMMENT = pa.schema(
     ]
 )
 
+# `PR_ISSUE_LINK` (issue #105): a *new* table, not a column added to `PR` --
+# the outage lesson this issue's own description calls out ("if you ADD a
+# column to an existing table, older partitions get it appended; prefer a
+# NEW table"). `PR.linked_issue_keys` (issue #102) only ever gets populated
+# for a PR collected/re-collected *after* that column existed; the ~8,785 PR
+# rows already on the data branch before then have `linked_issue_keys=null`
+# and the ordinary incremental collector's watermark will never revisit them
+# (module docstring, `collectors/github.py`'s "Watermark strategy" -- a PR
+# whose `updatedAt` never moves again is never re-fetched). `pipeline.
+# _collect_github_pr_issue_link_backfill` walks each configured repo's full
+# PR history once, ascending by `createdAt`, fetching only `number`/`title`
+# per PR (the title is discarded immediately after `extract_issue_keys` runs
+# over it -- same "metadata only, D1" discipline `PR.title_hash` documents;
+# never persisted here), and appends one row per (PR, extracted key) pair.
+# `metrics/review_responsiveness.py` unions this table with `pr.
+# linked_issue_keys` at read time so a pre-#102 PR's ticket links become
+# visible without ever rewriting its original `pr` row.
+PR_ISSUE_LINK = pa.schema(
+    [
+        pa.field("repo", pa.string(), nullable=False),
+        pa.field("number", pa.int64(), nullable=False),
+        pa.field("issue_key", pa.string(), nullable=False),
+        pa.field("source_snapshot_id", pa.string(), nullable=False),
+    ]
+)
+
 # --- Governance compliance engine (issue #36, D14/D15) ---------------------
 #
 # `COMMIT_COMPLIANCE` is the per-(commit, check) scoring output of
@@ -1158,6 +1184,7 @@ TABLE_SCHEMAS: dict[str, pa.Schema] = {
     "pr": PR,
     "pr_review": PR_REVIEW,
     "pr_comment": PR_COMMENT,
+    "pr_issue_link": PR_ISSUE_LINK,
     "commit_compliance": COMMIT_COMPLIANCE,
     "commit_fact": COMMIT_FACT,
     "commit_evidence": COMMIT_EVIDENCE,

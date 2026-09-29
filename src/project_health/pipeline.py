@@ -109,7 +109,15 @@ from project_health.collectors.git import (
     derive_review_events,
     github_clone_url,
 )
-from project_health.collectors.github import GitHubCollector, resolve_github_token
+from project_health.collectors.github import (
+    CollectionError as GitHubCollectionError,
+)
+from project_health.collectors.github import (
+    GitHubCollector,
+    RateLimitExhausted,
+    _normalize_pr_issue_link_rows,
+    resolve_github_token,
+)
 from project_health.collectors.reviewer_trailer import PARSER_VERSION
 from project_health.collectors.github_commit_authors import GitHubCommitAuthorCollector
 from project_health.collectors.github_profile import GitHubProfileCollector
@@ -228,6 +236,25 @@ DEFAULT_JIRA_COMMENT_BACKFILL_MAX_ISSUES_PER_RUN = 1000
 # `projects/<id>.yaml`'s `jira_patch_available_backfill.max_pages_per_run`
 # (`_jira_patch_available_backfill_budget`).
 DEFAULT_JIRA_PATCH_AVAILABLE_BACKFILL_MAX_PAGES_PER_RUN = 40
+
+# issue #105: budgeted, resumable page-cursor backfill of `pr_issue_link`
+# rows (which JIRA ticket key(s) a PR's title named, for a PR collected
+# before `pr.linked_issue_keys` existed -- issue #102). apache/cassandra
+# alone is ~53 pages at `collectors.github.PR_ISSUE_LINK_BACKFILL_PAGE_SIZE`
+# (100)/page (issue's own estimate); at this default (20 pages/night) that's
+# `ceil(53 / 20) = 3` nights, the same order of magnitude as the JIRA
+# Patch-Available backfill's own "~3 nights" above, and shares that
+# backfill's per-repo cursor/done-flag persistence pattern. Every repo in
+# `projects/<id>.yaml`'s `pull_requests.repos` is walked (not just
+# apache/cassandra), one after another, spending from the same shared
+# per-run page budget and stopping early (mid-repo) if
+# `GitHubCollector.rate_limit_floor` is reached -- the same "some repo
+# finishing cleanly beats every repo finishing half finished" reasoning
+# `collectors/github.py`'s module docstring documents for the ordinary
+# incremental collector's own multi-repo budget. Configurable via
+# `projects/<id>.yaml`'s `pr_issue_link_backfill.max_pages_per_run`
+# (`_github_pr_issue_link_backfill_budget`).
+DEFAULT_GITHUB_PR_ISSUE_LINK_BACKFILL_MAX_PAGES_PER_RUN = 20
 
 # `code-style-checkstyle`'s GitHub check-run re-fetch window (issue #36
 # fixup cycle 1): a check-run that's still pending/absent is only worth
@@ -570,6 +597,29 @@ def _dedupe_pr_comment_rows(table: pa.Table) -> pa.Table:
     for row in table.to_pylist():
         best.setdefault(row["comment_id"], row)
     kept = sorted(best.values(), key=lambda r: r["comment_id"])
+    return pa.Table.from_pylist(kept, schema=table.schema)
+
+
+def _dedupe_pr_issue_link_rows(table: pa.Table) -> pa.Table:
+    """Keep one row per `(repo, number, issue_key)` (issue #105).
+
+    `pr_issue_link_backfill`'s cursor is written only after a page is fully
+    processed (see `_collect_github_pr_issue_link_backfill`'s docstring), so
+    ordinary resumption never re-walks a page it already wrote rows for --
+    but a first-ever backfill re-run from a data dir with no prior cursor
+    (or a manually re-triggered backfill) would re-derive the same
+    (repo, number, issue_key) triples, which is otherwise harmless (the
+    triple is a fact, not a count) except for double-counting in raw-row
+    audits. Natural-key dedupe, same convention as `_dedupe_pr_review_rows`/
+    `_dedupe_pr_comment_rows` above.
+    """
+    if table.num_rows == 0:
+        return table
+    best: dict[tuple[str, int, str], dict[str, Any]] = {}
+    for row in table.to_pylist():
+        key = (row["repo"], row["number"], row["issue_key"])
+        best.setdefault(key, row)
+    kept = sorted(best.values(), key=lambda r: (r["repo"], r["number"], r["issue_key"]))
     return pa.Table.from_pylist(kept, schema=table.schema)
 
 
@@ -1332,6 +1382,187 @@ def _collect_jira(
     return source_result
 
 
+def _github_pr_issue_link_backfill_budget(config: ProjectConfig) -> int:
+    """`max_pages_per_run` for the `pr_issue_link` historical backfill (issue
+    #105) from `projects/<id>.yaml`'s optional `pr_issue_link_backfill:`
+    block, defaulting to
+    `DEFAULT_GITHUB_PR_ISSUE_LINK_BACKFILL_MAX_PAGES_PER_RUN` -- same
+    "arbitrary extra top-level key, read defensively" pattern as
+    `_jira_patch_available_backfill_budget` (`ProjectConfig`'s own
+    `extra="allow"`)."""
+    raw = getattr(config, "pr_issue_link_backfill", None)
+    if not isinstance(raw, dict):
+        raw = {}
+    return int(
+        raw.get(
+            "max_pages_per_run", DEFAULT_GITHUB_PR_ISSUE_LINK_BACKFILL_MAX_PAGES_PER_RUN
+        )
+    )
+
+
+def _collect_github_pr_issue_link_backfill(
+    config: ProjectConfig,
+    data_dir: Path,
+    run_id: str,
+    started_at: datetime,
+    max_pages: int,
+    collector_factory: Callable[[ProjectConfig], GitHubCollector] | None,
+) -> dict[str, Any]:
+    """Budgeted, resumable, page-cursor backfill of `pr_issue_link` rows
+    (issue #105) -- see `collectors/github.py`'s "`pr_issue_link` historical
+    backfill" module-docstring section and `schema/tables.py`'s
+    `PR_ISSUE_LINK` docstring for the full design.
+
+    Walks every repo in `config.pull_requests.repos`, one at a time, each
+    resuming from its own persisted GraphQL cursor
+    (`storage.write_watermark(..., table="pr_issue_link_backfill_cursor")`,
+    a JSON `{repo: cursor}` blob, same read-modify-write contract
+    `_collect_github`'s own per-repo watermark blob uses) and stopping for
+    good once a repo's `hasNextPage` is `false` (`table=
+    "pr_issue_link_backfill_done"`, a JSON `{repo: true}` blob so a `done`
+    repo is skipped outright on every future run rather than re-querying it
+    only to learn nothing changed). Spends from one shared `max_pages`
+    page budget across every repo this run, and stops the whole backfill
+    early -- not just the current repo -- the moment `GitHubCollector.
+    rate_limit_floor` is reached, exactly like `_collect_repo`'s own
+    per-run GraphQL budget (`collectors/github.py` module docstring
+    "Rate-limit budgeting"); a repo this run had to stop mid-page-budget
+    simply resumes from its own cursor next run.
+
+    Never raises and never marks the `github` source `'failed'` on its own
+    account -- a partial backfill is a legitimate, resumable state (this
+    run's leftover backlog is `pending` for the next one), not an outage,
+    matching `_collect_jira_patch_available_backfill`'s isolation contract.
+    """
+    stats: dict[str, Any] = {
+        "pages_fetched": 0,
+        "prs_processed": 0,
+        "link_rows": 0,
+        "repos": {},
+        "done": False,
+    }
+    repos: list[str] = list(getattr(config.pull_requests, "repos", None) or [])
+    if max_pages <= 0 or not repos:
+        return stats
+
+    raw_cursors = storage.read_watermark(data_dir, "github", table="pr_issue_link_backfill_cursor")
+    cursors: dict[str, str | None] = json.loads(raw_cursors) if raw_cursors else {}
+    raw_done = storage.read_watermark(data_dir, "github", table="pr_issue_link_backfill_done")
+    done_flags: dict[str, bool] = json.loads(raw_done) if raw_done else {}
+
+    try:
+        collector = (collector_factory or GitHubCollector)(config)
+    except Exception as exc:  # noqa: BLE001 - an evidence source's outage must not abort the run.
+        _log("github_pr_issue_link_backfill_failed", error=str(exc))
+        return stats
+
+    snapshot_id = f"{run_id}:github_pr_issue_link_backfill"
+    link_rows: list[dict[str, Any]] = []
+    budget_exhausted = False
+
+    try:
+        for repo_label in repos:
+            if budget_exhausted or stats["pages_fetched"] >= max_pages:
+                stats["repos"].setdefault(repo_label, "pending")
+                continue
+            if done_flags.get(repo_label):
+                stats["repos"][repo_label] = "done"
+                continue
+
+            cursor = cursors.get(repo_label)
+            repo_status = "in_progress"
+            while stats["pages_fetched"] < max_pages:
+                try:
+                    data = collector.fetch_pr_issue_link_backfill_page(repo_label, cursor)
+                except RateLimitExhausted as exc:
+                    _log(
+                        "github_pr_issue_link_backfill_rate_limited",
+                        repo=repo_label,
+                        error=str(exc),
+                    )
+                    budget_exhausted = True
+                    break
+                except GitHubCollectionError as exc:
+                    _log(
+                        "github_pr_issue_link_backfill_page_failed",
+                        repo=repo_label,
+                        error=str(exc),
+                    )
+                    break
+
+                stats["pages_fetched"] += 1
+                rate_limit = data.get("rateLimit") or {}
+                remaining = rate_limit.get("remaining")
+                connection = data["repository"]["pullRequests"]
+                for node in connection["nodes"]:
+                    for row in _normalize_pr_issue_link_rows(
+                        node["number"], node.get("title"), repo_label, snapshot_id
+                    ):
+                        link_rows.append(row)
+                    stats["prs_processed"] += 1
+
+                page_info = connection["pageInfo"]
+                cursor = page_info.get("endCursor") or cursor
+
+                if not page_info["hasNextPage"]:
+                    done_flags[repo_label] = True
+                    repo_status = "done"
+                    break
+                if remaining is not None and remaining <= collector.rate_limit_floor:
+                    _log(
+                        "github_pr_issue_link_backfill_rate_limited",
+                        repo=repo_label,
+                        remaining=remaining,
+                        floor=collector.rate_limit_floor,
+                    )
+                    budget_exhausted = True
+                    break
+
+            cursors[repo_label] = cursor
+            stats["repos"][repo_label] = repo_status
+            if budget_exhausted:
+                break
+    finally:
+        collector.close()
+
+    stats["link_rows"] = len(link_rows)
+    stats["done"] = all(done_flags.get(repo_label) for repo_label in repos)
+
+    partition_date = started_at.date()
+    if link_rows:
+        link_table = _governance_validate(
+            "pr_issue_link",
+            pa.Table.from_pylist(link_rows, schema=_governance_get_schema("pr_issue_link")),
+        )
+        storage.write_partition(
+            data_dir, "github", "pr_issue_link", partition_date, run_id, link_table
+        )
+
+    storage.write_watermark(
+        data_dir,
+        "github",
+        json.dumps(cursors, sort_keys=True),
+        table="pr_issue_link_backfill_cursor",
+    )
+    storage.write_watermark(
+        data_dir,
+        "github",
+        json.dumps(done_flags, sort_keys=True),
+        table="pr_issue_link_backfill_done",
+    )
+
+    _log(
+        "github_pr_issue_link_backfill_completed",
+        run_id=run_id,
+        pages_fetched=stats["pages_fetched"],
+        prs_processed=stats["prs_processed"],
+        link_rows=stats["link_rows"],
+        repos=stats["repos"],
+        done=stats["done"],
+    )
+    return stats
+
+
 def _collect_github(
     config: ProjectConfig,
     data_dir: Path,
@@ -1339,6 +1570,7 @@ def _collect_github(
     started_at: datetime,
     max_prs_per_repo: int | None,
     collector_factory: Callable[[ProjectConfig], GitHubCollector] | None,
+    pr_issue_link_backfill_factory: Callable[[ProjectConfig], GitHubCollector] | None = None,
 ) -> dict[str, Any]:
     """Collect GitHub PR/review/comment metadata (issue #51's collector,
     wired into the pipeline for the first time by issue #54).
@@ -1392,7 +1624,7 @@ def _collect_github(
             comment_count=result.comments.num_rows,
             repos=repo_statuses,
         )
-        return {
+        source_result: dict[str, Any] = {
             "status": result.status,
             "watermark": next_watermarks,
             "records_collected": result.prs.num_rows,
@@ -1402,7 +1634,7 @@ def _collect_github(
         }
     except Exception as exc:  # noqa: BLE001 - a source outage must never abort the run (§7.3)
         _log("source_collect_failed", source="github", error=str(exc))
-        return {
+        source_result = {
             "status": "failed",
             "watermark": watermarks,
             "records_collected": 0,
@@ -1411,6 +1643,22 @@ def _collect_github(
         }
     finally:
         collector.close()
+
+    # issue #105: the budgeted, resumable `pr_issue_link` historical backfill
+    # -- its own try/except (inside `_collect_github_pr_issue_link_backfill`)
+    # means a backfill hiccup never turns an otherwise-successful ordinary
+    # fetch above into a `'failed'` github source, and a partial backfill
+    # never marks this run degraded (it isn't part of `metrics.registry.
+    # METRIC_IDS`'s `metrics_missing` check).
+    source_result["pr_issue_link_backfill"] = _collect_github_pr_issue_link_backfill(
+        config,
+        data_dir,
+        run_id,
+        started_at,
+        _github_pr_issue_link_backfill_budget(config),
+        pr_issue_link_backfill_factory or collector_factory,
+    )
+    return source_result
 
 
 def _collect_asf_roster(
@@ -3110,6 +3358,12 @@ def run_pipeline(
     # `config`.
     jira_patch_available_backfill_factory: Callable[[ProjectConfig], JiraCollector] | None = None,
     github_collector_factory: Callable[[ProjectConfig], GitHubCollector] | None = None,
+    # issue #105: injects an offline-testable stand-in for `GitHubCollector`
+    # into the `pr_issue_link` historical backfill (`_collect_github_pr_
+    # issue_link_backfill`) -- defaults to `github_collector_factory` (or
+    # plain `GitHubCollector`) when omitted, mirroring `jira_patch_available_
+    # backfill_factory`'s own default-to-the-ordinary-factory pattern above.
+    github_pr_issue_link_backfill_factory: Callable[[ProjectConfig], GitHubCollector] | None = None,
     asf_roster_collector_factory: Callable[[ProjectConfig], AsfRosterCollector] | None = None,
     ponymail_collector_factory: Callable[[ProjectConfig], PonyMailCollector] | None = None,
     # --- Governance compliance engine (issue #36) ---------------------------
@@ -3200,7 +3454,13 @@ def run_pipeline(
         )
     if "github" in active_sources:
         source_results["github"] = _collect_github(
-            config, data_dir, run_id, started_at, max_prs_per_repo, github_collector_factory
+            config,
+            data_dir,
+            run_id,
+            started_at,
+            max_prs_per_repo,
+            github_collector_factory,
+            github_pr_issue_link_backfill_factory or github_collector_factory,
         )
     if "asf_roster" in active_sources:
         source_results["asf_roster"] = _collect_asf_roster(
@@ -3283,6 +3543,13 @@ def run_pipeline(
     # blended first-response detection needs a PR comment (not just a review) as
     # a qualifying GitHub-side event.
     pr_comment = _dedupe_pr_comment_rows(storage.read_table(data_dir, "github", "pr_comment"))
+    # issue #105: the `pr_issue_link` backfill's (repo, number, issue_key)
+    # rows -- unioned with `pr.linked_issue_keys` in
+    # `review_responsiveness.py::_build_submissions` for a PR collected
+    # before that column existed.
+    pr_issue_link = _dedupe_pr_issue_link_rows(
+        storage.read_table(data_dir, "github", "pr_issue_link")
+    )
 
     overrides = []
     if identity_overrides_path is not None and Path(identity_overrides_path).is_file():
@@ -3420,6 +3687,7 @@ def run_pipeline(
                 "pr": pr,
                 "pr_review": pr_review,
                 "pr_comment": pr_comment,
+                "pr_issue_link": pr_issue_link,
                 "identity_link": identity_link,
             },
             as_of=started_at.date(),

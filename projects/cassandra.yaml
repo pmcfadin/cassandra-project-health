@@ -228,3 +228,17 @@ jira_comment_backfill:
 # default, `ceil(11754 / 100 / 40) = 3` nights to reach full coverage.
 jira_patch_available_backfill:
   max_pages_per_run: 40
+
+# `pr_issue_link` historical backfill (issue #105, review-responsiveness
+# metrics): a paged `repository.pullRequests(first:100, orderBy: CREATED_AT
+# ASC){ number title }` GraphQL walk of each `pull_requests.repos` repo (100
+# PRs/page, `collectors.github.PR_ISSUE_LINK_BACKFILL_PAGE_SIZE`), for every
+# PR collected before `pr.linked_issue_keys` (issue #102) existed --
+# apache/cassandra alone is ~53 pages. `max_pages_per_run` pages/night ->
+# at the default, `ceil(53 / 20) = 3` nights to reach full coverage of
+# apache/cassandra alone (other configured repos add more, spent from the
+# same shared per-run budget). Shares apache/cassandra's GraphQL rate-limit
+# budget with the ordinary incremental `github` collector in the same
+# nightly run (`GitHubCollector.rate_limit_floor`).
+pr_issue_link_backfill:
+  max_pages_per_run: 20

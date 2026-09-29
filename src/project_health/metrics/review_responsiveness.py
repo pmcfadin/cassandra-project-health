@@ -308,7 +308,18 @@ def _build_submissions(con: duckdb.DuckDBPyConnection) -> list[_Submission]:
     issue_info: dict[str, tuple[str | None, str | None, datetime | None]] = {
         issue_key: (assignee_raw, resolution, resolved_at)
         for issue_key, assignee_raw, resolution, resolved_at in con.execute(
-            "SELECT issue_key, assignee_raw, resolution, resolved_at FROM issue"
+            # `issue` holds several rows per key (nightly + backfill, D3 append-only).
+            # Keep the latest `updated_at`; on a tie prefer the row that carries
+            # `resolution` -- rows written before #102 have it null, and the
+            # backfill re-emits the same `updated_at` with it filled in.
+            """
+            SELECT issue_key, assignee_raw, resolution, resolved_at
+            FROM issue
+            QUALIFY ROW_NUMBER() OVER (
+                PARTITION BY issue_key
+                ORDER BY updated_at DESC, (resolution IS NOT NULL) DESC
+            ) = 1
+            """
         ).fetchall()
     }
 

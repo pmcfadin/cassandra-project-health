@@ -726,6 +726,34 @@ def test_committed_within_365d_share_true_when_fixed_in_time():
     assert details["n_hit"] == 1
 
 
+def test_committed_uses_backfilled_resolution_over_older_null_row_same_updated_at():
+    """Live data has a pre-#102 nightly `issue` row (resolution null) and a
+    backfill row with the same `updated_at` carrying `resolution`; the
+    backfill row must win in either storage order."""
+    base = {
+        "issue_key": "CASSANDRA-1",
+        "created_at": _ts(2020, 1, 1),
+        "updated_at": _ts(2020, 3, 1),
+        "assignee_raw": "author1",
+        "resolved_at": _ts(2020, 3, 1),
+    }
+    for rows in (
+        [{**base, "resolution": "Fixed"}, {**base, "resolution": None}],
+        [{**base, "resolution": None}, {**base, "resolution": "Fixed"}],
+    ):
+        tables = _single_submission_tables()
+        tables["issue"] = issues(rows)
+        result = compute_review_responsiveness(
+            tables,
+            as_of=date(2021, 6, 1),
+            run_id=RUN_ID,
+            computed_at=_ts(2021, 6, 1),
+            config=CONFIG,
+        )
+        row = _row_for_year(result, "patch_committed_within_365d_share", TIER_FIRST, 2020)
+        assert _details(row)["n_hit"] == 1
+
+
 def test_committed_within_365d_share_excludes_submissions_not_yet_365d_old():
     tables = _empty_tables(
         issue=issues(

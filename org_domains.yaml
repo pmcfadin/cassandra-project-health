@@ -31,14 +31,13 @@
 apple.com: Apple                    # 100 commits/3y -- also confirmed via LFX Insights' own top-org list
 datastax.com:                       # 57 commits/3y -- DataStax, acquired by IBM
   - org: DataStax
-    end: "2025-04-22"                # approximate; IBM's own 8-K (filed 2025-07-24, "2Q25 Earnings
-                                      # Prepared Remarks", EX-99.1) confirms "We closed the acquisition
-                                      # of DataStax this quarter" (2Q25 = 2025-04-01..2025-06-30) but
-                                      # does not give the exact day in that filing -- 2025-04-22 is the
-                                      # widely reported close date; OWNER TO REVIEW the exact day
-                                      # against a primary source (e.g. an 8-K item 2.01) if one exists.
+    end: "2025-08-01"                # project owner (former DataStax staff), 2026-09-29: DataStax
+                                      # staff moved to IBM on 2025-08-01. IBM's 8-K (filed 2025-07-24,
+                                      # 2Q25 Earnings Prepared Remarks, EX-99.1) says the acquisition
+                                      # closed in 2Q25; affiliation here follows the date people
+                                      # became IBM employees, not the deal's legal close.
   - org: IBM
-    start: "2025-04-22"
+    start: "2025-08-01"
 ksolves.com: Ksolves                # 27 commits/3y -- Ksolves India Pvt. Ltd., an IT services company
 netcracker.com: NetCracker          # 10 commits/3y
 bloomberg.net: Bloomberg            # 10 commits/3y
@@ -58,7 +57,7 @@ jpmorgan.com: JPMorgan Chase        # 1 commit/3y -- same organization as jpmcha
 aiven.io: Aiven                     # 2 commits/3y
 pega.com: Pegasystems               # 2 commits/3y
 intel.com: Intel                    # 2 commits/3y
-ibm.com: IBM                        # 2 commits/3y (plus datastax.com from 2025-04-22, above)
+ibm.com: IBM                        # 2 commits/3y (plus datastax.com from 2025-08-01, above)
 ericsson.com: Ericsson              # 2 commits/3y
 netapp.com: NetApp                  # 1 commit/3y (plus instaclustr.com from 2022-05-20, above)
 amd.com: AMD                        # 1 commit/3y

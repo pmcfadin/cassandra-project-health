@@ -3,12 +3,14 @@
   "git:file_change_event": "17137ce34bd2fa89bc296e2d61d59eac9957b787",
   "git:review_event_parser_version": "2",
   "github": "{\"apache/cassandra\": \"Y3Vyc29yOnYyOpK0MjAyNi0wOS0yOVQwMDo0ODowOVrOBxBMBQ==\", \"apache/cassandra-accord\": \"Y3Vyc29yOnYyOpK0MjAyNi0wOS0yOFQyMjozNjowNlrO-JVKVg==\", \"apache/cassandra-analytics\": \"Y3Vyc29yOnYyOpK0MjAyNi0wOS0yOVQwMDowNDo1OFrPAAAAARCf8_s=\", \"apache/cassandra-dtest\": \"Y3Vyc29yOnYyOpK0MjAyNi0wOC0yNlQxNDo1MDo1NlrPAAAAAQRcyR8=\", \"apache/cassandra-java-driver\": \"Y3Vyc29yOnYyOpK0MjAyNi0wOS0yM1QyMToxNjoyN1rPAAAAARNL5KE=\", \"apache/cassandra-sidecar\": \"Y3Vyc29yOnYyOpK0MjAyNi0wOS0yNlQwMTowODowNlrPAAAAARCB_Q8=\", \"apache/cassandra-website\": \"Y3Vyc29yOnYyOpK0MjAyNi0wOS0yMlQxOToxNDowMFrPAAAAAQXf4ic=\"}",
+  "github:pr_issue_link_backfill_cursor": "{\"apache/cassandra\": \"Y3Vyc29yOnYyOpK0MjAyMi0xMS0xMVQwOTo0NDoyN1rOQrCk7A==\"}",
+  "github:pr_issue_link_backfill_done": "{}",
   "github_commit_authors:github_commit_author": "17137ce34bd2fa89bc296e2d61d59eac9957b787 32375",
   "governance_git": "17137ce34bd2fa89bc296e2d61d59eac9957b787",
   "governance_git:commit_record_parser_version": "2",
   "jira": "2026-09-29T00:47:03+00:00",
-  "jira:patch_available_backfill_covered": "8000",
-  "jira:patch_available_backfill_cursor": "CASSANDRA-15410",
+  "jira:patch_available_backfill_covered": "11754",
+  "jira:patch_available_backfill_cursor": "CASSANDRA-21721",
   "jira:patch_available_backfill_total": "11754",
   "ponymail": "{\"dev\": \"2026-08\", \"user\": \"2026-08\"}"
 }

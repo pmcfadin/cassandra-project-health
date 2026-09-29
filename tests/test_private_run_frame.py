@@ -15,8 +15,10 @@ import pyarrow as pa
 
 from project_health import storage
 from project_health.private_run.frame import (
+    load_dev_author_history,
     load_dev_messages_for_threads,
     load_dev_thread_frame,
+    load_jira_author_history,
     load_jira_thread_frame,
 )
 
@@ -92,6 +94,26 @@ def _write_issue(data_dir, rows: list[dict], run_id: str = "run-1") -> None:
         }
     )
     storage.write_partition(data_dir, "jira", "issue", "2026-09-25", run_id, table)
+
+
+def _write_issue_comment(data_dir, rows: list[dict], run_id: str = "run-1") -> None:
+    n = len(rows)
+    table = pa.table(
+        {
+            "comment_id": pa.array([r["comment_id"] for r in rows], type=pa.string()),
+            "issue_key": pa.array([r["issue_key"] for r in rows], type=pa.string()),
+            "author_identity_id": pa.array([None] * n, type=pa.string()),
+            "author_raw_type": pa.array(["jira_username"] * n, type=pa.string()),
+            "author_raw_value": pa.array(
+                [r["author_raw_value"] for r in rows], type=pa.string()
+            ),
+            "created_at": pa.array(
+                [r["created_at"] for r in rows], type=pa.timestamp("us", tz="UTC")
+            ),
+            "source_snapshot_id": pa.array(["snap-1"] * n, type=pa.string()),
+        }
+    )
+    storage.write_partition(data_dir, "jira", "issue_comment", "2026-09-25", run_id, table)
 
 
 class TestLoadDevThreadFrame:
@@ -239,3 +261,153 @@ class TestLoadDevMessagesForThreads:
         rows = load_dev_messages_for_threads(tmp_path, "dev", {"t1"})
         assert len(rows["t1"]) == 1
         assert rows["t1"][0]["message_id"] == "<dup@x>"
+
+
+class TestLoadDevAuthorHistory:
+    def test_returns_sorted_timestamps_per_raw_author(self, tmp_path):
+        _write_message(
+            tmp_path,
+            [
+                {
+                    "message_id": "<m1@x>",
+                    "list": "dev",
+                    "sender_raw_value": "alice@example.com",
+                    "occurred_at": _ts(2024, 1, 3),
+                    "thread_id": "t1",
+                },
+                {
+                    "message_id": "<m2@x>",
+                    "list": "dev",
+                    "sender_raw_value": "alice@example.com",
+                    "occurred_at": _ts(2024, 1, 1),
+                    "thread_id": "t1",
+                },
+                {
+                    "message_id": "<m3@x>",
+                    "list": "dev",
+                    "sender_raw_value": "bob@example.com",
+                    "occurred_at": _ts(2024, 1, 2),
+                    "thread_id": "t1",
+                },
+            ],
+        )
+        history = load_dev_author_history(tmp_path, "dev")
+        assert history["alice@example.com"] == [_ts(2024, 1, 1), _ts(2024, 1, 3)]
+        assert history["bob@example.com"] == [_ts(2024, 1, 2)]
+
+    def test_covers_the_whole_table_not_just_one_thread(self, tmp_path):
+        # This is the core requirement issue #114 needs: a message not
+        # sampled into any thread this run touches must still contribute
+        # to that author's history.
+        _write_message(
+            tmp_path,
+            [
+                {
+                    "message_id": "<old@x>",
+                    "list": "dev",
+                    "sender_raw_value": "alice@example.com",
+                    "occurred_at": _ts(2018, 1, 1),
+                    "thread_id": "ancient-unsampled-thread",
+                }
+            ],
+        )
+        history = load_dev_author_history(tmp_path, "dev")
+        assert history["alice@example.com"] == [_ts(2018, 1, 1)]
+
+    def test_filters_to_requested_list(self, tmp_path):
+        _write_message(
+            tmp_path,
+            [
+                {
+                    "message_id": "<m1@x>",
+                    "list": "dev",
+                    "sender_raw_value": "alice@example.com",
+                    "occurred_at": _ts(2024, 1, 1),
+                    "thread_id": "t1",
+                },
+                {
+                    "message_id": "<m2@x>",
+                    "list": "user",
+                    "sender_raw_value": "alice@example.com",
+                    "occurred_at": _ts(2024, 1, 1),
+                    "thread_id": "t2",
+                },
+            ],
+        )
+        history = load_dev_author_history(tmp_path, "dev")
+        assert len(history["alice@example.com"]) == 1
+
+    def test_no_partitions_written_yet_returns_empty(self, tmp_path):
+        assert load_dev_author_history(tmp_path, "dev") == {}
+
+    def test_dedupes_by_message_id(self, tmp_path):
+        row = {
+            "message_id": "<dup@x>",
+            "list": "dev",
+            "sender_raw_value": "alice@example.com",
+            "occurred_at": _ts(2024, 1, 1),
+            "thread_id": "t1",
+        }
+        _write_message(tmp_path, [row], run_id="run-1")
+        _write_message(tmp_path, [row], run_id="run-2")
+        history = load_dev_author_history(tmp_path, "dev")
+        assert history["alice@example.com"] == [_ts(2024, 1, 1)]
+
+
+class TestLoadJiraAuthorHistory:
+    def test_returns_sorted_timestamps_per_author_across_issues(self, tmp_path):
+        _write_issue_comment(
+            tmp_path,
+            [
+                {
+                    "comment_id": "1",
+                    "issue_key": "EXAMPLE-1",
+                    "author_raw_value": "dave",
+                    "created_at": _ts(2024, 1, 3),
+                },
+                {
+                    "comment_id": "2",
+                    "issue_key": "EXAMPLE-2",
+                    "author_raw_value": "dave",
+                    "created_at": _ts(2024, 1, 1),
+                },
+            ],
+        )
+        history = load_jira_author_history(tmp_path, "EXAMPLE")
+        assert history["dave"] == [_ts(2024, 1, 1), _ts(2024, 1, 3)]
+
+    def test_filters_to_requested_project_key_prefix(self, tmp_path):
+        _write_issue_comment(
+            tmp_path,
+            [
+                {
+                    "comment_id": "1",
+                    "issue_key": "EXAMPLE-1",
+                    "author_raw_value": "dave",
+                    "created_at": _ts(2024, 1, 1),
+                },
+                {
+                    "comment_id": "2",
+                    "issue_key": "OTHER-1",
+                    "author_raw_value": "dave",
+                    "created_at": _ts(2024, 1, 1),
+                },
+            ],
+        )
+        history = load_jira_author_history(tmp_path, "EXAMPLE")
+        assert len(history["dave"]) == 1
+
+    def test_no_partitions_written_yet_returns_empty(self, tmp_path):
+        assert load_jira_author_history(tmp_path, "EXAMPLE") == {}
+
+    def test_dedupes_by_comment_id(self, tmp_path):
+        row = {
+            "comment_id": "dup",
+            "issue_key": "EXAMPLE-1",
+            "author_raw_value": "dave",
+            "created_at": _ts(2024, 1, 1),
+        }
+        _write_issue_comment(tmp_path, [row], run_id="run-1")
+        _write_issue_comment(tmp_path, [row], run_id="run-2")
+        history = load_jira_author_history(tmp_path, "EXAMPLE")
+        assert history["dave"] == [_ts(2024, 1, 1)]

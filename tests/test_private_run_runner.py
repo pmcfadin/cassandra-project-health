@@ -1026,3 +1026,199 @@ class TestOversizedMessageCoverage:
         assert "PARTIAL RUN" in report_text
         assert "Truncated to fit Jev's per-request length budget: 2" in report_text
         assert "Skipped (never classified" in report_text
+
+
+# --- Issue #114: per-message index, thread-level metrics, newcomer rows -------
+
+
+class TestPrivateRunThreadDerivationWiring:
+    def test_message_index_is_written_with_hashed_authors_not_raw(self, tmp_path):
+        config = _project_config(tmp_path)
+        data_dir, ponymail_months, jira_comments = _small_fixture(tmp_path)
+        out_dir = tmp_path / "out"
+
+        result = run_private_run(
+            project_config=config,
+            data_dir=data_dir,
+            out_dir=out_dir,
+            quarters=["2024Q1"],
+            api_key="test-key",
+            monthly_cap_usd=1000.0,
+            bootstrap_iterations=5,
+            ponymail_transport=_ponymail_transport(ponymail_months),
+            jira_transport=_jira_paginating_transport(jira_comments),
+            jev_async_transport=_jev_transport(probability=0.6),
+        )
+
+        index_path = out_dir / "message_index.jsonl"
+        assert index_path.is_file()
+        lines = index_path.read_text(encoding="utf-8").splitlines()
+        assert len(lines) == 5  # 3 mail + 2 jira, same as venue_totals
+
+        raw = index_path.read_text(encoding="utf-8")
+        forbidden_authors = (
+            "alice@example.org",
+            "bob@example.org",
+            "carol@example.org",
+            "dave",
+            "erin",
+        )
+        for forbidden in forbidden_authors:
+            assert forbidden not in raw
+
+        entries = [json.loads(line) for line in lines]
+        for entry in entries:
+            assert set(entry) == {
+                "call_id",
+                "venue",
+                "quarter",
+                "thread_key",
+                "position",
+                "posted_at",
+                "parent_call_id",
+                "author_key",
+                "input_hash",
+            }
+            assert entry["input_hash"]
+
+        # A per-thread reply chain is captured: <m2@...> replies to <m1@...>.
+        reply = next(e for e in entries if e["call_id"] == "mail:<m2@example.org>")
+        assert reply["parent_call_id"] == "mail:<m1@example.org>"
+        assert reply["position"] == 1
+
+        assert (out_dir / "author_salt.txt").is_file()
+        assert result.aggregates_path.is_file()  # unaffected by the new files
+
+    def test_message_index_is_rebuilt_under_no_classify(self, tmp_path):
+        config = _project_config(tmp_path)
+        data_dir, ponymail_months, jira_comments = _small_fixture(tmp_path)
+        out_dir = tmp_path / "out"
+
+        run_private_run(
+            project_config=config,
+            data_dir=data_dir,
+            out_dir=out_dir,
+            quarters=["2024Q1"],
+            api_key="test-key",
+            monthly_cap_usd=1000.0,
+            bootstrap_iterations=5,
+            ponymail_transport=_ponymail_transport(ponymail_months),
+            jira_transport=_jira_paginating_transport(jira_comments),
+            jev_async_transport=_jev_transport(probability=0.6),
+        )
+        first_index = (out_dir / "message_index.jsonl").read_text(encoding="utf-8")
+
+        run_private_run(
+            project_config=config,
+            data_dir=data_dir,
+            out_dir=out_dir,
+            quarters=["2024Q1"],
+            monthly_cap_usd=1000.0,
+            bootstrap_iterations=5,
+            no_classify=True,
+            ponymail_transport=_ponymail_transport(ponymail_months),
+            jira_transport=_jira_paginating_transport(jira_comments),
+        )
+        second_index = (out_dir / "message_index.jsonl").read_text(encoding="utf-8")
+        assert first_index == second_index  # same salt, same pending -> identical rebuild
+
+    def test_author_salt_is_stable_across_runs(self, tmp_path):
+        config = _project_config(tmp_path)
+        data_dir, ponymail_months, jira_comments = _small_fixture(tmp_path)
+        out_dir = tmp_path / "out"
+
+        run_private_run(
+            project_config=config,
+            data_dir=data_dir,
+            out_dir=out_dir,
+            quarters=["2024Q1"],
+            api_key="test-key",
+            monthly_cap_usd=1000.0,
+            bootstrap_iterations=5,
+            ponymail_transport=_ponymail_transport(ponymail_months),
+            jira_transport=_jira_paginating_transport(jira_comments),
+            jev_async_transport=_jev_transport(probability=0.6),
+        )
+        salt_1 = (out_dir / "author_salt.txt").read_text(encoding="utf-8")
+
+        run_private_run(
+            project_config=config,
+            data_dir=data_dir,
+            out_dir=out_dir,
+            quarters=["2024Q1"],
+            api_key="test-key",
+            monthly_cap_usd=1000.0,
+            bootstrap_iterations=5,
+            ponymail_transport=_ponymail_transport(ponymail_months),
+            jira_transport=_jira_paginating_transport(jira_comments),
+            jev_async_transport=_jev_transport(probability=0.6),
+        )
+        salt_2 = (out_dir / "author_salt.txt").read_text(encoding="utf-8")
+        assert salt_1 == salt_2
+
+    def test_aggregates_carry_thread_and_newcomer_sections_with_no_leaks(self, tmp_path):
+        config = _project_config(tmp_path)
+        data_dir, ponymail_months, jira_comments = _small_fixture(tmp_path)
+        out_dir = tmp_path / "out"
+
+        result = run_private_run(
+            project_config=config,
+            data_dir=data_dir,
+            out_dir=out_dir,
+            quarters=["2024Q1"],
+            api_key="test-key",
+            monthly_cap_usd=1000.0,
+            bootstrap_iterations=5,
+            ponymail_transport=_ponymail_transport(ponymail_months),
+            jira_transport=_jira_paginating_transport(jira_comments),
+            jev_async_transport=_jev_transport(probability=0.6),
+        )
+        aggregates = result.aggregates
+        assert aggregates["thread_derive_cutoffs"] == ["0.5", "0.7"]
+        assert aggregates["newcomer_n"] == 3
+
+        # Tiny fixture (3 mail msgs / 2 jira msgs) is far below every §5.1
+        # thread-level and newcomer floor -> every rate renders as
+        # insufficient data, never a fabricated number.
+        for venue in ("mailing_list", "jira_comment"):
+            year_metrics = aggregates["thread_metrics_by_year"][venue]["2024"]["0.5"]
+            assert year_metrics["escalation_rate"]["insufficient_data"] is True
+            assert year_metrics["pile_on_rate"]["insufficient_data"] is True
+
+        raw = result.aggregates_path.read_text(encoding="utf-8")
+        for forbidden in (
+            "opening message",
+            "a reply",
+            "<m1@example.org>",
+            "alice@example.org",
+            "t1",
+        ):
+            assert forbidden not in raw
+
+        report_text = result.report_path.read_text(encoding="utf-8")
+        assert "Thread-level trend summary" in report_text
+        assert "Newcomer treatment trend summary" in report_text
+        assert "thread-level metrics" in report_text
+        assert "newcomer treatment" in report_text
+        for forbidden in ("opening message", "<m1@example.org>", "alice@example.org"):
+            assert forbidden not in report_text
+
+    def test_newcomer_threshold_flag_is_plumbed_through(self, tmp_path):
+        config = _project_config(tmp_path)
+        data_dir, ponymail_months, jira_comments = _small_fixture(tmp_path)
+        out_dir = tmp_path / "out"
+
+        result = run_private_run(
+            project_config=config,
+            data_dir=data_dir,
+            out_dir=out_dir,
+            quarters=["2024Q1"],
+            api_key="test-key",
+            monthly_cap_usd=1000.0,
+            bootstrap_iterations=5,
+            newcomer_n=1,
+            ponymail_transport=_ponymail_transport(ponymail_months),
+            jira_transport=_jira_paginating_transport(jira_comments),
+            jev_async_transport=_jev_transport(probability=0.6),
+        )
+        assert result.aggregates["newcomer_n"] == 1

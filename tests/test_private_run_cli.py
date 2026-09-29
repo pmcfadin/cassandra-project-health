@@ -56,6 +56,7 @@ class TestPrivateRunParsing:
         assert args.seed == 110
         assert args.k == 60
         assert args.classifier_version == "1.0.0"
+        assert args.newcomer_threshold == 3
 
     def test_accepts_optional_flags(self):
         parser = cli._build_parser()
@@ -84,6 +85,8 @@ class TestPrivateRunParsing:
                 "30",
                 "--classifier-version",
                 "2.0.0",
+                "--newcomer-threshold",
+                "5",
             ]
         )
         assert args.out == "o"
@@ -96,6 +99,7 @@ class TestPrivateRunParsing:
         assert args.seed == 42
         assert args.k == 30
         assert args.classifier_version == "2.0.0"
+        assert args.newcomer_threshold == 5
 
     @pytest.mark.parametrize("missing_flag", ["--project", "--data-dir"])
     def test_missing_required_flag_errors(self, missing_flag):

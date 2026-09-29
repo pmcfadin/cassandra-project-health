@@ -108,6 +108,60 @@ def load_jira_thread_frame(
     return dict(by_quarter)
 
 
+def load_dev_author_history(data_dir: str | Path, list_name: str) -> dict[str, list[Any]]:
+    """`{sender_raw_value: [occurred_at, ...] (sorted ascending)}` across
+    **every** dev@ message ever collected for `list_name` -- the whole
+    Phase-1 `ponymail/message` table, not just sampled threads/quarters.
+    Issue #114's newcomer rule ("an author is a newcomer in a venue at
+    message time if they have <N prior messages in that venue across the
+    *whole* Phase-1 metadata... not just the sample") needs exactly this:
+    a per-author timeline a sampled message's `posted_at` can be counted
+    against with `bisect`, independent of which quarters happened to be
+    sampled for this run.
+    """
+    table = storage.read_table(data_dir, "ponymail", "message")
+    if table.num_rows == 0:
+        return {}
+    frame = pl.from_arrow(table).filter(pl.col("list") == list_name)
+    frame = frame.unique(subset=["message_id"], keep="first")
+
+    by_author: dict[str, list[Any]] = defaultdict(list)
+    for row in frame.select(["sender_raw_value", "occurred_at"]).iter_rows(named=True):
+        author = row["sender_raw_value"]
+        if not author:
+            continue
+        by_author[author].append(row["occurred_at"])
+    for timestamps in by_author.values():
+        timestamps.sort()
+    return dict(by_author)
+
+
+def load_jira_author_history(data_dir: str | Path, project_key: str) -> dict[str, list[Any]]:
+    """`{author_raw_value: [created_at, ...] (sorted ascending)}` across
+    **every** JIRA comment ever collected for `project_key` -- the whole
+    Phase-1 `jira/issue_comment` table (metadata only: author + timestamp,
+    never comment bodies, per that table's own schema). Same "whole Phase-1
+    metadata, not just the sample" newcomer rule as `load_dev_author_history`,
+    applied to the JIRA venue.
+    """
+    table = storage.read_table(data_dir, "jira", "issue_comment")
+    if table.num_rows == 0:
+        return {}
+    prefix = f"{project_key}-"
+    frame = pl.from_arrow(table).filter(pl.col("issue_key").str.starts_with(prefix))
+    frame = frame.unique(subset=["comment_id"], keep="first")
+
+    by_author: dict[str, list[Any]] = defaultdict(list)
+    for row in frame.select(["author_raw_value", "created_at"]).iter_rows(named=True):
+        author = row["author_raw_value"]
+        if not author:
+            continue
+        by_author[author].append(row["created_at"])
+    for timestamps in by_author.values():
+        timestamps.sort()
+    return dict(by_author)
+
+
 def load_dev_messages_for_threads(
     data_dir: str | Path, list_name: str, thread_ids: set[str]
 ) -> dict[str, list[dict[str, Any]]]:

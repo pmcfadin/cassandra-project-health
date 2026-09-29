@@ -30,6 +30,25 @@ Modules:
 - `runner` -- end-to-end orchestration: sample -> fetch (transient, never
   persisted) -> classify (pinned Jev, D10 cost-capped, input-hash cached
   and therefore resumable) -> aggregate -> report/aggregates.json.
+- `identity` (issue #114) -- the per-`--out` author salt used only to hash
+  author identity for the per-message private index (`message_index.py`);
+  every other computation in this package works on raw, in-memory-only
+  author strings, exactly like the message-level pipeline already does.
+- `thread_derive` (issue #114) -- COMMUNITY-HEALTH.md §2.2's intensity
+  tiers and §2.3's deterministic thread-level derivation (escalation,
+  de-escalation, pile-on, resolution, abandonment-after-friction), computed
+  purely from message-level labels and the reply graph, never the LLM
+  (§1.3).
+- `thread_aggregate` (issue #114) -- §5.1-floored, thread-weighted
+  aggregation of the four §5.2 thread-level rates plus the two newcomer
+  response rates (§2.3 rule 8), with thread-level bootstrap 95% CIs.
+- `newcomer` (issue #114) -- newcomer determination against the *whole*
+  Phase-1 author history for a venue (`frame.load_dev_author_history`/
+  `load_jira_author_history`), not just this run's sample.
+- `message_index` (issue #114) -- the per-message private index written to
+  `--out/message_index.jsonl`: venue, thread key, position, timestamp,
+  parent, a salted `author_key`, and the `input_hash` joining to the Jev
+  cache. Never read by `report.md`/`aggregates.json`.
 """
 
 from __future__ import annotations

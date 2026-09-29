@@ -67,6 +67,7 @@ from project_health.pipeline import ALL_SOURCES, run_pipeline
 from project_health.private_run.quarters import parse_quarters_arg
 from project_health.private_run.runner import DEFAULT_MONTHLY_CAP_USD as PRIVATE_RUN_DEFAULT_CAP
 from project_health.private_run.runner import run_private_run
+from project_health.private_run.newcomer import DEFAULT_NEWCOMER_N
 from project_health.private_run.sample import DEFAULT_K as PRIVATE_RUN_DEFAULT_K
 from project_health.private_run.sample import DEFAULT_SEED as PRIVATE_RUN_DEFAULT_SEED
 
@@ -501,6 +502,16 @@ def _build_parser() -> argparse.ArgumentParser:
     private_run_parser.add_argument(
         "--classifier-version", default="1.0.0", help="classifier_version recorded on every record"
     )
+    private_run_parser.add_argument(
+        "--newcomer-threshold",
+        type=int,
+        default=DEFAULT_NEWCOMER_N,
+        help=(
+            "Issue #114: fewer than this many prior messages in a venue (across the whole "
+            f"Phase-1 metadata, not just the sample) makes an author a newcomer at message "
+            f"time (default: {DEFAULT_NEWCOMER_N})"
+        ),
+    )
 
     return parser
 
@@ -795,6 +806,7 @@ def _cmd_private_run(args: argparse.Namespace) -> int:
         classifier_version=args.classifier_version,
         sample_only=args.sample_only,
         no_classify=args.no_classify,
+        newcomer_n=args.newcomer_threshold,
     )
 
     if args.sample_only:

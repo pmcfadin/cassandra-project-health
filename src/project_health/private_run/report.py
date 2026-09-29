@@ -147,6 +147,156 @@ def _trend_summary_lines(aggregates: dict[str, Any]) -> list[str]:
     return lines
 
 
+def _fmt_thread_rate(entry: dict[str, Any] | None) -> str:
+    """Issue #114: format one §5.2 thread-level rate entry (`escalation_rate`,
+    `constructive_resolution_rate`, `thread_abandonment_rate_post_friction`)."""
+    if not entry or entry.get("insufficient_data") or entry.get("rate") is None:
+        return "insufficient data"
+    rate = entry["rate"]
+    ci = entry.get("ci95")
+    if ci:
+        return f"{rate:.3f} [{ci[0]:.3f}, {ci[1]:.3f}]"
+    return f"{rate:.3f}"
+
+
+def _fmt_pile_on_rate(entry: dict[str, Any] | None) -> str:
+    if not entry or entry.get("insufficient_data") or entry.get("per_100_threads") is None:
+        return "insufficient data"
+    value = entry["per_100_threads"]
+    ci = entry.get("ci95")
+    if ci:
+        return f"{value:.2f} [{ci[0]:.2f}, {ci[1]:.2f}]"
+    return f"{value:.2f}"
+
+
+def _thread_metrics_table(
+    thread_metrics_by_period: dict[str, dict[str, Any]], period_label: str, cutoff_key: str
+) -> list[str]:
+    lines = [
+        "| "
+        + period_label
+        + " | Threads | Escalation rate | Constructive resolution rate | "
+        "Thread abandonment rate (post-friction) | Pile-on rate (per 100 threads) |",
+        "|---|---|---|---|---|---|",
+    ]
+    for period in sorted(thread_metrics_by_period):
+        cell = thread_metrics_by_period[period].get(cutoff_key, {})
+        row = [
+            period,
+            str(cell.get("threads_total", 0)),
+            _fmt_thread_rate(cell.get("escalation_rate")),
+            _fmt_thread_rate(cell.get("constructive_resolution_rate")),
+            _fmt_thread_rate(cell.get("thread_abandonment_rate_post_friction")),
+            _fmt_pile_on_rate(cell.get("pile_on_rate")),
+        ]
+        lines.append("| " + " | ".join(row) + " |")
+    lines.append("")
+    return lines
+
+
+def _fmt_newcomer_row(label: str, cell: dict[str, Any] | None) -> str:
+    cell = cell or {}
+    messages = cell.get("messages_directed_at_newcomers", 0)
+    distinct = cell.get("distinct_newcomers", 0)
+    if cell.get("insufficient_data", True):
+        constructive = "insufficient data"
+        hostile = "insufficient data"
+    else:
+        c_rate = cell.get("constructive_response_rate")
+        c_ci = cell.get("constructive_response_rate_ci95")
+        h_rate = cell.get("dismissive_hostile_response_rate")
+        h_ci = cell.get("dismissive_hostile_response_rate_ci95")
+        constructive = (
+            f"{c_rate:.3f} [{c_ci[0]:.3f}, {c_ci[1]:.3f}]" if c_ci else f"{c_rate:.3f}"
+        )
+        hostile = f"{h_rate:.3f} [{h_ci[0]:.3f}, {h_ci[1]:.3f}]" if h_ci else f"{h_rate:.3f}"
+    return f"| {label} | {messages} | {distinct} | {constructive} | {hostile} |"
+
+
+def _newcomer_table(newcomer_by_period: dict[str, dict[str, Any]], period_label: str) -> list[str]:
+    lines = [
+        "| "
+        + period_label
+        + " | Newcomer-directed messages | Distinct newcomers | Constructive response rate | "
+        "Dismissive/hostile response rate |",
+        "|---|---|---|---|---|",
+    ]
+    for period in sorted(newcomer_by_period):
+        lines.append(_fmt_newcomer_row(period, newcomer_by_period[period]))
+    lines.append("")
+    return lines
+
+
+def _thread_trend_summary_lines(aggregates: dict[str, Any]) -> list[str]:
+    trend = aggregates.get("thread_trend_summary") or {}
+    headline_key = aggregates.get("thread_derive_headline_cutoff", "0.5")
+    lines = [
+        "## Thread-level trend summary (§2.3)",
+        "",
+        "The derived thread-level events -- escalation, constructive resolution, "
+        "abandonment-after-friction, pile-on -- pooled across the same early/recent year "
+        "windows as the message-level trend summary above, at the headline (0.5) "
+        "probability cutoff (see 'Thread-level metrics, by year' below for the full "
+        "per-year breakdown and the 0.7 sensitivity cutoff). Plain rates with "
+        "thread-level bootstrap 95% CIs; no verdicts (D25).",
+        "",
+    ]
+    for venue in aggregates.get("venues", []):
+        venue_trend = trend.get(venue)
+        if not venue_trend:
+            continue
+        early = venue_trend["windows"]["2017_2019"].get(headline_key, {})
+        recent = venue_trend["windows"]["2023_2025"].get(headline_key, {})
+        lines += [
+            f"### {venue}",
+            "",
+            "| Metric | 2017-2019 | 2023-2025 |",
+            "|---|---|---|",
+            f"| Escalation rate | {_fmt_thread_rate(early.get('escalation_rate'))} | "
+            f"{_fmt_thread_rate(recent.get('escalation_rate'))} |",
+            "| Constructive resolution rate | "
+            f"{_fmt_thread_rate(early.get('constructive_resolution_rate'))} | "
+            f"{_fmt_thread_rate(recent.get('constructive_resolution_rate'))} |",
+            "| Thread abandonment rate (post-friction) | "
+            f"{_fmt_thread_rate(early.get('thread_abandonment_rate_post_friction'))} | "
+            f"{_fmt_thread_rate(recent.get('thread_abandonment_rate_post_friction'))} |",
+            f"| Pile-on rate (per 100 threads) | {_fmt_pile_on_rate(early.get('pile_on_rate'))} | "
+            f"{_fmt_pile_on_rate(recent.get('pile_on_rate'))} |",
+            "",
+        ]
+    return lines
+
+
+def _newcomer_trend_summary_lines(aggregates: dict[str, Any]) -> list[str]:
+    trend = aggregates.get("newcomer_trend_summary") or {}
+    lines = [
+        "## Newcomer treatment trend summary (§5.2)",
+        "",
+        "Constructive and dismissive/hostile response rates for messages directed at a "
+        "newcomer (fewer than "
+        f"{aggregates.get('newcomer_n')} prior messages in this venue, across the whole "
+        "Phase-1 metadata, at message time -- COMMUNITY-HEALTH.md §2.3 rule 8), pooled "
+        "across the same early/recent year windows. Reported as two separate rates, "
+        "never netted into one (§5.1's no-composite rule).",
+        "",
+    ]
+    for venue in aggregates.get("venues", []):
+        venue_trend = trend.get(venue)
+        if not venue_trend:
+            continue
+        lines += [
+            f"### {venue}",
+            "",
+            "| Window | Newcomer-directed messages | Distinct newcomers | "
+            "Constructive response rate | Dismissive/hostile response rate |",
+            "|---|---|---|---|---|",
+            _fmt_newcomer_row("2017-2019", venue_trend["windows"].get("2017_2019")),
+            _fmt_newcomer_row("2023-2025", venue_trend["windows"].get("2023_2025")),
+            "",
+        ]
+    return lines
+
+
 def _fmt_coverage(value: float | None) -> str:
     if value is None:
         return "n/a"
@@ -221,11 +371,24 @@ def render_report_markdown(aggregates: dict[str, Any]) -> str:
     lines: list[str] = [
         "# Private Cassandra communication run -- owner-only report",
         "",
-        "Issue #110; DECISIONS.md D1, D10, D17, D18, D22, D23, D25. **Private, not "
+        "Issue #110, #114; DECISIONS.md D1, D10, D17, D18, D22, D23, D25. **Private, not "
         "published**: nothing in this file is published to the site, the public "
         "repo, or the `data` branch (COMMUNITY-HEALTH.md §7.8 -- PMC preview and "
         "explicit acknowledgment come first). No message text, no names, and no "
         "message ids appear anywhere below (COMMUNITY-HEALTH.md §7.3/§7.4).",
+        "",
+        "**Thread-level derivation (§2.2/§2.3) ambiguity resolutions**: COMMUNITY-"
+        "HEALTH.md §2.3 is written in prose, not pseudocode; issue #114 asks that any "
+        "ambiguity be resolved with the simplest reading and documented. Every reading "
+        "chosen (directed_at = parent author only, no @-mention extraction; parent "
+        "resolution scoped to this run's own thread survivors; escalation's "
+        "'two different author_refs' = two distinct authors each striking a new "
+        "running-maximum tier; de-escalation keyed off the thread's *last* tier >= 3 "
+        "message; resolution's tail-window evidence gated to the last k messages; "
+        "abandonment's target = the temporally last tier >= 2 message; only "
+        "thread-scoped abandonment is computed, not the project-scoped nightly-job "
+        "upgrade) is documented verbatim in `private_run/thread_derive.py`'s module "
+        "docstring.",
         "",
         f"- Generated at: {aggregates['generated_at']}",
         f"- Sampler seed: {aggregates['seed']}  |  K (threads/stratum): {aggregates['k']}",
@@ -246,6 +409,8 @@ def render_report_markdown(aggregates: dict[str, Any]) -> str:
 
     lines += _partial_run_lines(aggregates)
     lines += _trend_summary_lines(aggregates)
+    lines += _thread_trend_summary_lines(aggregates)
+    lines += _newcomer_trend_summary_lines(aggregates)
 
     lines += ["## Frame definition", ""]
     for venue, definition in aggregates["frame_definition"].items():
@@ -380,6 +545,29 @@ def render_report_markdown(aggregates: dict[str, Any]) -> str:
             lines.append(f"### {venue} -- public-benchmark sensitivity column, by year")
             lines.append("")
             lines += _sensitivity_table(year_cells, "Year", strong_labels)
+
+        thread_metrics_years = aggregates.get("thread_metrics_by_year", {}).get(venue, {})
+        thread_headline_key = aggregates.get("thread_derive_headline_cutoff", "0.5")
+        thread_derive_cutoffs = aggregates.get("thread_derive_cutoffs", [])
+        thread_sensitivity_keys = [c for c in thread_derive_cutoffs if c != thread_headline_key]
+
+        lines.append(
+            f"### {venue} -- thread-level metrics (§2.3, >= {thread_headline_key}), by year"
+        )
+        lines.append("")
+        lines += _thread_metrics_table(thread_metrics_years, "Year", thread_headline_key)
+
+        for cutoff_key in thread_sensitivity_keys:
+            lines.append(
+                f"### {venue} -- thread-level metrics sensitivity cutoff (>= {cutoff_key}), by year"
+            )
+            lines.append("")
+            lines += _thread_metrics_table(thread_metrics_years, "Year", cutoff_key)
+
+        newcomer_years = aggregates.get("newcomer_by_year", {}).get(venue, {})
+        lines.append(f"### {venue} -- newcomer treatment (§5.2), by year")
+        lines.append("")
+        lines += _newcomer_table(newcomer_years, "Year")
 
         lines.append(f"## {venue} -- headline (>= {headline_cutoff}), by quarter")
         lines.append("")

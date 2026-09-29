@@ -1,20 +1,27 @@
-"""End-to-end orchestration for `project-health private-run` (issue #110;
-DECISIONS.md D1, D10, D17, D18, D22, D23).
+"""End-to-end orchestration for `project-health private-run` (issue #110,
+#114; DECISIONS.md D1, D10, D17, D18, D22, D23).
 
 sample (stratified threads, seeded, weighted) -> fetch (transient dev@/JIRA
 text, never persisted) -> classify (pinned Jev, D10 cost-capped,
-input-hash cached and therefore resumable, D22) -> aggregate (per venue x
-quarter/year, §5.1 floors, D23 sensitivity) -> `report.md` + `aggregates.json`
-(both aggregate-only -- COMMUNITY-HEALTH.md §7.3/§7.4).
+input-hash cached and therefore resumable, D22) -> §2.2/§2.3 thread-level
+derivation + §2.3 rule 8 newcomer determination (issue #114) -> aggregate
+(per venue x quarter/year, §5.1 floors, D23 sensitivity) -> `report.md` +
+`aggregates.json` (both aggregate-only -- COMMUNITY-HEALTH.md §7.3/§7.4).
 
-**Nothing here ever writes message text, thread ids, message ids, or any
-per-person identifier to disk.** The Jev classification cache
+**Message text is never written to disk, and no raw author string is ever
+written to `report.md`/`aggregates.json`.** The Jev classification cache
 (`ClassificationCache`, reused unchanged from `classify/classifier.py`)
 never carries text (`ClassificationRecord`'s schema forbids it, D17); this
-module's own working state (fetched bodies, per-message author strings used
-only to count *distinct* authors for the §5.1 floor) lives in memory for
-the duration of one `run_private_run` call and is discarded once
-`aggregates.json`/`report.md` are written. This is what makes a re-run
+module's own in-memory working state (fetched bodies, per-message raw
+author strings used only to count *distinct* authors for the §5.1 floor
+and to derive thread-level/newcomer events) lives only for the duration of
+one `run_private_run` call and is discarded once `aggregates.json`/
+`report.md` are written. The one on-disk exception, by design (issue #114,
+build item 1), is `--out/message_index.jsonl`: a private, `--out`-only
+per-message audit index that *does* carry thread keys, message ids
+(`call_id`s), and a **salted hash** of each author (never the raw string;
+see `identity.py`) -- still never read back by `report.md`/`aggregates.
+json`, and rebuilt from scratch on every run. This is what makes a re-run
 "resumable" in exactly the sense D22 means: the paid Jev call is skipped
 for any message whose input hash is already cached, while the (free)
 dev@/JIRA text fetch simply happens again every run -- the same
@@ -56,9 +63,20 @@ from project_health.classify.text_fetch import (
 from project_health.classify.questions import MESSAGE_LEVEL_LABELS
 from project_health.config import ProjectConfig
 from project_health.private_run import aggregate, frame, report, sensitivity
+from project_health.private_run import message_index as message_index_module
+from project_health.private_run import thread_aggregate
+from project_health.private_run.identity import load_or_create_salt
+from project_health.private_run.newcomer import DEFAULT_NEWCOMER_N, is_newcomer
 from project_health.private_run.quarters import quarter_bounds  # noqa: F401  (re-exported for callers)
 from project_health.private_run.sample import DEFAULT_K, DEFAULT_SEED, StratumSample, sample_stratum
 from project_health.private_run.stats import ThreadCluster, median_probability_per_1000
+from project_health.private_run.thread_aggregate import NewcomerMessage
+from project_health.private_run.thread_derive import (
+    ThreadMessage,
+    derive_thread,
+    intensity_tier,
+    labels_present_at_cutoff,
+)
 
 # "Cap 60 messages/thread, earliest first" (issue #110) -- distinct from
 # `sample.DEFAULT_K` (60 *threads* per stratum); both default to 60, which
@@ -80,6 +98,16 @@ DEFAULT_COST_LEDGER_FILENAME = "cost_ledger.jsonl"
 MAILING_LIST_VENUE = "mailing_list"
 JIRA_COMMENT_VENUE = "jira_comment"
 VENUES: tuple[str, ...] = (MAILING_LIST_VENUE, JIRA_COMMENT_VENUE)
+
+# Issue #114: thread-level derivation (§2.2/§2.3) at the headline 0.5
+# probability cutoff, plus a 0.7 sensitivity cutoff -- mirrors `aggregate.
+# py`'s own HEADLINE_CUTOFF/CUTOFFS split for the message-level metrics.
+THREAD_DERIVE_HEADLINE_CUTOFF = 0.5
+THREAD_DERIVE_SENSITIVITY_CUTOFF = 0.7
+THREAD_DERIVE_CUTOFFS: tuple[float, ...] = (
+    THREAD_DERIVE_HEADLINE_CUTOFF,
+    THREAD_DERIVE_SENSITIVITY_CUTOFF,
+)
 
 # Issue #110 fixup round 1's trend-summary windows: pooled early vs. recent
 # years, per venue, at the headline (0.5) cutoff only. Plain calendar-year
@@ -105,6 +133,17 @@ class _PendingMessage:
     author_raw: str  # used only to build an in-memory *distinct-author count*
     normalized: NormalizedMessage
     context: ParentContext
+    # Issue #114: thread-derivation fields. `order_index` is this message's
+    # position among its thread's *surviving* messages (0-based, in
+    # posted-time order -- the same order `collect_dev_pending`/
+    # `collect_jira_pending` already fetch in). `posted_at` is an
+    # ISO-8601-ish sortable string. `parent_call_id` is this run's own
+    # `call_id` for the message's parent *if that parent also survived*
+    # (`thread_derive`'s module docstring, ambiguity resolution #2) --
+    # `None` for a thread root or an unresolvable/filtered-out parent.
+    order_index: int = 0
+    posted_at: str = ""
+    parent_call_id: str | None = None
 
 
 def _year_month(value: datetime) -> str:
@@ -156,6 +195,12 @@ def collect_dev_pending(
                 for row in survivors
             ]
             raws = fetcher.fetch_messages(refs)
+            # Issue #114: parent resolution for thread-derivation is scoped
+            # to this thread's own survivors (`thread_derive`'s module
+            # docstring, ambiguity resolution #2) -- a survivor's raw
+            # `message_id`, so `In-Reply-To` can be matched against it.
+            survivor_message_ids = {row["message_id"] for row in survivors}
+            position = 0
             for ref, row in zip(refs, survivors):
                 raw = raws.get(ref.message_id)
                 if raw is None:
@@ -168,6 +213,11 @@ def collect_dev_pending(
                 )
                 text = preprocess_text(raw.text, "mailing_list")
                 call_id = f"mail:{ref.message_id}"
+                parent_call_id = (
+                    f"mail:{raw.in_reply_to}"
+                    if raw.in_reply_to and raw.in_reply_to in survivor_message_ids
+                    else None
+                )
                 pending.append(
                     _PendingMessage(
                         call_id=call_id,
@@ -183,8 +233,12 @@ def collect_dev_pending(
                             text=text,
                         ),
                         context=ParentContext(text=parent_text),
+                        order_index=position,
+                        posted_at=row["occurred_at"].isoformat(),
+                        parent_call_id=parent_call_id,
                     )
                 )
+                position += 1
         truncated_thread_counts[quarter] = truncated
 
     return pending, truncated_thread_counts
@@ -215,10 +269,19 @@ def collect_jira_pending(
             if len(ordered) > MAX_MESSAGES_PER_THREAD:
                 truncated += 1
             capped = ordered[:MAX_MESSAGES_PER_THREAD]
+            # Issue #114: thread-derivation parent for JIRA is the previous
+            # *surviving* comment in order, not the raw previous comment
+            # in `capped` (`thread_derive`'s module docstring, ambiguity
+            # resolution #2) -- `parent_raw`/`parent_text` below (the
+            # classifier's own context window) are unaffected and keep
+            # using `fetcher.resolve_parent`'s pre-existing full-stream rule.
+            survivors = [
+                comment
+                for comment in capped
+                if not is_automated_sender(comment.author, automated_sender_patterns)
+            ]
 
-            for comment in capped:
-                if is_automated_sender(comment.author, automated_sender_patterns):
-                    continue
+            for position, comment in enumerate(survivors):
                 ref = JiraCommentRef(issue_key, comment.comment_id)
                 parent_raw = fetcher.resolve_parent(ref)
                 parent_text = (
@@ -228,6 +291,11 @@ def collect_jira_pending(
                 )
                 text = preprocess_text(comment.text, "jira_comment")
                 call_id = f"jira:{issue_key}:{comment.comment_id}"
+                parent_call_id = (
+                    f"jira:{issue_key}:{survivors[position - 1].comment_id}"
+                    if position > 0
+                    else None
+                )
                 pending.append(
                     _PendingMessage(
                         call_id=call_id,
@@ -243,6 +311,9 @@ def collect_jira_pending(
                             text=text,
                         ),
                         context=ParentContext(text=parent_text),
+                        order_index=position,
+                        posted_at=comment.created_at or "",
+                        parent_call_id=parent_call_id,
                     )
                 )
         truncated_thread_counts[quarter] = truncated
@@ -253,19 +324,14 @@ def collect_jira_pending(
 # --- Classification fan-out (avoids the duplicate-input-hash bug) -----------
 
 
-def _fan_out_by_call_id(
-    pending: list[_PendingMessage], cache: ClassificationCache, classifier: JevClassifier
-) -> dict[str, ClassificationRecord]:
-    """`{call_id: ClassificationRecord}` for every pending message that has
-    a cached record, joined by *its own* recomputed `input_hash` rather
-    than `ClassificationRecord.message_id`. Mirrors `benchmark_public.
-    runner._fan_out_by_input_hash`'s fix for the same bug: two distinct
-    pending messages can preprocess to byte-identical `(text, parent_text,
-    source)` (e.g. two "+1" JIRA comments) and therefore share one cached
-    record, whose `.message_id` field can only ever hold the *first*
-    message's id to reach that hash -- looking records up by `record.
-    message_id` would silently drop every later duplicate from
-    aggregation.
+def _compute_input_hashes(
+    pending: list[_PendingMessage], classifier: JevClassifier
+) -> dict[str, str]:
+    """`{call_id: input_hash}` for every pending message, recomputed the
+    same way `JevClassifier`/`ClassificationCache` key their own records.
+    Shared by `_fan_out_by_call_id` (cache lookup) and the issue #114
+    per-message index (`message_index.py`), which both need exactly this
+    join key -- computing it once keeps the two paths from drifting apart.
 
     Issue #115: `classifier.classify`/`run_async` truncate `message.text`/
     `context.text` to the length budget *before* hashing, so this function
@@ -277,14 +343,40 @@ def _fan_out_by_call_id(
     first attempt) is the one case this can still miss -- a narrow,
     documented gap, not the common path.
     """
-    result: dict[str, ClassificationRecord] = {}
+    result: dict[str, str] = {}
     for pm in pending:
         message_text, parent_text, _truncated = truncate_for_length_budget(
             pm.normalized.text, pm.context.text
         )
         state = build_state(message_text, pm.normalized.source, parent_text)
-        input_hash = compute_input_hash(state, classifier.question_set_version, classifier.model_id)
-        record = cache.get(input_hash)
+        result[pm.call_id] = compute_input_hash(
+            state, classifier.question_set_version, classifier.model_id
+        )
+    return result
+
+
+def _fan_out_by_call_id(
+    pending: list[_PendingMessage],
+    cache: ClassificationCache,
+    input_hashes: dict[str, str],
+) -> dict[str, ClassificationRecord]:
+    """`{call_id: ClassificationRecord}` for every pending message that has
+    a cached record, joined by *its own* recomputed `input_hash` rather
+    than `ClassificationRecord.message_id`. Mirrors `benchmark_public.
+    runner._fan_out_by_input_hash`'s fix for the same bug: two distinct
+    pending messages can preprocess to byte-identical `(text, parent_text,
+    source)` (e.g. two "+1" JIRA comments) and therefore share one cached
+    record, whose `.message_id` field can only ever hold the *first*
+    message's id to reach that hash -- looking records up by `record.
+    message_id` would silently drop every later duplicate from
+    aggregation. `input_hashes` (from `_compute_input_hashes`) already
+    accounts for issue #115's pre-hash truncation -- see that function's
+    docstring for why recomputing from raw, untruncated text would
+    silently "lose" every truncated message's cached record.
+    """
+    result: dict[str, ClassificationRecord] = {}
+    for pm in pending:
+        record = cache.get(input_hashes[pm.call_id])
         if record is not None:
             result[pm.call_id] = record
     return result
@@ -319,6 +411,85 @@ def build_clusters(
         )
         authors_by_cell.setdefault(cell_key, set()).update(entry["authors"])
     return clusters_by_cell, authors_by_cell
+
+
+def build_thread_derivations(
+    pending: list[_PendingMessage],
+    records_by_call_id: dict[str, ClassificationRecord],
+    cutoff: float,
+) -> dict[tuple[str, str], list]:
+    """`{(venue, quarter): [ThreadDerivation, ...]}` -- issue #114's §2.2/
+    §2.3 thread-level model, computed at `cutoff`. Groups the same way
+    `build_clusters` does (by (venue, quarter, thread_id)), but keeps each
+    message's `order_index`/`author_raw`/`parent_call_id`/labels (not just
+    its label probabilities) so `thread_derive.derive_thread` has what it
+    needs.
+    """
+    by_thread: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for pm in pending:
+        record = records_by_call_id.get(pm.call_id)
+        if record is None:
+            continue
+        key = (pm.venue, pm.quarter, pm.thread_id)
+        entry = by_thread.setdefault(key, {"weight": pm.weight, "messages": []})
+        probabilities = {label_id: label.probability for label_id, label in record.labels.items()}
+        labels_present = labels_present_at_cutoff(probabilities, cutoff)
+        entry["messages"].append(
+            ThreadMessage(
+                call_id=pm.call_id,
+                order_index=pm.order_index,
+                author_raw=pm.author_raw,
+                posted_at=pm.posted_at,
+                parent_call_id=pm.parent_call_id,
+                tier=intensity_tier(labels_present),
+                labels_present=labels_present,
+            )
+        )
+
+    result: dict[tuple[str, str], list] = {}
+    for (venue, quarter, thread_id), entry in by_thread.items():
+        derivation = derive_thread(thread_id, entry["weight"], entry["messages"])
+        result.setdefault((venue, quarter), []).append(derivation)
+    return result
+
+
+def build_newcomer_messages(
+    pending: list[_PendingMessage],
+    records_by_call_id: dict[str, ClassificationRecord],
+    author_history_by_venue: dict[str, dict[str, list[Any]]],
+    *,
+    cutoff: float,
+    newcomer_n: int,
+) -> dict[tuple[str, str], list[NewcomerMessage]]:
+    """`{(venue, quarter): [NewcomerMessage, ...]}` -- issue #114's §2.3
+    rule 8 / §5.2 newcomer rows. For every classified message with a
+    resolved parent (its `directed_at` target, ambiguity resolution #1 in
+    `thread_derive`'s docstring), checks whether that target was a newcomer
+    in this venue *at the message's own `posted_at`* against the venue's
+    whole Phase-1 author history (`frame.load_dev_author_history`/
+    `load_jira_author_history` -- never just the sampled messages).
+    """
+    by_call_id: dict[str, _PendingMessage] = {pm.call_id: pm for pm in pending}
+    result: dict[tuple[str, str], list[NewcomerMessage]] = {}
+    for pm in pending:
+        record = records_by_call_id.get(pm.call_id)
+        if record is None or pm.parent_call_id is None:
+            continue
+        parent = by_call_id.get(pm.parent_call_id)
+        if parent is None:
+            continue
+        history = author_history_by_venue.get(pm.venue, {})
+        if not is_newcomer(history, parent.author_raw, pm.posted_at, n=newcomer_n):
+            continue
+        probabilities = {label_id: label.probability for label_id, label in record.labels.items()}
+        tier = intensity_tier(labels_present_at_cutoff(probabilities, cutoff))
+        key = (pm.venue, pm.quarter)
+        result.setdefault(key, []).append(
+            NewcomerMessage(
+                target_author=parent.author_raw, responder_author=pm.author_raw, tier=tier
+            )
+        )
+    return result
 
 
 # --- Sample manifest (--sample-only) -----------------------------------------
@@ -462,6 +633,77 @@ def _compute_trend_summary(
     return result
 
 
+def _pool_by_years(
+    items_by_cell: dict[tuple[str, str], list],
+    quarters: list[str],
+    venue: str,
+    years: tuple[str, ...],
+) -> list:
+    """Pool every sampled quarter's items (thread derivations, or newcomer
+    messages) for `venue` whose year falls in `years` -- the same pooling
+    `_pool_clusters_for_years` does for message-level clusters, generalized
+    to issue #114's per-thread/per-message item lists."""
+    pooled: list = []
+    for quarter in quarters:
+        if quarter[:4] not in years:
+            continue
+        pooled += items_by_cell.get((venue, quarter), [])
+    return pooled
+
+
+def _compute_thread_trend_summary(
+    thread_derivations_by_cutoff: dict[float, dict[tuple[str, str], list]],
+    quarters: list[str],
+    *,
+    seed: int,
+    bootstrap_iterations: int,
+) -> dict[str, Any]:
+    """Issue #114's thread-level trend summary: the same
+    `thread_aggregate.aggregate_thread_metrics` a single year computes,
+    pooled across each `TREND_WINDOWS` window's years instead, per venue and
+    per cutoff (mirrors `_compute_trend_summary`'s message-level shape)."""
+    result: dict[str, Any] = {}
+    for venue in VENUES:
+        windows: dict[str, Any] = {}
+        for window_name, years in TREND_WINDOWS:
+            windows[window_name] = {
+                aggregate.cutoff_key(cutoff): thread_aggregate.aggregate_thread_metrics(
+                    _pool_by_years(thread_derivations_by_cutoff[cutoff], quarters, venue, years),
+                    seed=seed,
+                    cell_key=f"thread_trend:{venue}:{window_name}:{aggregate.cutoff_key(cutoff)}",
+                    bootstrap_iterations=bootstrap_iterations,
+                )
+                for cutoff in THREAD_DERIVE_CUTOFFS
+            }
+        result[venue] = {"windows": windows}
+    return result
+
+
+def _compute_newcomer_trend_summary(
+    newcomer_messages_by_cell: dict[tuple[str, str], list[NewcomerMessage]],
+    quarters: list[str],
+    *,
+    seed: int,
+    bootstrap_iterations: int,
+) -> dict[str, Any]:
+    """Issue #114's newcomer-row trend summary: `thread_aggregate.
+    aggregate_newcomer_rows` pooled across each `TREND_WINDOWS` window's
+    years, per venue."""
+    result: dict[str, Any] = {}
+    for venue in VENUES:
+        windows: dict[str, Any] = {}
+        for window_name, years in TREND_WINDOWS:
+            pooled = _pool_by_years(newcomer_messages_by_cell, quarters, venue, years)
+            windows[window_name] = thread_aggregate.aggregate_newcomer_rows(
+                pooled,
+                seed=seed,
+                cell_key=f"newcomer_trend:{venue}:{window_name}",
+                bootstrap_iterations=bootstrap_iterations,
+            )
+        result[venue] = {"windows": windows}
+    return result
+
+
 # --- Cost ledger (issue #110 fixup round 1) -----------------------------------
 
 
@@ -556,6 +798,8 @@ def run_private_run(
     report_filename: str = DEFAULT_REPORT_FILENAME,
     sample_manifest_filename: str = DEFAULT_SAMPLE_MANIFEST_FILENAME,
     bootstrap_iterations: int = aggregate.DEFAULT_BOOTSTRAP_ITERATIONS,
+    message_index_filename: str = message_index_module.DEFAULT_MESSAGE_INDEX_FILENAME,
+    newcomer_n: int = DEFAULT_NEWCOMER_N,
     clock: Any = lambda: datetime.now(timezone.utc),
 ) -> PrivateRunResult:
     """Run the whole private-run pipeline once. `out_dir` must already have
@@ -577,6 +821,12 @@ def run_private_run(
     """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+
+    # Issue #114: a per-`--out`-directory author salt, created once and
+    # reused on every subsequent run against this same directory (see
+    # `identity.py`) -- what makes the (hashed) `author_key` in
+    # `message_index.jsonl` stable run over run.
+    author_salt = load_or_create_salt(out_dir)
 
     quarters = sorted(quarters)
     mailing_lists = project_config.mailing_lists
@@ -670,8 +920,56 @@ def run_private_run(
         run_result = classifier.run(calls)
     elapsed_seconds = time.monotonic() - start
 
-    records_by_call_id = _fan_out_by_call_id(pending, cache, classifier)
+    input_hashes = _compute_input_hashes(pending, classifier)
+    records_by_call_id = _fan_out_by_call_id(pending, cache, input_hashes)
     clusters_by_cell, authors_by_cell = build_clusters(pending, records_by_call_id)
+
+    # Issue #114, build item 1: the per-message private index, rebuilt from
+    # this run's own `pending` every time (including `--no-classify`, since
+    # `pending` is populated by fetch regardless -- module docstring).
+    # Never read back by this function; a private, `--out`-only audit trail.
+    message_index_entries = [
+        message_index_module.build_entry(
+            call_id=pm.call_id,
+            venue=pm.venue,
+            quarter=pm.quarter,
+            thread_key=pm.thread_id,
+            position=pm.order_index,
+            posted_at=pm.posted_at,
+            parent_call_id=pm.parent_call_id,
+            author_raw=pm.author_raw,
+            salt=author_salt,
+            input_hash=input_hashes.get(pm.call_id),
+        )
+        for pm in pending
+    ]
+    message_index_module.write_message_index(
+        out_dir, message_index_entries, filename=message_index_filename
+    )
+
+    # Issue #114: §2.2/§2.3 thread-level derivation (escalation/de-
+    # escalation/pile-on/resolution/abandonment) at the headline (0.5) and
+    # sensitivity (0.7) cutoffs, plus §2.3 rule 8/§5.2's newcomer-directed
+    # messages -- both grouped by (venue, quarter), the same cell shape
+    # `build_clusters` already uses.
+    thread_derivations_by_cutoff: dict[float, dict[tuple[str, str], list]] = {
+        cutoff: build_thread_derivations(pending, records_by_call_id, cutoff)
+        for cutoff in THREAD_DERIVE_CUTOFFS
+    }
+
+    dev_author_history = frame.load_dev_author_history(data_dir, list_name)
+    jira_author_history = frame.load_jira_author_history(data_dir, project_key)
+    author_history_by_venue = {
+        MAILING_LIST_VENUE: dev_author_history,
+        JIRA_COMMENT_VENUE: jira_author_history,
+    }
+    newcomer_messages_by_cell = build_newcomer_messages(
+        pending,
+        records_by_call_id,
+        author_history_by_venue,
+        cutoff=THREAD_DERIVE_HEADLINE_CUTOFF,
+        newcomer_n=newcomer_n,
+    )
 
     # Coverage bookkeeping (issue #110 fixup round 2): how many of this
     # run's sampled/pending messages actually ended up with a cached
@@ -735,6 +1033,16 @@ def run_private_run(
     year_clusters: dict[str, dict[str, list[ThreadCluster]]] = {venue: {} for venue in VENUES}
     year_authors: dict[str, dict[str, set[str]]] = {venue: {} for venue in VENUES}
 
+    # Issue #114: year-pooled thread derivations (per cutoff) and
+    # newcomer-directed messages, mirroring `year_clusters`/`year_authors`
+    # above -- both are consumed once quarters finish pooling, below.
+    year_thread_derivations: dict[float, dict[str, dict[str, list]]] = {
+        cutoff: {venue: {} for venue in VENUES} for cutoff in THREAD_DERIVE_CUTOFFS
+    }
+    year_newcomer_messages: dict[str, dict[str, list[NewcomerMessage]]] = {
+        venue: {} for venue in VENUES
+    }
+
     for venue in VENUES:
         strata = strata_by_venue[venue]
         for quarter in quarters:
@@ -754,6 +1062,12 @@ def run_private_run(
             year = quarter[:4]
             year_clusters[venue].setdefault(year, []).extend(clusters)
             year_authors[venue].setdefault(year, set()).update(authors)
+            for cutoff in THREAD_DERIVE_CUTOFFS:
+                bucket = year_thread_derivations[cutoff][venue].setdefault(year, [])
+                bucket.extend(thread_derivations_by_cutoff[cutoff].get((venue, quarter), []))
+            year_newcomer_messages[venue].setdefault(year, []).extend(
+                newcomer_messages_by_cell.get((venue, quarter), [])
+            )
 
         for year, clusters in year_clusters[venue].items():
             authors = year_authors[venue][year]
@@ -767,6 +1081,29 @@ def run_private_run(
                 bootstrap_iterations=bootstrap_iterations,
                 threads_population=sum(strata[q].population for q in year_quarters),
                 threads_sampled=sum(len(strata[q].sampled_ids) for q in year_quarters),
+            )
+
+    thread_metrics_by_year: dict[str, dict[str, dict[str, Any]]] = {venue: {} for venue in VENUES}
+    for venue in VENUES:
+        for year in year_clusters[venue]:
+            thread_metrics_by_year[venue][year] = {
+                aggregate.cutoff_key(cutoff): thread_aggregate.aggregate_thread_metrics(
+                    year_thread_derivations[cutoff][venue].get(year, []),
+                    seed=seed,
+                    cell_key=f"thread:{venue}:year:{year}:{aggregate.cutoff_key(cutoff)}",
+                    bootstrap_iterations=bootstrap_iterations,
+                )
+                for cutoff in THREAD_DERIVE_CUTOFFS
+            }
+
+    newcomer_by_year: dict[str, dict[str, dict[str, Any]]] = {venue: {} for venue in VENUES}
+    for venue in VENUES:
+        for year, messages in year_newcomer_messages[venue].items():
+            newcomer_by_year[venue][year] = thread_aggregate.aggregate_newcomer_rows(
+                messages,
+                seed=seed,
+                cell_key=f"newcomer:{venue}:year:{year}",
+                bootstrap_iterations=bootstrap_iterations,
             )
 
     venue_totals: dict[str, Any] = {}
@@ -798,6 +1135,19 @@ def run_private_run(
         quarters,
         seed=seed,
         sensitivity_thresholds=sensitivity_thresholds,
+        bootstrap_iterations=bootstrap_iterations,
+    )
+
+    thread_trend_summary = _compute_thread_trend_summary(
+        thread_derivations_by_cutoff,
+        quarters,
+        seed=seed,
+        bootstrap_iterations=bootstrap_iterations,
+    )
+    newcomer_trend_summary = _compute_newcomer_trend_summary(
+        newcomer_messages_by_cell,
+        quarters,
+        seed=seed,
         bootstrap_iterations=bootstrap_iterations,
     )
 
@@ -889,6 +1239,19 @@ def run_private_run(
         "trend_summary": trend_summary,
         "cells_by_quarter": cells_by_quarter,
         "cells_by_year": cells_by_year,
+        # Issue #114: §2.2/§2.3 thread-level derivation (escalation, de-
+        # escalation, pile-on, resolution, abandonment-after-friction) and
+        # §2.3 rule 8/§5.2's newcomer response rows. `thread_derive_cutoffs`
+        # records which probability cutoffs `thread_metrics_by_year` was
+        # computed at (headline 0.5, sensitivity 0.7); `newcomer_n` records
+        # this run's own newcomer threshold (flag-configurable, default 3).
+        "thread_derive_cutoffs": [aggregate.cutoff_key(c) for c in THREAD_DERIVE_CUTOFFS],
+        "thread_derive_headline_cutoff": aggregate.cutoff_key(THREAD_DERIVE_HEADLINE_CUTOFF),
+        "newcomer_n": newcomer_n,
+        "thread_metrics_by_year": thread_metrics_by_year,
+        "newcomer_by_year": newcomer_by_year,
+        "thread_trend_summary": thread_trend_summary,
+        "newcomer_trend_summary": newcomer_trend_summary,
     }
 
     aggregates_path = out_dir / aggregates_filename

@@ -153,8 +153,7 @@ class Classifier(Protocol):
 
     def classify(
         self, message: NormalizedMessage, context: ParentContext
-    ) -> "ClassificationRecord":
-        ...
+    ) -> "ClassificationRecord": ...
 
 
 # --- ClassificationRecord schema (COMMUNITY-HEALTH.md §4.3, field for field) -------
@@ -347,6 +346,17 @@ class ClassificationCache:
 
     def __len__(self) -> int:
         return len(self._by_hash)
+
+    def records(self) -> "Sequence[ClassificationRecord]":
+        """Every record currently in the cache (one per distinct
+        `input_hash`), in no particular order. Added for issue #110's
+        cumulative cost reporting: the cache is the durable record of every
+        message ever billed for a given `--out` directory (D22), so
+        summing every record's `usage` here recovers true lifetime spend
+        even across runs that predate a caller's own cost-tracking
+        mechanism (e.g. a per-run ledger started after some records were
+        already cached)."""
+        return list(self._by_hash.values())
 
     def append(self, record: ClassificationRecord) -> None:
         """Add `record` to the cache, both in memory and on disk. A record whose
@@ -661,9 +671,7 @@ class JevClassifier:
 
     # -- Batch path: cache + cost cap + bounded concurrency --------------------------
 
-    def run(
-        self, items: Sequence[tuple[NormalizedMessage, ParentContext]]
-    ) -> RunResult:
+    def run(self, items: Sequence[tuple[NormalizedMessage, ParentContext]]) -> RunResult:
         """Synchronous convenience wrapper around `run_async` (`asyncio.run`)."""
         return asyncio.run(self.run_async(items))
 

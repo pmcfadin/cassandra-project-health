@@ -924,7 +924,9 @@ def _render_pages(
     # call, read once, shared by both pages that reference it" pattern as
     # `review_responsiveness_context` below -- the Community page's summary
     # card and the Conversations page's own section both need it.
-    conversation_patterns_context = build_conversation_patterns_context(data_dir)
+    conversation_patterns_context = build_conversation_patterns_context(
+        data_dir, now=build_time
+    )
 
     # Home (`/`).
     summary_cards = [

@@ -915,3 +915,40 @@ main {
 .conv-facet-chart {
   min-height: 260px;
 }
+
+/* --- Year-over-year grouped-bar chart controls + chart (issue #120) ---- */
+
+.conv-yoy-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  margin: 1rem 0;
+}
+.conv-yoy-controls label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.8rem;
+  color: var(--fg-muted);
+}
+.conv-yoy-controls select {
+  padding: 0.35rem 0.5rem;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--fg);
+  font: inherit;
+}
+
+/* Rotated axis labels need real width to stay legible; a narrow phone
+   viewport scrolls horizontally within this box rather than the page
+   itself (issue #120), same reasoning as `.conv-patterns-table-wrap`. */
+.conv-yoy-chart-wrap {
+  overflow-x: auto;
+  max-width: 100%;
+  margin-bottom: 1rem;
+}
+.conv-yoy-chart {
+  min-width: 34rem;
+  min-height: 320px;
+}

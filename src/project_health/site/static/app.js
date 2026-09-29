@@ -104,6 +104,60 @@
   });
   updateToggleButtons();
 
+  // --- Year-over-year chart controls (issue #120) ------------------------
+  //
+  // `conversation_patterns_page._yoy_group_spec` ships each panel's *whole*
+  // dataset (every venue/cutoff/year row that cleared the §5.1 floor) as
+  // `data.values` -- there's nothing else to fetch, so filtering to the
+  // controls' current venue/year-range/cutoff is just an array filter
+  // re-applied on every embed, first paint included. That means the
+  // controls' server-rendered `selected` options (from `_yoy_default_range`/
+  // `_yoy_context`) and this filter never have to be kept in sync by hand:
+  // this function is the only thing that ever narrows the data down.
+  function currentYoyControls() {
+    var form = document.querySelector("[data-yoy-controls]");
+    if (!form) {
+      return null;
+    }
+    var venueEl = form.querySelector('[data-yoy-control="venue"]');
+    var fromEl = form.querySelector('[data-yoy-control="from-year"]');
+    var toEl = form.querySelector('[data-yoy-control="to-year"]');
+    var cutoffEl = form.querySelector('[data-yoy-control="cutoff"]');
+    return {
+      venue: venueEl ? venueEl.value : null,
+      fromYear: fromEl ? Number(fromEl.value) : -Infinity,
+      toYear: toEl ? Number(toEl.value) : Infinity,
+      cutoff: cutoffEl ? cutoffEl.value : form.getAttribute("data-yoy-default-cutoff"),
+    };
+  }
+
+  function applyYoyFilter(el, spec) {
+    if (!el.hasAttribute("data-yoy-chart") || !spec.data || !spec.data.values) {
+      return spec;
+    }
+    var controls = currentYoyControls();
+    if (!controls) {
+      return spec;
+    }
+    var next = Object.assign({}, spec);
+    next.data = Object.assign({}, spec.data, {
+      values: spec.data.values.filter(function (row) {
+        var year = Number(row.year);
+        return (
+          row.venue === controls.venue &&
+          row.cutoff === controls.cutoff &&
+          year >= controls.fromYear &&
+          year <= controls.toYear
+        );
+      }),
+    });
+    return next;
+  }
+
+  document.querySelectorAll("[data-yoy-control]").forEach(function (el) {
+    el.addEventListener("change", renderAllCharts);
+  });
+
   // --- Chart embedding --------------------------------------------------
 
   function embedChart(el) {
@@ -121,6 +175,7 @@
       return;
     }
     spec = applyChartWindow(spec);
+    spec = applyYoyFilter(el, spec);
 
     var previous = embeddedResults.get(el);
     if (previous) {

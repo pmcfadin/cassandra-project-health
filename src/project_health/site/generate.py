@@ -55,6 +55,7 @@ from project_health import storage
 from project_health.metrics.windows import add_months, month_start
 from project_health.schema import get_schema, validate
 from project_health.site import chart_spec
+from project_health.site.conversation_patterns_page import build_conversation_patterns_context
 from project_health.site.manifest import RunManifest, load_manifest
 from project_health.site.governance_page import build_governance_page_context
 from project_health.site.leaderboard_page import build_leaderboard_page_context
@@ -916,6 +917,14 @@ def _render_pages(
     common_ctx = _common_page_context(manifest, build_time)
     series_by_page = _group_by_page(series_by_id)
     last_completed_month = _last_completed_month(manifest, build_time)
+    # Conversation patterns (issue #118, D26) -- preliminary, classified
+    # message/thread patterns published from `snapshots/conversation_patterns/
+    # <run date>.json` (written by `private_run.publish`, entirely outside
+    # this run's own `run_id`/`metrics.parquet`), same "own small additive
+    # call, read once, shared by both pages that reference it" pattern as
+    # `review_responsiveness_context` below -- the Community page's summary
+    # card and the Conversations page's own section both need it.
+    conversation_patterns_context = build_conversation_patterns_context(data_dir)
 
     # Home (`/`).
     summary_cards = [
@@ -968,6 +977,7 @@ def _render_pages(
         dimensions=community_dimensions,
         leaderboard=leaderboard_context,
         review_responsiveness=review_responsiveness_context,
+        conversation_patterns=conversation_patterns_context,
         **common_ctx,
     )
     _write_subpage(out_dir, "community", community_html)
@@ -990,6 +1000,7 @@ def _render_pages(
         current_page="conversations",
         base_prefix=SUBPAGE_BASE_PREFIX,
         dimensions=conversations_dimensions,
+        conversation_patterns=conversation_patterns_context,
         **common_ctx,
     )
     _write_subpage(out_dir, "conversations", conversations_html)

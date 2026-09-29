@@ -164,3 +164,36 @@ Owner decision (2026-09-28): "Let's not publish any policy on our website. That'
 - **The project's own guidance** (cwiki governance and CI Process pages, the contributor docs) is linked as references, so readers can judge for themselves.
 - **`governance-policy.yaml` becomes an internal evidence definition.** It records what signals are extracted and cites where the project describes each one (D24's sourcing discipline still applies to those citations). Its scoring semantics stay internal and are not rendered.
 - The Governance page intro states that the page does not judge compliance, and that the Apache Cassandra project and its maintainers set and interpret their own rules.
+
+## D26. Publish Conversation patterns page (preliminary, classified aggregates)
+Owner decision (2026-09-29): publish the private run's (#110/#114) classified **aggregates**
+on the site now, marked **Preliminary**, before the §7.8 PMC acknowledgment and before #47
+calibration. The owner will share the page for feedback. This amends `COMMUNITY-HEALTH.md`
+§7.8 (PMC preview/acknowledgment before publishing) and §6.4 (validation gates) for
+*preliminary, clearly-labelled* aggregates only — every other §7 rule stays binding: no
+per-person data, no quotes, no message links, §5.1/§5.2 floors, no composite score, no
+verdicts (D25).
+- **Publish path (aggregates only).** `project-health publish-conversation-aggregates --from
+  <private aggregates.json> --data-dir <data-branch checkout>` writes a **sanitized**
+  snapshot to `snapshots/conversation_patterns/<run date>.json` on the data branch
+  (`private_run/publish.py`). The sanitizer is an **allowlist** of keys (venue/year/quarter
+  cells, per-label rates + CIs at 0.5/0.7/0.9, probability-index + floor, thread-level
+  metrics, newcomer rows, counts of messages/authors/threads, coverage, truncated/skipped
+  counts, frame definition text, sampler seed/K, classifier_version/model_id, benchmark
+  thresholds + dataset names), dropping cost-ledger internals except total USD. It hard-fails
+  (nothing is written) if any value looks like a message id, email, JIRA comment id, input
+  hash, or author key, or if any published cell with a number is below its §5.1/§5.2 floor.
+  Site generation reads the latest snapshot if present; no snapshot means no "Conversation
+  patterns" section and no error.
+- **Page `/conversations/` "Conversation patterns" section.** A prominent Preliminary banner
+  (pinned classifier, uncalibrated cutoffs, not yet PMC-reviewed, feedback link); then, in
+  order: (1) a 2017–2019 vs. 2023–2025 summary per venue/label with CIs and an "intervals
+  overlap" column; (2) newcomer treatment (constructive and dismissive/hostile rates,
+  reported separately); (3) how disagreements go (escalation, constructive resolution,
+  abandonment-after-friction, pile-on shown as "insufficient data" where it is); (4) message
+  patterns by year as small-multiple charts with CI bands, constructive and negative labels
+  as separate groups, with tables as a no-JavaScript fallback; (5) method & limits (sampling,
+  cutoffs, probability-index floor, public-benchmark thresholds, venues not covered, coverage,
+  and what is not published). Every metric carries the `classified` tier badge; no verdict
+  vocabulary (D25); no causal commentary on any year's numbers. A nav link plus a summary
+  card on the Community page, directly under "Review responsiveness", links to the page.

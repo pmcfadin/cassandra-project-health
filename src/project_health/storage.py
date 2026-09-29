@@ -103,6 +103,19 @@ def _backfill_missing_columns(table: pa.Table, schema: pa.Schema) -> pa.Table:
     return table
 
 
+def _conform_column_order(table: pa.Table, schema: pa.Schema) -> pa.Table:
+    """Reorder `table`'s columns to `schema`'s declared order.
+
+    `_backfill_missing_columns` appends a newly added column at the end, but
+    partitions written after the column was added carry it at its declared
+    position; `pa.concat_tables` rejects schemas whose column order differs.
+    Columns not in `schema` keep their relative order after the declared ones.
+    """
+    declared = [name for name in schema.names if name in table.column_names]
+    extra = [name for name in table.column_names if name not in schema.names]
+    return table.select(declared + extra)
+
+
 def read_table(data_dir: str | Path, source: str, table: str) -> pa.Table:
     """Read and concatenate every partition of `<source>/<table>`.
 
@@ -119,7 +132,10 @@ def read_table(data_dir: str | Path, source: str, table: str) -> pa.Table:
         return get_schema(table).empty_table()
 
     schema = get_schema(table)
-    tables = [_backfill_missing_columns(pq.read_table(path), schema) for path in part_files]
+    tables = [
+        _conform_column_order(_backfill_missing_columns(pq.read_table(path), schema), schema)
+        for path in part_files
+    ]
     combined = pa.concat_tables(tables)
     return validate(table, combined)
 

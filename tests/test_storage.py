@@ -184,3 +184,25 @@ def test_read_table_backfills_a_column_added_after_a_partition_was_written(tmp_p
     by_event_id = {row["event_id"]: row for row in result.to_pylist()}
     assert by_event_id[old_row["event_id"]]["parser_version"] is None
     assert by_event_id[new_row["event_id"]]["parser_version"] == 2
+
+
+def test_read_table_conforms_column_order_when_a_mid_schema_column_was_added(tmp_path):
+    """Issue #102 follow-up: `ISSUE.resolution` was added in the *middle* of
+    the schema. An older partition gets it backfilled at the end, a newer
+    partition carries it at its declared position -- `read_table` must
+    reorder both to the declared schema before concatenating them.
+    """
+    schema = get_schema("issue")
+    assert schema.names[-1] != "resolution"
+    old_schema = pa.schema([field for field in schema if field.name != "resolution"])
+    for date, table in (
+        ("2020-01-01", old_schema.empty_table()),
+        ("2026-09-29", schema.empty_table()),
+    ):
+        partition_dir = tmp_path / "raw" / "jira" / "issue" / f"date={date}"
+        partition_dir.mkdir(parents=True)
+        pq.write_table(table, partition_dir / f"part-{date}.parquet")
+
+    combined = storage.read_table(tmp_path, "jira", "issue")
+
+    assert combined.schema.names == schema.names

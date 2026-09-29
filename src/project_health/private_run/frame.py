@@ -27,6 +27,26 @@ Only the `dev` list is in scope for v1 (issue #110's "Venues: dev@ mailing
 list and JIRA comments... GitHub PR comments are out of scope for v1") --
 `user@` is not scanned here even though `projects/cassandra.yaml` collects
 it for Phase 1 metadata purposes.
+
+**Every function below de-duplicates by its natural key** (`thread_id`,
+`issue_key`, `message_id`) before returning anything (issue #110 fixup
+round 2). The raw `ponymail/message`, `ponymail/message_thread`, and
+`jira/issue` tables are append-only across nightly collection runs and are
+*not* guaranteed unique per key -- verified live against this project's
+own `data` branch: 1,129 duplicate `message_id`s, 731 duplicate
+`thread_id`s, and 11,763 duplicate `issue_key`s, all from overlapping
+partitions written by separate collector runs. Without de-duplication
+here, a thread or message with more than one row could be sampled twice
+(inflating a stratum's population and, if both copies landed in the same
+K-sized sample, its `sampled_ids`) or counted twice in `pending` (silently
+double-weighting that message in every downstream rate -- discovered via
+issue #112's own "n of N sampled" coverage tracking, which is what first
+made the inflated counts visible). This mirrors the "dedupe at the read
+site, not a smarter watermark" convention this project's own collectors
+already document elsewhere (e.g. `collectors/jira.py`,
+`pipeline._dedupe_commit_trailer_review_events`) -- the raw cache is
+allowed to carry more than one row per key; every *reader* of it is
+expected to collapse that down to one.
 """
 
 from __future__ import annotations
@@ -54,6 +74,7 @@ def load_dev_thread_frame(
     if table.num_rows == 0:
         return {}
     frame = pl.from_arrow(table).filter(pl.col("list") == list_name)
+    frame = frame.unique(subset=["thread_id"], keep="first")
 
     by_quarter: dict[str, list[str]] = defaultdict(list)
     for row in frame.select(["thread_id", "started_at"]).iter_rows(named=True):
@@ -77,6 +98,7 @@ def load_jira_thread_frame(
         return {}
     prefix = f"{project_key}-"
     frame = pl.from_arrow(table).filter(pl.col("issue_key").str.starts_with(prefix))
+    frame = frame.unique(subset=["issue_key"], keep="first")
 
     by_quarter: dict[str, list[str]] = defaultdict(list)
     for row in frame.select(["issue_key", "created_at"]).iter_rows(named=True):
@@ -105,6 +127,7 @@ def load_dev_messages_for_threads(
     frame = pl.from_arrow(table).filter(
         (pl.col("list") == list_name) & pl.col("thread_id").is_in(list(thread_ids))
     )
+    frame = frame.unique(subset=["message_id"], keep="first")
 
     by_thread: dict[str, list[dict[str, Any]]] = defaultdict(list)
     cols = ["thread_id", "message_id", "occurred_at", "sender_raw_value"]

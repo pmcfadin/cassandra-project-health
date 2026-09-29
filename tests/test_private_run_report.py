@@ -246,3 +246,61 @@ class TestRenderReportMarkdown:
         markdown = render_report_markdown(_aggregates())
         # the 2017-2019 window is built from `_insufficient_cell` above
         assert "(insufficient data)" in markdown
+
+    def test_no_partial_run_section_when_fully_classified(self):
+        markdown = render_report_markdown(_aggregates())
+        assert "PARTIAL RUN" not in markdown
+
+    def test_partial_run_section_present_and_prominent(self):
+        aggregates = _aggregates(
+            partial_run={
+                "status": "paused_no_credits",
+                "messages_sampled": 5,
+                "messages_classified": 2,
+                "coverage_by_stratum": [
+                    {
+                        "venue": "mailing_list",
+                        "quarter": "2024Q1",
+                        "messages_sampled": 3,
+                        "messages_classified": 2,
+                        "coverage": 2 / 3,
+                    },
+                    {
+                        "venue": "jira_comment",
+                        "quarter": "2024Q1",
+                        "messages_sampled": 2,
+                        "messages_classified": 0,
+                        "coverage": 0.0,
+                    },
+                ],
+            }
+        )
+        markdown = render_report_markdown(aggregates)
+        assert "PARTIAL RUN" in markdown
+        assert "paused_no_credits" in markdown
+        assert "2 of 5 sampled messages were classified" in markdown
+        assert "| mailing_list | 2024Q1 | 3 | 2 | 66.7% |" in markdown
+        assert "| jira_comment | 2024Q1 | 2 | 0 | 0.0% |" in markdown
+        # must appear before the trend summary (top-of-report prominence).
+        assert markdown.index("PARTIAL RUN") < markdown.index("Trend summary")
+        assert markdown.index("PARTIAL RUN") < markdown.index("Frame definition")
+
+    def test_partial_run_coverage_none_renders_as_na(self):
+        aggregates = _aggregates(
+            partial_run={
+                "status": "paused_cost_cap",
+                "messages_sampled": 0,
+                "messages_classified": 0,
+                "coverage_by_stratum": [
+                    {
+                        "venue": "mailing_list",
+                        "quarter": "2024Q1",
+                        "messages_sampled": 0,
+                        "messages_classified": 0,
+                        "coverage": None,
+                    }
+                ],
+            }
+        )
+        markdown = render_report_markdown(aggregates)
+        assert "| mailing_list | 2024Q1 | 0 | 0 | n/a |" in markdown

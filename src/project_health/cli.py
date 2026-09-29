@@ -399,8 +399,7 @@ def _build_parser() -> argparse.ArgumentParser:
         type=float,
         default=BENCHMARK_PUBLIC_DEFAULT_CAP,
         help=(
-            f"Cost cap for this run (default: {BENCHMARK_PUBLIC_DEFAULT_CAP}; "
-            "issue #89's $10 cap)"
+            f"Cost cap for this run (default: {BENCHMARK_PUBLIC_DEFAULT_CAP}; issue #89's $10 cap)"
         ),
     )
     benchmark_public_parser.add_argument(
@@ -463,6 +462,14 @@ def _build_parser() -> argparse.ArgumentParser:
         "--sample-only",
         action="store_true",
         help="Build and write the stratified sample manifest only -- no fetch, no classify",
+    )
+    private_run_parser.add_argument(
+        "--no-classify",
+        action="store_true",
+        help="Fetch and aggregate from the existing --out cache only -- zero Jev calls, no "
+        "API key needed. Useful to re-render report.md/aggregates.json (e.g. after a run "
+        "paused on the D10 cost cap or a TypeSafe 402/no-credits response) without risking "
+        "a real API call.",
     )
     private_run_parser.add_argument(
         "--quarters",
@@ -685,9 +692,7 @@ def _cmd_pilot_evaluate(args: argparse.Namespace) -> int:
     try:
         corpus_path = assert_outside_repo(args.corpus, repo_root, label="corpus")
         results_path = assert_outside_repo(args.results, repo_root, label="results")
-        label_paths = [
-            assert_outside_repo(path, repo_root, label="labels") for path in args.labels
-        ]
+        label_paths = [assert_outside_repo(path, repo_root, label="labels") for path in args.labels]
         private_out_path = assert_outside_repo(args.private_out, repo_root, label="private-out")
     except UnsafePathError as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -789,6 +794,7 @@ def _cmd_private_run(args: argparse.Namespace) -> int:
         monthly_cap_usd=args.monthly_cap_usd,
         classifier_version=args.classifier_version,
         sample_only=args.sample_only,
+        no_classify=args.no_classify,
     )
 
     if args.sample_only:
@@ -806,6 +812,14 @@ def _cmd_private_run(args: argparse.Namespace) -> int:
         f"estimated_cost_usd={run_result.estimated_cost_usd if run_result else 0.0:.6f}",
         file=sys.stderr,
     )
+    partial_run = result.aggregates.get("partial_run") if result.aggregates else None
+    if partial_run:
+        print(
+            f"private-run: PARTIAL RUN -- {partial_run['messages_classified']} of "
+            f"{partial_run['messages_sampled']} sampled messages classified "
+            "(see report.md's 'PARTIAL RUN' section for strata coverage)",
+            file=sys.stderr,
+        )
     print(f"report written to {result.report_path}", file=sys.stderr)
     print(f"aggregates written to {result.aggregates_path}", file=sys.stderr)
     return 0
@@ -821,8 +835,7 @@ def _cmd_verify_policy_sources(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
     print(
-        f"verify-policy-sources: {len(results)} sourced item(s) checked, "
-        f"{len(failed)} failed",
+        f"verify-policy-sources: {len(results)} sourced item(s) checked, {len(failed)} failed",
         file=sys.stderr,
     )
     return 1 if failed else 0

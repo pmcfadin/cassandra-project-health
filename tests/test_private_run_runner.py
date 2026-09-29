@@ -213,6 +213,36 @@ def _jev_transport(
     return httpx2.MockTransport(handler)
 
 
+def _jev_402_after_n_transport(n: int, probability: float = 0.6) -> httpx2.MockTransport:
+    """Serves `n` successful responses, then HTTP 402 (no credits) for every
+    call after that -- simulates issue #110's real failure (a run that
+    dies partway through because the TypeSafe org ran out of credits)."""
+    answers = {label: {"type": "noul", "noul": probability} for label in MESSAGE_LEVEL_LABELS}
+    answers["tone_intensity"] = {
+        "type": "score",
+        "score": 1.0,
+        "confidence": 0.8,
+        "legend": {0: "neutral", 1: "firm", 2: "sharp", 3: "heated", 4: "aggressive"},
+        "probabilities": {0: 0.1, 1: 0.6, 2: 0.2, 3: 0.05, 4: 0.05},
+    }
+    success_body = {
+        "model": EXPECTED_MODEL,
+        "usage": {"input_tokens": 50, "output_tokens": 10},
+        "answers": answers,
+    }
+    count = {"n": 0}
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        count["n"] += 1
+        if count["n"] <= n:
+            return httpx2.Response(200, json=success_body)
+        return httpx2.Response(
+            402, json={"error": "Your organization has no available TypeSafe API credits"}
+        )
+
+    return httpx2.MockTransport(handler)
+
+
 # --- collect_dev_pending -----------------------------------------------------
 
 
@@ -765,3 +795,184 @@ class TestRunPrivateRunEndToEnd:
         }
         report_text = result.report_path.read_text(encoding="utf-8")
         assert "LKML Ferreira Set (2021)" in report_text
+
+    def test_402_pauses_cleanly_and_reports_partial_run(self, tmp_path):
+        """Issue #110 fixup round 2: the real failure this reproduces --
+        TypeSafe runs out of API credits partway through a run. Must not
+        raise, must still write report.md/aggregates.json, and must surface
+        a strata coverage table."""
+        config = _project_config(tmp_path)
+        data_dir, ponymail_months, jira_comments = _small_fixture(tmp_path)
+        out_dir = tmp_path / "out"
+
+        # 5 total pending (3 mail + 2 jira, dispatched in that order at
+        # concurrency=1): the first 2 succeed, the rest get 402.
+        result = run_private_run(
+            project_config=config,
+            data_dir=data_dir,
+            out_dir=out_dir,
+            quarters=["2024Q1"],
+            api_key="test-key",
+            concurrency=1,
+            monthly_cap_usd=1000.0,
+            bootstrap_iterations=5,
+            ponymail_transport=_ponymail_transport(ponymail_months),
+            jira_transport=_jira_paginating_transport(jira_comments),
+            jev_async_transport=_jev_402_after_n_transport(2),
+        )  # must not raise
+
+        assert result.run_result.status == "paused_no_credits"
+        assert result.run_result.calls_made == 2
+        assert result.report_path.is_file()
+        assert result.aggregates_path.is_file()
+
+        partial = result.aggregates["partial_run"]
+        assert partial is not None
+        assert partial["status"] == "paused_no_credits"
+        assert partial["messages_classified"] == 2
+        assert partial["messages_sampled"] == 5
+        coverage_venues = {row["venue"] for row in partial["coverage_by_stratum"]}
+        assert coverage_venues == {"mailing_list", "jira_comment"}
+        total_sampled_in_table = sum(
+            row["messages_sampled"] for row in partial["coverage_by_stratum"]
+        )
+        assert total_sampled_in_table == 5
+
+        report_text = result.report_path.read_text(encoding="utf-8")
+        assert "PARTIAL RUN" in report_text
+        assert "paused_no_credits" in report_text
+        assert "2 of 5 sampled messages were classified" in report_text
+        # PARTIAL RUN must appear near the top, before the trend summary.
+        assert report_text.index("PARTIAL RUN") < report_text.index("Trend summary")
+
+    def test_cost_cap_pause_also_reports_partial_run(self, tmp_path):
+        """The pre-existing D10 cost-cap pause gets the same PARTIAL RUN
+        treatment as a 402 -- not a status-specific special case."""
+        config = _project_config(tmp_path)
+        data_dir, ponymail_months, jira_comments = _small_fixture(tmp_path)
+        out_dir = tmp_path / "out"
+
+        result = run_private_run(
+            project_config=config,
+            data_dir=data_dir,
+            out_dir=out_dir,
+            quarters=["2024Q1"],
+            api_key="test-key",
+            concurrency=1,
+            # 50 input tokens/call at the default $0.042/M price is a tiny
+            # fraction of a cent, but a $0.0000005 cap is exceeded by the
+            # very first call's own cost, so nothing after it goes through.
+            monthly_cap_usd=0.0000005,
+            bootstrap_iterations=5,
+            ponymail_transport=_ponymail_transport(ponymail_months),
+            jira_transport=_jira_paginating_transport(jira_comments),
+            jev_async_transport=_jev_transport(probability=0.6),
+        )
+
+        assert result.run_result.status == "paused_cost_cap"
+        partial = result.aggregates["partial_run"]
+        assert partial is not None
+        assert partial["status"] == "paused_cost_cap"
+        assert partial["messages_classified"] < partial["messages_sampled"]
+
+    def test_no_classify_makes_zero_jev_calls_and_aggregates_from_cache(self, tmp_path):
+        config = _project_config(tmp_path)
+        data_dir, ponymail_months, jira_comments = _small_fixture(tmp_path)
+        out_dir = tmp_path / "out"
+
+        # Populate the cache fully with a real (mocked) classify run first.
+        run_private_run(
+            project_config=config,
+            data_dir=data_dir,
+            out_dir=out_dir,
+            quarters=["2024Q1"],
+            api_key="test-key",
+            monthly_cap_usd=1000.0,
+            bootstrap_iterations=5,
+            ponymail_transport=_ponymail_transport(ponymail_months),
+            jira_transport=_jira_paginating_transport(jira_comments),
+            jev_async_transport=_jev_transport(probability=0.6),
+        )
+
+        # Now re-run with --no-classify: no api_key, no jev_async_transport
+        # at all -- if this tried to reach TypeSafe, it would either raise
+        # (no transport configured) or hit tests/conftest.py's network
+        # block. Neither happens if zero Jev calls are actually made.
+        result = run_private_run(
+            project_config=config,
+            data_dir=data_dir,
+            out_dir=out_dir,
+            quarters=["2024Q1"],
+            monthly_cap_usd=1000.0,
+            bootstrap_iterations=5,
+            no_classify=True,
+            ponymail_transport=_ponymail_transport(ponymail_months),
+            jira_transport=_jira_paginating_transport(jira_comments),
+        )
+
+        assert result.run_result.status == "completed"
+        assert result.run_result.calls_made == 0
+        assert result.aggregates["venue_totals"]["mailing_list"]["messages_classified"] == 3
+        assert result.aggregates["venue_totals"]["jira_comment"]["messages_classified"] == 2
+        assert result.aggregates["partial_run"] is None  # cache was already complete
+
+    def test_no_classify_against_a_partially_cached_out_dir_reports_partial_run(self, tmp_path):
+        config = _project_config(tmp_path)
+        data_dir, ponymail_months, jira_comments = _small_fixture(tmp_path)
+        out_dir = tmp_path / "out"
+
+        # First run: only 2 of 5 messages get classified (402 partway).
+        run_private_run(
+            project_config=config,
+            data_dir=data_dir,
+            out_dir=out_dir,
+            quarters=["2024Q1"],
+            api_key="test-key",
+            concurrency=1,
+            monthly_cap_usd=1000.0,
+            bootstrap_iterations=5,
+            ponymail_transport=_ponymail_transport(ponymail_months),
+            jira_transport=_jira_paginating_transport(jira_comments),
+            jev_async_transport=_jev_402_after_n_transport(2),
+        )
+
+        # --no-classify against that same --out: must not attempt to
+        # classify the remaining 3, and must still report the shortfall.
+        result = run_private_run(
+            project_config=config,
+            data_dir=data_dir,
+            out_dir=out_dir,
+            quarters=["2024Q1"],
+            monthly_cap_usd=1000.0,
+            bootstrap_iterations=5,
+            no_classify=True,
+            ponymail_transport=_ponymail_transport(ponymail_months),
+            jira_transport=_jira_paginating_transport(jira_comments),
+        )
+
+        assert result.run_result.calls_made == 0
+        partial = result.aggregates["partial_run"]
+        assert partial is not None
+        assert partial["status"] == "completed"  # --no-classify never "pauses" itself
+        assert partial["messages_classified"] == 2
+        assert partial["messages_sampled"] == 5
+
+    def test_fully_classified_run_has_no_partial_run_section(self, tmp_path):
+        config = _project_config(tmp_path)
+        data_dir, ponymail_months, jira_comments = _small_fixture(tmp_path)
+        out_dir = tmp_path / "out"
+
+        result = run_private_run(
+            project_config=config,
+            data_dir=data_dir,
+            out_dir=out_dir,
+            quarters=["2024Q1"],
+            api_key="test-key",
+            monthly_cap_usd=1000.0,
+            bootstrap_iterations=5,
+            ponymail_transport=_ponymail_transport(ponymail_months),
+            jira_transport=_jira_paginating_transport(jira_comments),
+            jev_async_transport=_jev_transport(probability=0.6),
+        )
+        assert result.aggregates["partial_run"] is None
+        assert "PARTIAL RUN" not in result.report_path.read_text(encoding="utf-8")

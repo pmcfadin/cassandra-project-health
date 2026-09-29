@@ -526,6 +526,7 @@ def run_private_run(
     monthly_cap_usd: float = DEFAULT_MONTHLY_CAP_USD,
     classifier_version: str = "1.0.0",
     sample_only: bool = False,
+    no_classify: bool = False,
     api_key: str | None = None,
     pricing_config_path: str | Path | None = None,
     ponymail_transport: Any = None,
@@ -546,6 +547,16 @@ def run_private_run(
     private-output command in this project) -- this function does not
     re-check it, matching `pilot_classify.run_pilot_classify`'s own
     division of responsibility.
+
+    `no_classify=True` (issue #110 fixup round 2) skips the classify step
+    entirely -- no `JevClassifier.run()` call, so zero Jev calls, no API
+    key needed -- and aggregates from whatever is already in the on-disk
+    cache. dev@/JIRA text is still fetched (a message's `input_hash` has to
+    be recomputed to look it up in the cache; nothing is persisted, D18),
+    but nothing ever reaches TypeSafe. Useful to re-render `report.md`/
+    `aggregates.json` from an existing `--out` directory -- including one
+    whose classify run paused partway (`paused_cost_cap`/`paused_no_credits`
+    below) -- without risking a real API call.
     """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -625,9 +636,10 @@ def run_private_run(
 
     calls = [(pm.normalized, pm.context) for pm in pending]
     start = time.monotonic()
-    if calls:
-        run_result = classifier.run(calls)
-    else:
+    if no_classify or not calls:
+        # --no-classify: never construct/call the Jev client at all (issue
+        # #110 fixup round 2) -- zero Jev calls, no API key required. Also
+        # covers the pre-existing "nothing to classify" empty-run case.
         run_result = RunResult(
             status="completed",
             records=[],
@@ -637,10 +649,55 @@ def run_private_run(
             output_tokens_used=0,
             estimated_cost_usd=0.0,
         )
+    else:
+        run_result = classifier.run(calls)
     elapsed_seconds = time.monotonic() - start
 
     records_by_call_id = _fan_out_by_call_id(pending, cache, classifier)
     clusters_by_cell, authors_by_cell = build_clusters(pending, records_by_call_id)
+
+    # Coverage bookkeeping (issue #110 fixup round 2): how many of this
+    # run's sampled/pending messages actually ended up with a cached
+    # classification record, overall and per (venue, quarter) -- whether
+    # that's because this run's own classify step paused partway
+    # (`paused_cost_cap`/`paused_no_credits`), `--no-classify` was used
+    # against a not-yet-complete cache, or the cache was simply already
+    # incomplete for some other reason. `is_partial` (not `run_result.
+    # status`) is what actually decides whether the report gets a
+    # "PARTIAL RUN" section -- status is surfaced for context, but coverage
+    # is the ground truth.
+    pending_counts_by_cell: dict[tuple[str, str], int] = {}
+    classified_counts_by_cell: dict[tuple[str, str], int] = {}
+    for pm in pending:
+        key = (pm.venue, pm.quarter)
+        pending_counts_by_cell[key] = pending_counts_by_cell.get(key, 0) + 1
+        if pm.call_id in records_by_call_id:
+            classified_counts_by_cell[key] = classified_counts_by_cell.get(key, 0) + 1
+
+    total_sampled = len(pending)
+    total_classified = len(records_by_call_id)
+    partial_run: dict[str, Any] | None = None
+    if total_classified < total_sampled:
+        coverage_by_stratum = []
+        for venue in VENUES:
+            for quarter in quarters:
+                sampled = pending_counts_by_cell.get((venue, quarter), 0)
+                classified = classified_counts_by_cell.get((venue, quarter), 0)
+                coverage_by_stratum.append(
+                    {
+                        "venue": venue,
+                        "quarter": quarter,
+                        "messages_sampled": sampled,
+                        "messages_classified": classified,
+                        "coverage": (classified / sampled) if sampled else None,
+                    }
+                )
+        partial_run = {
+            "status": run_result.status,
+            "messages_sampled": total_sampled,
+            "messages_classified": total_classified,
+            "coverage_by_stratum": coverage_by_stratum,
+        }
 
     benchmark_path = public_benchmark_path or sensitivity.DEFAULT_PUBLIC_BENCHMARK_PATH
     sensitivity_thresholds = sensitivity.load_gating_thresholds(benchmark_path)
@@ -801,6 +858,7 @@ def run_private_run(
         "truncated_thread_counts": truncated_thread_counts,
         "cost_summary": cost_summary,
         "cost_ledger": cost_ledger_summary,
+        "partial_run": partial_run,
         "venue_totals": venue_totals,
         "trend_summary": trend_summary,
         "cells_by_quarter": cells_by_quarter,

@@ -23,6 +23,8 @@ import yaml
 from project_health.collectors.github import (
     CollectionError,
     GitHubCollector,
+    RateLimitExhausted,
+    _normalize_pr_issue_link_rows,
     resolve_github_token,
 )
 from project_health.config import load_project
@@ -530,3 +532,127 @@ class TestNoNetworkAccess:
 # (exercised indirectly above; this just guards the public surface).
 def test_collection_error_is_exported():
     assert issubclass(CollectionError, Exception)
+
+
+# --- `pr_issue_link` historical backfill (issue #105) -----------------------
+
+
+class TestNormalizePrIssueLinkRows:
+    """Unit coverage for the title -> issue-key extraction the backfill uses,
+    independent of any HTTP plumbing."""
+
+    def test_extracts_one_key_from_a_title(self):
+        rows = _normalize_pr_issue_link_rows(
+            100, "Fix flaky test (CASSANDRA-12345)", "a/b", "snap-1"
+        )
+        assert rows == [
+            {
+                "repo": "a/b",
+                "number": 100,
+                "issue_key": "CASSANDRA-12345",
+                "source_snapshot_id": "snap-1",
+            }
+        ]
+
+    def test_extracts_multiple_keys_from_one_title(self):
+        rows = _normalize_pr_issue_link_rows(
+            100, "CASSANDRA-1, CASSANDRA-2: shared fix", "a/b", "snap-1"
+        )
+        assert [row["issue_key"] for row in rows] == ["CASSANDRA-1", "CASSANDRA-2"]
+        assert all(row["number"] == 100 and row["repo"] == "a/b" for row in rows)
+
+    def test_title_with_no_key_yields_no_rows(self):
+        assert _normalize_pr_issue_link_rows(100, "Just a plain title", "a/b", "snap-1") == []
+
+    def test_none_title_yields_no_rows(self):
+        assert _normalize_pr_issue_link_rows(100, None, "a/b", "snap-1") == []
+
+    def test_never_returns_the_title_itself(self):
+        """D1: metadata only -- the extracted rows never carry the raw title
+        text anywhere, only the derived issue key."""
+        rows = _normalize_pr_issue_link_rows(100, "CASSANDRA-1 super secret title text", "a/b", "s")
+        for row in rows:
+            assert "title" not in row
+            assert all("super secret" not in str(v) for v in row.values())
+
+
+def _link_backfill_page(
+    *, has_next: bool, end_cursor: str | None, remaining: int, nodes: list[dict]
+):
+    return {
+        "rateLimit": {"remaining": remaining, "resetAt": "2026-09-25T22:00:00Z", "cost": 1},
+        "repository": {
+            "pullRequests": {
+                "pageInfo": {"hasNextPage": has_next, "endCursor": end_cursor},
+                "nodes": nodes,
+            }
+        },
+    }
+
+
+class TestFetchPrIssueLinkBackfillPage:
+    def test_first_page_returns_number_and_title_only_shape(self, single_repo_config):
+        page = _link_backfill_page(
+            has_next=True,
+            end_cursor="linkCursorAAA",
+            remaining=4990,
+            nodes=[
+                {"number": 1, "title": "for CASSANDRA-1: first fix"},
+                {"number": 2, "title": "no ticket here"},
+            ],
+        )
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            body = json.loads(request.content)
+            assert body["variables"]["cursor"] is None
+            assert body["variables"]["owner"] == "synthtest"
+            assert body["variables"]["name"] == "repo-a"
+            return httpx.Response(200, json={"data": page})
+
+        transport = httpx.MockTransport(handler)
+        collector = _offline_collector(single_repo_config, transport)
+
+        data = collector.fetch_pr_issue_link_backfill_page("synthtest/repo-a", None)
+
+        connection = data["repository"]["pullRequests"]
+        assert [node["number"] for node in connection["nodes"]] == [1, 2]
+        assert connection["pageInfo"]["hasNextPage"] is True
+        assert connection["pageInfo"]["endCursor"] == "linkCursorAAA"
+        assert data["rateLimit"]["remaining"] == 4990
+
+    def test_cursor_is_passed_through_to_resume_a_page(self, single_repo_config):
+        page = _link_backfill_page(
+            has_next=False, end_cursor="linkCursorBBB", remaining=4980, nodes=[]
+        )
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            body = json.loads(request.content)
+            assert body["variables"]["cursor"] == "linkCursorAAA"
+            return httpx.Response(200, json={"data": page})
+
+        transport = httpx.MockTransport(handler)
+        collector = _offline_collector(single_repo_config, transport)
+
+        data = collector.fetch_pr_issue_link_backfill_page("synthtest/repo-a", "linkCursorAAA")
+        assert data["repository"]["pullRequests"]["pageInfo"]["hasNextPage"] is False
+
+    def test_inline_rate_limited_error_raises_rate_limit_exhausted(self, single_repo_config):
+        transport = httpx.MockTransport(lambda r: httpx.Response(200, json=RATE_LIMITED_ERROR))
+        collector = _offline_collector(single_repo_config, transport)
+
+        with pytest.raises(RateLimitExhausted):
+            collector.fetch_pr_issue_link_backfill_page("synthtest/repo-a", None)
+
+    def test_hard_failure_raises_collection_error(self, single_repo_config):
+        transport = httpx.MockTransport(lambda r: httpx.Response(503, text="Service Unavailable"))
+        collector = _offline_collector(single_repo_config, transport, max_retries=1)
+
+        with pytest.raises(CollectionError):
+            collector.fetch_pr_issue_link_backfill_page("synthtest/repo-a", None)
+
+
+class TestRateLimitFloorProperty:
+    def test_rate_limit_floor_is_exposed_read_only(self, single_repo_config):
+        transport = httpx.MockTransport(lambda r: httpx.Response(200, json=EMPTY_PAGE))
+        collector = _offline_collector(single_repo_config, transport, rate_limit_floor=777)
+        assert collector.rate_limit_floor == 777

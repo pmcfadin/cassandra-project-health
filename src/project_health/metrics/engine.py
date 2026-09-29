@@ -217,6 +217,11 @@ def _connect(tables: dict[str, pa.Table]) -> duckdb.DuckDBPyConnection:
         # nowhere -- issue #54's dev_metrics.py never needed PR comments).
         "jira_changelog",
         "pr_comment",
+        # issue #105: the `pr_issue_link` backfill's (repo, number, issue_key)
+        # rows, unioned with `pr.linked_issue_keys` in
+        # `review_responsiveness.py::_build_submissions` for a PR collected
+        # before that column existed.
+        "pr_issue_link",
     ):
         con.register(name, _table_or_empty(tables, name))
     con.execute(

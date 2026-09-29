@@ -40,6 +40,7 @@ from tests.fixtures.metrics.builders import (
     issues,
     jira_changelog,
     pr_comments,
+    pr_issue_link,
     pr_reviews,
     prs,
 )
@@ -74,6 +75,7 @@ def _empty_tables(**overrides):
         "pr": prs([]),
         "pr_review": pr_reviews([]),
         "pr_comment": pr_comments([]),
+        "pr_issue_link": pr_issue_link([]),
     }
     tables.update(overrides)
     return tables
@@ -273,6 +275,136 @@ def test_submitted_at_is_earliest_of_pa_transition_and_linked_pr():
     )
     subs = _submissions(tables)
     assert subs["CASSANDRA-1"].submitted_at == _ts(2020, 1, 1)
+
+
+# --- `pr_issue_link` union with `pr.linked_issue_keys` (issue #105) --------
+
+
+def test_pr_issue_link_union_links_a_pr_with_null_linked_issue_keys():
+    """A PR collected before issue #102's `pr.linked_issue_keys` column
+    existed has that column `null` (schema/tables.py's own documented
+    "callers must treat null the same as an empty list" contract) -- without
+    the `pr_issue_link` backfill's row for it, this PR would never attach to
+    its issue at all. This is the exact gap issue #105 closes."""
+    tables = _empty_tables(
+        issue=issues(
+            [
+                {
+                    "issue_key": "CASSANDRA-1",
+                    "created_at": _ts(2020, 1, 1),
+                    "updated_at": _ts(2020, 1, 1),
+                    "assignee_raw": "author1",
+                }
+            ]
+        ),
+        jira_changelog=jira_changelog(
+            [_pa_transition("CASSANDRA-1", _ts(2020, 1, 1), actor="author1")]
+        ),
+        pr=prs(
+            [
+                {
+                    "repo": REPO,
+                    "number": 1,
+                    "created_at": _ts(2020, 1, 1),
+                    "author_raw_value": "author1",
+                    "linked_issue_keys": None,
+                }
+            ]
+        ),
+        pr_review=pr_reviews(
+            [
+                {
+                    "repo": REPO,
+                    "pr_number": 1,
+                    "reviewer_raw_value": "reviewer1",
+                    "submitted_at": _ts(2020, 1, 4),
+                }
+            ]
+        ),
+        pr_issue_link=pr_issue_link([{"repo": REPO, "number": 1, "issue_key": "CASSANDRA-1"}]),
+    )
+    subs = _submissions(tables)
+    assert "CASSANDRA-1" in subs
+    sub = subs["CASSANDRA-1"]
+    assert sub.first_response_source == "gh_review"
+    assert sub.first_response_at == _ts(2020, 1, 4)
+
+
+def test_without_pr_issue_link_backfill_a_null_linked_issue_keys_pr_is_invisible():
+    """Sanity check for the test above: with no `pr_issue_link` row at all,
+    the same PR contributes no event -- proving the prior test's pass is the
+    union doing real work, not some other path already finding the review."""
+    tables = _empty_tables(
+        issue=issues(
+            [
+                {
+                    "issue_key": "CASSANDRA-1",
+                    "created_at": _ts(2020, 1, 1),
+                    "updated_at": _ts(2020, 1, 1),
+                    "assignee_raw": "author1",
+                }
+            ]
+        ),
+        jira_changelog=jira_changelog(
+            [_pa_transition("CASSANDRA-1", _ts(2020, 1, 1), actor="author1")]
+        ),
+        pr=prs(
+            [
+                {
+                    "repo": REPO,
+                    "number": 1,
+                    "created_at": _ts(2020, 1, 1),
+                    "author_raw_value": "author1",
+                    "linked_issue_keys": None,
+                }
+            ]
+        ),
+        pr_review=pr_reviews(
+            [
+                {
+                    "repo": REPO,
+                    "pr_number": 1,
+                    "reviewer_raw_value": "reviewer1",
+                    "submitted_at": _ts(2020, 1, 4),
+                }
+            ]
+        ),
+    )
+    sub = _submissions(tables)["CASSANDRA-1"]
+    assert sub.first_response_at is None
+    assert sub.first_response_source is None
+
+
+def test_pr_issue_link_naming_the_same_key_as_linked_issue_keys_is_not_double_counted():
+    """When both `pr.linked_issue_keys` and `pr_issue_link` name the same key
+    for the same PR (e.g. a backfill re-covering a PR already collected
+    post-#102), the union must dedupe -- the PR still contributes its one
+    real event, not two."""
+    tables = _single_submission_tables(
+        prs_=[
+            {
+                "repo": REPO,
+                "number": 1,
+                "created_at": _ts(2020, 1, 1),
+                "author_raw_value": "author1",
+            }
+        ],
+        reviews=[
+            {
+                "repo": REPO,
+                "pr_number": 1,
+                "reviewer_raw_value": "reviewer1",
+                "submitted_at": _ts(2020, 1, 4),
+            }
+        ],
+    )
+    tables["pr_issue_link"] = pr_issue_link(
+        [{"repo": REPO, "number": 1, "issue_key": "CASSANDRA-1"}]
+    )
+
+    sub = _submissions(tables)["CASSANDRA-1"]
+    assert sub.first_response_source == "gh_review"
+    assert sub.first_response_at == _ts(2020, 1, 4)
 
 
 # --- Blended first-response source attribution ----------------------------

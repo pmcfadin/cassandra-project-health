@@ -70,6 +70,22 @@ finished. A hard GraphQL/HTTP failure (`CollectionError`, after
 to the next repo — a single flaky repo shouldn't block the others the way a
 shared rate-limit budget legitimately should.
 
+## `pr_issue_link` historical backfill (issue #105)
+
+`pr.linked_issue_keys` (issue #102) only gets populated on a PR row written
+after that column existed; every PR already on the data branch before then
+has it null, and the watermark strategy above means the ordinary incremental
+collector will never re-visit one of those PRs again on its own (nothing
+about it moves `updatedAt`). `fetch_pr_issue_link_backfill_page` and
+`schema/tables.py`'s `PR_ISSUE_LINK` table (a new table, deliberately not a
+column added to the existing `pr` table -- see that schema's own docstring)
+close that gap: `pipeline._collect_github_pr_issue_link_backfill` drives a
+separate, budgeted, resumable page-cursor walk of each configured repo's
+full PR history (ascending `createdAt`), fetching only `number`/`title` per
+page and discarding the title immediately after extracting any ticket key
+from it, same as the ordinary collector's own `title_hash`/
+`linked_issue_keys` handling.
+
 ## Known limitation: nested pagination is single-page
 
 `reviews`, a review's `comments`, and a PR's `comments` are each fetched as
@@ -119,6 +135,31 @@ DEFAULT_RATE_LIMIT_FLOOR = 500
 REVIEWS_PAGE_SIZE = 100
 REVIEW_COMMENTS_PAGE_SIZE = 50
 PR_COMMENTS_PAGE_SIZE = 100
+
+# --- `pr_issue_link` historical backfill (issue #105) ------------------------
+#
+# A separate, much cheaper query than `_QUERY` above -- `number`/`title` only,
+# no nested reviews/comments -- since the backfill's only job is discovering
+# which JIRA ticket key(s) a *pre-existing* PR's title named
+# (`schema/tables.py` PR_ISSUE_LINK docstring). Ordered by `CREATED_AT` (not
+# `UPDATED_AT` like `_QUERY`): the backfill's cursor is walked exactly once,
+# start to finish, per repo, so there's no "re-visit a PR whose activity
+# moved" concern `_QUERY`'s own ordering choice exists to serve -- creation
+# order is simpler and, being immutable, gives a cursor that's always safe to
+# resume from.
+PR_ISSUE_LINK_BACKFILL_PAGE_SIZE = 100
+
+_PR_ISSUE_LINK_BACKFILL_QUERY = """
+query($owner: String!, $name: String!, $cursor: String, $pageSize: Int!) {
+  rateLimit { remaining resetAt cost }
+  repository(owner: $owner, name: $name) {
+    pullRequests(first: $pageSize, after: $cursor, orderBy: {field: CREATED_AT, direction: ASC}) {
+      pageInfo { hasNextPage endCursor }
+      nodes { number title }
+    }
+  }
+}
+"""
 
 GRAPHQL_ENDPOINT = "https://api.github.com"
 
@@ -284,6 +325,29 @@ def _normalize_pr(node: dict, repo_label: str, source_snapshot_id: str) -> dict:
     }
 
 
+def _normalize_pr_issue_link_rows(
+    number: int, title: str | None, repo_label: str, source_snapshot_id: str
+) -> list[dict]:
+    """One `pr_issue_link` row per ticket key named in `title` (issue #105).
+
+    Mirrors `_normalize_pr`'s `linked_issue_keys` extraction exactly (same
+    `extract_issue_keys` call), but for the historical backfill's standalone
+    `(number, title)` fetch rather than a full PR node -- `title` is never
+    returned to any caller past this function (schema/tables.py PR_ISSUE_LINK
+    docstring: "metadata only, D1"). An empty list for a title with no
+    recognizable ticket key.
+    """
+    return [
+        {
+            "repo": repo_label,
+            "number": number,
+            "issue_key": key,
+            "source_snapshot_id": source_snapshot_id,
+        }
+        for key in extract_issue_keys(title or "")
+    ]
+
+
 def _normalize_review(
     node: dict, repo_label: str, pr_number: int, source_snapshot_id: str
 ) -> dict:
@@ -425,6 +489,17 @@ class GitHubCollector:
         self._client = httpx.Client(
             base_url=GRAPHQL_ENDPOINT, transport=transport, timeout=timeout, headers=headers
         )
+
+    @property
+    def rate_limit_floor(self) -> int:
+        """This collector's configured `rate_limit_floor` (module docstring
+        "Rate-limit budgeting") -- exposed read-only so a caller driving its
+        own paginated loop against the same GraphQL budget (issue #105's
+        `pr_issue_link` backfill, `pipeline._collect_github_pr_issue_link_
+        backfill`) can stop at the same floor `collect()` itself respects,
+        without reaching into a private attribute.
+        """
+        return self._rate_limit_floor
 
     def close(self) -> None:
         self._client.close()
@@ -651,6 +726,42 @@ class GitHubCollector:
             error=error,
         )
         return pr_rows, review_rows, comment_rows, outcome
+
+    # --- `pr_issue_link` historical backfill (issue #105) -------------------
+
+    def fetch_pr_issue_link_backfill_page(
+        self,
+        repo_label: str,
+        cursor: str | None,
+        page_size: int = PR_ISSUE_LINK_BACKFILL_PAGE_SIZE,
+    ) -> dict:
+        """Fetch one raw GraphQL page (`number`/`title` per PR node, plus
+        `rateLimit`) for the `pr_issue_link` backfill.
+
+        Returns the raw `data` payload -- same "collector returns raw
+        payload, caller owns the page-budget loop and cursor persistence"
+        split `collectors/jira.py::JiraCollector.fetch_patch_available_
+        backfill_page` uses for its own resumable backfill -- so
+        `pipeline._collect_github_pr_issue_link_backfill` can extract keys
+        via `extract_issue_keys`/`_normalize_pr_issue_link_rows`, check
+        `rateLimit.remaining` against `self.rate_limit_floor` exactly like
+        `_collect_repo` does, and persist the resulting per-repo cursor.
+        Raises `RateLimitExhausted`/`CollectionError` exactly like
+        `_post_with_retry` -- the caller is expected to catch both, stopping
+        cleanly rather than propagating (module docstring "Rate-limit
+        budgeting").
+        """
+        owner, name = repo_label.split("/", 1)
+        payload = {
+            "query": _PR_ISSUE_LINK_BACKFILL_QUERY,
+            "variables": {
+                "owner": owner,
+                "name": name,
+                "cursor": cursor,
+                "pageSize": page_size,
+            },
+        }
+        return self._post_with_retry(payload)
 
     # --- Top-level collection --------------------------------------------
 

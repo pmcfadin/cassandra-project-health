@@ -31,14 +31,17 @@ from project_health.collectors.ponymail import PonyMailCollector
 from project_health.collectors.security import SecurityCollector
 from project_health.config import FlexibleSection, load_project
 from project_health.pipeline import (
+    _collect_github_pr_issue_link_backfill,
     _dedupe_commit_trailer_review_events,
     _dedupe_governance_commit_records,
     _dedupe_issue_rows,
     _dedupe_jira_review_events,
+    _dedupe_pr_issue_link_rows,
     _dedupe_pr_review_rows,
     _dedupe_pr_rows,
     _dedupe_roster_entries,
     _dedupe_security_advisories,
+    _github_pr_issue_link_backfill_budget,
     run_pipeline,
 )
 from project_health.schema import get_schema, validate
@@ -2916,3 +2919,283 @@ class TestGitHubDedupe:
     def test_dedupe_functions_are_noop_on_empty_tables(self):
         assert _dedupe_pr_rows(get_schema("pr").empty_table()).num_rows == 0
         assert _dedupe_pr_review_rows(get_schema("pr_review").empty_table()).num_rows == 0
+
+
+# --- `pr_issue_link` historical backfill (issue #105) -----------------------
+
+
+def _link_page(has_next: bool, end_cursor: str | None, remaining: int, nodes: list[dict]) -> dict:
+    return {
+        "rateLimit": {"remaining": remaining, "resetAt": "2026-01-01T00:00:00Z", "cost": 1},
+        "repository": {
+            "pullRequests": {
+                "pageInfo": {"hasNextPage": has_next, "endCursor": end_cursor},
+                "nodes": nodes,
+            }
+        },
+    }
+
+
+class _StubPrIssueLinkCollector:
+    """Offline stand-in for `GitHubCollector`, exercising only the surface
+    `_collect_github_pr_issue_link_backfill` actually calls: `pages_by_repo`
+    maps `repo -> {cursor: page_dict}` (`_link_page` shape above)."""
+
+    def __init__(self, pages_by_repo: dict[str, dict], rate_limit_floor: int = 500):
+        self._pages_by_repo = pages_by_repo
+        self.rate_limit_floor = rate_limit_floor
+        self.calls: list[tuple[str, str | None]] = []
+        self.closed = False
+
+    def fetch_pr_issue_link_backfill_page(self, repo_label: str, cursor: str | None) -> dict:
+        self.calls.append((repo_label, cursor))
+        return self._pages_by_repo[repo_label][cursor]
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def _single_repo_config(repos: list[str]):
+    return load_project("projects/cassandra.yaml").model_copy(
+        update={"pull_requests": FlexibleSection(type="github", repos=repos)}
+    )
+
+
+class TestPrIssueLinkBackfillBudget:
+    def test_defaults_when_config_has_no_block(self):
+        config = load_project("projects/cassandra.yaml").model_copy(
+            update={"pr_issue_link_backfill": None}
+        )
+        assert _github_pr_issue_link_backfill_budget(config) == 20
+
+    def test_reads_max_pages_per_run_override(self, tmp_path):
+        config = load_project("projects/cassandra.yaml").model_copy(
+            update={"pr_issue_link_backfill": {"max_pages_per_run": 3}}
+        )
+        assert _github_pr_issue_link_backfill_budget(config) == 3
+
+
+class TestPrIssueLinkBackfillCollection:
+    def test_extracts_link_rows_and_writes_a_pr_issue_link_partition(self, tmp_path):
+        config = _single_repo_config(["apache/cassandra"])
+        data_dir = tmp_path / "data"
+        page = _link_page(
+            has_next=False,
+            end_cursor=None,
+            remaining=4990,
+            nodes=[
+                {"number": 1, "title": "for CASSANDRA-1: fix a bug"},
+                {"number": 2, "title": "no ticket here"},
+            ],
+        )
+        stub = _StubPrIssueLinkCollector({"apache/cassandra": {None: page}})
+
+        stats = _collect_github_pr_issue_link_backfill(
+            config, data_dir, "run-1", NOW, 20, lambda cfg: stub
+        )
+
+        assert stats["pages_fetched"] == 1
+        assert stats["prs_processed"] == 2
+        assert stats["link_rows"] == 1
+        assert stats["done"] is True
+        assert stats["repos"] == {"apache/cassandra": "done"}
+        assert stub.closed is True
+
+        link_table = storage.read_table(data_dir, "github", "pr_issue_link")
+        rows = link_table.to_pylist()
+        assert len(rows) == 1
+        assert rows[0]["repo"] == "apache/cassandra"
+        assert rows[0]["number"] == 1
+        assert rows[0]["issue_key"] == "CASSANDRA-1"
+
+    def test_cursor_resumes_across_two_runs_and_marks_done_on_last_page(self, tmp_path):
+        """A one-page-per-run budget must resume from exactly where the prior
+        run's cursor left off, and only mark the repo `done` once the second
+        (final) page's `hasNextPage` is false."""
+        config = _single_repo_config(["apache/cassandra"])
+        data_dir = tmp_path / "data"
+        page1 = _link_page(
+            has_next=True,
+            end_cursor="cursorAAA",
+            remaining=4990,
+            nodes=[{"number": 1, "title": "for CASSANDRA-1: fix"}],
+        )
+        page2 = _link_page(
+            has_next=False,
+            end_cursor="cursorBBB",
+            remaining=4980,
+            nodes=[{"number": 2, "title": "for CASSANDRA-2: fix"}],
+        )
+        stub = _StubPrIssueLinkCollector({"apache/cassandra": {None: page1, "cursorAAA": page2}})
+
+        first = _collect_github_pr_issue_link_backfill(
+            config, data_dir, "run-1", NOW, 1, lambda cfg: stub
+        )
+        assert first["pages_fetched"] == 1
+        assert first["done"] is False
+        assert first["repos"] == {"apache/cassandra": "in_progress"}
+
+        second = _collect_github_pr_issue_link_backfill(
+            config, data_dir, "run-2", NOW, 1, lambda cfg: stub
+        )
+        assert second["pages_fetched"] == 1
+        assert second["done"] is True
+        assert second["repos"] == {"apache/cassandra": "done"}
+
+        # The stub was asked for cursor=None then cursor="cursorAAA" -- never
+        # re-asked for a page it already has.
+        assert stub.calls == [("apache/cassandra", None), ("apache/cassandra", "cursorAAA")]
+
+        link_table = storage.read_table(data_dir, "github", "pr_issue_link")
+        assert sorted(link_table.column("issue_key").to_pylist()) == [
+            "CASSANDRA-1",
+            "CASSANDRA-2",
+        ]
+
+    def test_a_done_repo_is_never_re_queried_on_a_later_run(self, tmp_path):
+        config = _single_repo_config(["apache/cassandra"])
+        data_dir = tmp_path / "data"
+        page = _link_page(has_next=False, end_cursor=None, remaining=4990, nodes=[])
+        stub = _StubPrIssueLinkCollector({"apache/cassandra": {None: page}})
+
+        _collect_github_pr_issue_link_backfill(config, data_dir, "run-1", NOW, 20, lambda cfg: stub)
+        assert stub.calls == [("apache/cassandra", None)]
+
+        # A second run's collector would raise KeyError if actually queried
+        # (no page registered for a repeat call) -- the done flag must skip
+        # it outright instead.
+        stats = _collect_github_pr_issue_link_backfill(
+            config, data_dir, "run-2", NOW, 20, lambda cfg: stub
+        )
+        assert stats["repos"] == {"apache/cassandra": "done"}
+        assert stub.calls == [("apache/cassandra", None)]  # unchanged -- no new call
+
+    def test_shared_page_budget_spans_repos_leaving_the_second_pending(self, tmp_path):
+        config = _single_repo_config(["apache/cassandra", "apache/cassandra-dtest"])
+        data_dir = tmp_path / "data"
+        page_a = _link_page(
+            has_next=True, end_cursor="cursorA1", remaining=4990,
+            nodes=[{"number": 1, "title": "for CASSANDRA-1: fix"}],
+        )
+        stub = _StubPrIssueLinkCollector({"apache/cassandra": {None: page_a}})
+
+        stats = _collect_github_pr_issue_link_backfill(
+            config, data_dir, "run-1", NOW, 1, lambda cfg: stub
+        )
+
+        assert stats["pages_fetched"] == 1
+        assert stats["repos"]["apache/cassandra"] == "in_progress"
+        assert stats["repos"]["apache/cassandra-dtest"] == "pending"
+        # the second repo's own budget never got spent -- no call at all.
+        assert stub.calls == [("apache/cassandra", None)]
+
+    def test_rate_limit_floor_stops_the_whole_backfill_cleanly(self, tmp_path):
+        config = _single_repo_config(["apache/cassandra", "apache/cassandra-dtest"])
+        data_dir = tmp_path / "data"
+        page = _link_page(
+            has_next=True,
+            end_cursor="cursorA1",
+            remaining=100,  # <= default rate_limit_floor (500)
+            nodes=[{"number": 1, "title": "for CASSANDRA-1: fix"}],
+        )
+        stub = _StubPrIssueLinkCollector(
+            {"apache/cassandra": {None: page}}, rate_limit_floor=500
+        )
+
+        stats = _collect_github_pr_issue_link_backfill(
+            config, data_dir, "run-1", NOW, 20, lambda cfg: stub
+        )  # must not raise
+
+        assert stats["repos"]["apache/cassandra"] == "in_progress"
+        assert all(repo != "apache/cassandra-dtest" for repo, _cursor in stub.calls)
+        assert stats["done"] is False
+        # progress (the cursor from the one page fetched) is still kept for
+        # next run's resumption.
+        raw_cursor = storage.read_watermark(
+            data_dir, "github", table="pr_issue_link_backfill_cursor"
+        )
+        assert json.loads(raw_cursor)["apache/cassandra"] == "cursorA1"
+
+    def test_zero_page_budget_is_a_no_op(self, tmp_path):
+        config = _single_repo_config(["apache/cassandra"])
+        data_dir = tmp_path / "data"
+        stub = _StubPrIssueLinkCollector({})
+
+        stats = _collect_github_pr_issue_link_backfill(
+            config, data_dir, "run-1", NOW, 0, lambda cfg: stub
+        )
+        assert stats == {
+            "pages_fetched": 0,
+            "prs_processed": 0,
+            "link_rows": 0,
+            "repos": {},
+            "done": False,
+        }
+        assert stub.calls == []
+
+
+class TestDedupePrIssueLink:
+    def test_dedupe_keeps_one_row_per_repo_number_issue_key(self):
+        schema = get_schema("pr_issue_link")
+        rows = [
+            {
+                "repo": "apache/cassandra",
+                "number": 1,
+                "issue_key": "CASSANDRA-1",
+                "source_snapshot_id": "run-1",
+            },
+            {
+                "repo": "apache/cassandra",
+                "number": 1,
+                "issue_key": "CASSANDRA-1",
+                "source_snapshot_id": "run-2",
+            },
+            {
+                "repo": "apache/cassandra",
+                "number": 1,
+                "issue_key": "CASSANDRA-2",
+                "source_snapshot_id": "run-1",
+            },
+        ]
+        table = pa.Table.from_pylist(rows, schema=schema)
+
+        deduped = _dedupe_pr_issue_link_rows(table)
+
+        assert sorted(deduped.column("issue_key").to_pylist()) == ["CASSANDRA-1", "CASSANDRA-2"]
+
+    def test_noop_on_empty_table(self):
+        assert _dedupe_pr_issue_link_rows(get_schema("pr_issue_link").empty_table()).num_rows == 0
+
+
+class TestPrIssueLinkEndToEnd:
+    def test_run_pipeline_writes_pr_issue_link_and_reads_it_back_deduped(
+        self, tmp_path, config, git_workdir
+    ):
+        """A full `run_pipeline` call over the `github` source must produce a
+        `pr_issue_link` partition (via the default single-page-per-repo mock
+        transport, `_github_factory`) and read it back without error."""
+        data_dir = tmp_path / "data"
+
+        result = run_pipeline(
+            config=config,
+            data_dir=data_dir,
+            workdir=git_workdir,
+            sources=["git", "jira", "asf_roster", "github"],
+            now=NOW,
+            code_sha="abc1234",
+            jira_collector_factory=_jira_factory(
+                _paginated_transport({0: PAGE_1, 5: PAGE_2, 10: EMPTY_PAGE})
+            ),
+            asf_roster_collector_factory=_roster_factory(),
+            github_collector_factory=_github_factory(),
+        )
+
+        assert result.exit_code == 0
+        github = result.manifest["sources"]["github"]
+        assert "pr_issue_link_backfill" in github
+        assert github["pr_issue_link_backfill"]["done"] is True
+
+        # The fixture's title ("Fixture PR") names no ticket -- zero rows is
+        # the correct, honest outcome; the table must still be readable.
+        link_table = storage.read_table(data_dir, "github", "pr_issue_link")
+        assert link_table.num_rows == 0

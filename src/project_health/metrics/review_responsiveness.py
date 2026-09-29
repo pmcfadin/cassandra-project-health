@@ -55,8 +55,11 @@ here (no scope creep).
 
 A "patch submission" is one JIRA issue that ever entered `Patch Available`
 (`jira_changelog`, `field='status'`, `to_value='Patch Available'`), with any
-GitHub PRs whose title names the ticket (`pr.linked_issue_keys`, issue #102)
-attached.
+GitHub PRs whose title names the ticket attached -- `pr.linked_issue_keys`
+(issue #102) unioned, per PR, with `pr_issue_link` (issue #105: the
+historical backfill for a PR collected before `linked_issue_keys` existed;
+see `collectors/github.py`'s "`pr_issue_link` historical backfill" section
+and `schema/tables.py`'s `PR_ISSUE_LINK` docstring).
 
 - `submitted_at` = `min(first Patch-Available transition, earliest linked PR
   created_at)`.
@@ -323,6 +326,18 @@ def _build_submissions(con: duckdb.DuckDBPyConnection) -> list[_Submission]:
         ).fetchall()
     }
 
+    # issue #105: `pr_issue_link`'s (repo, number, issue_key) rows backfill
+    # the ticket key(s) a PR collected *before* `pr.linked_issue_keys`
+    # (issue #102) existed named in its title -- see schema/tables.py's
+    # `PR_ISSUE_LINK` docstring. Keyed by (repo, number) so it can be unioned
+    # per-PR against `pr.linked_issue_keys` below, since either source (or
+    # both, redundantly) can name the same key for the same PR.
+    backfilled_keys_by_pr: dict[tuple[str, int], set[str]] = {}
+    for repo, number, issue_key in con.execute(
+        "SELECT repo, number, issue_key FROM pr_issue_link"
+    ).fetchall():
+        backfilled_keys_by_pr.setdefault((repo, number), set()).add(issue_key)
+
     # Flattened in Python rather than a SQL `unnest()` -- simpler and avoids
     # any DuckDB list-column edge case, and `pr` is a small enough table
     # (thousands of rows, not millions) that this costs nothing measurable.
@@ -330,7 +345,8 @@ def _build_submissions(con: duckdb.DuckDBPyConnection) -> list[_Submission]:
     for repo, number, created_at, author, linked_issue_keys in con.execute(
         "SELECT repo, number, created_at, author_raw_value, linked_issue_keys FROM pr"
     ).fetchall():
-        for issue_key in linked_issue_keys or []:
+        issue_keys = set(linked_issue_keys or []) | backfilled_keys_by_pr.get((repo, number), set())
+        for issue_key in issue_keys:
             prs_by_issue.setdefault(issue_key, []).append(
                 {"repo": repo, "number": number, "created_at": created_at, "author": author}
             )

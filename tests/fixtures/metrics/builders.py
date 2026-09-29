@@ -278,6 +278,25 @@ def pr_comments(rows: list[dict]) -> pa.Table:
     return validate("pr_comment", pa.Table.from_pylist(built, schema=schema))
 
 
+def pr_issue_link(rows: list[dict]) -> pa.Table:
+    """Build a `pr_issue_link` table (issue #105).
+
+    Required per row: `repo`, `number`, `issue_key`. Optional:
+    `source_snapshot_id`.
+    """
+    built = [
+        {
+            "repo": row["repo"],
+            "number": row["number"],
+            "issue_key": row["issue_key"],
+            "source_snapshot_id": row.get("source_snapshot_id", "snap-1"),
+        }
+        for row in rows
+    ]
+    schema = get_schema("pr_issue_link")
+    return validate("pr_issue_link", pa.Table.from_pylist(built, schema=schema))
+
+
 def comment_backfill_checked(rows: list[dict]) -> pa.Table:
     """Build a `comment_backfill_checked` table (issue #79) --
     `time_to_first_response_jira`'s per-month backfill-coverage check.

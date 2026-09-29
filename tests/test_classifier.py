@@ -22,6 +22,8 @@ from typesafe_sdk import RetryPolicy
 
 from project_health.classify.classifier import (
     DEFAULT_RETRYABLE_STATUSES,
+    NO_CREDITS_STATUS,
+    PAUSED_STATUSES,
     ClassificationCache,
     ClassificationRecord,
     CostCap,
@@ -365,9 +367,7 @@ class TestLoadJevKeyFromDotenv:
         def _raise(*args, **kwargs):
             raise FileNotFoundError("no git here")
 
-        monkeypatch.setattr(
-            "project_health.classify.classifier.subprocess.run", _raise
-        )
+        monkeypatch.setattr("project_health.classify.classifier.subprocess.run", _raise)
         found = load_jev_key_from_dotenv(tmp_path / "does-not-exist.env")
         assert found is False
         assert "TYPESAFE_API_KEY" not in os.environ
@@ -487,9 +487,7 @@ class TestJevClassifierClassify:
                 concurrency=0,
             )
 
-    def test_second_classify_call_is_a_cache_hit_with_zero_transport_calls(
-        self, tmp_path: Path
-    ):
+    def test_second_classify_call_is_a_cache_hit_with_zero_transport_calls(self, tmp_path: Path):
         """D22: a repeated `classify()` call for the same message must never
         re-send it -- `classify()` is not exempt from the input-hash cache
         just because it's the single-message path."""
@@ -691,6 +689,123 @@ class TestJevClassifierRun:
         assert in_flight["max_seen"] <= 2
 
 
+# --- 402 (no API credits) pauses cleanly, issue #110 fixup round 2 ---------------------
+
+
+class TestNoCreditsPause:
+    def test_run_pauses_cleanly_on_402_and_returns_partial_results(self, tmp_path: Path):
+        responses = [
+            (200, {"model": EXPECTED_MODEL, "usage": _usage(), "answers": _full_answers(0.3)}),
+            (402, {"error": "Your organization has no available TypeSafe API credits"}),
+            (402, {"error": "Your organization has no available TypeSafe API credits"}),
+        ]
+        transport = _mock_transport(responses=responses)
+        classifier = _classifier(tmp_path, async_transport=transport, concurrency=1)
+        items = [
+            (NormalizedMessage(f"m{i}", "t1", "mailing_list", f"text {i}"), ParentContext())
+            for i in range(3)
+        ]
+
+        result = classifier.run(items)
+
+        assert result.status == "paused_no_credits"
+        assert result.calls_made == 1
+        assert len(result.records) == 1
+        assert result.records[0].message_id == "m0"
+
+    def test_run_never_raises_when_the_very_first_call_is_402(self, tmp_path: Path):
+        transport = _mock_transport(
+            fixed_response=None,
+            responses=[(402, {"error": "no credits"})],
+        )
+        classifier = _classifier(tmp_path, async_transport=transport, concurrency=1)
+        items = [(NormalizedMessage("m1", "t1", "mailing_list", "text"), ParentContext())]
+
+        result = classifier.run(items)  # must not raise
+
+        assert result.status == "paused_no_credits"
+        assert result.calls_made == 0
+        assert result.records == []
+
+    def test_402_is_never_retried_under_the_default_retry_policy(self, tmp_path: Path):
+        # `_mock_transport`'s `fixed_response` branch always returns HTTP
+        # 200 -- build the 402 response directly via a custom handler that
+        # counts every physical request.
+        call_log: list[dict] = []
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            call_log.append(json.loads(request.content))
+            return httpx2.Response(402, json={"error": "no credits"})
+
+        # No `retry=` override -- exercises the classifier's own default
+        # policy, the one every real caller (pilot-classify, private-run,
+        # benchmark-public) actually uses.
+        classifier = JevClassifier(
+            api_key="test-key",
+            cache=ClassificationCache(tmp_path / "cache.jsonl"),
+            concurrency=1,
+            async_transport=httpx2.MockTransport(handler),
+            clock=lambda: FIXED_NOW,
+        )
+        items = [(NormalizedMessage("m1", "t1", "mailing_list", "text"), ParentContext())]
+
+        result = classifier.run(items)
+
+        assert result.status == "paused_no_credits"
+        assert len(call_log) == 1  # exactly one HTTP request -- no retry happened
+
+    def test_402_prints_exactly_one_clear_stderr_message_even_with_concurrent_workers(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ):
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            return httpx2.Response(402, json={"error": "no credits"})
+
+        classifier = JevClassifier(
+            api_key="test-key",
+            cache=ClassificationCache(tmp_path / "cache.jsonl"),
+            concurrency=4,
+            async_transport=httpx2.MockTransport(handler),
+            clock=lambda: FIXED_NOW,
+        )
+        items = [
+            (NormalizedMessage(f"m{i}", "t1", "mailing_list", f"text {i}"), ParentContext())
+            for i in range(8)
+        ]
+
+        result = classifier.run(items)
+
+        assert result.status == "paused_no_credits"
+        err = capsys.readouterr().err
+        assert err.count("402") == 1
+        assert "add credits" in err.lower()
+
+    def test_paused_no_credits_is_in_paused_statuses(self):
+        assert "paused_no_credits" in PAUSED_STATUSES
+        assert "paused_cost_cap" in PAUSED_STATUSES
+
+    def test_a_different_api_error_status_still_raises(self, tmp_path: Path):
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            return httpx2.Response(403, json={"error": "forbidden"})
+
+        classifier = JevClassifier(
+            api_key="test-key",
+            cache=ClassificationCache(tmp_path / "cache.jsonl"),
+            concurrency=1,
+            async_transport=httpx2.MockTransport(handler),
+            retry=RetryPolicy(max_retries=0),
+            clock=lambda: FIXED_NOW,
+        )
+        items = [(NormalizedMessage("m1", "t1", "mailing_list", "text"), ParentContext())]
+
+        with pytest.raises(Exception) as exc_info:
+            classifier.run(items)
+        assert "403" in str(exc_info.value)
+
+    def test_no_credits_status_constant_is_402(self):
+        assert NO_CREDITS_STATUS == 402
+        assert NO_CREDITS_STATUS not in DEFAULT_RETRYABLE_STATUSES
+
+
 # --- Retries (429/529) ----------------------------------------------------------------
 
 
@@ -805,8 +920,7 @@ class TestLiveSmoke:
 
         print(f"\n[live smoke, run 1] status={result_1.status}")
         print(
-            f"[live smoke, run 1] calls_made={result_1.calls_made} "
-            f"cache_hits={result_1.cache_hits}"
+            f"[live smoke, run 1] calls_made={result_1.calls_made} cache_hits={result_1.cache_hits}"
         )
         print(
             f"[live smoke, run 1] input_tokens={result_1.input_tokens_used} "
@@ -843,8 +957,7 @@ class TestLiveSmoke:
 
         print(f"[live smoke, run 2] status={result_2.status}")
         print(
-            f"[live smoke, run 2] calls_made={result_2.calls_made} "
-            f"cache_hits={result_2.cache_hits}"
+            f"[live smoke, run 2] calls_made={result_2.calls_made} cache_hits={result_2.cache_hits}"
         )
 
         assert result_2.calls_made == 0

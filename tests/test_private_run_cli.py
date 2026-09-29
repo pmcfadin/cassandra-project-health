@@ -49,6 +49,7 @@ class TestPrivateRunParsing:
         assert args.out == str(Path.home() / "project-health-private")
         assert args.dotenv is None
         assert args.sample_only is False
+        assert args.no_classify is False
         assert args.quarters is None
         assert args.concurrency == 4
         assert args.monthly_cap_usd == 25.0
@@ -70,6 +71,7 @@ class TestPrivateRunParsing:
                 "--dotenv",
                 "x.env",
                 "--sample-only",
+                "--no-classify",
                 "--quarters",
                 "2024Q1,2025Q1",
                 "--concurrency",
@@ -87,6 +89,7 @@ class TestPrivateRunParsing:
         assert args.out == "o"
         assert args.dotenv == "x.env"
         assert args.sample_only is True
+        assert args.no_classify is True
         assert args.quarters == "2024Q1,2025Q1"
         assert args.concurrency == 8
         assert args.monthly_cap_usd == 5.0

@@ -24,6 +24,11 @@ updated by `docs/spec/DECISIONS.md` D17 (provider) and D10 (cost cap), issue #45
   cap, priced from `pricing.yaml` (never hardcoded, so a price change is a config
   edit); hitting it pauses cleanly (`RunResult.status == "paused_cost_cap"`) and
   returns whatever was already classified -- it never raises.
+- A TypeSafe HTTP 402 ("no available API credits") gets the same clean-stop
+  treatment (`RunResult.status == "paused_no_credits"`, issue #110 fixup round 2):
+  `run_async` catches it, never retries it (it's an account-level failure, not a
+  transient one), and returns whatever was already classified rather than letting
+  the exception crash the whole batch.
 
 Everything here that talks to TypeSafe is fully offline-testable: `JevClassifier`
 accepts injectable `httpx2.BaseTransport`/`httpx2.AsyncBaseTransport` instances (see
@@ -38,6 +43,7 @@ import hashlib
 import json
 import os
 import subprocess
+import sys
 import uuid
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -50,7 +56,13 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 try:
     import httpx2
-    from typesafe_sdk import AsyncTypeSafeClient, RetryPolicy, SystemOneResponse, TypeSafeClient
+    from typesafe_sdk import (
+        AsyncTypeSafeClient,
+        RetryPolicy,
+        SystemOneResponse,
+        TypeSafeAPIError,
+        TypeSafeClient,
+    )
 except ImportError as exc:  # pragma: no cover - exercised only when the dep is missing
     raise ImportError(
         "typesafe-sdk is required for project_health.classify.classifier (see "
@@ -533,15 +545,30 @@ def load_jev_key_from_dotenv(dotenv_path: str | Path | None = None) -> bool:
 
 # --- Run result ----------------------------------------------------------------------
 
-RunStatus = Literal["completed", "paused_cost_cap"]
+RunStatus = Literal["completed", "paused_cost_cap", "paused_no_credits"]
+
+# Both "paused_*" statuses share the same contract as D10's cost cap: the run
+# stops cleanly, never raises, and everything already classified stays cached
+# (issue #110 fixup round 2). Exposed so a caller (e.g. `private_run.runner`)
+# can check "did this run stop early for any reason" without hardcoding both
+# literal strings, and so a future third pause reason only needs to be added
+# here once.
+PAUSED_STATUSES: frozenset[str] = frozenset({"paused_cost_cap", "paused_no_credits"})
 
 
 @dataclass
 class RunResult:
-    """The outcome of a `JevClassifier.run`/`run_async` batch. `status ==
-    "paused_cost_cap"` means D10's cap was hit partway through -- `records` holds
-    whatever was classified (from calls and cache hits) before the pause, never an
-    exception (D10: "the rest of the pipeline keeps running")."""
+    """The outcome of a `JevClassifier.run`/`run_async` batch.
+
+    `status == "paused_cost_cap"` means D10's cap was hit partway through.
+    `status == "paused_no_credits"` means TypeSafe returned HTTP 402 (the
+    organization has no available API credits) partway through -- issue #110
+    fixup round 2, the same clean-stop contract as the cost cap, not an
+    account-level failure this project can do anything about except wait for
+    the owner to add credits. Either way, `records` holds whatever was
+    classified (from calls and cache hits) before the pause, never an
+    exception (D10: "the rest of the pipeline keeps running").
+    """
 
     status: RunStatus
     records: list[ClassificationRecord]
@@ -562,6 +589,18 @@ DEFAULT_CONCURRENCY = 4
 # calls them out by name, so this project pins its own `RetryPolicy` naming them
 # explicitly rather than relying on an unread default that could change upstream.
 DEFAULT_RETRYABLE_STATUSES: frozenset[int] = frozenset({429, 529, *range(500, 600)})
+
+# HTTP 402: the TypeSafe organization has no available API credits (issue
+# #110 fixup round 2 -- the full private-run crashed with an unhandled
+# `TypeSafeAPIError` on this status). Deliberately **not** in
+# `DEFAULT_RETRYABLE_STATUSES` -- this is an account-level failure, not a
+# transient one, so retrying it would just burn the retry budget waiting on
+# a condition that cannot resolve itself. `run_async`'s worker below always
+# treats it as non-retryable and ends the run cleanly (`paused_no_credits`)
+# regardless of what `RetryPolicy.http_statuses` a caller configures, since
+# catching it happens after the SDK's own retry loop has already given up
+# (or, under the default policy, never started).
+NO_CREDITS_STATUS = 402
 
 
 def _default_retry_policy() -> "RetryPolicy":
@@ -683,7 +722,10 @@ class JevClassifier:
         cache_hits = 0
         input_tokens_used = 0
         output_tokens_used = 0
-        paused = False
+        # None | "cost_cap" | "no_credits" -- issue #110 fixup round 2 adds the
+        # second reason alongside D10's existing cost-cap pause; both share the
+        # same "stop dispatching, never raise" contract below.
+        pause_reason: str | None = None
 
         semaphore = asyncio.Semaphore(self._concurrency)
 
@@ -694,9 +736,9 @@ class JevClassifier:
             async def worker(
                 index: int, message: NormalizedMessage, context: ParentContext
             ) -> None:
-                nonlocal calls_made, cache_hits, input_tokens_used, output_tokens_used, paused
+                nonlocal calls_made, cache_hits, input_tokens_used, output_tokens_used, pause_reason
                 async with semaphore:
-                    if paused:
+                    if pause_reason is not None:
                         return
                     _validate_normalized_message(message)
                     state = build_state(message.text, message.source, context.text)
@@ -707,11 +749,35 @@ class JevClassifier:
                         records[index] = cached
                         return
                     if self._cost_cap is not None and self._cost_cap.exceeded:
-                        paused = True
+                        pause_reason = "cost_cap"
                         return
-                    response = await client.system_one(
-                        state=state, questions=self._questions, model=self.model_id
-                    )
+                    try:
+                        response = await client.system_one(
+                            state=state, questions=self._questions, model=self.model_id
+                        )
+                    except TypeSafeAPIError as exc:
+                        if exc.status != NO_CREDITS_STATUS:
+                            raise
+                        # Non-retryable by construction: this is an
+                        # account-level failure (no TypeSafe API credits
+                        # left), not a transient one, so nothing about
+                        # retrying it could ever succeed. Whether the SDK's
+                        # own retry loop already tried and gave up, or never
+                        # tried at all (402 isn't in
+                        # `DEFAULT_RETRYABLE_STATUSES`), this is always the
+                        # last word on this call: end the run cleanly, the
+                        # same "never raise, keep what's cached" contract
+                        # D10's cost cap already uses.
+                        if pause_reason is None:  # print the notice exactly once
+                            pause_reason = "no_credits"
+                            print(
+                                "project_health.classify.classifier: TypeSafe API returned "
+                                "402 (no available API credits) -- pausing this run cleanly. "
+                                "Everything already classified stays cached; add credits to "
+                                "your TypeSafe organization and re-run to resume.",
+                                file=sys.stderr,
+                            )
+                        return
                     record = self._record_from_response(message, input_hash, response)
                     self._cache.append(record)
                     calls_made += 1
@@ -729,8 +795,14 @@ class JevClassifier:
         if self._cost_cap is not None:
             estimated_cost_usd = self._cost_cap.estimate_cost_usd(input_tokens_used)
 
+        status: RunStatus = "completed"
+        if pause_reason == "cost_cap":
+            status = "paused_cost_cap"
+        elif pause_reason == "no_credits":
+            status = "paused_no_credits"
+
         return RunResult(
-            status="paused_cost_cap" if paused else "completed",
+            status=status,
             records=[r for r in records if r is not None],
             calls_made=calls_made,
             cache_hits=cache_hits,

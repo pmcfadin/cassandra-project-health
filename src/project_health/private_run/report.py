@@ -147,6 +147,48 @@ def _trend_summary_lines(aggregates: dict[str, Any]) -> list[str]:
     return lines
 
 
+def _fmt_coverage(value: float | None) -> str:
+    if value is None:
+        return "n/a"
+    return f"{value:.1%}"
+
+
+def _partial_run_lines(aggregates: dict[str, Any]) -> list[str]:
+    """Issue #110 fixup round 2: a prominent, top-of-report notice whenever
+    fewer messages were classified than were sampled -- whether because
+    this run's own classify step paused partway (D10's cost cap, or
+    TypeSafe returning HTTP 402/no credits), `--no-classify` was pointed at
+    a not-yet-complete cache, or the cache was already incomplete for some
+    other reason. Returns `[]` (no section at all) when every sampled
+    message was classified.
+    """
+    partial = aggregates.get("partial_run")
+    if not partial:
+        return []
+    lines = [
+        "## PARTIAL RUN",
+        "",
+        f"**This run did not classify every sampled message.** Status: "
+        f"`{partial['status']}`. **{partial['messages_classified']} of "
+        f"{partial['messages_sampled']} sampled messages were classified**; every "
+        "number below reflects only what was classified so far. Already-classified "
+        "messages are cached and are never re-sent -- re-run (with TypeSafe credits "
+        "added, a higher --monthly-cap-usd, or without --no-classify) to continue.",
+        "",
+        "### Strata coverage",
+        "",
+        "| Venue | Quarter | Sampled | Classified | Coverage |",
+        "|---|---|---|---|---|",
+    ]
+    for row in partial["coverage_by_stratum"]:
+        lines.append(
+            f"| {row['venue']} | {row['quarter']} | {row['messages_sampled']} | "
+            f"{row['messages_classified']} | {_fmt_coverage(row['coverage'])} |"
+        )
+    lines.append("")
+    return lines
+
+
 def render_report_markdown(aggregates: dict[str, Any]) -> str:
     cutoffs: list[str] = aggregates.get("cutoffs", [])
     headline_cutoff: str = aggregates.get("headline_cutoff", "")
@@ -178,6 +220,7 @@ def render_report_markdown(aggregates: dict[str, Any]) -> str:
         "",
     ]
 
+    lines += _partial_run_lines(aggregates)
     lines += _trend_summary_lines(aggregates)
 
     lines += ["## Frame definition", ""]

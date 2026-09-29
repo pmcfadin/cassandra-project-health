@@ -367,14 +367,23 @@ class RunResult:
 
 
 def _dedupe_issue_rows(table: pa.Table) -> pa.Table:
-    """Keep the latest `updated_at` row per `issue_key`."""
+    """Keep the latest `updated_at` row per `issue_key`.
+
+    On an `updated_at` tie, prefer a row carrying `resolution` (issue #102):
+    rows written before `resolution` existed have it null, and the
+    Patch-Available backfill re-emits the same `updated_at` with it filled in.
+    """
     if table.num_rows == 0:
         return table
+
+    def rank(row: dict[str, Any]) -> tuple:
+        return (row["updated_at"], row.get("resolution") is not None)
+
     best: dict[str, dict[str, Any]] = {}
     for row in table.to_pylist():
         key = row["issue_key"]
         current = best.get(key)
-        if current is None or row["updated_at"] > current["updated_at"]:
+        if current is None or rank(row) > rank(current):
             best[key] = row
     kept = sorted(best.values(), key=lambda r: r["issue_key"])
     return pa.Table.from_pylist(kept, schema=table.schema)

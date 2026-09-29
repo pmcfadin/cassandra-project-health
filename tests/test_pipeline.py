@@ -1141,6 +1141,26 @@ class TestDedupe:
         assert by_key["CASSANDRA-1"]["summary"] == "re-fetched, newer"
         assert by_key["CASSANDRA-2"]["summary"] == "unrelated issue"
 
+    def test_dedupe_issue_rows_tie_prefers_row_with_resolution(self):
+        """Issue #102: a pre-#102 nightly row (resolution null) and a backfill
+        row with the same `updated_at` -- the backfill row must win in either
+        storage order, or `patch_committed_within_365d_share` reads 0%."""
+        schema = get_schema("issue")
+        base = {
+            "issue_key": "CASSANDRA-1",
+            "created_at": datetime(2026, 1, 1, tzinfo=timezone.utc),
+            "updated_at": datetime(2026, 1, 2, tzinfo=timezone.utc),
+            "resolved_at": datetime(2026, 1, 2, tzinfo=timezone.utc),
+            "source_snapshot_id": "run-1:jira",
+        }
+        for order in ([None, "Fixed"], ["Fixed", None]):
+            rows = [{**base, "resolution": value} for value in order]
+            table = validate("issue", pa.Table.from_pylist(rows, schema=schema))
+
+            deduped = _dedupe_issue_rows(table)
+
+            assert deduped.to_pylist()[0]["resolution"] == "Fixed"
+
     def test_dedupe_jira_review_events_keeps_latest_occurred_at_per_issue_and_reviewer(self):
         schema = get_schema("review_event")
         base = {

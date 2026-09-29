@@ -25,7 +25,7 @@ def _ts(*args) -> datetime:
     return datetime(*args, tzinfo=timezone.utc)
 
 
-def _write_message_thread(data_dir, rows: list[dict]) -> None:
+def _write_message_thread(data_dir, rows: list[dict], run_id: str = "run-1") -> None:
     table = pa.table(
         {
             "thread_id": pa.array([r["thread_id"] for r in rows], type=pa.string()),
@@ -41,10 +41,10 @@ def _write_message_thread(data_dir, rows: list[dict]) -> None:
             "source_snapshot_id": pa.array(["snap-1"] * len(rows), type=pa.string()),
         }
     )
-    storage.write_partition(data_dir, "ponymail", "message_thread", "2026-09-25", "run-1", table)
+    storage.write_partition(data_dir, "ponymail", "message_thread", "2026-09-25", run_id, table)
 
 
-def _write_message(data_dir, rows: list[dict]) -> None:
+def _write_message(data_dir, rows: list[dict], run_id: str = "run-1") -> None:
     table = pa.table(
         {
             "message_id": pa.array([r["message_id"] for r in rows], type=pa.string()),
@@ -63,10 +63,10 @@ def _write_message(data_dir, rows: list[dict]) -> None:
             "source_snapshot_id": pa.array(["snap-1"] * len(rows), type=pa.string()),
         }
     )
-    storage.write_partition(data_dir, "ponymail", "message", "2026-09-25", "run-1", table)
+    storage.write_partition(data_dir, "ponymail", "message", "2026-09-25", run_id, table)
 
 
-def _write_issue(data_dir, rows: list[dict]) -> None:
+def _write_issue(data_dir, rows: list[dict], run_id: str = "run-1") -> None:
     n = len(rows)
     table = pa.table(
         {
@@ -91,7 +91,7 @@ def _write_issue(data_dir, rows: list[dict]) -> None:
             "source_snapshot_id": pa.array(["snap-1"] * n, type=pa.string()),
         }
     )
-    storage.write_partition(data_dir, "jira", "issue", "2026-09-25", "run-1", table)
+    storage.write_partition(data_dir, "jira", "issue", "2026-09-25", run_id, table)
 
 
 class TestLoadDevThreadFrame:
@@ -129,6 +129,25 @@ class TestLoadDevThreadFrame:
     def test_no_partitions_written_yet_returns_empty(self, tmp_path):
         assert load_dev_thread_frame(tmp_path, "dev", {"2024Q1"}) == {}
 
+    def test_dedupes_a_thread_id_written_by_two_overlapping_collection_runs(self, tmp_path):
+        # issue #112 fixup: the raw message_thread table is append-only
+        # across nightly runs and isn't guaranteed unique per thread_id --
+        # verified live against the real data branch (1,129/731/11,763
+        # duplicate message_id/thread_id/issue_key rows). Two partitions,
+        # same thread_id, must collapse to one entry in the frame.
+        _write_message_thread(
+            tmp_path,
+            [{"thread_id": "t1", "list": "dev", "started_at": _ts(2024, 1, 5)}],
+            run_id="run-1",
+        )
+        _write_message_thread(
+            tmp_path,
+            [{"thread_id": "t1", "list": "dev", "started_at": _ts(2024, 1, 5)}],
+            run_id="run-2",
+        )
+        frame = load_dev_thread_frame(tmp_path, "dev", {"2024Q1"})
+        assert frame["2024Q1"] == ["t1"]
+
 
 class TestLoadJiraThreadFrame:
     def test_buckets_issues_by_created_at_quarter(self, tmp_path):
@@ -156,6 +175,16 @@ class TestLoadJiraThreadFrame:
 
     def test_no_partitions_written_yet_returns_empty(self, tmp_path):
         assert load_jira_thread_frame(tmp_path, "CASSANDRA", {"2024Q1"}) == {}
+
+    def test_dedupes_an_issue_key_written_by_two_overlapping_collection_runs(self, tmp_path):
+        _write_issue(
+            tmp_path, [{"issue_key": "CASSANDRA-1", "created_at": _ts(2024, 1, 5)}], run_id="run-1"
+        )
+        _write_issue(
+            tmp_path, [{"issue_key": "CASSANDRA-1", "created_at": _ts(2024, 1, 5)}], run_id="run-2"
+        )
+        frame = load_jira_thread_frame(tmp_path, "CASSANDRA", {"2024Q1"})
+        assert frame["2024Q1"] == ["CASSANDRA-1"]
 
 
 class TestLoadDevMessagesForThreads:
@@ -193,3 +222,20 @@ class TestLoadDevMessagesForThreads:
     def test_empty_thread_id_set_returns_empty_without_reading(self, tmp_path):
         # no partitions written at all -- must not raise FileNotFoundError.
         assert load_dev_messages_for_threads(tmp_path, "dev", set()) == {}
+
+    def test_dedupes_a_message_id_written_by_two_overlapping_collection_runs(self, tmp_path):
+        # issue #112 fixup: without this, the same real message would be
+        # counted twice in `pending` (private_run.runner), silently
+        # double-weighting it in every downstream rate.
+        row = {
+            "message_id": "<dup@x>",
+            "list": "dev",
+            "sender_raw_value": "alice@example.com",
+            "occurred_at": _ts(2024, 1, 1),
+            "thread_id": "t1",
+        }
+        _write_message(tmp_path, [row], run_id="run-1")
+        _write_message(tmp_path, [row], run_id="run-2")
+        rows = load_dev_messages_for_threads(tmp_path, "dev", {"t1"})
+        assert len(rows["t1"]) == 1
+        assert rows["t1"][0]["message_id"] == "<dup@x>"

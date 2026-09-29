@@ -64,6 +64,11 @@ from project_health.pilot.report import (
     render_public_report_markdown,
 )
 from project_health.pipeline import ALL_SOURCES, run_pipeline
+from project_health.private_run.quarters import parse_quarters_arg
+from project_health.private_run.runner import DEFAULT_MONTHLY_CAP_USD as PRIVATE_RUN_DEFAULT_CAP
+from project_health.private_run.runner import run_private_run
+from project_health.private_run.sample import DEFAULT_K as PRIVATE_RUN_DEFAULT_K
+from project_health.private_run.sample import DEFAULT_SEED as PRIVATE_RUN_DEFAULT_SEED
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -424,6 +429,72 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Path to governance-policy.yaml (default: the repo-root policy file)",
     )
 
+    private_run_parser = subparsers.add_parser(
+        "private-run",
+        help=(
+            "Owner-only private run over Cassandra history (issue #110; DECISIONS.md D1, "
+            "D10, D17, D18, D22, D23): stratified thread sampling (venue x quarter, "
+            "seeded, weighted), full-thread classification with the pinned, cost-capped "
+            "Jev classifier, and a private, aggregate-only report.md/aggregates.json "
+            "(no message text, no names, no message ids). Nothing produced here is "
+            "published to the site, the public repo, or the data branch."
+        ),
+    )
+    private_run_parser.add_argument(
+        "--project", required=True, help="Path to a projects/<id>.yaml file"
+    )
+    private_run_parser.add_argument(
+        "--data-dir",
+        required=True,
+        help="Root of the raw/snapshots/manifests/state data layout (a data-branch checkout)",
+    )
+    private_run_parser.add_argument(
+        "--out",
+        default=str(Path.home() / "project-health-private"),
+        help="Output directory for report.md/aggregates.json/Jev cache -- must be outside "
+        "this repo checkout (default: ~/project-health-private/)",
+    )
+    private_run_parser.add_argument(
+        "--dotenv",
+        default=None,
+        help="If set, load TYPESAFE_API_KEY from this .env file's jev_key= entry before running",
+    )
+    private_run_parser.add_argument(
+        "--sample-only",
+        action="store_true",
+        help="Build and write the stratified sample manifest only -- no fetch, no classify",
+    )
+    private_run_parser.add_argument(
+        "--quarters",
+        default=None,
+        help="Comma-separated YYYYQN list (e.g. 2024Q1,2025Q1) for a scoped/smoke run; "
+        "default: the full 2012Q1-2026Q3 range",
+    )
+    private_run_parser.add_argument(
+        "--concurrency", type=int, default=4, help="Max concurrent system_one calls (default: 4)"
+    )
+    private_run_parser.add_argument(
+        "--monthly-cap-usd",
+        type=float,
+        default=PRIVATE_RUN_DEFAULT_CAP,
+        help=f"D10 cost cap for this run (default: {PRIVATE_RUN_DEFAULT_CAP})",
+    )
+    private_run_parser.add_argument(
+        "--seed",
+        type=int,
+        default=PRIVATE_RUN_DEFAULT_SEED,
+        help=f"Sampler seed, deterministic and recorded (default: {PRIVATE_RUN_DEFAULT_SEED})",
+    )
+    private_run_parser.add_argument(
+        "--k",
+        type=int,
+        default=PRIVATE_RUN_DEFAULT_K,
+        help=f"Threads sampled per (venue, quarter) stratum (default: {PRIVATE_RUN_DEFAULT_K})",
+    )
+    private_run_parser.add_argument(
+        "--classifier-version", default="1.0.0", help="classifier_version recorded on every record"
+    )
+
     return parser
 
 
@@ -686,6 +757,60 @@ def _cmd_benchmark_public(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_private_run(args: argparse.Namespace) -> int:
+    if args.dotenv:
+        load_jev_key_from_dotenv(args.dotenv)
+
+    repo_root = find_public_repo_root()
+    try:
+        out_path = assert_outside_repo(args.out, repo_root, label="out")
+    except UnsafePathError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+
+    config = load_project(args.project)
+    if config.mailing_lists is None or config.issue_tracker is None:
+        print(
+            "private-run requires mailing_lists and issue_tracker in the project config",
+            file=sys.stderr,
+        )
+        return 2
+
+    quarters = parse_quarters_arg(args.quarters)
+
+    result = run_private_run(
+        project_config=config,
+        data_dir=args.data_dir,
+        out_dir=out_path,
+        quarters=quarters,
+        seed=args.seed,
+        k=args.k,
+        concurrency=args.concurrency,
+        monthly_cap_usd=args.monthly_cap_usd,
+        classifier_version=args.classifier_version,
+        sample_only=args.sample_only,
+    )
+
+    if args.sample_only:
+        print(
+            f"private-run --sample-only: sample manifest written to {result.sample_manifest_path}",
+            file=sys.stderr,
+        )
+        return 0
+
+    run_result = result.run_result
+    print(
+        f"private-run: status={run_result.status if run_result else None}, "
+        f"calls_made={run_result.calls_made if run_result else 0}, "
+        f"cache_hits={run_result.cache_hits if run_result else 0}, "
+        f"estimated_cost_usd={run_result.estimated_cost_usd if run_result else 0.0:.6f}",
+        file=sys.stderr,
+    )
+    print(f"report written to {result.report_path}", file=sys.stderr)
+    print(f"aggregates written to {result.aggregates_path}", file=sys.stderr)
+    return 0
+
+
 def _cmd_verify_policy_sources(args: argparse.Namespace) -> int:
     results = verify_policy_sources(args.policy)
     failed = [r for r in results if not r.ok]
@@ -722,6 +847,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_benchmark_public(args)
     if args.command == "verify-policy-sources":
         return _cmd_verify_policy_sources(args)
+    if args.command == "private-run":
+        return _cmd_private_run(args)
     parser.error(f"unknown command {args.command!r}")
     return 2
 

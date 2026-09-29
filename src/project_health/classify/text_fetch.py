@@ -473,6 +473,19 @@ class JiraCommentTextFetcher(_PacedClient):
         self._issue_cache[issue_key] = comments
         return comments
 
+    def fetch_issue_comments(self, issue_key: str) -> list[RawJiraComment]:
+        """Public accessor for the full, ordered (ascending by JIRA's
+        default `created` order), **not capped** comment stream for
+        `issue_key` -- added for issue #110's private run, which needs to
+        fetch every comment on a sampled JIRA thread (up to its own,
+        caller-applied per-thread cap), not just specific ids via
+        `fetch_comments`. Hits this fetcher's per-issue cache, so calling it
+        after `fetch_comments`/`resolve_parent` has already touched the same
+        issue costs no extra network request. Mirrors `PonyMailTextFetcher.
+        fetch_month_raw`'s "public accessor over the same cache" shape.
+        """
+        return list(self._fetch_issue_comments(issue_key))
+
     def fetch_comments(self, refs: Iterable[JiraCommentRef]) -> dict[str, RawJiraComment]:
         """Fetch raw bodies for exactly the given refs. Only the issues
         actually referenced are fetched -- never a blanket issue crawl."""

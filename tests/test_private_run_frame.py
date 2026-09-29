@@ -1,0 +1,195 @@
+"""Tests for project_health.private_run.frame (issue #110).
+
+Builds tiny synthetic Parquet partitions for `ponymail/message_thread`,
+`ponymail/message`, and `jira/issue` via `project_health.storage.
+write_partition` (the same real write path collectors use), then checks the
+frame builders read them back correctly -- no network, no real Cassandra
+data anywhere.
+"""
+
+from __future__ import annotations
+
+from datetime import datetime, timezone
+
+import pyarrow as pa
+
+from project_health import storage
+from project_health.private_run.frame import (
+    load_dev_messages_for_threads,
+    load_dev_thread_frame,
+    load_jira_thread_frame,
+)
+
+
+def _ts(*args) -> datetime:
+    return datetime(*args, tzinfo=timezone.utc)
+
+
+def _write_message_thread(data_dir, rows: list[dict]) -> None:
+    table = pa.table(
+        {
+            "thread_id": pa.array([r["thread_id"] for r in rows], type=pa.string()),
+            "list": pa.array([r["list"] for r in rows], type=pa.string()),
+            "root_message_id": pa.array([r["thread_id"] + "-root" for r in rows], type=pa.string()),
+            "started_at": pa.array(
+                [r["started_at"] for r in rows], type=pa.timestamp("us", tz="UTC")
+            ),
+            "last_activity_at": pa.array(
+                [r["started_at"] for r in rows], type=pa.timestamp("us", tz="UTC")
+            ),
+            "message_count": pa.array([r.get("message_count", 1) for r in rows], type=pa.int64()),
+            "source_snapshot_id": pa.array(["snap-1"] * len(rows), type=pa.string()),
+        }
+    )
+    storage.write_partition(data_dir, "ponymail", "message_thread", "2026-09-25", "run-1", table)
+
+
+def _write_message(data_dir, rows: list[dict]) -> None:
+    table = pa.table(
+        {
+            "message_id": pa.array([r["message_id"] for r in rows], type=pa.string()),
+            "list": pa.array([r["list"] for r in rows], type=pa.string()),
+            "sender_identity_id": pa.array([None] * len(rows), type=pa.string()),
+            "sender_raw_type": pa.array(["mailing_list_address"] * len(rows), type=pa.string()),
+            "sender_raw_value": pa.array([r["sender_raw_value"] for r in rows], type=pa.string()),
+            "sender_display_name": pa.array([None] * len(rows), type=pa.string()),
+            "occurred_at": pa.array(
+                [r["occurred_at"] for r in rows], type=pa.timestamp("us", tz="UTC")
+            ),
+            "subject_hash": pa.array(["a" * 64] * len(rows), type=pa.string()),
+            "in_reply_to": pa.array([r.get("in_reply_to") for r in rows], type=pa.string()),
+            "references": pa.array([[] for _ in rows], type=pa.list_(pa.string())),
+            "thread_id": pa.array([r["thread_id"] for r in rows], type=pa.string()),
+            "source_snapshot_id": pa.array(["snap-1"] * len(rows), type=pa.string()),
+        }
+    )
+    storage.write_partition(data_dir, "ponymail", "message", "2026-09-25", "run-1", table)
+
+
+def _write_issue(data_dir, rows: list[dict]) -> None:
+    n = len(rows)
+    table = pa.table(
+        {
+            "issue_key": pa.array([r["issue_key"] for r in rows], type=pa.string()),
+            "summary": pa.array([None] * n, type=pa.string()),
+            "status": pa.array([None] * n, type=pa.string()),
+            "status_category": pa.array([None] * n, type=pa.string()),
+            "priority": pa.array([None] * n, type=pa.string()),
+            "issue_type": pa.array([None] * n, type=pa.string()),
+            "created_at": pa.array(
+                [r["created_at"] for r in rows], type=pa.timestamp("us", tz="UTC")
+            ),
+            "updated_at": pa.array(
+                [r["created_at"] for r in rows], type=pa.timestamp("us", tz="UTC")
+            ),
+            "resolved_at": pa.array([None] * n, type=pa.timestamp("us", tz="UTC")),
+            "reporter_identity_id": pa.array([None] * n, type=pa.string()),
+            "reporter_raw": pa.array([None] * n, type=pa.string()),
+            "assignee_identity_id": pa.array([None] * n, type=pa.string()),
+            "assignee_raw": pa.array([None] * n, type=pa.string()),
+            "resolution": pa.array([None] * n, type=pa.string()),
+            "source_snapshot_id": pa.array(["snap-1"] * n, type=pa.string()),
+        }
+    )
+    storage.write_partition(data_dir, "jira", "issue", "2026-09-25", "run-1", table)
+
+
+class TestLoadDevThreadFrame:
+    def test_buckets_threads_by_started_at_quarter(self, tmp_path):
+        _write_message_thread(
+            tmp_path,
+            [
+                {"thread_id": "t1", "list": "dev", "started_at": _ts(2024, 1, 5)},
+                {"thread_id": "t2", "list": "dev", "started_at": _ts(2024, 2, 1)},
+                {"thread_id": "t3", "list": "dev", "started_at": _ts(2024, 4, 1)},
+            ],
+        )
+        frame = load_dev_thread_frame(tmp_path, "dev", {"2024Q1", "2024Q2"})
+        assert sorted(frame["2024Q1"]) == ["t1", "t2"]
+        assert frame["2024Q2"] == ["t3"]
+
+    def test_filters_to_requested_list(self, tmp_path):
+        _write_message_thread(
+            tmp_path,
+            [
+                {"thread_id": "dev-thread", "list": "dev", "started_at": _ts(2024, 1, 5)},
+                {"thread_id": "user-thread", "list": "user", "started_at": _ts(2024, 1, 5)},
+            ],
+        )
+        frame = load_dev_thread_frame(tmp_path, "dev", {"2024Q1"})
+        assert frame["2024Q1"] == ["dev-thread"]
+
+    def test_excludes_quarters_outside_the_requested_set(self, tmp_path):
+        _write_message_thread(
+            tmp_path, [{"thread_id": "t1", "list": "dev", "started_at": _ts(2019, 6, 1)}]
+        )
+        frame = load_dev_thread_frame(tmp_path, "dev", {"2024Q1"})
+        assert frame == {}
+
+    def test_no_partitions_written_yet_returns_empty(self, tmp_path):
+        assert load_dev_thread_frame(tmp_path, "dev", {"2024Q1"}) == {}
+
+
+class TestLoadJiraThreadFrame:
+    def test_buckets_issues_by_created_at_quarter(self, tmp_path):
+        _write_issue(
+            tmp_path,
+            [
+                {"issue_key": "CASSANDRA-1", "created_at": _ts(2024, 1, 5)},
+                {"issue_key": "CASSANDRA-2", "created_at": _ts(2024, 7, 1)},
+            ],
+        )
+        frame = load_jira_thread_frame(tmp_path, "CASSANDRA", {"2024Q1", "2024Q3"})
+        assert frame["2024Q1"] == ["CASSANDRA-1"]
+        assert frame["2024Q3"] == ["CASSANDRA-2"]
+
+    def test_filters_to_the_configured_project_key(self, tmp_path):
+        _write_issue(
+            tmp_path,
+            [
+                {"issue_key": "CASSANDRA-1", "created_at": _ts(2024, 1, 5)},
+                {"issue_key": "OTHERPROJ-1", "created_at": _ts(2024, 1, 5)},
+            ],
+        )
+        frame = load_jira_thread_frame(tmp_path, "CASSANDRA", {"2024Q1"})
+        assert frame["2024Q1"] == ["CASSANDRA-1"]
+
+    def test_no_partitions_written_yet_returns_empty(self, tmp_path):
+        assert load_jira_thread_frame(tmp_path, "CASSANDRA", {"2024Q1"}) == {}
+
+
+class TestLoadDevMessagesForThreads:
+    def test_returns_only_requested_threads(self, tmp_path):
+        _write_message(
+            tmp_path,
+            [
+                {
+                    "message_id": "<m1@x>",
+                    "list": "dev",
+                    "sender_raw_value": "alice@example.com",
+                    "occurred_at": _ts(2024, 1, 1),
+                    "thread_id": "t1",
+                },
+                {
+                    "message_id": "<m2@x>",
+                    "list": "dev",
+                    "sender_raw_value": "bob@example.com",
+                    "occurred_at": _ts(2024, 1, 2),
+                    "thread_id": "t1",
+                },
+                {
+                    "message_id": "<m3@x>",
+                    "list": "dev",
+                    "sender_raw_value": "carol@example.com",
+                    "occurred_at": _ts(2024, 1, 1),
+                    "thread_id": "t2",
+                },
+            ],
+        )
+        rows = load_dev_messages_for_threads(tmp_path, "dev", {"t1"})
+        assert set(rows) == {"t1"}
+        assert {r["message_id"] for r in rows["t1"]} == {"<m1@x>", "<m2@x>"}
+
+    def test_empty_thread_id_set_returns_empty_without_reading(self, tmp_path):
+        # no partitions written at all -- must not raise FileNotFoundError.
+        assert load_dev_messages_for_threads(tmp_path, "dev", set()) == {}

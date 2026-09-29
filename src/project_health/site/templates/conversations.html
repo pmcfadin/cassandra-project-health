@@ -72,6 +72,72 @@
     {% endfor %}
   </section>
 
+  {% if conversation_patterns.yoy %}
+  <section class="conv-yoy" id="conv-yoy" aria-labelledby="conv-yoy-heading">
+    <h3 id="conv-yoy-heading">Year-over-year by label</h3>
+    <p class="governance-note">
+      Counts per 1,000 classified messages by label and year, one bar per year within
+      each label, with 95% confidence-interval error bars. Constructive and negative
+      labels are two independent-scale panels, never combined into one axis. Years
+      shown are whichever the controls below select; a year with <code>insufficient_data</code>
+      for the selected venue is left out of the chart entirely (noted below) rather than
+      shown as zero.
+    </p>
+
+    <form class="conv-yoy-controls" data-yoy-controls aria-label="Year-over-year chart controls"
+          data-yoy-default-cutoff="{{ conversation_patterns.yoy.default_cutoff }}">
+      <label>Venue
+        <select data-yoy-control="venue">
+          {% for v in conversation_patterns.yoy.venues %}
+          <option value="{{ v.id }}" {% if v.id == conversation_patterns.yoy.default_venue %}selected{% endif %}>{{ v.label }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>From year
+        <select data-yoy-control="from-year">
+          {% for y in conversation_patterns.yoy.years %}
+          <option value="{{ y.value }}" {% if y.value == conversation_patterns.yoy.default_from %}selected{% endif %}>{{ y.display }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>To year
+        <select data-yoy-control="to-year">
+          {% for y in conversation_patterns.yoy.years %}
+          <option value="{{ y.value }}" {% if y.value == conversation_patterns.yoy.default_to %}selected{% endif %}>{{ y.display }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      {% if conversation_patterns.yoy.cutoffs | length > 1 %}
+      <label>Cutoff
+        <select data-yoy-control="cutoff">
+          {% for c in conversation_patterns.yoy.cutoffs %}
+          <option value="{{ c }}" {% if c == conversation_patterns.yoy.default_cutoff %}selected{% endif %}>{{ c }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      {% endif %}
+    </form>
+
+    {% for group in conversation_patterns.yoy.groups %}
+    <h4>{{ group.title }}</h4>
+    <div class="conv-yoy-chart-wrap">
+      <div class="chart conv-yoy-chart" data-yoy-chart data-vega-spec='{{ group.spec_json }}' role="img" aria-label="{{ group.title }} labels, year over year">
+        <noscript>Enable JavaScript to see this chart, or use the tables above.</noscript>
+      </div>
+    </div>
+    {% endfor %}
+
+    {% if conversation_patterns.yoy.insufficient_notes %}
+    <p class="governance-note">
+      Omitted for <code>insufficient_data</code>:
+      {% for note in conversation_patterns.yoy.insufficient_notes %}
+      {{ note.venue_label }} ({{ note.years | join(", ") }}){% if not loop.last %}; {% endif %}
+      {% endfor %}
+    </p>
+    {% endif %}
+  </section>
+  {% endif %}
+
   <section class="conv-newcomer" id="conv-newcomer" aria-labelledby="conv-newcomer-heading">
     <h3 id="conv-newcomer-heading">Newcomer treatment</h3>
     <p class="governance-note">

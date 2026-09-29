@@ -2678,3 +2678,167 @@ def test_conversation_patterns_shows_insufficient_data_for_pile_on(tmp_path):
     out_dir, _ = _build_site_with_conversation_patterns(tmp_path)
     html_text = _conversations_html(out_dir)
     assert "insufficient data" in html_text
+
+
+# --- Year-over-year grouped-bar chart (issue #120) --------------------------
+
+from project_health.site.conversation_patterns_page import _yoy_default_range  # noqa: E402
+from tests.test_private_run_publish import VENUES, _cell  # noqa: E402
+
+
+def _sample_aggregates_with_years(years: dict[str, bool]) -> dict:
+    """`_sample_aggregates()`, but `cells_by_year` spans the given
+    `{year: insufficient_data}` map for every venue, instead of the base
+    fixture's single "2024" year -- everything a year-over-year chart test
+    needs to exercise a real range, a partial current year and an
+    excluded insufficient year."""
+    aggregates = _sample_aggregates()
+    aggregates["cells_by_year"] = {
+        v: {year: _cell(insufficient=insufficient) for year, insufficient in years.items()}
+        for v in VENUES
+    }
+    return aggregates
+
+
+def _build_site_with_yoy_years(tmp_path: Path, years: dict[str, bool]) -> Path:
+    out_dir, _ = _build_site_with_conversation_patterns(
+        tmp_path, aggregates=_sample_aggregates_with_years(years)
+    )
+    return out_dir
+
+
+def _yoy_group_specs(html_text: str) -> dict[str, dict]:
+    """Every `data-yoy-chart` element's own Vega-Lite spec, keyed by its
+    panel heading (the immediately preceding `<h4>`) -- so a test can pick
+    out "Constructive / discussion" vs. "Negative" specifically."""
+    specs = {}
+    for match in re.finditer(
+        r"<h4>([^<]+)</h4>\s*<div class=\"conv-yoy-chart-wrap\">\s*"
+        r"<div class=\"chart conv-yoy-chart\"[^>]*data-vega-spec='(.*?)'",
+        html_text,
+        re.S,
+    ):
+        title, raw_spec = match.groups()
+        specs[title] = json.loads(html_module.unescape(raw_spec))
+    return specs
+
+
+def test_yoy_default_range_is_last_five_complete_years():
+    """Issue #120's own worked example: `now` in 2026 -> 2021-2025."""
+    years = [str(y) for y in range(2017, 2027)]
+    assert _yoy_default_range(years, datetime(2026, 9, 29, tzinfo=UTC)) == ("2021", "2025")
+
+
+def test_yoy_default_range_clamps_to_years_actually_present():
+    assert _yoy_default_range(["2023", "2024"], datetime(2026, 9, 29, tzinfo=UTC)) == (
+        "2023",
+        "2024",
+    )
+
+
+def test_conversations_page_renders_yoy_section_with_controls(tmp_path):
+    out_dir = _build_site_with_yoy_years(
+        tmp_path,
+        {str(y): False for y in range(2021, 2027)},
+    )
+    html_text = _conversations_html(out_dir)
+
+    assert 'id="conv-yoy"' in html_text
+    assert "Year-over-year by label" in html_text
+    assert 'data-yoy-control="venue"' in html_text
+    assert 'data-yoy-control="from-year"' in html_text
+    assert 'data-yoy-control="to-year"' in html_text
+    assert 'data-yoy-control="cutoff"' in html_text  # base fixture carries 3 cutoffs
+    # Default range 2021-2025 (2026 is the current, partial year).
+    assert '<option value="2021" selected>2021</option>' in html_text
+    assert '<option value="2025" selected>2025</option>' in html_text
+    assert "2026 (partial)" in html_text
+
+
+def test_yoy_section_appears_directly_after_summary_before_newcomer_section(tmp_path):
+    out_dir, _ = _build_site_with_conversation_patterns(tmp_path)
+    html_text = _conversations_html(out_dir)
+    summary_index = html_text.index('id="conv-summary-heading"')
+    yoy_index = html_text.index('id="conv-yoy-heading"')
+    newcomer_index = html_text.index('id="conv-newcomer-heading"')
+    message_patterns_index = html_text.index('id="conv-message-patterns-heading"')
+    assert summary_index < yoy_index < newcomer_index < message_patterns_index
+
+
+def test_yoy_chart_has_both_panels_with_independent_specs(tmp_path):
+    out_dir = _build_site_with_yoy_years(tmp_path, {str(y): False for y in range(2021, 2027)})
+    html_text = _conversations_html(out_dir)
+    specs = _yoy_group_specs(html_text)
+
+    assert set(specs) == {"Constructive / discussion", "Negative"}
+    for spec in specs.values():
+        assert spec["layer"][0]["mark"]["type"] == "bar"
+        assert spec["layer"][1]["mark"]["type"] == "rule"
+        assert spec["encoding"]["color"]["field"] == "year"
+        assert spec["encoding"]["color"]["scale"]["scheme"] == "blues"
+
+
+def test_yoy_chart_label_order_matches_fixed_group_order_not_alphabetical(tmp_path):
+    out_dir = _build_site_with_yoy_years(tmp_path, {str(y): False for y in range(2021, 2027)})
+    html_text = _conversations_html(out_dir)
+    specs = _yoy_group_specs(html_text)
+
+    assert specs["Constructive / discussion"]["encoding"]["x"]["sort"] == [
+        "Acknowledgment",
+        "Compromise offer",
+        "Constructive counterargument",
+        "Evidence based argument",
+        "Resolution marker",
+        "Technical disagreement",
+    ]
+    assert specs["Negative"]["encoding"]["x"]["sort"] == [
+        "Dismissiveness",
+        "Hostility",
+        "Personal attack",
+        "Sarcasm",
+        "Gatekeeping",
+        "Status authority invocation",
+    ]
+
+
+def test_yoy_chart_excludes_insufficient_data_years_from_spec_and_notes_them(tmp_path):
+    out_dir = _build_site_with_yoy_years(
+        tmp_path,
+        {"2020": True, "2021": False, "2022": False, "2023": False, "2024": False, "2025": False},
+    )
+    html_text = _conversations_html(out_dir)
+    specs = _yoy_group_specs(html_text)
+
+    years_in_chart = {row["year"] for row in specs["Constructive / discussion"]["data"]["values"]}
+    assert "2020" not in years_in_chart
+    assert years_in_chart == {"2021", "2022", "2023", "2024", "2025"}
+    assert "insufficient_data" in html_text
+    assert "2020" in html_text.split('id="conv-yoy"')[1].split('id="conv-newcomer"')[0]
+
+
+def test_yoy_chart_tooltip_carries_label_year_rate_ci_messages_authors(tmp_path):
+    out_dir = _build_site_with_yoy_years(tmp_path, {"2024": False})
+    html_text = _conversations_html(out_dir)
+    specs = _yoy_group_specs(html_text)
+    tooltip_fields = {t["field"] for t in specs["Constructive / discussion"]["encoding"]["tooltip"]}
+    assert {"label_display", "year", "per_1000", "ci_lo", "ci_hi", "messages", "authors"} <= (
+        tooltip_fields
+    )
+
+
+def test_yoy_chart_row_values_match_synthetic_snapshot(tmp_path):
+    """The chart's own `per_1000`/CI values are exactly what the synthetic
+    fixture's `_cell()` (via `_rate_entry()`, per_1000=5.0, CI [4.0, 6.0])
+    put there -- not some derived/re-aggregated number."""
+    out_dir = _build_site_with_yoy_years(tmp_path, {"2024": False})
+    html_text = _conversations_html(out_dir)
+    specs = _yoy_group_specs(html_text)
+    rows = specs["Negative"]["data"]["values"]
+    hostility_row = next(
+        r for r in rows if r["label"] == "hostility" and r["cutoff"] == "0.5"
+    )
+    assert hostility_row["per_1000"] == 5.0
+    assert hostility_row["ci_lo"] == 4.0
+    assert hostility_row["ci_hi"] == 6.0
+    assert hostility_row["messages"] == 50
+    assert hostility_row["authors"] == 15

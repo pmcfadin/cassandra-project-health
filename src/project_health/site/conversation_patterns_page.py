@@ -36,6 +36,7 @@ never an error, when it isn't.
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
@@ -66,6 +67,18 @@ VENUE_LABELS: dict[str, str] = {
     "mailing_list": "dev@ mailing list",
     "jira_comment": "JIRA comments",
 }
+
+# Issue #120's own two panels, in this fixed display order -- also the
+# fixed x-axis label order for each panel's grouped-bar chart (never the
+# alphabetical `SORTED_LABELS` order).
+_YOY_LABEL_GROUPS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
+    ("constructive", "Constructive / discussion", CONSTRUCTIVE_LABELS),
+    ("negative", "Negative", NEGATIVE_LABELS),
+)
+
+# Issue #120 default range: "last 5 complete years" -- a year is complete
+# once the calendar year after it has started.
+_YOY_DEFAULT_RANGE_YEARS = 5
 
 _EARLY_WINDOW = "2017_2019"
 _RECENT_WINDOW = "2023_2025"
@@ -158,6 +171,12 @@ def _fmt_newcomer_rate(entry: dict[str, Any], key: str) -> str:
 
 def _venue_label(venue: str) -> str:
     return VENUE_LABELS.get(venue, venue)
+
+
+def _humanize_label(label: str) -> str:
+    """`"compromise_offer"` -> `"Compromise offer"` -- issue #120's own
+    example of a human-readable axis label (sentence case, not Title Case)."""
+    return label.replace("_", " ").capitalize()
 
 
 def _summary_by_venue(snapshot: dict[str, Any], venues: list[str]) -> list[dict[str, Any]]:
@@ -404,6 +423,199 @@ def _message_patterns_by_venue(
     return out
 
 
+def _yoy_rows(
+    snapshot: dict[str, Any], venues: list[str]
+) -> tuple[list[dict[str, Any]], dict[str, list[str]]]:
+    """Long-format rows for the year-over-year grouped-bar chart (issue
+    #120): one row per (venue, cutoff, label, year) cell that clears the
+    §5.1 floor, across every venue and every cutoff the snapshot carries --
+    filtering down to a single venue/cutoff/year-range is left to the
+    client (`app.js`'s `applyYoyFilter`), same "ship the whole small
+    dataset, filter in JS" pattern as the chart-window toggle (issue #28).
+
+    Also returns each venue's own list of years omitted for
+    `insufficient_data` (a whole cell, never a single label within it --
+    `publish.py`'s own §5.1 floor invariant), for the template's note
+    under the chart."""
+    cutoffs = list(snapshot["cutoffs"])
+    rows: list[dict[str, Any]] = []
+    insufficient_years_by_venue: dict[str, list[str]] = {}
+    for venue in venues:
+        year_cells = snapshot["cells_by_year"].get(venue, {})
+        insufficient_years: list[str] = []
+        for year in sorted(year_cells):
+            cell = year_cells[year]
+            if cell["insufficient_data"]:
+                insufficient_years.append(year)
+                continue
+            for group_id, _group_title, labels in _YOY_LABEL_GROUPS:
+                for label in labels:
+                    for cutoff in cutoffs:
+                        entry = cell["cutoff_rates_per_1000_messages"][label].get(cutoff)
+                        if entry is None:
+                            continue
+                        ci_lo, ci_hi = entry["ci95"]
+                        rows.append(
+                            {
+                                "venue": venue,
+                                "venue_label": _venue_label(venue),
+                                "year": year,
+                                "cutoff": cutoff,
+                                "group": group_id,
+                                "label": label,
+                                "label_display": _humanize_label(label),
+                                "per_1000": entry["per_1000"],
+                                "ci_lo": ci_lo,
+                                "ci_hi": ci_hi,
+                                "messages": cell["messages_classified"],
+                                "authors": cell["distinct_authors"],
+                            }
+                        )
+        insufficient_years_by_venue[venue] = insufficient_years
+    return rows, insufficient_years_by_venue
+
+
+def _yoy_default_range(years: list[str], now: datetime) -> tuple[str, str]:
+    """Issue #120: "default: last 5 complete years, i.e. 2021-2025" (given
+    `now` in 2026) -- a year is "complete" once the following calendar
+    year has started, i.e. up to `now.year - 1`, clamped to the years
+    actually present in the data."""
+    if not years:
+        return ("", "")
+    numeric_years = sorted(int(y) for y in years)
+    default_to = min(now.year - 1, numeric_years[-1])
+    default_to = max(default_to, numeric_years[0])
+    default_from = max(default_to - (_YOY_DEFAULT_RANGE_YEARS - 1), numeric_years[0])
+    return (str(default_from), str(default_to))
+
+
+def _yoy_year_options(years: list[str], now: datetime) -> list[dict[str, str]]:
+    """Every year selectable in the From/To year controls -- "2026
+    selectable but labeled partial" (issue #120): any year whose calendar
+    year has not yet fully elapsed as of `now` gets a "(partial)" suffix,
+    distinct from (and independent of) a year being `insufficient_data`."""
+    options = []
+    for year in years:
+        display = year
+        if int(year) >= now.year:
+            display = f"{year} (partial)"
+        options.append({"value": year, "display": display})
+    return options
+
+
+def _yoy_group_spec(
+    rows: list[dict[str, Any]], group_id: str, labels: tuple[str, ...]
+) -> str | None:
+    """A grouped-bar-chart-with-error-bars Vega-Lite spec for one panel
+    (constructive or negative): x = human-readable label, dodged by year,
+    color = year on a sequential single-hue ramp (older lighter, newer
+    darker -- issue #120), with a `rule` layer for each bar's 95% CI.
+
+    `data.values` carries every venue/cutoff/year row for this group (not
+    pre-filtered to a default range/venue/cutoff) -- `app.js`'s
+    `applyYoyFilter` narrows it to the controls' current selection on
+    every render, first paint included, so this Python-side default and
+    the client-side one never have to be kept in sync by hand."""
+    group_rows = [row for row in rows if row["group"] == group_id]
+    if not group_rows:
+        return None
+
+    label_order = [_humanize_label(label) for label in labels]
+    tooltip = [
+        {"field": "label_display", "type": "nominal", "title": "Label"},
+        {"field": "year", "type": "ordinal", "title": "Year"},
+        {"field": "per_1000", "type": "quantitative", "title": "per 1,000", "format": ".2f"},
+        {"field": "ci_lo", "type": "quantitative", "title": "CI low", "format": ".2f"},
+        {"field": "ci_hi", "type": "quantitative", "title": "CI high", "format": ".2f"},
+        {"field": "messages", "type": "quantitative", "title": "Messages"},
+        {"field": "authors", "type": "quantitative", "title": "Authors"},
+    ]
+    spec = {
+        "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+        "width": "container",
+        "height": 280,
+        "data": {"values": group_rows},
+        "encoding": {
+            "x": {
+                "field": "label_display",
+                "type": "nominal",
+                "title": None,
+                "sort": label_order,
+                "axis": {"labelAngle": -40, "labelLimit": 130, "labelPadding": 4},
+            },
+            "xOffset": {"field": "year", "type": "ordinal"},
+            "y": {"field": "per_1000", "type": "quantitative", "title": "per 1,000 messages"},
+            "color": {
+                "field": "year",
+                "type": "ordinal",
+                "title": "Year",
+                "scale": {"scheme": "blues"},
+            },
+            "tooltip": tooltip,
+        },
+        "layer": [
+            {"mark": {"type": "bar"}},
+            {
+                "mark": {"type": "rule"},
+                "encoding": {
+                    "y": {"field": "ci_lo", "type": "quantitative"},
+                    "y2": {"field": "ci_hi", "type": "quantitative"},
+                    "color": {"value": "rgba(0, 0, 0, 0.55)"},
+                },
+            },
+        ],
+    }
+    return json.dumps(spec)
+
+
+def _yoy_context(
+    snapshot: dict[str, Any], venues: list[str], venue_meta: list[dict[str, str]], now: datetime
+) -> dict[str, Any] | None:
+    """Issue #120: the year-over-year grouped-bar chart context -- both
+    panels' specs, the shared From/To year + venue + (optional) cutoff
+    controls, and each venue's insufficient-data-years note.
+
+    `None` (never an error/empty chart) when no venue/cutoff/year/label
+    cell clears the floor at all -- same "honest no-data" convention as
+    `build_conversation_patterns_context` itself."""
+    rows, insufficient_years_by_venue = _yoy_rows(snapshot, venues)
+    if not rows:
+        return None
+
+    all_years = sorted({row["year"] for row in rows})
+    default_from, default_to = _yoy_default_range(all_years, now)
+    cutoffs = list(snapshot["cutoffs"])
+    headline_cutoff = snapshot["headline_cutoff"]
+    default_cutoff = headline_cutoff if headline_cutoff in cutoffs else cutoffs[0]
+
+    groups = []
+    for group_id, group_title, labels in _YOY_LABEL_GROUPS:
+        spec_json = _yoy_group_spec(rows, group_id, labels)
+        if spec_json is None:
+            continue
+        groups.append({"id": group_id, "title": group_title, "spec_json": spec_json})
+    if not groups:
+        return None
+
+    insufficient_notes = [
+        {"venue_label": _venue_label(venue), "years": years}
+        for venue, years in insufficient_years_by_venue.items()
+        if years
+    ]
+
+    return {
+        "groups": groups,
+        "venues": venue_meta,
+        "default_venue": venues[0],
+        "years": _yoy_year_options(all_years, now),
+        "default_from": default_from,
+        "default_to": default_to,
+        "cutoffs": cutoffs,
+        "default_cutoff": default_cutoff,
+        "insufficient_notes": insufficient_notes,
+    }
+
+
 def _method_context(snapshot: dict[str, Any]) -> dict[str, Any]:
     headline_cutoff = snapshot["headline_cutoff"]
     covered = {_venue_label(v) for v in snapshot["venues"]}
@@ -468,10 +680,17 @@ def _community_card_metrics(snapshot: dict[str, Any], venues: list[str]) -> list
     ]
 
 
-def build_conversation_patterns_context(data_dir: str | Path) -> dict[str, Any]:
+def build_conversation_patterns_context(
+    data_dir: str | Path, *, now: datetime | None = None
+) -> dict[str, Any]:
+    """`now` is the build-time reference for the year-over-year chart's
+    default range and "(partial)" year labeling (issue #120); it defaults
+    to the current UTC time -- tests pass an explicit value for
+    determinism, same convention as `site.generate.generate`'s own `now`."""
     snapshot = _read_latest_snapshot(data_dir)
     if snapshot is None:
         return {"available": False}
+    build_time = now if now is not None else datetime.now(UTC)
 
     venues = list(snapshot["venues"])
     venue_meta = [{"id": v, "label": _venue_label(v)} for v in venues]
@@ -484,6 +703,7 @@ def build_conversation_patterns_context(data_dir: str | Path) -> dict[str, Any]:
         "model_id_pinned": snapshot.get("model_id_pinned"),
         "venues": venue_meta,
         "summary_by_venue": _summary_by_venue(snapshot, venues),
+        "yoy": _yoy_context(snapshot, venues, venue_meta, build_time),
         "newcomer_by_venue": _newcomer_by_venue(snapshot, venues),
         "disagreement_by_venue": _disagreement_by_venue(snapshot, venues),
         "message_patterns_by_venue": _message_patterns_by_venue(snapshot, venues),

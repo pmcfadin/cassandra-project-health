@@ -41,6 +41,8 @@ from typing import Any
 from urllib.parse import urlencode
 
 from project_health.classify.questions import MESSAGE_LEVEL_LABELS
+from project_health.private_run.sample import DEFAULT_K
+from project_health.site.conversation_patterns_page import CONSTRUCTIVE_LABELS, NEGATIVE_LABELS
 
 REPO_URL = "https://github.com/pmcfadin/cassandra-project-health"
 # `decisions_url` itself comes from `generate._common_page_context` (every
@@ -237,6 +239,244 @@ def _write_rows_json(path: Path, rows: list[dict[str, Any]]) -> None:
     path.write_text(json.dumps(payload, separators=(",", ":")))
 
 
+# --- Charts above the table (issue #124) ----------------------------------
+#
+# Both charts are driven by the *same* filter state as the table (venue,
+# outcome, label, year range): `thread_explorer.js` recomputes each chart's
+# data from `state.filtered` -- the identical row list the table itself
+# renders -- on every filter change, using a JS port of the two pure
+# derivation functions below (`year_outcome_rows`, `label_year_share_rows`).
+# Those two functions are the single source of truth for the aggregation
+# logic; this module uses them to build the page's *initial* (unfiltered)
+# specs at build time, and they're what `test_site_thread_explorer.py`
+# exercises directly against synthetic rows so the math is tested
+# independent of any browser.
+#
+# Unweighted counts only (issue #124 acceptance #3): every count and share
+# here is of *sampled* threads, never population-weighted -- the chart
+# footnote says so and points to Conversation patterns for the
+# population-weighted numbers.
+
+# Fixed stacking/legend order (issue #124's own list) -- never alphabetical,
+# same reasoning as `_OUTCOME_DISPLAY_ORDER`.
+CHART_OUTCOME_CATEGORIES: tuple[str, ...] = (
+    "none",
+    "resolved",
+    "escalated",
+    "escalated, then de-escalated",
+    "abandoned after friction",
+)
+
+# A neutral qualitative palette (D25: no verdicts) -- deliberately not a
+# red/green stoplight scheme, which would editorialize "escalated" as bad
+# and "resolved" as good.
+_OUTCOME_COLOR_SCHEME = "tableau10"
+
+
+def _chart_outcome_category(outcome_flags: dict[str, Any]) -> str:
+    """One mutually-exclusive chart category per thread (issue #124) --
+    unlike `_outcome_display`'s narrative string, which can carry more
+    than one true flag at once, a stacked bar needs exactly one category
+    per thread. Escalation takes priority over resolution, same
+    left-to-right precedence `_OUTCOME_DISPLAY_ORDER` already uses."""
+    if outcome_flags.get("escalated") and outcome_flags.get("de-escalated"):
+        return "escalated, then de-escalated"
+    if outcome_flags.get("escalated"):
+        return "escalated"
+    if outcome_flags.get("resolved"):
+        return "resolved"
+    if outcome_flags.get("abandoned after friction"):
+        return "abandoned after friction"
+    return "none"
+
+
+def year_outcome_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Long-format `{year, outcome, count}` rows for the "threads per year
+    by outcome" stacked-bar chart (issue #124) -- one row per (year,
+    category) pair actually present in `rows`. `rows` is whatever subset
+    the caller passes in: `thread_explorer.js`'s JS port of this function
+    passes the table's currently *filtered* rows on every filter change;
+    this Python function is called once, over every row, to build the
+    page's initial unfiltered chart."""
+    counts: dict[tuple[str, str], int] = {}
+    for row in rows:
+        year = row.get("year")
+        if not year:
+            continue
+        category = _chart_outcome_category(row.get("outcome_flags") or {})
+        key = (year, category)
+        counts[key] = counts.get(key, 0) + 1
+    return [
+        {"year": year, "outcome": outcome, "count": count}
+        for (year, outcome), count in sorted(
+            counts.items(),
+            key=lambda kv: (kv[0][0], CHART_OUTCOME_CATEGORIES.index(kv[0][1])),
+        )
+    ]
+
+
+def label_year_share_rows(
+    rows: list[dict[str, Any]], labels: tuple[str, ...]
+) -> list[dict[str, Any]]:
+    """Long-format `{label, label_display, year, count, total, share}` rows
+    for the "threads with >=1 flagged message, by label, year over year"
+    grouped-bar chart (issue #124). `share` is this year's (within `rows`)
+    fraction of threads with at least one message classified >=0.5 for
+    `label` -- `count / total`, `total` being every row in `rows` for that
+    year regardless of label. `rows` is whatever the caller passes in --
+    the same "filter first with the table's own filter predicate, then
+    aggregate" contract as `year_outcome_rows` above, so a test can verify
+    "share with filter applied" just by filtering the input list before
+    calling this function."""
+    totals: dict[str, int] = {}
+    for row in rows:
+        year = row.get("year")
+        if not year:
+            continue
+        totals[year] = totals.get(year, 0) + 1
+
+    counts: dict[tuple[str, str], int] = {}
+    for row in rows:
+        year = row.get("year")
+        if not year:
+            continue
+        label_counts = row.get("label_counts") or {}
+        for label in labels:
+            if label_counts.get(label):
+                key = (label, year)
+                counts[key] = counts.get(key, 0) + 1
+
+    years = sorted(totals)
+    out = []
+    for label in labels:
+        for year in years:
+            total = totals[year]
+            count = counts.get((label, year), 0)
+            out.append(
+                {
+                    "label": label,
+                    "label_display": _humanize_label(label),
+                    "year": year,
+                    "count": count,
+                    "total": total,
+                    "share": (count / total) if total else 0.0,
+                }
+            )
+    return out
+
+
+def _year_outcome_chart_spec(rows: list[dict[str, Any]]) -> str | None:
+    """Stacked-bar Vega-Lite spec for the "threads per year by outcome"
+    chart -- one `mark: bar` layer, `stack: zero`, toggled client-side
+    (`thread_explorer.js`) to `stack: normalize` for the counts <-> share
+    of year toggle (issue #124). No CI band/rule layer: unlike the
+    Conversation patterns section's rate-based charts, this is a raw
+    count of sampled threads, not a population estimate with a confidence
+    interval."""
+    values = year_outcome_rows(rows)
+    if not values:
+        return None
+    spec = {
+        "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+        "width": "container",
+        "height": 260,
+        "data": {"values": values},
+        "mark": {"type": "bar"},
+        "encoding": {
+            "x": {"field": "year", "type": "ordinal", "title": "Year"},
+            "y": {
+                "field": "count",
+                "type": "quantitative",
+                "title": "Threads",
+                "stack": "zero",
+            },
+            "color": {
+                "field": "outcome",
+                "type": "nominal",
+                "title": "Outcome",
+                "scale": {
+                    "domain": list(CHART_OUTCOME_CATEGORIES),
+                    "scheme": _OUTCOME_COLOR_SCHEME,
+                },
+            },
+            "tooltip": [
+                {"field": "year", "type": "ordinal", "title": "Year"},
+                {"field": "outcome", "type": "nominal", "title": "Outcome"},
+                {"field": "count", "type": "quantitative", "title": "Threads"},
+            ],
+        },
+    }
+    return json.dumps(spec)
+
+
+def _label_year_group_spec(rows: list[dict[str, Any]], labels: tuple[str, ...]) -> str | None:
+    """Grouped-bar Vega-Lite spec for one panel (constructive or negative)
+    of the "threads with >=1 flagged message, by label, year over year"
+    chart -- same visual language as `conversation_patterns_page.
+    _yoy_group_spec` (issue #120): x = human-readable label in the group's
+    own fixed order, dodged by year, color = year on a sequential "blues"
+    ramp. No CI rule layer (see `_year_outcome_chart_spec`'s docstring --
+    same reasoning: a raw sample share, not a population rate)."""
+    values = label_year_share_rows(rows, labels)
+    if not values:
+        return None
+    label_order = [_humanize_label(label) for label in labels]
+    spec = {
+        "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+        "width": "container",
+        "height": 260,
+        "data": {"values": values},
+        "mark": {"type": "bar"},
+        "encoding": {
+            "x": {
+                "field": "label_display",
+                "type": "nominal",
+                "title": None,
+                "sort": label_order,
+                "axis": {"labelAngle": -40, "labelLimit": 130, "labelPadding": 4},
+            },
+            "xOffset": {"field": "year", "type": "ordinal"},
+            "y": {
+                "field": "share",
+                "type": "quantitative",
+                "title": "Share of year's threads",
+                "axis": {"format": "%"},
+            },
+            "color": {
+                "field": "year",
+                "type": "ordinal",
+                "title": "Year",
+                "scale": {"scheme": "blues"},
+            },
+            "tooltip": [
+                {"field": "label_display", "type": "nominal", "title": "Label"},
+                {"field": "year", "type": "ordinal", "title": "Year"},
+                {"field": "share", "type": "quantitative", "title": "Share", "format": ".1%"},
+                {"field": "count", "type": "quantitative", "title": "Threads flagged"},
+                {"field": "total", "type": "quantitative", "title": "Threads (year total)"},
+            ],
+        },
+    }
+    return json.dumps(spec)
+
+
+def _threads_chart_context(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Both charts' initial (unfiltered) specs, plus the sample-size note
+    the template renders under them (issue #124: "Counts are of sampled
+    threads (K=<n> per venue-quarter); for population-weighted rates see
+    Conversation patterns")."""
+    outcome_spec = _year_outcome_chart_spec(rows)
+    constructive_spec = _label_year_group_spec(rows, CONSTRUCTIVE_LABELS)
+    negative_spec = _label_year_group_spec(rows, NEGATIVE_LABELS)
+    return {
+        "available": bool(outcome_spec or constructive_spec or negative_spec),
+        "outcome_spec_json": outcome_spec,
+        "constructive_spec_json": constructive_spec,
+        "negative_spec_json": negative_spec,
+        "sample_k": DEFAULT_K,
+    }
+
+
 def build_thread_explorer_context(
     data_dir: str | Path,
     out_dir: str | Path,
@@ -270,6 +510,7 @@ def build_thread_explorer_context(
             "default_sort_field": DEFAULT_SORT_FIELD,
             "default_sort_dir": DEFAULT_SORT_DIR,
             "decisions_d27_anchor": DECISIONS_D27_ANCHOR,
+            "charts": {"available": False},
         }
 
     rows = [_row_context(r) for r in snapshot.get("threads", [])]
@@ -284,4 +525,5 @@ def build_thread_explorer_context(
         "default_sort_field": DEFAULT_SORT_FIELD,
         "default_sort_dir": DEFAULT_SORT_DIR,
         "decisions_d27_anchor": DECISIONS_D27_ANCHOR,
+        "charts": _threads_chart_context(rows),
     }

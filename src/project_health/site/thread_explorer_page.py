@@ -100,26 +100,33 @@ def _humanize_label(label: str) -> str:
     return label.replace("_", " ").capitalize()
 
 
-def _outcome_label(outcome: dict[str, Any]) -> str:
-    """One of the five neutral outcome categories issue #122 names,
-    verbatim: "resolved / escalated / de-escalated / abandoned after
-    friction / none". A thread can carry more than one derived flag at
-    once (e.g. it escalated *and* later de-escalated); this picks the
-    single most informative one to show in one column, in a fixed
-    priority order -- resolution and abandonment (§2.3's terminal
-    outcomes) outrank the escalation/de-escalation *events* that happen
-    along the way to either. `pile_on` isn't one of the five (it's a
-    distinct §2.3 event, not a thread outcome) -- surfaced separately as
-    its own boolean, never folded into this string."""
-    if outcome.get("constructive_resolution"):
-        return "resolved"
-    if outcome.get("abandonment_after_friction"):
-        return "abandoned after friction"
-    if outcome.get("escalation"):
-        return "escalated"
-    if outcome.get("deescalation"):
-        return "de-escalated"
-    return "none"
+# Fixed narrative order for `_outcome_display` -- escalation and de-
+# escalation are *events along the way*, resolution/abandonment are §2.3's
+# terminal states, so this reads left-to-right as roughly chronological.
+_OUTCOME_DISPLAY_ORDER: tuple[tuple[str, str], ...] = (
+    ("escalation", "escalated"),
+    ("deescalation", "de-escalated"),
+    ("constructive_resolution", "resolved"),
+    ("abandonment_after_friction", "abandoned after friction"),
+)
+
+
+def _outcome_display(outcome: dict[str, Any]) -> str:
+    """Every derived §2.3 outcome flag that's true for this thread,
+    joined into one neutral narrative string (e.g. `"escalated, then
+    de-escalated"`), or `"none"` if none are. A thread can carry more
+    than one flag at once (escalation and de-escalation both true is
+    common -- a thread climbs, then comes back down); a fixup round of
+    issue #122 replaced this function's original single-value, priority-
+    ordered design (which picked one flag and silently dropped the
+    others) after a real sample row (a JIRA thread that both escalated
+    and later de-escalated) showed only "escalated" and never surfaced
+    its own `deescalation: true`. `pile_on` isn't one of these (a
+    distinct §2.3 event, not a thread outcome) -- kept as its own
+    separate boolean everywhere this is used, never folded into this
+    string."""
+    parts = [label for key, label in _OUTCOME_DISPLAY_ORDER if outcome.get(key)]
+    return ", then ".join(parts) if parts else "none"
 
 
 def thread_disagreement_url(row: dict[str, Any]) -> str:
@@ -132,7 +139,7 @@ def thread_disagreement_url(row: dict[str, Any]) -> str:
     label_summary = ", ".join(
         f"{label}={count}" for label, count in sorted(row["label_counts"].items())
     )
-    outcome_line = f"Outcome: {_outcome_label(row['outcome'])}"
+    outcome_line = f"Outcome: {_outcome_display(row['outcome'])}"
     if row["outcome"].get("pile_on"):
         outcome_line += " (pile-on)"
     tier = row["peak_intensity_tier"]
@@ -191,7 +198,17 @@ def _row_context(row: dict[str, Any]) -> dict[str, Any]:
         "thread_key": row["thread_key"],
         "n_messages": row["n_messages"],
         "n_distinct_participants": row["n_distinct_participants"],
-        "outcome_label": _outcome_label(row["outcome"]),
+        "outcome_display": _outcome_display(row["outcome"]),
+        # Individual flags (issue #122 fixup) -- the table's Outcome filter
+        # matches on these directly, not on `outcome_display`'s composed
+        # string, so filtering for "escalated" also finds a thread whose
+        # display reads "escalated, then de-escalated".
+        "outcome_flags": {
+            "resolved": bool(row["outcome"].get("constructive_resolution")),
+            "escalated": bool(row["outcome"].get("escalation")),
+            "de-escalated": bool(row["outcome"].get("deescalation")),
+            "abandoned after friction": bool(row["outcome"].get("abandonment_after_friction")),
+        },
         "pile_on": bool(row["outcome"].get("pile_on")),
         "peak_intensity_tier": row["peak_intensity_tier"],
         "peak_intensity_label": _TIER_LABELS.get(row["peak_intensity_tier"], "unknown"),

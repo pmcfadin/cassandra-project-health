@@ -15,6 +15,7 @@ import pytest
 
 from project_health.private_run.publish import (
     SanitizeError,
+    _thread_hard_fail_scan,
     sanitize_threads,
     write_threads_snapshot,
 )
@@ -94,15 +95,32 @@ class TestSanitizeThreads:
         with pytest.raises(SanitizeError, match="email address"):
             sanitize_threads([row])
 
-    def test_email_address_in_subject_does_not_hard_fail(self):
+    def test_email_address_in_subject_is_redacted_not_hard_failed(self):
         # Real, already-public JIRA/dev@ subjects legitimately mention an
-        # email address (e.g. a committer-key ticket) -- `subject` is
-        # explicitly public under D27 and is excluded from the generic
-        # leak scan for exactly this reason (verified against a real
-        # private-run output: "Add e.dimitrova@gmail.com to KEYS").
+        # email address (verified against a real private-run output: "Add
+        # e.dimitrova@gmail.com to KEYS") -- rather than exempting
+        # `subject` from the email check, the address is redacted to the
+        # literal marker and publishing proceeds.
         row = _row(subject="Add e.dimitrova@gmail.com to KEYS")
         sanitized = sanitize_threads([row])
-        assert sanitized[0]["subject"] == "Add e.dimitrova@gmail.com to KEYS"
+        assert sanitized[0]["subject"] == "Add [email] to KEYS"
+        assert "e.dimitrova@gmail.com" not in sanitized[0]["subject"]
+
+    def test_multiple_emails_in_subject_all_redacted(self):
+        row = _row(subject="cc alice@example.org and bob@example.org please")
+        sanitized = sanitize_threads([row])
+        assert sanitized[0]["subject"] == "cc [email] and [email] please"
+
+    def test_hard_fail_still_fires_on_an_unredacted_email_in_subject(self):
+        # Defense in depth: `sanitize_threads`'s own `_copy_thread_row`
+        # always redacts `subject` before this scan ever runs, so this
+        # calls the scan directly on a row whose subject was never
+        # redacted, proving the email check still applies to `subject`
+        # (only the long-hex/id check is exempted there) rather than the
+        # field being skipped by the scan wholesale.
+        row = _row(subject="Add e.dimitrova@gmail.com to KEYS")
+        with pytest.raises(SanitizeError, match="email address"):
+            _thread_hard_fail_scan([row])
 
     def test_long_digit_string_in_subject_does_not_hard_fail(self):
         # A real JIRA NumberFormatException stack-trace subject can contain

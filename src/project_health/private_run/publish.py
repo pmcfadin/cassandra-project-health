@@ -568,6 +568,22 @@ _ALLOWED_THREAD_URL_PREFIXES = (
     "https://issues.apache.org/jira/browse/",
 )
 
+# Fields (other than `subject`) scanned by `_thread_hard_fail_scan` below.
+_THREAD_SCALAR_FIELDS = ("venue", "thread_key", "url", "quarter")
+
+
+def _redact_emails(text: str) -> str:
+    """Replace every email-address-shaped substring with the literal
+    marker `"[email]"`, deterministically and losslessly otherwise --
+    issue #122 fixup. A real, already-public JIRA/dev@ `subject` can
+    legitimately mention an email address (e.g. `"Add e.dimitrova@gmail.
+    com to KEYS"`, a real, already-public JIRA summary about a
+    committer's key), and D27 publishes subjects verbatim -- but an email
+    address specifically is still exactly the kind of value COMMUNITY-
+    HEALTH.md's rules never publish, so it is redacted here rather than
+    letting `subject` bypass the email check entirely."""
+    return _EMAIL_RE.sub("[email]", text)
+
 
 def _copy_thread_row(row: dict[str, Any], path: str) -> dict[str, Any]:
     missing = [key for key in _THREADS_REQUIRED_ROW_KEYS if key not in row]
@@ -577,11 +593,12 @@ def _copy_thread_row(row: dict[str, Any], path: str) -> dict[str, Any]:
     outcome_missing = [key for key in _THREADS_OUTCOME_KEYS if key not in outcome]
     if outcome_missing:
         raise SanitizeError(f"{path}.outcome: missing required key(s): {outcome_missing}")
+    subject = row["subject"]
     return {
         "venue": row["venue"],
         "thread_key": row["thread_key"],
         "url": row["url"],
-        "subject": row["subject"],
+        "subject": _redact_emails(subject) if subject else subject,
         "started_at": row["started_at"],
         "quarter": row["quarter"],
         "n_messages": row["n_messages"],
@@ -592,6 +609,51 @@ def _copy_thread_row(row: dict[str, Any], path: str) -> dict[str, Any]:
     }
 
 
+def _thread_field_leak_reason(value: str, *, allow_long_digits: bool) -> str | None:
+    if _MESSAGE_ID_RE.search(value):
+        return "looks like a mailing-list Message-ID"
+    if _EMAIL_RE.search(value):
+        return "looks like an email address"
+    if not allow_long_digits and _HEX_ID_RE.search(value):
+        return "looks like a hash / author_key / input hash (long hex string)"
+    if _JIRA_COMMENT_RE.search(value):
+        return "looks like a JIRA comment reference"
+    return None
+
+
+def _thread_hard_fail_scan(sanitized: list[dict[str, Any]]) -> None:
+    """The threads-specific hard-fail scan (issue #122 fixup). Every
+    scalar field is checked against every leak pattern *except* `subject`,
+    which is checked against everything **except** the long-hex/id
+    pattern -- a real JIRA `NumberFormatException` stack-trace subject can
+    legitimately contain a 32+ digit number, and D27 publishes subjects
+    verbatim (rather than exempting the field outright, `_copy_thread_row`
+    already redacted any email address in it above, so the email check
+    here is defense in depth against a redaction gap, not a no-op)."""
+    for index, row in enumerate(sanitized):
+        for field in _THREAD_SCALAR_FIELDS:
+            value = row[field]
+            reason = _thread_field_leak_reason(value, allow_long_digits=False)
+            if reason:
+                raise SanitizeError(
+                    f"threads[{index}].{field}: refusing to publish {value!r} -- {reason}"
+                )
+        subject = row.get("subject")
+        if subject:
+            reason = _thread_field_leak_reason(subject, allow_long_digits=True)
+            if reason:
+                raise SanitizeError(
+                    f"threads[{index}].subject: refusing to publish {subject!r} -- {reason}"
+                )
+        for label in row["label_counts"]:
+            reason = _thread_field_leak_reason(label, allow_long_digits=False)
+            if reason:
+                raise SanitizeError(
+                    f"threads[{index}].label_counts: refusing to publish key {label!r} -- "
+                    f"{reason}"
+                )
+
+
 def sanitize_threads(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Sanitize `runner.py`'s private `threads.jsonl` (already parsed into
     a list of row dicts) through an explicit allowlist (issue #122, D27),
@@ -599,24 +661,20 @@ def sanitize_threads(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     publishes nothing if any row is missing a required key, if any row's
     `url` is set but isn't a Pony Mail dev@ thread permalink or a JIRA
     `.../browse/<KEY>` link ("Just link to pony mail" -- no other archive
-    mirror), or if anything outside `subject` looks like it could identify
-    a message or a person (the same hard-fail patterns `sanitize_aggregates`
-    uses -- defense in depth; `runner.py`'s own public `thread_key`
-    construction already keeps a raw dev@ message id out of this file in
-    the first place, per that module's own comment).
+    mirror), or if anything looks like it could identify a message or a
+    person (`_thread_hard_fail_scan` above; `runner.py`'s own public
+    `thread_key` construction already keeps a raw dev@ message id out of
+    this file in the first place, per that module's own comment).
 
-    **`subject` is deliberately excluded from the hard-fail scan.** It is
-    real, public free text (a mailing-list `Subject:` header or a JIRA
-    `summary`) that D27 explicitly allows to publish verbatim -- and real
-    subjects do legitimately contain things that match the *generic*
-    leak patterns without being a leak at all: verified live against this
-    project's own real run, `"Add e.dimitrova@gmail.com to KEYS"` (a real,
-    already-public JIRA summary about a committer's key) and a JIRA
-    `NumberFormatException` stack-trace digit string that happens to be
-    32+ characters long. Scanning `subject` against the same patterns as
-    every other field would hard-fail publishing on ordinary, legitimate
-    public subject lines -- the patterns stay meaningful (and stay applied)
-    for every field that was never supposed to contain free text at all.
+    `subject` is real, public free text (a mailing-list `Subject:` header
+    or a JIRA `summary`) that D27 explicitly allows to publish verbatim.
+    Rather than exempting it from the hard-fail scan outright, any email
+    address it contains is redacted to the literal string `"[email]"`
+    (`_redact_emails`, applied in `_copy_thread_row`) and the scan still
+    runs against the redacted text -- a long digit run (e.g. a JIRA
+    `NumberFormatException` stack-trace subject) is the one pattern left
+    unchecked for `subject` specifically, since that's a real, legitimate,
+    non-identifying case verified against this project's own real run.
     """
     sanitized = [_copy_thread_row(row, f"threads[{index}]") for index, row in enumerate(rows)]
     for index, row in enumerate(sanitized):
@@ -632,8 +690,7 @@ def sanitize_threads(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "archive link (Pony Mail dev@ thread permalink or issues.apache.org "
                 "JIRA browse link)"
             )
-    scan_view = [{k: v for k, v in row.items() if k != "subject"} for row in sanitized]
-    _hard_fail_scan(scan_view, "<threads>")
+    _thread_hard_fail_scan(sanitized)
     return sanitized
 
 

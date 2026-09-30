@@ -101,8 +101,16 @@
     if (f.venue && row.venue !== f.venue) {
       return false;
     }
-    if (f.outcome && row.outcome_label !== f.outcome) {
-      return false;
+    if (f.outcome) {
+      // Match on the individual boolean flag, not the composed
+      // `outcome_display` string -- filtering for "escalated" must also
+      // find a thread whose display reads "escalated, then de-escalated"
+      // (issue #122 fixup: outcome flags aren't mutually exclusive).
+      var flagMatch =
+        f.outcome === "none" ? row.outcome_display === "none" : row.outcome_flags[f.outcome];
+      if (!flagMatch) {
+        return false;
+      }
     }
     if (f.label && !(row.label_counts && row.label_counts[f.label] > 0)) {
       return false;
@@ -131,8 +139,8 @@
     n_distinct_participants: function (r) {
       return r.n_distinct_participants;
     },
-    outcome_label: function (r) {
-      return r.outcome_label;
+    outcome_display: function (r) {
+      return r.outcome_display;
     },
     peak_intensity_tier: function (r) {
       return r.peak_intensity_tier;
@@ -184,7 +192,7 @@
   }
 
   function rowHtml(row) {
-    var outcome = row.outcome_label + (row.pile_on ? " (pile-on)" : "");
+    var outcome = row.outcome_display + (row.pile_on ? " (pile-on)" : "");
     return (
       "<tr>" +
       '<td data-label="Date" class="thread-nowrap">' + escapeHtml(row.date) + "</td>" +
@@ -305,7 +313,11 @@
     "url",
     "n_messages",
     "n_distinct_participants",
-    "outcome_label",
+    "outcome_display",
+    "escalated",
+    "de_escalated",
+    "resolved",
+    "abandoned_after_friction",
     "pile_on",
     "peak_intensity_tier",
   ];
@@ -326,7 +338,11 @@
       row.url,
       row.n_messages,
       row.n_distinct_participants,
-      row.outcome_label,
+      row.outcome_display,
+      row.outcome_flags.escalated,
+      row.outcome_flags["de-escalated"],
+      row.outcome_flags.resolved,
+      row.outcome_flags["abandoned after friction"],
       row.pile_on,
       row.peak_intensity_tier,
     ];

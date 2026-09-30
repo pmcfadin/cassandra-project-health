@@ -108,38 +108,6 @@ def load_jira_thread_frame(
     return dict(by_quarter)
 
 
-def load_dev_thread_meta(
-    data_dir: str | Path, list_name: str, thread_ids: set[str]
-) -> dict[str, dict[str, Any]]:
-    """`{thread_id: {"root_message_id", "started_at"}}` for exactly
-    `thread_ids` (issue #122, D27): the public thread-level export
-    (`private_run/thread_export.py`) needs each classified dev@ thread's
-    root message id -- to look up its public Pony Mail archive permalink
-    and subject line via `PonyMailTextFetcher.fetch_month_raw`
-    (`runner.py`) -- and its `started_at`, published directly as
-    `threads.jsonl`'s `started_at`. Never a full scan; mirrors `load_dev_
-    messages_for_threads`'s own "exactly `thread_ids`" contract.
-    """
-    if not thread_ids:
-        return {}
-    table = storage.read_table(data_dir, "ponymail", "message_thread")
-    if table.num_rows == 0:
-        return {}
-    frame = pl.from_arrow(table).filter(
-        (pl.col("list") == list_name) & pl.col("thread_id").is_in(list(thread_ids))
-    )
-    frame = frame.unique(subset=["thread_id"], keep="first")
-
-    result: dict[str, dict[str, Any]] = {}
-    cols = ["thread_id", "root_message_id", "started_at"]
-    for row in frame.select(cols).iter_rows(named=True):
-        result[row["thread_id"]] = {
-            "root_message_id": row["root_message_id"],
-            "started_at": row["started_at"],
-        }
-    return result
-
-
 def load_jira_issue_meta(
     data_dir: str | Path, project_key: str, issue_keys: set[str]
 ) -> dict[str, dict[str, Any]]:
@@ -147,8 +115,19 @@ def load_jira_issue_meta(
     (issue #122, D27): the public thread-level export uses `jira/issue.
     summary` directly as a JIRA row's public subject (already-collected
     metadata, never a fetch) and `created_at` as `started_at`. Never a full
-    scan; mirrors `load_dev_thread_meta`'s own "exactly the given keys"
-    contract.
+    scan; mirrors `load_dev_messages_for_threads`'s own "exactly the given
+    keys" contract.
+
+    dev@'s equivalent metadata (url/subject/started_at) is captured
+    inline by `runner.collect_dev_pending`, from each thread's first
+    surviving message while it is already being fetched -- not a separate
+    frame-layer lookup like this one. A fixup round of issue #122 found
+    that a `ponymail/message_thread.root_message_id`-keyed lookup (this
+    function's original dev@ counterpart) silently dropped threads whose
+    local `root_message_id` didn't resolve against Pony Mail's live
+    per-month digest; JIRA has no such failure mode (`jira/issue.summary`/
+    `created_at` are already-collected local metadata, never a live
+    fetch), so this function is unaffected and unchanged.
     """
     if not issue_keys:
         return {}

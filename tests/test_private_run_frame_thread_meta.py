@@ -1,8 +1,17 @@
-"""Tests for `project_health.private_run.frame`'s issue #122 (D27)
-additions: `load_dev_thread_meta` and `load_jira_issue_meta`, which the
-public per-thread export (`thread_export.py`, wired in `runner.py`) uses
-to look up each classified thread's root message id / started_at (dev@)
-or summary / created_at (JIRA)."""
+"""Tests for `project_health.private_run.frame.load_jira_issue_meta`
+(issue #122, D27): the public per-thread export
+(`thread_export.py`, wired in `runner.py`) uses it to look up each
+classified JIRA "thread"'s summary/created_at.
+
+dev@'s equivalent metadata is captured inline by `runner.
+collect_dev_pending` (never a separate frame-layer lookup -- a fixup round
+of issue #122 removed this module's original `load_dev_thread_meta`,
+which was silently dropping threads whose local `root_message_id` didn't
+resolve against Pony Mail's live per-month digest; see `frame.
+load_jira_issue_meta`'s own docstring and `runner.collect_dev_pending`'s
+docstring for the full story), so there is no dev@ counterpart to test
+here.
+"""
 
 from __future__ import annotations
 
@@ -11,33 +20,11 @@ from datetime import datetime, timezone
 import pyarrow as pa
 
 from project_health import storage
-from project_health.private_run.frame import load_dev_thread_meta, load_jira_issue_meta
+from project_health.private_run.frame import load_jira_issue_meta
 
 
 def _ts(*args) -> datetime:
     return datetime(*args, tzinfo=timezone.utc)
-
-
-def _write_message_thread(data_dir, rows: list[dict]) -> None:
-    table = pa.table(
-        {
-            "thread_id": pa.array([r["thread_id"] for r in rows], type=pa.string()),
-            "list": pa.array([r.get("list", "dev") for r in rows], type=pa.string()),
-            "root_message_id": pa.array(
-                [r.get("root_message_id", r["thread_id"] + "-root") for r in rows],
-                type=pa.string(),
-            ),
-            "started_at": pa.array(
-                [r["started_at"] for r in rows], type=pa.timestamp("us", tz="UTC")
-            ),
-            "last_activity_at": pa.array(
-                [r["started_at"] for r in rows], type=pa.timestamp("us", tz="UTC")
-            ),
-            "message_count": pa.array([r.get("message_count", 1) for r in rows], type=pa.int64()),
-            "source_snapshot_id": pa.array(["snap-1"] * len(rows), type=pa.string()),
-        }
-    )
-    storage.write_partition(data_dir, "ponymail", "message_thread", "2026-09-25", "run-1", table)
 
 
 def _write_issue(data_dir, rows: list[dict]) -> None:
@@ -66,35 +53,6 @@ def _write_issue(data_dir, rows: list[dict]) -> None:
         }
     )
     storage.write_partition(data_dir, "jira", "issue", "2026-09-25", "run-1", table)
-
-
-class TestLoadDevThreadMeta:
-    def test_returns_root_message_id_and_started_at_for_requested_threads(self, tmp_path):
-        _write_message_thread(
-            tmp_path,
-            [
-                {"thread_id": "t1", "started_at": _ts(2024, 1, 1)},
-                {"thread_id": "t2", "started_at": _ts(2024, 2, 1)},
-            ],
-        )
-        result = load_dev_thread_meta(tmp_path, "dev", {"t1"})
-        assert set(result) == {"t1"}
-        assert result["t1"]["root_message_id"] == "t1-root"
-        assert result["t1"]["started_at"] == _ts(2024, 1, 1)
-
-    def test_filters_by_list_name(self, tmp_path):
-        _write_message_thread(
-            tmp_path,
-            [{"thread_id": "t1", "list": "user", "started_at": _ts(2024, 1, 1)}],
-        )
-        result = load_dev_thread_meta(tmp_path, "dev", {"t1"})
-        assert result == {}
-
-    def test_empty_thread_ids_returns_empty_without_reading(self, tmp_path):
-        assert load_dev_thread_meta(tmp_path, "dev", set()) == {}
-
-    def test_no_table_returns_empty(self, tmp_path):
-        assert load_dev_thread_meta(tmp_path, "dev", {"t1"}) == {}
 
 
 class TestLoadJiraIssueMeta:

@@ -242,3 +242,31 @@ names on our pages, no quotations, no verdict wording (D25), Preliminary labelli
   correction path, §7.6). No snapshot published yet → the page itself is not generated (no
   dangling link, no empty page). Linked from the Conversation patterns section and the
   Community card ("Explore individual threads").
+
+**Fixup round 1 (orchestrator review of the first real-data run).** Three corrections, all
+covered by tests:
+- **Subject vs. hard-fail scan.** A real subject can legitimately contain an email address
+  (e.g. a committer-key JIRA ticket, `"Add x@example.org to KEYS"`) or a long digit run (a
+  stack-trace number) without being a leak. Rather than exempting `subject` from the scan
+  outright, the publisher **redacts** any email address in it to the literal marker
+  `"[email]"` and keeps the email hard-fail check active on the (redacted) subject too,
+  everywhere else, and on every other field; only the long-digit/hash pattern is skipped for
+  `subject` specifically.
+- **Dev@ export gap.** The original dev@ permalink/subject lookup keyed off `ponymail/
+  message_thread.root_message_id` and could legitimately fail to resolve against Pony Mail's
+  live per-month digest (e.g. a message near a month boundary, or a root message itself
+  filtered as an automated sender) — silently dropping the whole thread from the export even
+  though it had classified messages. Verified against a real full-history run: 154 of 3,117
+  classified dev@ threads (4.9%). Fixed by capturing each thread's permalink/subject from its
+  own first *surviving, successfully-fetched* message instead (a value the pipeline already
+  confirmed present moments earlier) — this is also cheaper, since it reuses the fetcher's
+  own per-month cache instead of a second, independent live-fetch pass. The Thread explorer
+  page's own method note states the (much smaller) remaining, intentional gap: a sampled
+  thread with nothing to classify at all (zero surviving, non-automated-sender messages —
+  most commonly a JIRA issue with no comments) is filtered out before classification and
+  never appears in `threads.jsonl`.
+- **Outcome column.** §2.3's escalation and de-escalation flags aren't mutually exclusive
+  (a thread commonly climbs, then comes back down) — showing only one, priority-ordered flag
+  hid a true `deescalation` whenever `escalation` was also true. The Outcome column now shows
+  every true flag composed into one neutral string (e.g. `"escalated, then de-escalated"`),
+  and the column's filter matches on the individual flag, not the composed string.

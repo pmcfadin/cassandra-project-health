@@ -16,6 +16,8 @@ from urllib.parse import parse_qs, urlparse
 from project_health.private_run.publish import sanitize_aggregates, write_threads_snapshot
 from project_health.site.generate import generate
 from project_health.site.thread_explorer_page import (
+    _outcome_display,
+    _row_context,
     build_thread_explorer_context,
     thread_disagreement_url,
 )
@@ -153,6 +155,61 @@ class TestBuildThreadExplorerContext:
         assert ctx["row_count"] == 1
 
 
+class TestOutcomeDisplay:
+    def test_escalation_and_deescalation_both_shown(self):
+        # Issue #122 fixup: a thread that both escalated and later
+        # de-escalated must show both, not just "escalated".
+        outcome = {
+            "escalation": True,
+            "deescalation": True,
+            "constructive_resolution": False,
+            "abandonment_after_friction": False,
+            "pile_on": False,
+        }
+        assert _outcome_display(outcome) == "escalated, then de-escalated"
+
+    def test_resolved_only(self):
+        outcome = {
+            "escalation": False,
+            "deescalation": False,
+            "constructive_resolution": True,
+            "abandonment_after_friction": False,
+            "pile_on": False,
+        }
+        assert _outcome_display(outcome) == "resolved"
+
+    def test_none_when_no_flags(self):
+        outcome = {
+            "escalation": False,
+            "deescalation": False,
+            "constructive_resolution": False,
+            "abandonment_after_friction": False,
+            "pile_on": False,
+        }
+        assert _outcome_display(outcome) == "none"
+
+    def test_escalation_then_resolution(self):
+        outcome = {
+            "escalation": True,
+            "deescalation": False,
+            "constructive_resolution": True,
+            "abandonment_after_friction": False,
+            "pile_on": False,
+        }
+        assert _outcome_display(outcome) == "escalated, then resolved"
+
+    def test_row_context_exposes_individual_outcome_flags(self):
+        row = _sample_thread_rows()[0]  # escalation=True, abandonment_after_friction=True
+        ctx = _row_context(row)
+        assert ctx["outcome_display"] == "escalated, then abandoned after friction"
+        assert ctx["outcome_flags"] == {
+            "resolved": False,
+            "escalated": True,
+            "de-escalated": False,
+            "abandoned after friction": True,
+        }
+
+
 class TestThreadDisagreementUrl:
     def test_prefills_thread_url_and_scores(self):
         row = _sample_thread_rows()[0]
@@ -162,11 +219,10 @@ class TestThreadDisagreementUrl:
         assert params["template"] == ["thread-score-disagreement.yml"]
         assert params["thread_url"] == [row["url"]]
         scores = params["scores"][0]
-        # Priority order: resolved > abandoned after friction > escalated >
-        # de-escalated > none (`thread_explorer_page._outcome_label`) -- this
-        # fixture row has both escalation=True and abandonment_after_friction
-        # =True, so "abandoned after friction" wins the single Outcome line.
-        assert "abandoned after friction" in scores
+        # `_outcome_display` composes every true flag in narrative order
+        # (issue #122 fixup) -- this fixture row has both escalation=True
+        # and abandonment_after_friction=True, so both appear.
+        assert "escalated, then abandoned after friction" in scores
         assert "technical_disagreement=2" in scores
         assert "hostility=1" in scores
 

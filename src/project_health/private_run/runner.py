@@ -163,18 +163,37 @@ def collect_dev_pending(
     strata: dict[str, StratumSample],
     fetcher: PonyMailTextFetcher,
     automated_sender_patterns: Any,
-) -> tuple[list[_PendingMessage], dict[str, int]]:
+) -> tuple[list[_PendingMessage], dict[str, int], dict[str, dict[str, Any]]]:
     """Fetch text (transiently) for every message in every sampled dev@
-    thread across `strata`. Returns `(pending, truncated_thread_counts)`;
-    `truncated_thread_counts[quarter]` is how many of that quarter's
-    sampled threads had more than `MAX_MESSAGES_PER_THREAD` messages
-    (issue #110: "record truncation").
+    thread across `strata`. Returns `(pending, truncated_thread_counts,
+    thread_meta)`; `truncated_thread_counts[quarter]` is how many of that
+    quarter's sampled threads had more than `MAX_MESSAGES_PER_THREAD`
+    messages (issue #110: "record truncation").
+
+    `thread_meta` is `{thread_id: {"url", "subject", "started_at"}}` for
+    issue #122's (D27) public per-thread export -- captured from each
+    thread's own first surviving, successfully-fetched message, **never**
+    a separate lookup of `ponymail/message_thread.root_message_id`. A
+    fixup round of issue #122 found that lookup drops threads: the local
+    `message_thread.started_at`/`root_message_id` can name a message that
+    Pony Mail's own live month digest doesn't have under that exact id/
+    month (e.g. a message near a month boundary, or a root message that
+    was itself filtered as an automated sender and so never entered
+    `pending` at all) -- across a real full-history run, that dropped 154
+    of 3117 classified dev@ threads (4.9%) from the export even though
+    every one of them had classified messages and should have appeared.
+    Using the first surviving message instead is always safe: it is, by
+    construction, a message this same loop just confirmed present in the
+    fetcher's per-month cache moments ago, so the `fetch_month_raw` call
+    below is a guaranteed cache hit (zero extra network requests) rather
+    than a second, independent, sometimes-failing lookup.
     """
     all_thread_ids = {tid for stratum in strata.values() for tid in stratum.sampled_ids}
     messages_by_thread = frame.load_dev_messages_for_threads(data_dir, list_name, all_thread_ids)
 
     pending: list[_PendingMessage] = []
     truncated_thread_counts: dict[str, int] = {}
+    thread_meta: dict[str, dict[str, Any]] = {}
 
     for quarter, stratum in strata.items():
         truncated = 0
@@ -208,6 +227,25 @@ def collect_dev_pending(
                 raw = raws.get(ref.message_id)
                 if raw is None:
                     continue
+                if position == 0:
+                    # Issue #122 (D27): this thread's public permalink/
+                    # subject, from the exact message + month we just
+                    # fetched above -- see this function's own docstring
+                    # for why this replaced a separate `root_message_id`
+                    # lookup. `fetch_month_raw` hits `fetcher`'s per-month
+                    # cache (already populated by `fetch_messages` a few
+                    # lines up), so this is not a new network request.
+                    month_raw = fetcher.fetch_month_raw(list_name, domain, ref.year_month)
+                    digest_record = month_raw.get(ref.message_id) or {}
+                    mid = digest_record.get("mid")
+                    thread_meta[thread_id] = {
+                        "url": f"https://lists.apache.org/thread/{mid}" if mid else "",
+                        "subject": digest_record.get("subject"),
+                        # Kept as a datetime (not `.isoformat()`'d here) so
+                        # `run_private_run`'s single `started_at.isoformat()`
+                        # call site handles both venues identically.
+                        "started_at": row["occurred_at"],
+                    }
                 parent_raw = fetcher.resolve_parent(ref, raw)
                 parent_text = (
                     preprocess_text(parent_raw.text, "mailing_list")
@@ -244,7 +282,7 @@ def collect_dev_pending(
                 position += 1
         truncated_thread_counts[quarter] = truncated
 
-    return pending, truncated_thread_counts
+    return pending, truncated_thread_counts, thread_meta
 
 
 # --- JIRA collection ----------------------------------------------------------
@@ -907,7 +945,7 @@ def run_private_run(
     truncated_thread_counts: dict[str, dict[str, int]] = {}
 
     with PonyMailTextFetcher(transport=ponymail_transport) as ponymail_fetcher:
-        dev_pending, dev_truncated = collect_dev_pending(
+        dev_pending, dev_truncated, dev_thread_meta = collect_dev_pending(
             data_dir, list_name, domain, dev_strata, ponymail_fetcher, automated_sender_patterns
         )
     pending += dev_pending
@@ -1019,46 +1057,21 @@ def run_private_run(
         pending, records_by_call_id, THREAD_DERIVE_HEADLINE_CUTOFF
     )
 
-    dev_thread_ids_classified: set[str] = set()
-    jira_issue_keys_classified: set[str] = set()
-    for (venue, _quarter), derivations in headline_derivations.items():
-        target = (
-            dev_thread_ids_classified
-            if venue == MAILING_LIST_VENUE
-            else jira_issue_keys_classified
-        )
-        target.update(d.thread_key for d in derivations)
-
-    dev_thread_meta = frame.load_dev_thread_meta(data_dir, list_name, dev_thread_ids_classified)
+    jira_issue_keys_classified: set[str] = {
+        d.thread_key
+        for (venue, _quarter), derivations in headline_derivations.items()
+        if venue == JIRA_COMMENT_VENUE
+        for d in derivations
+    }
     jira_issue_meta = frame.load_jira_issue_meta(
         data_dir, project_key, jira_issue_keys_classified
     )
-
-    # Dev@ permalinks/subjects need Pony Mail's own opaque `mid` field
-    # (`text_fetch.PonyMailTextFetcher.fetch_month_raw`, the same call
-    # `classify/sample.py`'s pilot sampler already uses for this) -- a
-    # second, short-lived fetcher instance rather than reusing
-    # `collect_dev_pending`'s own (already-closed) one, since this needs
-    # only the classified threads' root messages, known only after
-    # classification. Never persisted past this function call (module
-    # docstring); subject text is intentionally published (D27), never a
-    # message body.
-    dev_thread_urls_subjects: dict[str, dict[str, str | None]] = {}
-    if dev_thread_meta:
-        with PonyMailTextFetcher(transport=ponymail_transport) as meta_fetcher:
-            year_months = {_year_month(meta["started_at"]) for meta in dev_thread_meta.values()}
-            raw_by_month = {
-                ym: meta_fetcher.fetch_month_raw(list_name, domain, ym) for ym in year_months
-            }
-            for thread_id, meta in dev_thread_meta.items():
-                ym = _year_month(meta["started_at"])
-                record = raw_by_month.get(ym, {}).get(meta["root_message_id"])
-                mid = record.get("mid") if record else None
-                subject = record.get("subject") if record else None
-                dev_thread_urls_subjects[thread_id] = {
-                    "url": f"https://lists.apache.org/thread/{mid}" if mid else "",
-                    "subject": subject,
-                }
+    # dev@'s own url/subject/started_at came from `collect_dev_pending`'s
+    # `dev_thread_meta` (captured from each thread's first surviving
+    # message while it was already being fetched, per that function's own
+    # docstring -- a fixup round of issue #122 replaced a separate
+    # `root_message_id` lookup here that was silently dropping ~5% of
+    # classified dev@ threads from this export).
 
     jira_base_url = base_url.rstrip("/")
 
@@ -1068,9 +1081,8 @@ def run_private_run(
             counts = thread_label_counts.get((venue, quarter, derivation.thread_key), {})
             if venue == MAILING_LIST_VENUE:
                 meta = dev_thread_meta.get(derivation.thread_key, {})
-                url_subject = dev_thread_urls_subjects.get(derivation.thread_key, {})
-                url = url_subject.get("url") or ""
-                subject = url_subject.get("subject")
+                url = meta.get("url") or ""
+                subject = meta.get("subject")
                 started_at = meta.get("started_at")
                 # This export's `thread_key` must never be `derivation.
                 # thread_key` for dev@ -- that internal id *is* the raw

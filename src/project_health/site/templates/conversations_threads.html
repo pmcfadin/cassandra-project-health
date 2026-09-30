@@ -25,6 +25,16 @@
     first — there is no severity-based default sort or highlighting.
   </p>
 
+  <p class="page-intro">
+    <strong>Method note.</strong> This table lists every sampled thread that has at least
+    one classified message. A sampled thread with nothing to classify — a JIRA issue with
+    no comments, or a dev@ thread whose only message(s) came from an automated sender
+    (e.g. a CI bot) — is filtered out before classification and never appears here; this
+    is the large majority of the gap between the sample size reported in the Conversation
+    patterns section above and this table's row count. No thread with at least one
+    classified message is excluded from this table for any other reason.
+  </p>
+
   {% if available %}
   <section
     class="thread-explorer-table governance-commits"
@@ -99,7 +109,7 @@
             <th scope="col">Thread</th>
             <th scope="col" data-threads-sort="n_messages" tabindex="0" role="button" aria-sort="none">Messages</th>
             <th scope="col" data-threads-sort="n_distinct_participants" tabindex="0" role="button" aria-sort="none">Participants</th>
-            <th scope="col" data-threads-sort="outcome_label" tabindex="0" role="button" aria-sort="none">Outcome</th>
+            <th scope="col" data-threads-sort="outcome_display" tabindex="0" role="button" aria-sort="none">Outcome</th>
             <th scope="col" data-threads-sort="peak_intensity_tier" tabindex="0" role="button" aria-sort="none">Peak intensity</th>
             <th scope="col" title="Compact per-label counts of messages classified >= 0.5 probability">Flagged messages</th>
             <th scope="col">Feedback</th>

@@ -50,7 +50,7 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -524,6 +524,198 @@ def sanitize_aggregates(aggregates: dict[str, Any]) -> dict[str, Any]:
     _assert_floor_invariants(sanitized)
     _hard_fail_scan(sanitized, "<output>")
     return sanitized
+
+
+# --- Thread-level export (issue #122, D27) --------------------------------
+#
+# D27 (owner, 2026-09-29): "This is a public mailing list and we are out
+# there already." Publish thread-level results for every sampled thread,
+# linked to the public archive -- amending §7.3's "no deep links from
+# aggregates to raw messages" for **threads only**. "Just link to pony
+# mail" (owner clarification, same date): dev@ rows link only to their
+# canonical Pony Mail thread permalink on `lists.apache.org` -- no other
+# archive mirror (markmail, mail-archive.com, ...) and no in-site rendering
+# of thread content; JIRA rows link to `issues.apache.org/jira/browse/
+# <KEY>` (Pony Mail doesn't host JIRA comment streams as threads). Every
+# other §7 rule stays binding: no per-message scores, no per-person data or
+# names, no quotations, no verdict wording (D25).
+
+_THREADS_REQUIRED_ROW_KEYS = (
+    "venue",
+    "thread_key",
+    "url",
+    "subject",
+    "started_at",
+    "quarter",
+    "n_messages",
+    "n_distinct_participants",
+    "outcome",
+    "peak_intensity_tier",
+    "label_counts",
+)
+
+_THREADS_OUTCOME_KEYS = (
+    "escalation",
+    "deescalation",
+    "constructive_resolution",
+    "abandonment_after_friction",
+    "pile_on",
+)
+
+# "Just link to pony mail" -- the only two allowed archive URL shapes.
+_ALLOWED_THREAD_URL_PREFIXES = (
+    "https://lists.apache.org/thread/",
+    "https://issues.apache.org/jira/browse/",
+)
+
+# Fields (other than `subject`) scanned by `_thread_hard_fail_scan` below.
+_THREAD_SCALAR_FIELDS = ("venue", "thread_key", "url", "quarter")
+
+
+def _redact_emails(text: str) -> str:
+    """Replace every email-address-shaped substring with the literal
+    marker `"[email]"`, deterministically and losslessly otherwise --
+    issue #122 fixup. A real, already-public JIRA/dev@ `subject` can
+    legitimately mention an email address (e.g. `"Add e.dimitrova@gmail.
+    com to KEYS"`, a real, already-public JIRA summary about a
+    committer's key), and D27 publishes subjects verbatim -- but an email
+    address specifically is still exactly the kind of value COMMUNITY-
+    HEALTH.md's rules never publish, so it is redacted here rather than
+    letting `subject` bypass the email check entirely."""
+    return _EMAIL_RE.sub("[email]", text)
+
+
+def _copy_thread_row(row: dict[str, Any], path: str) -> dict[str, Any]:
+    missing = [key for key in _THREADS_REQUIRED_ROW_KEYS if key not in row]
+    if missing:
+        raise SanitizeError(f"{path}: threads row missing required key(s): {missing}")
+    outcome = row["outcome"]
+    outcome_missing = [key for key in _THREADS_OUTCOME_KEYS if key not in outcome]
+    if outcome_missing:
+        raise SanitizeError(f"{path}.outcome: missing required key(s): {outcome_missing}")
+    subject = row["subject"]
+    return {
+        "venue": row["venue"],
+        "thread_key": row["thread_key"],
+        "url": row["url"],
+        "subject": _redact_emails(subject) if subject else subject,
+        "started_at": row["started_at"],
+        "quarter": row["quarter"],
+        "n_messages": row["n_messages"],
+        "n_distinct_participants": row["n_distinct_participants"],
+        "outcome": {key: outcome[key] for key in _THREADS_OUTCOME_KEYS},
+        "peak_intensity_tier": row["peak_intensity_tier"],
+        "label_counts": dict(row["label_counts"]),
+    }
+
+
+def _thread_field_leak_reason(value: str, *, allow_long_digits: bool) -> str | None:
+    if _MESSAGE_ID_RE.search(value):
+        return "looks like a mailing-list Message-ID"
+    if _EMAIL_RE.search(value):
+        return "looks like an email address"
+    if not allow_long_digits and _HEX_ID_RE.search(value):
+        return "looks like a hash / author_key / input hash (long hex string)"
+    if _JIRA_COMMENT_RE.search(value):
+        return "looks like a JIRA comment reference"
+    return None
+
+
+def _thread_hard_fail_scan(sanitized: list[dict[str, Any]]) -> None:
+    """The threads-specific hard-fail scan (issue #122 fixup). Every
+    scalar field is checked against every leak pattern *except* `subject`,
+    which is checked against everything **except** the long-hex/id
+    pattern -- a real JIRA `NumberFormatException` stack-trace subject can
+    legitimately contain a 32+ digit number, and D27 publishes subjects
+    verbatim (rather than exempting the field outright, `_copy_thread_row`
+    already redacted any email address in it above, so the email check
+    here is defense in depth against a redaction gap, not a no-op)."""
+    for index, row in enumerate(sanitized):
+        for field in _THREAD_SCALAR_FIELDS:
+            value = row[field]
+            reason = _thread_field_leak_reason(value, allow_long_digits=False)
+            if reason:
+                raise SanitizeError(
+                    f"threads[{index}].{field}: refusing to publish {value!r} -- {reason}"
+                )
+        subject = row.get("subject")
+        if subject:
+            reason = _thread_field_leak_reason(subject, allow_long_digits=True)
+            if reason:
+                raise SanitizeError(
+                    f"threads[{index}].subject: refusing to publish {subject!r} -- {reason}"
+                )
+        for label in row["label_counts"]:
+            reason = _thread_field_leak_reason(label, allow_long_digits=False)
+            if reason:
+                raise SanitizeError(
+                    f"threads[{index}].label_counts: refusing to publish key {label!r} -- "
+                    f"{reason}"
+                )
+
+
+def sanitize_threads(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Sanitize `runner.py`'s private `threads.jsonl` (already parsed into
+    a list of row dicts) through an explicit allowlist (issue #122, D27),
+    returning a new list safe to publish. Raises `SanitizeError` and
+    publishes nothing if any row is missing a required key, if any row's
+    `url` is set but isn't a Pony Mail dev@ thread permalink or a JIRA
+    `.../browse/<KEY>` link ("Just link to pony mail" -- no other archive
+    mirror), or if anything looks like it could identify a message or a
+    person (`_thread_hard_fail_scan` above; `runner.py`'s own public
+    `thread_key` construction already keeps a raw dev@ message id out of
+    this file in the first place, per that module's own comment).
+
+    `subject` is real, public free text (a mailing-list `Subject:` header
+    or a JIRA `summary`) that D27 explicitly allows to publish verbatim.
+    Rather than exempting it from the hard-fail scan outright, any email
+    address it contains is redacted to the literal string `"[email]"`
+    (`_redact_emails`, applied in `_copy_thread_row`) and the scan still
+    runs against the redacted text -- a long digit run (e.g. a JIRA
+    `NumberFormatException` stack-trace subject) is the one pattern left
+    unchecked for `subject` specifically, since that's a real, legitimate,
+    non-identifying case verified against this project's own real run.
+    """
+    sanitized = [_copy_thread_row(row, f"threads[{index}]") for index, row in enumerate(rows)]
+    for index, row in enumerate(sanitized):
+        url = row["url"]
+        # Fail closed: an empty url is only ever a `runner.py` bug (it
+        # already skips a dev@ thread whose root message has no resolvable
+        # permalink rather than emitting one with an empty url) -- this
+        # sanitizer doesn't rely on that upstream discipline and refuses
+        # to publish a row with nothing (or something disallowed) here.
+        if not url or not url.startswith(_ALLOWED_THREAD_URL_PREFIXES):
+            raise SanitizeError(
+                f"threads[{index}]: refusing to publish url {url!r} -- not an allowed "
+                "archive link (Pony Mail dev@ thread permalink or issues.apache.org "
+                "JIRA browse link)"
+            )
+    _thread_hard_fail_scan(sanitized)
+    return sanitized
+
+
+def write_threads_snapshot(
+    rows: list[dict[str, Any]],
+    data_dir: str | Path,
+    *,
+    run_date: date,
+) -> Path:
+    """Sanitize `rows` (parsed from a private run's `threads.jsonl`) and
+    write them to `<data_dir>/snapshots/conversation_patterns/
+    threads-<run date>.json`. Raises `SanitizeError` and writes nothing if
+    sanitization fails."""
+    sanitized = sanitize_threads(rows)
+    out_dir = Path(data_dir) / "snapshots" / "conversation_patterns"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / f"threads-{run_date.isoformat()}.json"
+    payload = {
+        "generated_at": datetime.now(UTC).isoformat(),
+        "run_date": run_date.isoformat(),
+        "row_count": len(sanitized),
+        "threads": sanitized,
+    }
+    out_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return out_path
 
 
 def _parse_run_date(generated_at: str) -> date:

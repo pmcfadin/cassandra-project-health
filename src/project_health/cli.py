@@ -70,7 +70,11 @@ from project_health.private_run.quarters import parse_quarters_arg
 from project_health.private_run.runner import DEFAULT_MONTHLY_CAP_USD as PRIVATE_RUN_DEFAULT_CAP
 from project_health.private_run.runner import run_private_run
 from project_health.private_run.newcomer import DEFAULT_NEWCOMER_N
-from project_health.private_run.publish import SanitizeError, write_conversation_patterns_snapshot
+from project_health.private_run.publish import (
+    SanitizeError,
+    write_conversation_patterns_snapshot,
+    write_threads_snapshot,
+)
 from project_health.private_run.sample import DEFAULT_K as PRIVATE_RUN_DEFAULT_K
 from project_health.private_run.sample import DEFAULT_SEED as PRIVATE_RUN_DEFAULT_SEED
 
@@ -546,6 +550,16 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Override the snapshot filename's date (YYYY-MM-DD); default: the date "
         "portion of the aggregates' own generated_at",
     )
+    publish_conv_parser.add_argument(
+        "--threads",
+        dest="threads_path",
+        default=None,
+        help="Issue #122 (D27): path to the private run's threads.jsonl (private_run/"
+        "runner.py output) -- if given, also sanitizes and publishes "
+        "snapshots/conversation_patterns/threads-<run date>.json (thread-level rows, "
+        "linked to the public archive -- dev@ threads to their Pony Mail permalink, "
+        "JIRA threads to issues.apache.org/jira/browse/<KEY>)",
+    )
 
     return parser
 
@@ -868,6 +882,7 @@ def _cmd_private_run(args: argparse.Namespace) -> int:
         )
     print(f"report written to {result.report_path}", file=sys.stderr)
     print(f"aggregates written to {result.aggregates_path}", file=sys.stderr)
+    print(f"threads written to {result.threads_path}", file=sys.stderr)
     return 0
 
 
@@ -889,6 +904,27 @@ def _cmd_publish_conversation_aggregates(args: argparse.Namespace) -> int:
         return 2
 
     print(f"publish-conversation-aggregates: wrote {out_path}", file=sys.stderr)
+
+    if args.threads_path:
+        threads_source = Path(args.threads_path)
+        if not threads_source.is_file():
+            print(f"error: --threads {threads_source} not found", file=sys.stderr)
+            return 2
+        rows = [
+            json.loads(line)
+            for line in threads_source.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        effective_run_date = run_date or date.fromisoformat(aggregates["generated_at"][:10])
+        try:
+            threads_out_path = write_threads_snapshot(
+                rows, args.data_dir, run_date=effective_run_date
+            )
+        except SanitizeError as exc:
+            print(f"error: refusing to publish threads -- {exc}", file=sys.stderr)
+            return 2
+        print(f"publish-conversation-aggregates: wrote {threads_out_path}", file=sys.stderr)
+
     return 0
 
 

@@ -1,0 +1,136 @@
+{% extends "base.html" %}
+{% block title %}Thread explorer — Cassandra Project Health{% endblock %}
+{% block content %}
+<section class="thread-explorer" id="thread-explorer" aria-labelledby="thread-explorer-heading">
+  <p class="card-links"><a href="{{ base_prefix }}conversations/#conversation-patterns">&larr; Back to Conversation patterns</a></p>
+  <h2 id="thread-explorer-heading">Thread explorer <span class="badge badge--tier badge--tier-classified">classified</span></h2>
+
+  <div class="banner banner--preliminary" role="status">
+    <strong>Preliminary.</strong> Classifier output from the same pinned, uncalibrated
+    0.5-probability cutoff as the Conversation patterns section
+    (production-threshold calibration is tracked in issue #47) —
+    <strong>read the thread and judge for yourself</strong>. This page has
+    <strong>not been reviewed by the Cassandra PMC</strong>
+    (<a href="{{ decisions_url }}#d26-publish-conversation-patterns-page-preliminary-classified-aggregates">COMMUNITY-HEALTH.md §7.8</a>)
+    — published preliminary per
+    <a href="{{ decisions_url }}#{{ decisions_d27_anchor }}">DECISIONS.md D27</a>.
+  </div>
+
+  <p class="page-intro">
+    Every sampled, classified thread from dev@ and JIRA comments, linked to its public
+    archive record — a Pony Mail thread permalink for dev@, an issue link for JIRA (D27
+    amends COMMUNITY-HEALTH.md §7.3's "no deep links" rule for threads only; every other
+    §7 rule stays binding: no per-message scores, no per-person data or names, no
+    quotations, plain neutral column names only). Default sort is date, most recent
+    first — there is no severity-based default sort or highlighting.
+  </p>
+
+  <p class="page-intro">
+    <strong>Method note.</strong> This table lists every sampled thread that has at least
+    one classified message. A sampled thread with nothing to classify — a JIRA issue with
+    no comments, or a dev@ thread whose only message(s) came from an automated sender
+    (e.g. a CI bot) — is filtered out before classification and never appears here; this
+    is the large majority of the gap between the sample size reported in the Conversation
+    patterns section above and this table's row count. No thread with at least one
+    classified message is excluded from this table for any other reason.
+  </p>
+
+  {% if available %}
+  <section
+    class="thread-explorer-table governance-commits"
+    data-threads-table
+    data-rows-href="{{ rows_href }}"
+    data-default-sort="{{ default_sort_field }}"
+    data-default-dir="{{ default_sort_dir }}"
+    aria-label="Sampled threads"
+  >
+    <p class="page-intro">
+      Export the current view:
+      <button type="button" data-threads-export="csv">CSV</button>
+      <button type="button" data-threads-export="json">JSON</button>
+    </p>
+
+    <form class="gov-filters" data-threads-filters aria-label="Filter threads">
+      <label>
+        Venue
+        <select data-threads-filter="venue">
+          <option value="">All</option>
+          {% for v in filter_options.venues %}
+          <option value="{{ v.id }}">{{ v.label }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>
+        Outcome
+        <select data-threads-filter="outcome">
+          <option value="">All</option>
+          {% for o in filter_options.outcomes %}
+          <option value="{{ o }}">{{ o }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>
+        Has &ge;1 message flagged for
+        <select data-threads-filter="label">
+          <option value="">Any</option>
+          {% for l in filter_options.labels %}
+          <option value="{{ l.id }}">{{ l.display }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>
+        Year from
+        <select data-threads-filter="year_from">
+          <option value="">Any</option>
+          {% for y in filter_options.years %}
+          <option value="{{ y }}">{{ y }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>
+        Year to
+        <select data-threads-filter="year_to">
+          <option value="">Any</option>
+          {% for y in filter_options.years %}
+          <option value="{{ y }}">{{ y }}</option>
+          {% endfor %}
+        </select>
+      </label>
+    </form>
+
+    <p class="gov-status" data-threads-status role="status">Loading threads…</p>
+
+    <div class="gov-table-wrap">
+      <table class="security-table gov-commits-table threads-table">
+        <thead>
+          <tr>
+            <th scope="col" data-threads-sort="date" tabindex="0" role="button" aria-sort="descending">Date</th>
+            <th scope="col" data-threads-sort="venue" tabindex="0" role="button" aria-sort="none">Venue</th>
+            <th scope="col">Thread</th>
+            <th scope="col" data-threads-sort="n_messages" tabindex="0" role="button" aria-sort="none">Messages</th>
+            <th scope="col" data-threads-sort="n_distinct_participants" tabindex="0" role="button" aria-sort="none">Participants</th>
+            <th scope="col" data-threads-sort="outcome_display" tabindex="0" role="button" aria-sort="none">Outcome</th>
+            <th scope="col" data-threads-sort="peak_intensity_tier" tabindex="0" role="button" aria-sort="none">Peak intensity</th>
+            <th scope="col" title="Compact per-label counts of messages classified >= 0.5 probability">Flagged messages</th>
+            <th scope="col">Feedback</th>
+          </tr>
+        </thead>
+        <tbody data-threads-tbody></tbody>
+      </table>
+    </div>
+
+    <nav class="gov-pagination" data-threads-pagination aria-label="Thread table pages">
+      <button type="button" data-threads-prev>Previous</button>
+      <span data-threads-page-label></span>
+      <button type="button" data-threads-next>Next</button>
+    </nav>
+  </section>
+  {% else %}
+  <p class="card-empty-state">
+    The thread explorer isn't published yet — it appears once a preliminary thread-level
+    export has been sanitized and published (DECISIONS.md D27).
+  </p>
+  {% endif %}
+</section>
+<script src="{{ base_prefix }}static/thread_explorer.js" defer></script>
+{% endblock %}

@@ -152,6 +152,14 @@ class ThreadDerivation:
     outcome: str  # "resolved" | "abandoned" | "indeterminate"
     abandoned_target_author: str | None
     pile_on_target_authors: tuple[str, ...] = field(default_factory=tuple)
+    # Issue #122 (D27): the thread's peak §2.2 intensity tier across every
+    # ordered message -- `max(m.tier for m in ordered)`, distinct from
+    # `_derive_escalation`'s own `highest_reached` (which is only ever
+    # computed/used internally to decide *whether* the thread escalates).
+    # `0` for an empty thread (never constructed in practice -- `derive_
+    # thread` always receives >=1 message -- but a safe default all the
+    # same, matching `intensity_tier`'s own "no label present" -> `0`).
+    peak_tier: int = 0
 
 
 def _directed_at(
@@ -276,6 +284,7 @@ def derive_thread(
     deescalation = _derive_deescalation(ordered, escalation)
     pile_on_targets = _derive_pile_on_targets(ordered, directed_at)
     outcome, abandoned_target = _derive_outcome(ordered, directed_at, resolution_window_k)
+    peak_tier = max((m.tier for m in ordered), default=0)
 
     return ThreadDerivation(
         thread_key=thread_key,
@@ -290,4 +299,5 @@ def derive_thread(
         outcome=outcome,
         abandoned_target_author=abandoned_target,
         pile_on_target_authors=pile_on_targets,
+        peak_tier=peak_tier,
     )

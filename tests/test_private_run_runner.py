@@ -285,7 +285,7 @@ class TestCollectDevPending:
         from project_health.classify.text_fetch import PonyMailTextFetcher
 
         with PonyMailTextFetcher(transport=transport, min_request_interval=0) as fetcher:
-            pending, truncated = collect_dev_pending(
+            pending, truncated, _meta = collect_dev_pending(
                 tmp_path, "dev", "example.org", strata, fetcher, automated_sender_patterns=[]
             )
 
@@ -328,7 +328,7 @@ class TestCollectDevPending:
         from project_health.classify.text_fetch import PonyMailTextFetcher
 
         with PonyMailTextFetcher(transport=transport, min_request_interval=0) as fetcher:
-            pending, _truncated = collect_dev_pending(
+            pending, _truncated, _meta = collect_dev_pending(
                 tmp_path,
                 "dev",
                 "example.org",
@@ -351,7 +351,7 @@ class TestCollectDevPending:
         with PonyMailTextFetcher(
             transport=_ponymail_transport({}), min_request_interval=0
         ) as fetcher:
-            pending, truncated = collect_dev_pending(
+            pending, truncated, _meta = collect_dev_pending(
                 tmp_path, "dev", "example.org", strata, fetcher, automated_sender_patterns=[]
             )
         assert pending == []

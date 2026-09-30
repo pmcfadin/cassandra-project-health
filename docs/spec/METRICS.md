@@ -1024,6 +1024,19 @@ Every number is subject to the same §5.1/§5.2 minimum-sample floors as everywh
 this document; below floor it renders as `insufficient data`. Direction of good is
 deliberately not stated for any of these (D25: this site is informational, not a verdict).
 
+### 7.2 D27 thread-level explorer (issue #122) — per-thread, not aggregate
+
+DECISIONS.md D27 (owner, 2026-09-29) publishes one more preliminary view alongside §7.1's
+aggregates: `/conversations/threads/`, one row per sampled, classified thread rather than a
+pooled rate. This is **not a new metric formula** — every field is either already-computed
+per-thread derivation (§2.3's outcome flags, §2.2's peak intensity tier) or a §7.1 count
+re-cut to thread grain (per-label counts of messages ≥0.5 probability, never a rate or a
+per-message probability). It carries the same tier (`classified`), the same fixed 0.5
+headline cutoff, and the same "no direction of good stated" rule as §7.1. Its one departure
+from the rest of this document: each row links to its public archive record (a Pony Mail
+thread permalink for dev@, an `issues.apache.org/jira/browse/<KEY>` link for JIRA) — D27's
+narrow amendment to COMMUNITY-HEALTH.md §7.3's "no deep links" rule, for threads only.
+
 ---
 
 ## 8. Sources referenced

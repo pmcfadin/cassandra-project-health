@@ -692,6 +692,46 @@ main {
   opacity: 1;
 }
 
+/* Thread explorer (issue #122, D27): same sortable-header treatment as the
+   governance commit table, keyed off its own `data-threads-sort` attribute. */
+.threads-table th[data-threads-sort] {
+  cursor: pointer;
+  user-select: none;
+  position: relative;
+  padding-right: 1.25rem;
+}
+.threads-table th[data-threads-sort]:hover,
+.threads-table th[data-threads-sort]:focus-visible {
+  color: var(--accent);
+}
+.threads-table th[data-threads-sort]::after {
+  content: "";
+  position: absolute;
+  right: 0.4rem;
+  opacity: 0.4;
+}
+.threads-table th[aria-sort="ascending"]::after {
+  content: "\2191";
+  opacity: 1;
+}
+.threads-table th[aria-sort="descending"]::after {
+  content: "\2193";
+  opacity: 1;
+}
+.thread-flag {
+  display: inline-block;
+  border: 1px solid var(--border);
+  background: var(--bg-alt);
+  border-radius: 4px;
+  padding: 0.05rem 0.35rem;
+  margin: 0 0.15rem 0.15rem 0;
+  font-size: 0.75rem;
+  white-space: nowrap;
+}
+.thread-nowrap {
+  white-space: nowrap;
+}
+
 .gov-expand-cell {
   width: 2rem;
 }

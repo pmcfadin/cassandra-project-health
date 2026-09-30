@@ -183,7 +183,13 @@
         </li>
         {% endfor %}
       </ul>
-      <p class="card-more"><a href="{{ base_prefix }}conversations/#conversation-patterns">See the full page &rarr;</a></p>
+      <p class="card-more">
+        <a href="{{ base_prefix }}conversations/#conversation-patterns">See the full page &rarr;</a>
+        {% if thread_explorer.available %}
+        &middot;
+        <a href="{{ base_prefix }}conversations/threads/">Explore individual threads &rarr;</a>
+        {% endif %}
+      </p>
     </article>
   </div>
   {% else %}

@@ -118,7 +118,13 @@ def _read_latest_snapshot(data_dir: str | Path) -> dict[str, Any] | None:
     snapshot_dir = Path(data_dir) / "snapshots" / "conversation_patterns"
     if not snapshot_dir.is_dir():
         return None
-    files = sorted(snapshot_dir.glob("*.json"))
+    # Issue #122 (D27) also writes `threads-<run date>.json` into this same
+    # directory (`thread_explorer_page.py`'s own reader) -- excluded here
+    # by its distinct `threads-` prefix so it's never mistaken for this
+    # module's own `<run date>.json` aggregates snapshot (lexicographic
+    # sort would otherwise put a "threads-..." filename after a plain date
+    # and make it look like the latest run).
+    files = sorted(f for f in snapshot_dir.glob("*.json") if not f.name.startswith("threads-"))
     if not files:
         return None
     # Filenames are `<run date>.json` (ISO 8601), so a lexicographic sort is

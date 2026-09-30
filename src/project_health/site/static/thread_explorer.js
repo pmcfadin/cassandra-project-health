@@ -32,6 +32,246 @@
   );
   var sortHeaders = Array.prototype.slice.call(section.querySelectorAll("[data-threads-sort]"));
 
+  // --- Charts above the table (issue #124) ---------------------------------
+  //
+  // Both charts are driven by the *same* filter state as the table: every
+  // call to `applyFiltersAndSort` below re-derives each chart's data from
+  // `state.filtered` -- the identical row list the table itself renders --
+  // using the JS ports of `thread_explorer_page.py`'s `year_outcome_rows`/
+  // `label_year_share_rows` (also pytest-tested there against synthetic
+  // rows, so the aggregation math has one canonical, tested definition).
+  // Each chart <div>'s `data-threads-chart-spec` attribute carries the
+  // *initial* (unfiltered) Vega-Lite spec Python built for it -- its
+  // `mark`/`encoding`/color scale are kept as-is on every re-render; only
+  // `data.values` is replaced, same "clone spec, swap data.values, re-embed"
+  // pattern as `app.js`'s year-over-year chart filter.
+
+  // Fixed order, mirroring `thread_explorer_page.CHART_OUTCOME_CATEGORIES`.
+  var OUTCOME_CATEGORIES = [
+    "none",
+    "resolved",
+    "escalated",
+    "escalated, then de-escalated",
+    "abandoned after friction",
+  ];
+
+  // Mirrors `conversation_patterns_page.CONSTRUCTIVE_LABELS`/`NEGATIVE_LABELS`
+  // -- fixed display order, never alphabetical (same reasoning as #120).
+  var CONSTRUCTIVE_LABELS = [
+    "acknowledgment",
+    "compromise_offer",
+    "constructive_counterargument",
+    "evidence_based_argument",
+    "resolution_marker",
+    "technical_disagreement",
+  ];
+  var NEGATIVE_LABELS = [
+    "dismissiveness",
+    "hostility",
+    "personal_attack",
+    "sarcasm",
+    "gatekeeping",
+    "status_authority_invocation",
+  ];
+
+  function humanizeLabel(label) {
+    var s = String(label).replace(/_/g, " ");
+    return s.charAt(0).toUpperCase() + s.slice(1);
+  }
+
+  // Mirrors `thread_explorer_page._chart_outcome_category`.
+  function outcomeCategory(row) {
+    var f = row.outcome_flags || {};
+    if (f.escalated && f["de-escalated"]) {
+      return "escalated, then de-escalated";
+    }
+    if (f.escalated) {
+      return "escalated";
+    }
+    if (f.resolved) {
+      return "resolved";
+    }
+    if (f["abandoned after friction"]) {
+      return "abandoned after friction";
+    }
+    return "none";
+  }
+
+  // Mirrors `thread_explorer_page.year_outcome_rows`.
+  function yearOutcomeRows(rows) {
+    var counts = {};
+    rows.forEach(function (row) {
+      if (!row.year) {
+        return;
+      }
+      var key = row.year + "\u0000" + outcomeCategory(row);
+      counts[key] = (counts[key] || 0) + 1;
+    });
+    var out = Object.keys(counts).map(function (key) {
+      var parts = key.split("\u0000");
+      return { year: parts[0], outcome: parts[1], count: counts[key] };
+    });
+    out.sort(function (a, b) {
+      if (a.year !== b.year) {
+        return a.year < b.year ? -1 : 1;
+      }
+      return OUTCOME_CATEGORIES.indexOf(a.outcome) - OUTCOME_CATEGORIES.indexOf(b.outcome);
+    });
+    return out;
+  }
+
+  // Mirrors `thread_explorer_page.label_year_share_rows`.
+  function labelYearShareRows(rows, labels) {
+    var totals = {};
+    rows.forEach(function (row) {
+      if (!row.year) {
+        return;
+      }
+      totals[row.year] = (totals[row.year] || 0) + 1;
+    });
+    var counts = {};
+    rows.forEach(function (row) {
+      if (!row.year || !row.label_counts) {
+        return;
+      }
+      labels.forEach(function (label) {
+        if (row.label_counts[label]) {
+          var key = label + "\u0000" + row.year;
+          counts[key] = (counts[key] || 0) + 1;
+        }
+      });
+    });
+    var years = Object.keys(totals).sort();
+    var out = [];
+    labels.forEach(function (label) {
+      years.forEach(function (year) {
+        var total = totals[year];
+        var count = counts[label + "\u0000" + year] || 0;
+        out.push({
+          label: label,
+          label_display: humanizeLabel(label),
+          year: year,
+          count: count,
+          total: total,
+          share: total ? count / total : 0,
+        });
+      });
+    });
+    return out;
+  }
+
+  var CHART_KEYS = ["outcome", "label-constructive", "label-negative"];
+  var chartEmbeds = {};
+  var chartBaseSpecs = {};
+  var chartShowShare = false; // outcome chart's counts <-> share-of-year toggle
+
+  CHART_KEYS.forEach(function (key) {
+    var el = document.querySelector('[data-threads-chart="' + key + '"]');
+    if (!el) {
+      return;
+    }
+    var raw = el.getAttribute("data-threads-chart-spec");
+    if (!raw) {
+      return;
+    }
+    try {
+      chartBaseSpecs[key] = JSON.parse(raw);
+    } catch (err) {
+      // Leave unset -- `renderCharts` below skips any chart with no spec.
+    }
+  });
+
+  function setFilterValue(name, value) {
+    filterInputs.forEach(function (el) {
+      if (el.getAttribute("data-threads-filter") === name) {
+        el.value = value;
+      }
+    });
+  }
+
+  // Issue #124: "Clicking a bar applies that year (+ outcome or label) as
+  // a table filter." The table's own Outcome filter matches a single
+  // boolean flag (`rowMatches` above), not this chart's composite
+  // "escalated, then de-escalated" category -- clicking that segment
+  // applies the closest single-flag filter the table actually supports.
+  function onChartClick(key, datum) {
+    if (!datum || !datum.year) {
+      return;
+    }
+    setFilterValue("year_from", datum.year);
+    setFilterValue("year_to", datum.year);
+    if (key === "outcome" && datum.outcome) {
+      setFilterValue("outcome", datum.outcome.split(",")[0]);
+    } else if (key !== "outcome" && datum.label) {
+      setFilterValue("label", datum.label);
+    }
+    applyFiltersAndSort();
+  }
+
+  function embedChart(key, spec) {
+    var el = document.querySelector('[data-threads-chart="' + key + '"]');
+    if (!el || !spec || !window.vegaEmbed) {
+      return;
+    }
+    var previous = chartEmbeds[key];
+    if (previous) {
+      previous.finalize();
+      delete chartEmbeds[key];
+    }
+    var width = el.clientWidth || el.getBoundingClientRect().width || 300;
+    var resolvedSpec = Object.assign({}, spec, { width: width });
+    window
+      .vegaEmbed(el, resolvedSpec, { actions: false, renderer: "svg" })
+      .then(function (result) {
+        chartEmbeds[key] = result;
+        result.view.addEventListener("click", function (evt, item) {
+          if (item && item.datum) {
+            onChartClick(key, item.datum);
+          }
+        });
+      })
+      .catch(function () {
+        // A chart failing to render must never break the table below.
+      });
+  }
+
+  function renderCharts() {
+    var rows = state.filtered;
+
+    if (chartBaseSpecs.outcome) {
+      var outcomeSpec = JSON.parse(JSON.stringify(chartBaseSpecs.outcome));
+      outcomeSpec.data = { values: yearOutcomeRows(rows) };
+      if (chartShowShare) {
+        outcomeSpec.encoding.y.stack = "normalize";
+        outcomeSpec.encoding.y.title = "Share of year's threads";
+        outcomeSpec.encoding.y.axis = Object.assign({}, outcomeSpec.encoding.y.axis, {
+          format: "%",
+        });
+      }
+      embedChart("outcome", outcomeSpec);
+    }
+    if (chartBaseSpecs["label-constructive"]) {
+      var constructiveSpec = JSON.parse(JSON.stringify(chartBaseSpecs["label-constructive"]));
+      constructiveSpec.data = { values: labelYearShareRows(rows, CONSTRUCTIVE_LABELS) };
+      embedChart("label-constructive", constructiveSpec);
+    }
+    if (chartBaseSpecs["label-negative"]) {
+      var negativeSpec = JSON.parse(JSON.stringify(chartBaseSpecs["label-negative"]));
+      negativeSpec.data = { values: labelYearShareRows(rows, NEGATIVE_LABELS) };
+      embedChart("label-negative", negativeSpec);
+    }
+  }
+
+  var outcomeToggleBtn = document.querySelector("[data-threads-outcome-toggle]");
+  if (outcomeToggleBtn) {
+    outcomeToggleBtn.addEventListener("click", function () {
+      chartShowShare = !chartShowShare;
+      outcomeToggleBtn.setAttribute("aria-pressed", chartShowShare ? "true" : "false");
+      outcomeToggleBtn.textContent = chartShowShare ? "Show counts" : "Show share of year";
+      renderCharts();
+    });
+  }
+
   var state = {
     rows: [],
     filtered: [],
@@ -247,6 +487,7 @@
     state.page = 0;
     writeUrlState();
     render();
+    renderCharts();
   }
 
   // --- Sorting interaction (mouse + keyboard, per aria-sort) ------------------
@@ -385,6 +626,18 @@
         exportJson();
       }
     });
+  });
+
+  // Re-resolve each chart's width on viewport/layout changes -- these chart
+  // containers aren't `[data-vega-spec]` elements (see the top of this
+  // file), so `app.js`'s own resize handler never touches them; same
+  // reasoning/timer debounce as `app.js`'s own listener.
+  var chartResizeTimer = null;
+  window.addEventListener("resize", function () {
+    if (chartResizeTimer) {
+      clearTimeout(chartResizeTimer);
+    }
+    chartResizeTimer = setTimeout(renderCharts, 150);
   });
 
   // --- Boot -----------------------------------------------------------------

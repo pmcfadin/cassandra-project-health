@@ -2,7 +2,7 @@
 {% block title %}Thread explorer — Cassandra Project Health{% endblock %}
 {% block content %}
 <section class="thread-explorer" id="thread-explorer" aria-labelledby="thread-explorer-heading">
-  <p class="card-links"><a href="{{ base_prefix }}conversations/#conversation-patterns">&larr; Back to Conversation patterns</a></p>
+  <p class="card-links"><a href="{{ base_prefix }}conversations/#conversation-patterns">Charts and trends &larr;</a></p>
   <h2 id="thread-explorer-heading">Thread explorer <span class="badge badge--tier badge--tier-classified">classified</span></h2>
 
   <div class="banner banner--preliminary" role="status">
@@ -36,6 +36,76 @@
   </p>
 
   {% if available %}
+  {% if charts.available %}
+  <section class="thread-explorer-charts" data-threads-charts aria-label="Thread charts, driven by the filters below">
+    <div class="thread-chart-block">
+      <div class="thread-chart-toolbar">
+        <h3>Threads per year, by outcome</h3>
+        {% if charts.outcome_spec_json %}
+        <button
+          type="button"
+          class="chart-window-toggle"
+          data-threads-outcome-toggle
+          aria-pressed="false"
+        >Show share of year</button>
+        {% endif %}
+      </div>
+      {% if charts.outcome_spec_json %}
+      <div
+        class="chart thread-outcome-chart"
+        data-threads-chart="outcome"
+        data-threads-chart-spec='{{ charts.outcome_spec_json }}'
+        role="img"
+        aria-label="Threads per year, by outcome"
+      >
+        <noscript>Enable JavaScript to see this chart, or use the table below.</noscript>
+      </div>
+      {% endif %}
+    </div>
+
+    <div class="thread-chart-block">
+      <h3>Threads with &ge;1 flagged message, by label, year over year</h3>
+      <p class="governance-note">
+        Share of that year's (filtered) threads with at least one message classified
+        &ge;0.5 for the label. Constructive and negative labels are two independent-scale
+        panels, never combined into one axis — same visual language as the Conversation
+        patterns section's own year-over-year chart.
+      </p>
+      <div class="thread-label-chart-wrap">
+        {% if charts.constructive_spec_json %}
+        <h4>Constructive / discussion</h4>
+        <div
+          class="chart thread-label-chart"
+          data-threads-chart="label-constructive"
+          data-threads-chart-spec='{{ charts.constructive_spec_json }}'
+          role="img"
+          aria-label="Constructive labels, share of flagged threads, year over year"
+        >
+          <noscript>Enable JavaScript to see this chart, or use the table below.</noscript>
+        </div>
+        {% endif %}
+        {% if charts.negative_spec_json %}
+        <h4>Negative</h4>
+        <div
+          class="chart thread-label-chart"
+          data-threads-chart="label-negative"
+          data-threads-chart-spec='{{ charts.negative_spec_json }}'
+          role="img"
+          aria-label="Negative labels, share of flagged threads, year over year"
+        >
+          <noscript>Enable JavaScript to see this chart, or use the table below.</noscript>
+        </div>
+        {% endif %}
+      </div>
+    </div>
+
+    <p class="chart-legend-note">
+      Counts are of sampled threads (K={{ charts.sample_k }} per venue-quarter); for
+      population-weighted rates see
+      <a href="{{ base_prefix }}conversations/#conversation-patterns">Conversation patterns</a>.
+    </p>
+  </section>
+  {% endif %}
   <section
     class="thread-explorer-table governance-commits"
     data-threads-table

@@ -5,6 +5,10 @@
 <section class="conversation-patterns" id="conversation-patterns" aria-labelledby="conversation-patterns-heading">
   <h2 id="conversation-patterns-heading">Conversation patterns <span class="badge badge--tier badge--tier-classified">classified</span></h2>
 
+  {% if thread_explorer.available %}
+  <p class="explorer-cta"><a class="btn-cta" href="threads/">Explore individual threads &rarr;</a></p>
+  {% endif %}
+
   <div class="banner banner--preliminary" role="status">
     <strong>Preliminary.</strong> Classified by the pinned TypeSafe Jev model
     <code>{{ conversation_patterns.model_id_pinned }}</code> (classifier
@@ -75,6 +79,10 @@
     </div>
     {% endfor %}
   </section>
+
+  {% if thread_explorer.available %}
+  <p class="explorer-cta"><a class="btn-cta" href="threads/">Explore individual threads &rarr;</a></p>
+  {% endif %}
 
   {% if conversation_patterns.yoy %}
   <section class="conv-yoy" id="conv-yoy" aria-labelledby="conv-yoy-heading">

@@ -197,3 +197,48 @@ verdicts (D25).
   and what is not published). Every metric carries the `classified` tier badge; no verdict
   vocabulary (D25); no causal commentary on any year's numbers. A nav link plus a summary
   card on the Community page, directly under "Review responsiveness", links to the page.
+
+## D27. Public thread-level conversation explorer
+
+Owner decision (2026-09-29): publish **thread-level** results for every sampled thread,
+linked to the public archive. Owner: "This is a public mailing list and we are out there
+already." This amends `COMMUNITY-HEALTH.md` §7.3 (no deep links from aggregates to raw
+messages) for **threads only**. Still binding: no per-message scores, no per-person data or
+names on our pages, no quotations, no verdict wording (D25), Preliminary labelling (D26).
+
+- **"Just link to pony mail."** Owner clarification, same date: a dev@ thread row links only
+  to its canonical Pony Mail thread permalink on `lists.apache.org` (`https://lists.apache.org/
+  thread/<mid>`, Pony Mail's own opaque `mid` field — never the raw RFC 5322 `Message-ID`,
+  verified live) — no other archive mirror (markmail, mail-archive.com, or any other index),
+  and no in-site rendering of thread content. A JIRA "thread" (one issue's full comment
+  stream) links to `issues.apache.org/jira/browse/<KEY>` instead, since Pony Mail doesn't host
+  JIRA comment streams as threads — the issue tracker's own permalink, not an archive mirror.
+- **Data (private run → published snapshot).** `private-run` emits `threads.jsonl` in `--out`
+  (`private_run/thread_export.py`, wired in `runner.py`): per sampled, classified thread —
+  venue, thread key (dev@: Pony Mail's own `mid`, never the raw dev@ Message-ID; JIRA: the
+  issue key), **public URL**, **subject/summary** (public metadata fetched with the thread,
+  never a message body), started_at, quarter, n_messages, n_distinct_participants, derived
+  §2.3 outcome flags (escalation, de-escalation, constructive resolution, abandonment-after-
+  friction, pile-on), peak §2.2 intensity tier, and per-label **counts of messages ≥0.5**
+  probability (no per-message probabilities, no message ids, no author keys). Rebuildable with
+  `--no-classify`.
+- **Publish path.** `publish-conversation-aggregates --threads <threads.jsonl>` (a sibling
+  flag on the existing D26 publish command) sanitizes and writes
+  `snapshots/conversation_patterns/threads-<run date>.json` (`private_run/publish.py`'s own
+  **allowlist**: only the fields above). Hard-fails (nothing written) on anything that looks
+  like a message id, email, or hash, and on any URL that isn't a Pony Mail thread permalink or
+  an `issues.apache.org/jira/browse/<KEY>` link.
+- **Page `/conversations/threads/` ("Thread explorer").** Preliminary banner (classifier
+  output, uncalibrated, "read the thread and judge for yourself", not PMC-reviewed). One
+  filterable, sortable table (governance commit-history table pattern: text filters, column
+  sort, URL state, CSV/JSON export, full-width): Date · Venue · Thread (subject, links to
+  archive) · Messages · Participants · Outcome (resolved / escalated / de-escalated /
+  abandoned after friction / none) · Peak intensity · flagged-message counts per label
+  (compact; full names in tooltip/header). Default sort: date descending. No "worst threads"
+  view, no pre-sorted-by-severity default, no highlight styling of negative rows. Filters:
+  venue, year range, outcome, "has ≥1 message flagged for `<label>`". Every row: "Disagree
+  with this score?" link to a new GitHub issue template (`thread-score-disagreement.yml`)
+  prefilled with the thread URL and its published scores (feeds #47 calibration; also the
+  correction path, §7.6). No snapshot published yet → the page itself is not generated (no
+  dangling link, no empty page). Linked from the Conversation patterns section and the
+  Community card ("Explore individual threads").

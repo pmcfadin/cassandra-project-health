@@ -1,0 +1,44 @@
+name: Thread disagreement (Thread explorer)
+description: >-
+  Disagree with a specific thread's row on the /conversations/threads/
+  "Thread explorer" page (DECISIONS.md D27)? Use this form. It feeds issue
+  #47's calibration work and is this project's correction path
+  (COMMUNITY-HEALTH.md §7.6) for one thread's own contribution to the
+  published, preliminary, uncalibrated numbers.
+title: "Thread disagreement: "
+labels:
+  - thread-score-disagreement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This form is about **one thread's row** on the
+        [Thread explorer](https://pmcfadin.github.io/cassandra-project-health/conversations/threads/)
+        page -- its outcome, peak intensity, or flagged-message counts.
+        These are classifier outputs from an uncalibrated, preliminary run
+        (DECISIONS.md
+        [D26](https://github.com/pmcfadin/cassandra-project-health/blob/main/docs/spec/DECISIONS.md#d26-publish-conversation-patterns-page-preliminary-classified-aggregates),
+        [D27](https://github.com/pmcfadin/cassandra-project-health/blob/main/docs/spec/DECISIONS.md#d27-public-thread-level-conversation-explorer)),
+        not a verdict about anyone -- read the thread yourself and judge.
+  - type: input
+    id: thread_url
+    attributes:
+      label: Thread URL
+      description: The public archive link from the row (Pony Mail permalink or JIRA issue link).
+      placeholder: "https://lists.apache.org/thread/..."
+    validations:
+      required: true
+  - type: textarea
+    id: scores
+    attributes:
+      label: Published row (outcome, peak intensity, flagged-message counts)
+      description: Pre-filled from the row you clicked; edit if useful.
+      render: text
+    validations:
+      required: false
+  - type: textarea
+    id: feedback
+    attributes:
+      label: What's wrong, and what would you expect instead?
+    validations:
+      required: true

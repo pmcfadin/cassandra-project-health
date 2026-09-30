@@ -108,6 +108,66 @@ def load_jira_thread_frame(
     return dict(by_quarter)
 
 
+def load_dev_thread_meta(
+    data_dir: str | Path, list_name: str, thread_ids: set[str]
+) -> dict[str, dict[str, Any]]:
+    """`{thread_id: {"root_message_id", "started_at"}}` for exactly
+    `thread_ids` (issue #122, D27): the public thread-level export
+    (`private_run/thread_export.py`) needs each classified dev@ thread's
+    root message id -- to look up its public Pony Mail archive permalink
+    and subject line via `PonyMailTextFetcher.fetch_month_raw`
+    (`runner.py`) -- and its `started_at`, published directly as
+    `threads.jsonl`'s `started_at`. Never a full scan; mirrors `load_dev_
+    messages_for_threads`'s own "exactly `thread_ids`" contract.
+    """
+    if not thread_ids:
+        return {}
+    table = storage.read_table(data_dir, "ponymail", "message_thread")
+    if table.num_rows == 0:
+        return {}
+    frame = pl.from_arrow(table).filter(
+        (pl.col("list") == list_name) & pl.col("thread_id").is_in(list(thread_ids))
+    )
+    frame = frame.unique(subset=["thread_id"], keep="first")
+
+    result: dict[str, dict[str, Any]] = {}
+    cols = ["thread_id", "root_message_id", "started_at"]
+    for row in frame.select(cols).iter_rows(named=True):
+        result[row["thread_id"]] = {
+            "root_message_id": row["root_message_id"],
+            "started_at": row["started_at"],
+        }
+    return result
+
+
+def load_jira_issue_meta(
+    data_dir: str | Path, project_key: str, issue_keys: set[str]
+) -> dict[str, dict[str, Any]]:
+    """`{issue_key: {"summary", "created_at"}}` for exactly `issue_keys`
+    (issue #122, D27): the public thread-level export uses `jira/issue.
+    summary` directly as a JIRA row's public subject (already-collected
+    metadata, never a fetch) and `created_at` as `started_at`. Never a full
+    scan; mirrors `load_dev_thread_meta`'s own "exactly the given keys"
+    contract.
+    """
+    if not issue_keys:
+        return {}
+    table = storage.read_table(data_dir, "jira", "issue")
+    if table.num_rows == 0:
+        return {}
+    prefix = f"{project_key}-"
+    frame = pl.from_arrow(table).filter(
+        pl.col("issue_key").str.starts_with(prefix) & pl.col("issue_key").is_in(list(issue_keys))
+    )
+    frame = frame.unique(subset=["issue_key"], keep="first")
+
+    result: dict[str, dict[str, Any]] = {}
+    cols = ["issue_key", "summary", "created_at"]
+    for row in frame.select(cols).iter_rows(named=True):
+        result[row["issue_key"]] = {"summary": row["summary"], "created_at": row["created_at"]}
+    return result
+
+
 def load_dev_author_history(data_dir: str | Path, list_name: str) -> dict[str, list[Any]]:
     """`{sender_raw_value: [occurred_at, ...] (sorted ascending)}` across
     **every** dev@ message ever collected for `list_name` -- the whole

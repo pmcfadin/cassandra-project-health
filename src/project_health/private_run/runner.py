@@ -65,6 +65,7 @@ from project_health.config import ProjectConfig
 from project_health.private_run import aggregate, frame, report, sensitivity
 from project_health.private_run import message_index as message_index_module
 from project_health.private_run import thread_aggregate
+from project_health.private_run import thread_export
 from project_health.private_run.identity import load_or_create_salt
 from project_health.private_run.newcomer import DEFAULT_NEWCOMER_N, is_newcomer
 from project_health.private_run.quarters import quarter_bounds  # noqa: F401  (re-exported for callers)
@@ -72,6 +73,8 @@ from project_health.private_run.sample import DEFAULT_K, DEFAULT_SEED, StratumSa
 from project_health.private_run.stats import ThreadCluster, median_probability_per_1000
 from project_health.private_run.thread_aggregate import NewcomerMessage
 from project_health.private_run.thread_derive import (
+    OUTCOME_ABANDONED,
+    OUTCOME_RESOLVED,
     ThreadMessage,
     derive_thread,
     intensity_tier,
@@ -453,6 +456,31 @@ def build_thread_derivations(
     return result
 
 
+def build_thread_label_counts(
+    pending: list[_PendingMessage],
+    records_by_call_id: dict[str, ClassificationRecord],
+    cutoff: float,
+) -> dict[tuple[str, str, str], dict[str, int]]:
+    """`{(venue, quarter, thread_id): {label: count of messages whose
+    probability for that label cleared `cutoff`}}` -- issue #122's public
+    per-thread export (`thread_export.py`) publishes exactly this count,
+    never a per-message probability, at the headline (0.5) cutoff only.
+    Groups the same way `build_clusters`/`build_thread_derivations` do.
+    """
+    result: dict[tuple[str, str, str], dict[str, int]] = {}
+    for pm in pending:
+        record = records_by_call_id.get(pm.call_id)
+        if record is None:
+            continue
+        key = (pm.venue, pm.quarter, pm.thread_id)
+        probabilities = {label_id: label.probability for label_id, label in record.labels.items()}
+        labels_present = labels_present_at_cutoff(probabilities, cutoff)
+        counts = result.setdefault(key, {})
+        for label in labels_present:
+            counts[label] = counts.get(label, 0) + 1
+    return result
+
+
 def build_newcomer_messages(
     pending: list[_PendingMessage],
     records_by_call_id: dict[str, ClassificationRecord],
@@ -768,6 +796,10 @@ class PrivateRunResult:
     sample_manifest_path: Path | None
     run_result: RunResult | None
     elapsed_seconds: float
+    # Issue #122 (D27): `--out/threads.jsonl`, the public per-thread export
+    # -- `None` for a `--sample-only` run (no fetch/classify happened, so
+    # there is nothing to export yet).
+    threads_path: Path | None = None
 
 
 # --- End-to-end orchestration -------------------------------------------------
@@ -799,6 +831,7 @@ def run_private_run(
     sample_manifest_filename: str = DEFAULT_SAMPLE_MANIFEST_FILENAME,
     bootstrap_iterations: int = aggregate.DEFAULT_BOOTSTRAP_ITERATIONS,
     message_index_filename: str = message_index_module.DEFAULT_MESSAGE_INDEX_FILENAME,
+    threads_filename: str = thread_export.DEFAULT_THREADS_FILENAME,
     newcomer_n: int = DEFAULT_NEWCOMER_N,
     clock: Any = lambda: datetime.now(timezone.utc),
 ) -> PrivateRunResult:
@@ -969,6 +1002,120 @@ def run_private_run(
         author_history_by_venue,
         cutoff=THREAD_DERIVE_HEADLINE_CUTOFF,
         newcomer_n=newcomer_n,
+    )
+
+    # Issue #122 (D27): the public per-thread export, `--out/threads.jsonl`
+    # -- built once, at the headline (0.5) cutoff only, from exactly the
+    # threads that produced a derivation there (i.e. had >=1 classified
+    # message). "Just link to pony mail" (owner, 2026-09-29): dev@ rows
+    # link to their Pony Mail thread permalink (`https://lists.apache.org/
+    # thread/<mid>`, `text_fetch.PonyMailTextFetcher.fetch_month_raw`'s own
+    # docstring, verified live); JIRA rows link to `issue_tracker.base_url`
+    # + `/browse/<KEY>` (Pony Mail doesn't host JIRA comment streams as
+    # threads). Rebuilt from scratch every run (`thread_export.py`'s own
+    # module docstring).
+    headline_derivations = thread_derivations_by_cutoff[THREAD_DERIVE_HEADLINE_CUTOFF]
+    thread_label_counts = build_thread_label_counts(
+        pending, records_by_call_id, THREAD_DERIVE_HEADLINE_CUTOFF
+    )
+
+    dev_thread_ids_classified: set[str] = set()
+    jira_issue_keys_classified: set[str] = set()
+    for (venue, _quarter), derivations in headline_derivations.items():
+        target = (
+            dev_thread_ids_classified
+            if venue == MAILING_LIST_VENUE
+            else jira_issue_keys_classified
+        )
+        target.update(d.thread_key for d in derivations)
+
+    dev_thread_meta = frame.load_dev_thread_meta(data_dir, list_name, dev_thread_ids_classified)
+    jira_issue_meta = frame.load_jira_issue_meta(
+        data_dir, project_key, jira_issue_keys_classified
+    )
+
+    # Dev@ permalinks/subjects need Pony Mail's own opaque `mid` field
+    # (`text_fetch.PonyMailTextFetcher.fetch_month_raw`, the same call
+    # `classify/sample.py`'s pilot sampler already uses for this) -- a
+    # second, short-lived fetcher instance rather than reusing
+    # `collect_dev_pending`'s own (already-closed) one, since this needs
+    # only the classified threads' root messages, known only after
+    # classification. Never persisted past this function call (module
+    # docstring); subject text is intentionally published (D27), never a
+    # message body.
+    dev_thread_urls_subjects: dict[str, dict[str, str | None]] = {}
+    if dev_thread_meta:
+        with PonyMailTextFetcher(transport=ponymail_transport) as meta_fetcher:
+            year_months = {_year_month(meta["started_at"]) for meta in dev_thread_meta.values()}
+            raw_by_month = {
+                ym: meta_fetcher.fetch_month_raw(list_name, domain, ym) for ym in year_months
+            }
+            for thread_id, meta in dev_thread_meta.items():
+                ym = _year_month(meta["started_at"])
+                record = raw_by_month.get(ym, {}).get(meta["root_message_id"])
+                mid = record.get("mid") if record else None
+                subject = record.get("subject") if record else None
+                dev_thread_urls_subjects[thread_id] = {
+                    "url": f"https://lists.apache.org/thread/{mid}" if mid else "",
+                    "subject": subject,
+                }
+
+    jira_base_url = base_url.rstrip("/")
+
+    thread_rows: list[dict[str, Any]] = []
+    for (venue, quarter), derivations in headline_derivations.items():
+        for derivation in derivations:
+            counts = thread_label_counts.get((venue, quarter, derivation.thread_key), {})
+            if venue == MAILING_LIST_VENUE:
+                meta = dev_thread_meta.get(derivation.thread_key, {})
+                url_subject = dev_thread_urls_subjects.get(derivation.thread_key, {})
+                url = url_subject.get("url") or ""
+                subject = url_subject.get("subject")
+                started_at = meta.get("started_at")
+                # This export's `thread_key` must never be `derivation.
+                # thread_key` for dev@ -- that internal id *is* the raw
+                # RFC 5322 root `Message-ID` (`collectors/ponymail.py`'s
+                # own "thread_id = message_id" rule), exactly the kind of
+                # value `publish.py`'s hard-fail scan exists to catch. The
+                # public, safe surrogate is Pony Mail's own opaque `mid`
+                # (already what the permalink itself embeds); a thread
+                # whose root message isn't found in this month's digest
+                # (and therefore has no `mid`, no permalink) is skipped
+                # from the export entirely -- there is nothing safe to
+                # publish for it.
+                public_thread_key = url.rsplit("/", 1)[-1] if url else None
+                if not public_thread_key:
+                    continue
+            else:
+                meta = jira_issue_meta.get(derivation.thread_key, {})
+                url = f"{jira_base_url}/browse/{derivation.thread_key}"
+                subject = meta.get("summary")
+                started_at = meta.get("created_at")
+                # A JIRA issue key (e.g. "CASSANDRA-12345") is already the
+                # project's own public identifier, unlike dev@'s internal
+                # thread id -- safe to publish as-is.
+                public_thread_key = derivation.thread_key
+            thread_rows.append(
+                thread_export.build_thread_row(
+                    venue=venue,
+                    thread_key=public_thread_key,
+                    url=url,
+                    subject=subject,
+                    started_at=started_at.isoformat() if started_at is not None else None,
+                    quarter=quarter,
+                    n_messages=derivation.n_messages,
+                    n_distinct_participants=len(derivation.participant_authors),
+                    escalation=derivation.escalation,
+                    deescalation=derivation.deescalation,
+                    constructive_resolution=derivation.outcome == OUTCOME_RESOLVED,
+                    abandonment_after_friction=derivation.outcome == OUTCOME_ABANDONED,
+                    pile_on=bool(derivation.pile_on_target_authors),
+                    peak_intensity_tier=derivation.peak_tier,
+                    label_counts=counts,
+                )
+            )
+    threads_path = thread_export.write_threads_jsonl(
+        out_dir, thread_rows, filename=threads_filename
     )
 
     # Coverage bookkeeping (issue #110 fixup round 2): how many of this
@@ -1270,4 +1417,5 @@ def run_private_run(
         sample_manifest_path=None,
         run_result=run_result,
         elapsed_seconds=elapsed_seconds,
+        threads_path=threads_path,
     )

@@ -846,6 +846,16 @@ rate" describes a rate of messages, never "how hostile [person] is."
   does not provide that link. Anyone who wants to inspect the public archive can do so
   independently, through the archive's own search — this project does not build the index
   that makes a negative label trivially attributable to a person.
+  - **D27 exception, threads only (owner, 2026-09-29).** "This is a public mailing list and
+    we are out there already." The `/conversations/threads/` Thread explorer links each
+    sampled thread's row to its public archive record — the thread as a whole, never a
+    specific flagged message or the message-level scores behind it. "Just link to pony
+    mail" (owner clarification, same date): a dev@ row links only to its canonical Pony
+    Mail thread permalink on `lists.apache.org`, never any other archive mirror, and the
+    site never renders thread content in-page; a JIRA row links to the issue tracker's own
+    `.../browse/<KEY>` page (Pony Mail doesn't host JIRA comment streams as threads). This
+    narrows "no deep links" to "no deep links *to a message or a person*" for this one
+    page — the aggregate numbers elsewhere in §7.1/§5 still carry no link of any kind.
 
 ### 7.4 Quotations, and public vs. semi-public data
 
@@ -907,6 +917,12 @@ Concrete, enumerated mechanisms (not aspirations):
 - Corrections accumulate into future revisions of the frozen benchmark corpus (§6.1),
   so recurring disputed patterns actually improve future classifier versions rather than
   being handled as one-off overrides forever.
+- **D27's "Disagree with this score?" link (issue #122).** Every row on the
+  `/conversations/threads/` Thread explorer carries a link to a pre-filled GitHub issue
+  (`.github/ISSUE_TEMPLATE/thread-score-disagreement.yml`), populated with that row's public
+  thread URL and its published outcome/peak-intensity/flagged-label counts — the practical,
+  self-service front door to this section's review process for a specific thread, and one
+  more input into issue #47's production-threshold calibration work.
 
 ### 7.7 Data retention
 

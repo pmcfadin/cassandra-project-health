@@ -50,7 +50,7 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -524,6 +524,141 @@ def sanitize_aggregates(aggregates: dict[str, Any]) -> dict[str, Any]:
     _assert_floor_invariants(sanitized)
     _hard_fail_scan(sanitized, "<output>")
     return sanitized
+
+
+# --- Thread-level export (issue #122, D27) --------------------------------
+#
+# D27 (owner, 2026-09-29): "This is a public mailing list and we are out
+# there already." Publish thread-level results for every sampled thread,
+# linked to the public archive -- amending §7.3's "no deep links from
+# aggregates to raw messages" for **threads only**. "Just link to pony
+# mail" (owner clarification, same date): dev@ rows link only to their
+# canonical Pony Mail thread permalink on `lists.apache.org` -- no other
+# archive mirror (markmail, mail-archive.com, ...) and no in-site rendering
+# of thread content; JIRA rows link to `issues.apache.org/jira/browse/
+# <KEY>` (Pony Mail doesn't host JIRA comment streams as threads). Every
+# other §7 rule stays binding: no per-message scores, no per-person data or
+# names, no quotations, no verdict wording (D25).
+
+_THREADS_REQUIRED_ROW_KEYS = (
+    "venue",
+    "thread_key",
+    "url",
+    "subject",
+    "started_at",
+    "quarter",
+    "n_messages",
+    "n_distinct_participants",
+    "outcome",
+    "peak_intensity_tier",
+    "label_counts",
+)
+
+_THREADS_OUTCOME_KEYS = (
+    "escalation",
+    "deescalation",
+    "constructive_resolution",
+    "abandonment_after_friction",
+    "pile_on",
+)
+
+# "Just link to pony mail" -- the only two allowed archive URL shapes.
+_ALLOWED_THREAD_URL_PREFIXES = (
+    "https://lists.apache.org/thread/",
+    "https://issues.apache.org/jira/browse/",
+)
+
+
+def _copy_thread_row(row: dict[str, Any], path: str) -> dict[str, Any]:
+    missing = [key for key in _THREADS_REQUIRED_ROW_KEYS if key not in row]
+    if missing:
+        raise SanitizeError(f"{path}: threads row missing required key(s): {missing}")
+    outcome = row["outcome"]
+    outcome_missing = [key for key in _THREADS_OUTCOME_KEYS if key not in outcome]
+    if outcome_missing:
+        raise SanitizeError(f"{path}.outcome: missing required key(s): {outcome_missing}")
+    return {
+        "venue": row["venue"],
+        "thread_key": row["thread_key"],
+        "url": row["url"],
+        "subject": row["subject"],
+        "started_at": row["started_at"],
+        "quarter": row["quarter"],
+        "n_messages": row["n_messages"],
+        "n_distinct_participants": row["n_distinct_participants"],
+        "outcome": {key: outcome[key] for key in _THREADS_OUTCOME_KEYS},
+        "peak_intensity_tier": row["peak_intensity_tier"],
+        "label_counts": dict(row["label_counts"]),
+    }
+
+
+def sanitize_threads(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Sanitize `runner.py`'s private `threads.jsonl` (already parsed into
+    a list of row dicts) through an explicit allowlist (issue #122, D27),
+    returning a new list safe to publish. Raises `SanitizeError` and
+    publishes nothing if any row is missing a required key, if any row's
+    `url` is set but isn't a Pony Mail dev@ thread permalink or a JIRA
+    `.../browse/<KEY>` link ("Just link to pony mail" -- no other archive
+    mirror), or if anything outside `subject` looks like it could identify
+    a message or a person (the same hard-fail patterns `sanitize_aggregates`
+    uses -- defense in depth; `runner.py`'s own public `thread_key`
+    construction already keeps a raw dev@ message id out of this file in
+    the first place, per that module's own comment).
+
+    **`subject` is deliberately excluded from the hard-fail scan.** It is
+    real, public free text (a mailing-list `Subject:` header or a JIRA
+    `summary`) that D27 explicitly allows to publish verbatim -- and real
+    subjects do legitimately contain things that match the *generic*
+    leak patterns without being a leak at all: verified live against this
+    project's own real run, `"Add e.dimitrova@gmail.com to KEYS"` (a real,
+    already-public JIRA summary about a committer's key) and a JIRA
+    `NumberFormatException` stack-trace digit string that happens to be
+    32+ characters long. Scanning `subject` against the same patterns as
+    every other field would hard-fail publishing on ordinary, legitimate
+    public subject lines -- the patterns stay meaningful (and stay applied)
+    for every field that was never supposed to contain free text at all.
+    """
+    sanitized = [_copy_thread_row(row, f"threads[{index}]") for index, row in enumerate(rows)]
+    for index, row in enumerate(sanitized):
+        url = row["url"]
+        # Fail closed: an empty url is only ever a `runner.py` bug (it
+        # already skips a dev@ thread whose root message has no resolvable
+        # permalink rather than emitting one with an empty url) -- this
+        # sanitizer doesn't rely on that upstream discipline and refuses
+        # to publish a row with nothing (or something disallowed) here.
+        if not url or not url.startswith(_ALLOWED_THREAD_URL_PREFIXES):
+            raise SanitizeError(
+                f"threads[{index}]: refusing to publish url {url!r} -- not an allowed "
+                "archive link (Pony Mail dev@ thread permalink or issues.apache.org "
+                "JIRA browse link)"
+            )
+    scan_view = [{k: v for k, v in row.items() if k != "subject"} for row in sanitized]
+    _hard_fail_scan(scan_view, "<threads>")
+    return sanitized
+
+
+def write_threads_snapshot(
+    rows: list[dict[str, Any]],
+    data_dir: str | Path,
+    *,
+    run_date: date,
+) -> Path:
+    """Sanitize `rows` (parsed from a private run's `threads.jsonl`) and
+    write them to `<data_dir>/snapshots/conversation_patterns/
+    threads-<run date>.json`. Raises `SanitizeError` and writes nothing if
+    sanitization fails."""
+    sanitized = sanitize_threads(rows)
+    out_dir = Path(data_dir) / "snapshots" / "conversation_patterns"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / f"threads-{run_date.isoformat()}.json"
+    payload = {
+        "generated_at": datetime.now(UTC).isoformat(),
+        "run_date": run_date.isoformat(),
+        "row_count": len(sanitized),
+        "threads": sanitized,
+    }
+    out_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return out_path
 
 
 def _parse_run_date(generated_at: str) -> date:

@@ -56,6 +56,7 @@ from project_health.metrics.windows import add_months, month_start
 from project_health.schema import get_schema, validate
 from project_health.site import chart_spec
 from project_health.site.conversation_patterns_page import build_conversation_patterns_context
+from project_health.site.thread_explorer_page import build_thread_explorer_context
 from project_health.site.manifest import RunManifest, load_manifest
 from project_health.site.governance_page import build_governance_page_context
 from project_health.site.leaderboard_page import build_leaderboard_page_context
@@ -118,6 +119,10 @@ DECISIONS_D19_ANCHOR = "d19-contributor-leaderboard-amends-d2-rule-7"
 # to every such link in `templates/base.html` and this module.
 HOME_BASE_PREFIX = "./"
 SUBPAGE_BASE_PREFIX = "../"
+# `/conversations/threads/` (issue #122, D27) lives two directories down
+# from the site root, so its own relative links to `static/`/`data/` need
+# one extra `../` beyond `SUBPAGE_BASE_PREFIX`.
+NESTED_SUBPAGE_BASE_PREFIX = "../../"
 
 
 def _version_key(version: str) -> tuple[int, ...]:
@@ -927,6 +932,15 @@ def _render_pages(
     conversation_patterns_context = build_conversation_patterns_context(
         data_dir, now=build_time
     )
+    # Thread explorer (issue #122, D27) -- computed here (not down by the
+    # Conversations page below) so both the Community card and the
+    # Conversations page's own link can gate on `thread_explorer.available`
+    # before ever linking to `/conversations/threads/`; the page itself is
+    # only written further down, and only when available (see "no-snapshot
+    # -> no page" below).
+    thread_explorer_context = build_thread_explorer_context(
+        data_dir, out_dir, base_prefix=NESTED_SUBPAGE_BASE_PREFIX
+    )
 
     # Home (`/`).
     summary_cards = [
@@ -980,6 +994,7 @@ def _render_pages(
         leaderboard=leaderboard_context,
         review_responsiveness=review_responsiveness_context,
         conversation_patterns=conversation_patterns_context,
+        thread_explorer=thread_explorer_context,
         **common_ctx,
     )
     _write_subpage(out_dir, "community", community_html)
@@ -1003,9 +1018,27 @@ def _render_pages(
         base_prefix=SUBPAGE_BASE_PREFIX,
         dimensions=conversations_dimensions,
         conversation_patterns=conversation_patterns_context,
+        thread_explorer=thread_explorer_context,
         **common_ctx,
     )
     _write_subpage(out_dir, "conversations", conversations_html)
+
+    # Thread explorer (`/conversations/threads/`, issue #122, D27) -- a
+    # filterable/sortable table of every sampled, classified thread, linked
+    # to its public archive record. "No-snapshot -> no page": this route is
+    # only written when a `threads-*.json` snapshot has actually been
+    # published, so nothing links to (or 200s from) a page with nothing on
+    # it -- mirrors every other honest-empty-state convention on this site,
+    # taken one step further since this is a whole standalone route rather
+    # than a section within an always-rendered page.
+    if thread_explorer_context["available"]:
+        thread_explorer_html = env.get_template("conversations_threads.html").render(
+            current_page="conversations",
+            base_prefix=NESTED_SUBPAGE_BASE_PREFIX,
+            **thread_explorer_context,
+            **common_ctx,
+        )
+        _write_subpage(out_dir, "conversations/threads", thread_explorer_html)
 
     # Governance (`/governance/`) — per-commit compliance trends and detail
     # (issue #37, D14/D15), the Security section (OpenSSF Scorecard + CVE/

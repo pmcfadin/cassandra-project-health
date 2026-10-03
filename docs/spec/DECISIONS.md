@@ -270,3 +270,15 @@ covered by tests:
   hid a true `deescalation` whenever `escalation` was also true. The Outcome column now shows
   every true flag composed into one neutral string (e.g. `"escalated, then de-escalated"`),
   and the column's filter matches on the individual flag, not the composed string.
+
+## D28. Owner-only local per-account review (amends COMMUNITY-HEALTH.md §7.1, §7.3 for the owner's private use only)
+
+The owner may generate a **private, local** per-account review report from classifier output, to
+decide which conversations to read. It is not part of this system's published output.
+
+- It lives only on the owner's machine, outside every git repository. Its code, data and output are
+  never committed to this repo, the `data` branch, or the site, and never shared as a ranking.
+- The score orders reading; it is not a verdict. Every entry links to the original public messages
+  so the owner judges from the source, and the report says the classifier is uncalibrated (#47).
+- Everything published stays bound by §7.3: no per-person scores, counts or rankings on the site or
+  in any public artifact.

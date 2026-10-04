@@ -37,14 +37,19 @@ jobs:
         with:
           path: main
 
-      - name: Set up Python
-        uses: actions/setup-python@v7
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v10
         with:
           python-version: '3.12'
 
+      # Installs exactly the versions pinned in uv.lock (--locked fails if the
+      # lock is stale), then puts the project venv on PATH so later steps can
+      # call `project-health` directly.
       - name: Install project-health
         working-directory: main
-        run: pip install -e .
+        run: |
+          uv sync --locked
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
 
       - name: Compute cache key (calendar week)
         id: cache-week

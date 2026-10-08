@@ -1,0 +1,197 @@
+{
+  "completed_at": "2026-10-08T13:33:34.070336+00:00",
+  "data_branch_commit": null,
+  "governance": {
+    "check_runs": {
+      "calls_made": 11,
+      "checked": 11,
+      "pending": 0,
+      "skipped_outside_retention": 18329,
+      "skipped_resolved": 399,
+      "skipped_too_old": 135
+    },
+    "ci_evidence": {
+      "attachments_found": 0,
+      "calls_made": 37,
+      "checked": 36,
+      "pending": 1,
+      "skipped_up_to_date": 2859
+    },
+    "commit_record_reparse": {
+      "parser_version": 2,
+      "status": "skipped"
+    },
+    "commits_scored": 32376,
+    "compliance_rows": 161880,
+    "git_records_collected": 0,
+    "jira_attachments": {
+      "attachments_found": 0,
+      "checked": 36,
+      "pending": 1
+    },
+    "policy_version": 2,
+    "status": "partial"
+  },
+  "leaderboard": {
+    "activity_types": [
+      "commits",
+      "jira_issues_resolved",
+      "reviews"
+    ],
+    "rows": 75,
+    "status": "ok"
+  },
+  "metrics_computed": [
+    "active_contributors_monthly@1.1",
+    "contributor_absence_factor@1.0",
+    "contributor_hhi@1.0",
+    "elephant_factor@1.0",
+    "median_resolution_latency_jira@1.0",
+    "new_contributors_monthly@1.1",
+    "organizational_hhi@1.0",
+    "pmc_joins_quarterly@1.0",
+    "pr_merge_lead_time@1.0",
+    "pr_review_engagement@1.0",
+    "pr_time_to_close@1.0",
+    "pr_time_to_first_review@1.0",
+    "reviewer_hhi@1.0",
+    "single_org_share@1.0",
+    "stale_jira_rate@1.0",
+    "stale_pr_rate@1.0",
+    "time_to_first_reply_devlist@1.0",
+    "time_to_first_response_jira@1.0",
+    "truck_factor@1.0",
+    "unanswered_thread_rate_devlist@1.0",
+    "unique_reviewers_monthly@1.1",
+    "unknown_affiliation_rate@1.0"
+  ],
+  "metrics_missing": [],
+  "metrics_skipped_insufficient_data": [],
+  "pipeline_code_sha": "1481581437481268f474b6fde6a05c6ad72e67e6",
+  "run_id": "2026-10-08T133204Z-1481581",
+  "scoring": {
+    "composite": 50.228764483853716,
+    "dimensions_included": 4,
+    "dimensions_total": 5,
+    "has_declining_dimension": true,
+    "scoring_version": "1.0.0",
+    "status": "ok"
+  },
+  "site_deploy_status": "ok",
+  "sources": {
+    "asf_roster": {
+      "records_collected": 101,
+      "status": "ok"
+    },
+    "git": {
+      "commit_trailer_reparse": {
+        "parser_version": 2,
+        "status": "skipped"
+      },
+      "file_changes_collected": 0,
+      "placeholder_reviewer_commits": 0,
+      "records_collected": 0,
+      "status": "ok",
+      "watermark": "sha:17137ce34bd2fa89bc296e2d61d59eac9957b787"
+    },
+    "github": {
+      "comment_count": 32,
+      "pr_issue_link_backfill": {
+        "done": true,
+        "link_rows": 0,
+        "pages_fetched": 0,
+        "prs_processed": 0,
+        "repos": {
+          "apache/cassandra": "done",
+          "apache/cassandra-accord": "done",
+          "apache/cassandra-analytics": "done",
+          "apache/cassandra-dtest": "done",
+          "apache/cassandra-java-driver": "done",
+          "apache/cassandra-sidecar": "done",
+          "apache/cassandra-website": "done"
+        }
+      },
+      "records_collected": 11,
+      "repos": {
+        "apache/cassandra": "ok",
+        "apache/cassandra-accord": "ok",
+        "apache/cassandra-analytics": "ok",
+        "apache/cassandra-dtest": "ok",
+        "apache/cassandra-java-driver": "ok",
+        "apache/cassandra-sidecar": "ok",
+        "apache/cassandra-website": "ok"
+      },
+      "review_count": 34,
+      "status": "ok",
+      "watermark": {
+        "apache/cassandra": "Y3Vyc29yOnYyOpK0MjAyNi0xMC0wOFQxMjozMTozN1rPAAAAAQvj1Sc=",
+        "apache/cassandra-accord": "Y3Vyc29yOnYyOpK0MjAyNi0xMC0wOFQxMzozMDowOFrO-JVKVg==",
+        "apache/cassandra-analytics": "Y3Vyc29yOnYyOpK0MjAyNi0xMC0wOFQwMDo0MToyNlrPAAAAARzsZw0=",
+        "apache/cassandra-dtest": "Y3Vyc29yOnYyOpK0MjAyNi0wOC0yNlQxNDo1MDo1NlrPAAAAAQRcyR8=",
+        "apache/cassandra-java-driver": "Y3Vyc29yOnYyOpK0MjAyNi0xMC0wNlQxOTo0NzoyN1rO4Gr9Ww==",
+        "apache/cassandra-sidecar": "Y3Vyc29yOnYyOpK0MjAyNi0xMC0wOFQwMDo0MDowNVrPAAAAARyz1I4=",
+        "apache/cassandra-website": "Y3Vyc29yOnYyOpK0MjAyNi0xMC0wNFQxNjoxMzo0NlrPAAAAAQXf4ic="
+      }
+    },
+    "github_commit_authors": {
+      "commits_seen": 0,
+      "reason": null,
+      "records_collected": 0,
+      "status": "ok",
+      "watermark": "17137ce34bd2fa89bc296e2d61d59eac9957b787 32375"
+    },
+    "github_profile": {
+      "new_logins_seen": 0,
+      "records_collected": 0,
+      "status": "ok"
+    },
+    "jira": {
+      "backfill": {
+        "calls_made": 0,
+        "checked": 0,
+        "pending": 0
+      },
+      "comment_count": 19,
+      "patch_available_backfill": {
+        "changelog_rows": 0,
+        "comment_rows": 0,
+        "done": true,
+        "issues_processed": 0,
+        "n_covered": 11755,
+        "n_total": 11754,
+        "pages_fetched": 1
+      },
+      "records_collected": 4,
+      "status": "ok",
+      "watermark": "2026-10-08T12:29:07+00:00"
+    },
+    "ponymail": {
+      "backfill": {
+        "dev": {
+          "months_remaining": 0
+        },
+        "user": {
+          "months_remaining": 0
+        }
+      },
+      "partial": false,
+      "records_collected": 61,
+      "skipped_count": 0,
+      "status": "ok",
+      "thread_count": 18,
+      "watermark": {
+        "dev": "2026-09",
+        "user": "2026-09"
+      }
+    },
+    "security": {
+      "advisories_collected": 16,
+      "records_collected": 30,
+      "scorecard_checks_collected": 14,
+      "status": "ok"
+    }
+  },
+  "started_at": "2026-10-08T13:32:04.324784+00:00",
+  "status": "ok",
+  "trigger": "schedule"
+}

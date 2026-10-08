@@ -16,16 +16,18 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Set up Python
-        uses: actions/setup-python@v7
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v10.2.0
         with:
           python-version: ${{ matrix.python-version }}
 
+      # --locked fails if uv.lock is out of date with pyproject.toml, so CI
+      # always installs exactly the committed dependency versions.
       - name: Install dependencies
-        run: pip install -e '.[dev]'
+        run: uv sync --locked --extra dev
 
       - name: Lint with ruff
-        run: ruff check .
+        run: uv run ruff check .
 
       - name: Run tests with pytest
-        run: pytest -v
+        run: uv run pytest -v

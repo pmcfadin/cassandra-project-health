@@ -947,6 +947,7 @@ def _community_sections_context(
                 "id": meta.section_id,
                 "title": meta.title,
                 "chaoss_url": meta.chaoss_url,
+                "chaoss_label": meta.chaoss_label,
                 "summary_items": summary_items,
                 "dimensions": [
                     {
@@ -989,6 +990,7 @@ def _governance_sections_context(
                 "id": meta.section_id,
                 "title": meta.title,
                 "chaoss_url": meta.chaoss_url,
+                "chaoss_label": meta.chaoss_label,
                 "summary_items": summary_items,
             }
         )

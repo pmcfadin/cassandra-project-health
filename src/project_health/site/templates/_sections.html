@@ -9,13 +9,13 @@
    so its signature/markup stays generic (no community-/governance-specific
    assumptions) rather than growing per-page special cases. #}
 
-{% macro section(section_id, title, chaoss_url=None, summary_items=None, open=False, extra_class="") %}
+{% macro section(section_id, title, chaoss_url=None, summary_items=None, open=False, extra_class="", chaoss_label="CHAOSS practitioner guide") %}
 <details class="page-section {{ extra_class }}" id="{{ section_id }}"{% if open %} open{% endif %}>
   <summary class="page-section-summary">
     <span class="page-section-summary-head">
       <span class="page-section-title">{{ title }}</span>
       {% if chaoss_url %}
-      <a class="page-section-chaoss-link" href="{{ chaoss_url }}">CHAOSS practitioner guide</a>
+      <a class="page-section-chaoss-link" href="{{ chaoss_url }}">{{ chaoss_label }}</a>
       {% endif %}
     </span>
     {% if summary_items %}

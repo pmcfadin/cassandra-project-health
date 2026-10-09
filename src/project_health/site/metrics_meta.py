@@ -1158,6 +1158,9 @@ class SectionMeta:
     title: str
     chaoss_url: str | None
     headline_metric_ids: tuple[str, ...] = ()
+    # Link text for `chaoss_url`; most sections link a practitioner guide,
+    # Releases links a metric page (no release practitioner guide exists).
+    chaoss_label: str = "CHAOSS practitioner guide"
 
 
 # Community page sections (issue #144's owner-approved grouping, CHAOSS
@@ -1210,6 +1213,7 @@ COMMUNITY_SECTIONS: tuple[SectionMeta, ...] = (
         # https://chaoss.community/kb/metric-release-frequency/ (the
         # 'assessing viability' guide URL 404s; do not link it)".
         chaoss_url="https://chaoss.community/kb/metric-release-frequency/",
+        chaoss_label="CHAOSS: Release Frequency",
         headline_metric_ids=(
             "release_frequency",
             "days_between_releases",

@@ -429,3 +429,13 @@ def test_section_chrome_never_renders_verdict_vocabulary(tmp_path):
 
     for banned in ("fail", "failing", "pass rate", "exempt", "verdict", "healthy", "unhealthy"):
         assert re.search(rf"\b{re.escape(banned)}\b", text) is None, banned
+
+
+def test_releases_section_links_release_frequency_metric_not_a_guide():
+    from project_health.site.metrics_meta import COMMUNITY_SECTIONS
+
+    releases = next(s for s in COMMUNITY_SECTIONS if s.section_id == "releases")
+    assert releases.chaoss_url.endswith("/kb/metric-release-frequency/")
+    assert releases.chaoss_label == "CHAOSS: Release Frequency"
+    guides = [s for s in COMMUNITY_SECTIONS if s.section_id != "releases"]
+    assert all(s.chaoss_label == "CHAOSS practitioner guide" for s in guides)

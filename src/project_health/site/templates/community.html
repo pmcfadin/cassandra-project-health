@@ -9,7 +9,7 @@
 {{ sections.section_nav(community_sections) }}
 
 {% for section in community_sections %}
-{% call sections.section(section.id, section.title, section.chaoss_url, section.summary_items) %}
+{% call sections.section(section.id, section.title, section.chaoss_url, section.summary_items, chaoss_label=section.chaoss_label) %}
   {% for group in section.dimensions %}
   <section class="dimension" aria-labelledby="dim-{{ section.id }}-{{ loop.index }}">
     <h3 id="dim-{{ section.id }}-{{ loop.index }}">{{ group.dimension | title }}</h3>

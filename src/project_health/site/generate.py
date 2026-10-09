@@ -67,7 +67,10 @@ from project_health.site.staleness import source_staleness_badges
 from project_health.site.metrics_meta import (
     CHAOSS_STARTER_METRICS,
     CHAOSS_STARTER_MODEL_URL,
+    COMMUNITY_METRIC_SECTION,
+    COMMUNITY_SECTIONS,
     GOVERNANCE_METRICS,
+    GOVERNANCE_SECTIONS,
     HOME_CARD_METRIC_LIMIT,
     M0_METRICS,
     PAGES,
@@ -858,6 +861,140 @@ def _headline_metric_context(series: MetricSeries, last_completed_month: date) -
     }
 
 
+# --- Collapsible page sections (issue #144) ---------------------------------
+#
+# `_sparkline_spec`/`_section_headline_item` build a section's collapsed
+# "summary row" (issue #144: "Collapsed state = summary row: section
+# title, CHAOSS topic link, 3-4 headline numbers (value + month + n) each
+# with a tiny sparkline") -- reusing `MetricSeries`/`MetricMeta.format_value`
+# the exact same way `_card_context`/`_headline_metric_context` already do,
+# so a summary row's number is always the same number its own expanded
+# card shows, never a second, independently-computed one.
+
+
+def _sparkline_spec(series: MetricSeries, months: int = 24) -> dict[str, Any]:
+    """A compact, axis-free trend line for a section's summary row -- the
+    same `window_end`/`value` points `_vega_lite_spec` plots, trimmed to the
+    trailing `months` and stripped of every axis/legend/tooltip so it reads
+    as a glance-only trend, not a second full chart."""
+    points = series.points[-months:]
+    values = [{"window_end": p.window_end.isoformat(), "value": p.value} for p in points]
+    return {
+        "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+        "width": "container",
+        "height": 28,
+        "autosize": {"type": "fit-x", "contains": "padding"},
+        "background": None,
+        "data": {"values": values},
+        "mark": {"type": "line", "clip": True, "strokeWidth": 1.5},
+        "encoding": {
+            "x": {"field": "window_end", "type": "temporal", "axis": None},
+            "y": {"field": "value", "type": "quantitative", "axis": None},
+        },
+        "config": {"view": {"stroke": None}},
+    }
+
+
+def _section_headline_item(series: MetricSeries, last_completed_month: date) -> dict[str, Any]:
+    """One summary-row entry: name, latest value/month/n, and a sparkline
+    spec -- `None` for the sparkline when there are no points to plot at
+    all (an honest empty state, same as the value side)."""
+    latest = series.latest
+    return {
+        "name": series.meta.name,
+        "value_display": series.meta.format_value(latest.value) if latest else None,
+        "month_label": latest.window_end.strftime("%b %Y") if latest else None,
+        "n": latest.n if latest else None,
+        "sparkline_spec_json": json.dumps(_sparkline_spec(series)) if series.points else None,
+    }
+
+
+def _community_sections_context(
+    all_community_series: list[MetricSeries],
+    card_series: list[MetricSeries],
+    base_prefix: str,
+    last_completed_month: date,
+    manifest: RunManifest,
+) -> list[dict[str, Any]]:
+    """Group the Community page's metrics by CHAOSS-topic section
+    (`metrics_meta.COMMUNITY_SECTIONS`/`COMMUNITY_METRIC_SECTION`, issue
+    #144) instead of by raw `dimension` -- each section still groups its
+    own cards by `dimension` underneath (`_group_by_dimension`), unchanged
+    from before this issue, just nested one level deeper.
+
+    `all_community_series` (every `page == "community"` metric, including
+    the `PR_BACKLOG_METRICS` ones) is only used to resolve a section's
+    summary-row headline values -- `card_series` (the already-filtered,
+    `open_pr_backlog_*`-excluded list `_render_pages` built for issue #142)
+    is what actually becomes a dimension/card grid in a section's expanded
+    body, unchanged from before this issue."""
+    all_series_by_metric_id = {s.meta.metric_id: s for s in all_community_series}
+    card_series_by_section: dict[str, list[MetricSeries]] = {
+        meta.section_id: [] for meta in COMMUNITY_SECTIONS
+    }
+    for series in card_series:
+        section_id = COMMUNITY_METRIC_SECTION[series.meta.metric_id]
+        card_series_by_section[section_id].append(series)
+    sections = []
+    for meta in COMMUNITY_SECTIONS:
+        summary_items = [
+            _section_headline_item(all_series_by_metric_id[metric_id], last_completed_month)
+            for metric_id in meta.headline_metric_ids
+            if metric_id in all_series_by_metric_id
+        ]
+        sections.append(
+            {
+                "id": meta.section_id,
+                "title": meta.title,
+                "chaoss_url": meta.chaoss_url,
+                "summary_items": summary_items,
+                "dimensions": [
+                    {
+                        "dimension": dimension,
+                        "metrics": [
+                            _card_context(s, base_prefix, last_completed_month, manifest)
+                            for s in series_list
+                        ],
+                    }
+                    for dimension, series_list in _group_by_dimension(
+                        card_series_by_section[meta.section_id]
+                    )
+                ],
+            }
+        )
+    return sections
+
+
+def _governance_sections_context(
+    governance_card_series_by_metric_id: dict[str, MetricSeries],
+    last_completed_month: date,
+) -> list[dict[str, Any]]:
+    """`metrics_meta.GOVERNANCE_SECTIONS`' own summary-row headline items
+    (issue #144) -- the section markup itself (which existing `<section>`
+    content lands in "Facts summary"/"Commit history"/"References") stays
+    in `governance.html`, since unlike Community's cards, Governance's three
+    sections each wrap a single, already-bespoke block of markup rather
+    than a metric-id-keyed card grid."""
+    sections = []
+    for meta in GOVERNANCE_SECTIONS:
+        summary_items = [
+            _section_headline_item(
+                governance_card_series_by_metric_id[metric_id], last_completed_month
+            )
+            for metric_id in meta.headline_metric_ids
+            if metric_id in governance_card_series_by_metric_id
+        ]
+        sections.append(
+            {
+                "id": meta.section_id,
+                "title": meta.title,
+                "chaoss_url": meta.chaoss_url,
+                "summary_items": summary_items,
+            }
+        )
+    return sections
+
+
 def _summary_card_context(
     page: PageMeta,
     page_series: list[MetricSeries],
@@ -1043,16 +1180,18 @@ def _render_pages(
         for series in series_by_page["community"]
         if series.meta.metric_id not in PR_BACKLOG_METRICS
     ]
-    community_dimensions = [
-        {
-            "dimension": dimension,
-            "metrics": [
-                _card_context(s, SUBPAGE_BASE_PREFIX, last_completed_month, manifest)
-                for s in series_list
-            ],
-        }
-        for dimension, series_list in _group_by_dimension(community_card_series)
-    ]
+    # Collapsible CHAOSS-topic sections (issue #144), replacing the old flat
+    # `community_dimensions` list -- see `_community_sections_context`'s own
+    # docstring for why it takes both the full community series list (for
+    # summary-row headline values) and the filtered `community_card_series`
+    # above (for each section's own expanded dimension/card grid).
+    community_sections = _community_sections_context(
+        series_by_page["community"],
+        community_card_series,
+        SUBPAGE_BASE_PREFIX,
+        last_completed_month,
+        manifest,
+    )
     # Contributor leaderboard (D19, issue #56) — a ranked top-N table, kept
     # entirely out of the `metric_value`/M0 machinery above; see
     # `leaderboard_page.py`'s module docstring for why this stays a small,
@@ -1075,7 +1214,7 @@ def _render_pages(
     community_html = env.get_template("community.html").render(
         current_page="community",
         base_prefix=SUBPAGE_BASE_PREFIX,
-        dimensions=community_dimensions,
+        community_sections=community_sections,
         leaderboard=leaderboard_context,
         review_responsiveness=review_responsiveness_context,
         pr_backlog=pr_backlog_context,
@@ -1169,12 +1308,22 @@ def _render_pages(
                 "has_data": chart["has_data"],
             }
         )
+    # Collapsible page sections (issue #144): "Facts summary", "Commit
+    # history" and "References" -- summary-row headline items only; the
+    # section markup/body itself stays inline in governance.html, since
+    # (unlike Community's per-metric card grid) each of these three wraps a
+    # single, already-bespoke block rather than a metric-id-keyed list.
+    governance_sections = _governance_sections_context(
+        {s.meta.metric_id: s for s in series_by_page["governance"]},
+        last_completed_month,
+    )
     governance_html = env.get_template("governance.html").render(
         current_page="governance",
         base_prefix=SUBPAGE_BASE_PREFIX,
         security=security_context,
         governance=governance_context,
         governance_trend_cards=governance_trend_cards,
+        governance_sections={s["id"]: s for s in governance_sections},
         **common_ctx,
     )
     _write_subpage(out_dir, "governance", governance_html)

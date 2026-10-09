@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% import "_sections.html" as sections %}
 {% block title %}Governance — Cassandra Project Health{% endblock %}
 {% block content %}
 {% if governance.has_data %}
@@ -66,8 +67,11 @@
 </section>
 {% else %}
 
+{{ sections.section_nav(governance_sections.values()) }}
+
+{% call sections.section("facts-summary", governance_sections["facts-summary"].title, governance_sections["facts-summary"].chaoss_url, governance_sections["facts-summary"].summary_items) %}
 <section class="governance-trends" aria-labelledby="trends-heading">
-  <h2 id="trends-heading">Monthly rates</h2>
+  <h3 id="trends-heading">Monthly rates</h3>
   <p class="page-intro">
     A plain, neutral share of non-merge commits per month for each column below — how many had a
     named reviewer, CI evidence before commit, both CI artefacts, or a successful checkstyle run.
@@ -80,7 +84,7 @@
     {% for chart in governance_trend_cards %}
     <article class="card">
       <header class="card-header">
-        <h3>{{ chart.name }}</h3>
+        <h4>{{ chart.name }}</h4>
       </header>
       {% if chart.staleness_badges %}
       <p class="card-staleness">
@@ -114,7 +118,7 @@
 
     <article class="card">
       <header class="card-header">
-        <h3>Declares "ninja"</h3>
+        <h4>Declares "ninja"</h4>
         <span class="badge">descriptive only</span>
       </header>
       <p class="card-status">
@@ -131,12 +135,14 @@
     </article>
   </div>
 </section>
+{% endcall %}
 
+{% call sections.section("commit-history", governance_sections["commit-history"].title, governance_sections["commit-history"].chaoss_url, governance_sections["commit-history"].summary_items, open=True) %}
 <section class="governance-commits" aria-labelledby="commits-heading" data-gov-commits
   data-default-href="{{ governance.commits_default_json_href }}"
   data-older-href="{{ governance.commits_older_json_href }}"
   data-default-range-start="{{ governance.default_range_start }}">
-  <h2 id="commits-heading">Commit history</h2>
+  <h3 id="commits-heading">Commit history</h3>
   <p class="page-intro">
     Every commit from {{ governance.default_range_start }} on, one row each, with what the public
     record shows for review, CI evidence and checkstyle.
@@ -266,9 +272,11 @@
     <p>Enable JavaScript to browse the commit history.</p>
   </noscript>
 </section>
+{% endcall %}
 
+{% call sections.section("references", governance_sections["references"].title, governance_sections["references"].chaoss_url, governance_sections["references"].summary_items) %}
 <section class="governance-references" aria-labelledby="references-heading">
-  <h2 id="references-heading">References</h2>
+  <h3 id="references-heading">References</h3>
   <p class="page-intro">
     The project's own published guidance this page's facts are drawn from. This project does not
     interpret these as requirements it enforces — see the note at the top of this page.
@@ -281,6 +289,7 @@
   {{ governance.overrides_count }} correction(s) on record in
   <a href="{{ governance.overrides_url }}">governance_overrides.yaml</a>.
 </section>
+{% endcall %}
 <script src="{{ base_prefix }}static/governance.js" defer></script>
 {% endif %}
 

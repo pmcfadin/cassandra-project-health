@@ -277,8 +277,28 @@
       });
   }
 
+  // A chart inside a collapsed `<details class="page-section">`'s body
+  // (issue #144) has zero layout width -- embedding it now would bake in
+  // that zero width (the same bug the `clientWidth` comment above this
+  // function describes, just caused by `display: none` instead of a race).
+  // A chart that lives in the section's always-visible `<summary>` (the
+  // collapsed-state sparkline) is unaffected either way, so this only
+  // skips charts inside `.page-section-body`.
+  function isChartVisible(el) {
+    var body = el.closest ? el.closest(".page-section-body") : null;
+    if (!body) {
+      return true;
+    }
+    var details = body.parentElement;
+    return !!(details && details.open);
+  }
+
   function renderAllCharts() {
-    document.querySelectorAll("[data-vega-spec]").forEach(embedChart);
+    document.querySelectorAll("[data-vega-spec]").forEach(function (el) {
+      if (isChartVisible(el)) {
+        embedChart(el);
+      }
+    });
   }
 
   if (document.readyState === "loading") {
@@ -296,5 +316,96 @@
       clearTimeout(resizeTimer);
     }
     resizeTimer = setTimeout(renderAllCharts, 150);
+  });
+
+  // --- Collapsible page sections (issue #144) ----------------------------
+  //
+  // Native <details>/<summary>: works with JS disabled (the noscript guard
+  // further down only hides the expand-all/collapse-all/jump controls, not
+  // the sections themselves), Ctrl+F finds matches once a section is
+  // expanded, and prints fine. This block only adds: (1) opening the
+  // section a `#hash` deep-link targets and scrolling to it, (2) expand-
+  // all/collapse-all buttons, and (3) re-embedding a section's charts the
+  // moment it's opened, since `renderAllCharts`/`isChartVisible` above
+  // deliberately skip them while collapsed.
+
+  function pageSections() {
+    return Array.prototype.slice.call(document.querySelectorAll("details.page-section"));
+  }
+
+  function openSection(details) {
+    details.open = true;
+  }
+
+  function applyHashTarget() {
+    var hash = window.location.hash;
+    if (!hash || hash.length < 2) {
+      return;
+    }
+    var target;
+    try {
+      target = document.getElementById(hash.slice(1));
+    } catch (err) {
+      return;
+    }
+    if (!target) {
+      return;
+    }
+    // Climb every ancestor <details> (a hash can target an element nested
+    // several levels deep inside a section, e.g. a venue heading inside
+    // "Summary"), opening each one so the target is actually visible.
+    var opened = false;
+    var node = target.tagName === "DETAILS" ? target : target.closest("details");
+    while (node) {
+      if (!node.open) {
+        node.open = true;
+        opened = true;
+      }
+      node = node.parentElement ? node.parentElement.closest("details") : null;
+    }
+    if (opened) {
+      renderAllCharts();
+    }
+    target.scrollIntoView();
+  }
+
+  window.addEventListener("hashchange", applyHashTarget);
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", applyHashTarget);
+  } else {
+    applyHashTarget();
+  }
+
+  pageSections().forEach(function (details) {
+    details.addEventListener("toggle", function () {
+      if (details.open) {
+        renderAllCharts();
+      }
+    });
+  });
+
+  document.querySelectorAll("[data-section-expand-all]").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      pageSections().forEach(openSection);
+      renderAllCharts();
+    });
+  });
+  document.querySelectorAll("[data-section-collapse-all]").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      pageSections().forEach(function (details) {
+        details.open = false;
+      });
+    });
+  });
+
+  // A click on the CHAOSS practitioner-guide link inside a <summary> would
+  // otherwise also toggle the section (the click bubbles to the native
+  // <summary> toggle handler before the browser navigates) -- stopping
+  // propagation here lets the link navigate without the visible flash of
+  // toggling the section open/closed underneath it.
+  document.querySelectorAll(".page-section-chaoss-link").forEach(function (a) {
+    a.addEventListener("click", function (evt) {
+      evt.stopPropagation();
+    });
   });
 })();

@@ -223,7 +223,8 @@ main {
   justify-content: space-between;
   gap: 0.5rem;
 }
-.card-header h3 {
+.card-header h3,
+.card-header h4 {
   margin: 0;
   font-size: 1rem;
 }
@@ -989,5 +990,144 @@ main {
   .thread-chart-toolbar {
     flex-direction: column;
     align-items: flex-start;
+  }
+}
+
+/* --- Collapsible page sections (issue #144) ---------------------------- */
+
+.page-section-nav {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+  padding: 0.6rem 0;
+  margin-bottom: 1.5rem;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem 0.6rem;
+  font-size: 0.85rem;
+}
+.page-section-nav-label {
+  font-weight: 600;
+  color: var(--fg-muted);
+}
+.page-section-nav a {
+  color: var(--accent);
+  text-decoration: none;
+}
+.page-section-nav a:hover {
+  text-decoration: underline;
+}
+.page-section-nav-controls {
+  margin-left: auto;
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+.page-section-expand-all,
+.page-section-collapse-all {
+  font-size: 0.8rem;
+  padding: 0.25rem 0.6rem;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--bg-alt);
+  color: var(--fg);
+  cursor: pointer;
+}
+
+.page-section {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  margin-bottom: 1.25rem;
+  background: var(--bg-alt);
+  /* Every element this box contains (the summary row's sparklines, and
+     every card/chart/table in the expanded body) must stay inside this
+     border at any viewport width -- never force a horizontal page scroll. */
+  overflow-x: hidden;
+}
+.page-section-summary {
+  cursor: pointer;
+  padding: 0.85rem 1rem;
+  list-style: none;
+}
+.page-section-summary::-webkit-details-marker {
+  display: none;
+}
+.page-section-summary-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.6rem;
+}
+.page-section-title {
+  font-size: 1.1rem;
+  font-weight: 600;
+}
+.page-section-chaoss-link {
+  font-size: 0.8rem;
+  color: var(--fg-muted);
+}
+.page-section-body {
+  padding: 0 1rem 1rem;
+  border-top: 1px solid var(--border);
+}
+/* The body's own direct `.dimension`/section children keep their usual
+   bottom margin, but the body itself already carries side/bottom padding
+   above, so the last child's margin would otherwise double up. */
+.page-section-body > :last-child {
+  margin-bottom: 0;
+}
+
+.section-headline-metrics {
+  list-style: none;
+  margin: 0.6rem 0 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem 1.5rem;
+}
+.section-headline-metric {
+  display: flex;
+  flex-direction: column;
+  min-width: 100px;
+  max-width: 100%;
+  flex: 1 1 130px;
+}
+.section-headline-metric-name {
+  font-size: 0.75rem;
+  color: var(--fg-muted);
+}
+.section-headline-metric-value {
+  font-size: 1.15rem;
+  font-weight: 600;
+}
+.section-headline-metric-value--insufficient {
+  font-size: 0.9rem;
+  font-weight: 500;
+  color: var(--fg-muted);
+}
+.section-headline-metric-period {
+  font-size: 0.7rem;
+  color: var(--fg-muted);
+}
+.chart--sparkline {
+  width: 100%;
+  display: block;
+  min-height: 28px;
+  height: 28px;
+  margin: 0.15rem 0 0;
+}
+
+@media (max-width: 480px) {
+  .page-section-nav-controls {
+    margin-left: 0;
+  }
+  .page-section-summary {
+    padding: 0.75rem 0.85rem;
+  }
+  .page-section-body {
+    padding: 0 0.85rem 0.85rem;
   }
 }

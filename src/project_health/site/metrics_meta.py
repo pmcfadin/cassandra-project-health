@@ -713,6 +713,12 @@ M0_METRICS: dict[str, MetricMeta] = {
         value_kind="ratio",
         page="community",
         sources=("github",),
+        prior_art=(
+            PriorArt(
+                "CHAOSS: Change Request Closure Ratio",
+                "https://chaoss.community/kb/metric-change-request-closure-ratio/",
+            ),
+        ),
     ),
     "change_request_closure_ratio_jira_patch": MetricMeta(
         metric_id="change_request_closure_ratio_jira_patch",
@@ -723,6 +729,12 @@ M0_METRICS: dict[str, MetricMeta] = {
         value_kind="ratio",
         page="community",
         sources=("jira",),
+        prior_art=(
+            PriorArt(
+                "CHAOSS: Change Request Closure Ratio",
+                "https://chaoss.community/kb/metric-change-request-closure-ratio/",
+            ),
+        ),
     ),
 }
 
@@ -914,9 +926,14 @@ class ChaossStarterMetric:
     """Presentation metadata for one of the four CHAOSS "Starter Project
     Health" metrics-model metrics (issue #136, DECISIONS.md D29, reversing
     D20's composite score): the landing page leads with this published,
-    external standard instead of an in-house composite. `chaoss_url` and
-    `chaoss_model_url` were verified live (HTTP 200) by the orchestrator on
-    2026-10-09. `mapping_note` states which of this project's own metrics
+    external standard instead of an in-house composite. `chaoss_url` is
+    sourced from the representative series metric's own `MetricMeta.
+    prior_art` (issue #134) wherever one exists, via `_prior_art_url` below
+    -- never a second, independently-maintained copy of the same CHAOSS KB
+    link -- except `release_frequency`, which has no registered metric yet
+    (pending #135) and so keeps a literal URL. Every link here and
+    `chaoss_model_url` were verified live (redirect-then-200, orchestrator,
+    2026-10-09). `mapping_note` states which of this project's own metrics
     compute each CHAOSS concept for Cassandra -- a plain fact, never
     intent/recommendation language (D29 item 4)."""
 
@@ -933,13 +950,29 @@ class ChaossStarterMetric:
 
 CHAOSS_STARTER_MODEL_URL = "https://chaoss.community/kb/metrics-model-starter-project-health/"
 
+
+def _prior_art_url(metric_id: str) -> str:
+    """The first `PriorArt` citation's URL already registered on
+    `M0_METRICS[metric_id]` (issue #134) -- reused here (issue #136,
+    orchestrator review) so a CHAOSS Starter Project Health landing card's
+    link is never a second, independently-drifting copy of the exact same
+    CHAOSS KB URL that metric's own community/conversations card already
+    cites under "Based on". Every metric named below carries a real,
+    non-"(adjacent)"/non-"(applied to ...)" prior-art entry for this exact
+    CHAOSS concept (verified by reading `M0_METRICS` directly, not assumed)."""
+    prior_art = M0_METRICS[metric_id].prior_art
+    if not prior_art:
+        raise ValueError(f"{metric_id!r} has no prior_art to source a CHAOSS link from")
+    return prior_art[0].url
+
+
 # Order matches the CHAOSS Starter Project Health model's own listing
 # (verified live, 2026-10-09).
 CHAOSS_STARTER_METRICS: tuple[ChaossStarterMetric, ...] = (
     ChaossStarterMetric(
         key="time_to_first_response",
         chaoss_name="Time to First Response",
-        chaoss_url="https://chaoss.community/kb/metric-time-to-first-response/",
+        chaoss_url=_prior_art_url("time_to_first_response_jira"),
         mapping_note=(
             "Computed for Cassandra from three venues, shown separately: GitHub PR time to "
             "first review, JIRA time to first response, and dev@ time to first reply."
@@ -953,7 +986,7 @@ CHAOSS_STARTER_METRICS: tuple[ChaossStarterMetric, ...] = (
     ChaossStarterMetric(
         key="change_request_closure_ratio",
         chaoss_name="Change Request Closure Ratio",
-        chaoss_url="https://chaoss.community/kb/metric-change-request-closure-ratio/",
+        chaoss_url=_prior_art_url("change_request_closure_ratio_pr"),
         mapping_note=(
             "Computed for Cassandra from two venues, shown separately, since reviewed changes "
             "are committed via JIRA as well as GitHub: GitHub pull requests, and JIRA issues "
@@ -970,7 +1003,7 @@ CHAOSS_STARTER_METRICS: tuple[ChaossStarterMetric, ...] = (
     ChaossStarterMetric(
         key="contributor_absence_factor",
         chaoss_name="Contributor Absence Factor",
-        chaoss_url="https://chaoss.community/kb/metric-contributor-absence-factor/",
+        chaoss_url=_prior_art_url("contributor_absence_factor"),
         mapping_note=(
             "This project's existing contributor_absence_factor metric: the smallest number "
             "of contributors whose combined trailing-12-month commits reach 50% of all "
@@ -981,6 +1014,10 @@ CHAOSS_STARTER_METRICS: tuple[ChaossStarterMetric, ...] = (
     ChaossStarterMetric(
         key="release_frequency",
         chaoss_name="Release Frequency",
+        # Not sourced via `_prior_art_url`, unlike the three cards above:
+        # `release_frequency` has no `MetricMeta`/`PriorArt` entry yet
+        # (pending #135) for this to read from -- a literal URL is the only
+        # option until that issue registers the metric.
         chaoss_url="https://chaoss.community/kb/metric-release-frequency/",
         mapping_note="Pending #135.",
         series=(),

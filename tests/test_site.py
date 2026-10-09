@@ -22,7 +22,13 @@ import pytest
 from project_health import storage
 from project_health.schema import get_schema, validate
 from project_health.site.generate import generate
-from project_health.site.metrics_meta import GOVERNANCE_METRICS, M0_METRICS, PAGES, PriorArt
+from project_health.site.metrics_meta import (
+    CHAOSS_STARTER_METRICS,
+    GOVERNANCE_METRICS,
+    M0_METRICS,
+    PAGES,
+    PriorArt,
+)
 
 SITE_PAGES = ["", "community/", "conversations/", "governance/"]
 
@@ -2399,20 +2405,13 @@ def test_home_page_leads_with_chaoss_starter_project_health(tmp_path):
 
     assert "CHAOSS Starter Project Health" in html_text
     assert "https://chaoss.community/kb/metrics-model-starter-project-health/" in html_text
-    for chaoss_name, chaoss_url in (
-        ("Time to First Response", "https://chaoss.community/kb/metric-time-to-first-response/"),
-        (
-            "Change Request Closure Ratio",
-            "https://chaoss.community/kb/metric-change-request-closure-ratio/",
-        ),
-        (
-            "Contributor Absence Factor",
-            "https://chaoss.community/kb/metric-contributor-absence-factor/",
-        ),
-        ("Release Frequency", "https://chaoss.community/kb/metric-release-frequency/"),
-    ):
-        assert chaoss_name in html_text
-        assert f'href="{chaoss_url}"' in html_text
+    # Each card's link is sourced from CHAOSS_STARTER_METRICS itself (issue
+    # #134's prior_art data for three of the four, orchestrator review of
+    # issue #136), not re-typed here -- a hard-coded expected URL would
+    # silently drift from the real one the moment that sourcing changes.
+    for card in CHAOSS_STARTER_METRICS:
+        assert card.chaoss_name in html_text
+        assert f'href="{card.chaoss_url}"' in html_text
 
     # Change Request Closure Ratio and Time to First Response are each shown
     # as two/three labelled series, not collapsed into one number.

@@ -34,6 +34,14 @@
           <div class="chart chart--small" data-vega-spec='{{ s.vega_spec_json }}' role="img" aria-label="History chart for {{ card.chaoss_name }}{% if s.label %} ({{ s.label }}){% endif %}">
             <noscript>Enable JavaScript to see this history chart, or use the data links below.</noscript>
           </div>
+          <p class="card-prior-art">
+            Based on:
+            {% if s.prior_art %}
+            {% for pa in s.prior_art %}<a href="{{ pa.url }}">{{ pa.label }}</a>{% if not loop.last %}, {% endif %}{% endfor %}
+            {% else %}
+            project-specific (no established CHAOSS/literature equivalent)
+            {% endif %}
+          </p>
           <p class="card-links">
             <a href="{{ s.json_href }}">JSON</a> &middot; <a href="{{ s.csv_href }}">CSV</a>
           </p>

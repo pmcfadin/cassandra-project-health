@@ -817,6 +817,13 @@ def _card_context(
         "vega_spec_json": json.dumps(_vega_lite_spec(series)),
         "json_href": f"{base_prefix}data/{series.meta.metric_id}.json",
         "csv_href": f"{base_prefix}data/{series.meta.metric_id}.csv",
+        # issue #134: "Based on" line -- a list of {label, url} dicts for
+        # the template to render as links, or an empty list when
+        # `series.meta.prior_art` is empty (METRICS.md documents no
+        # established CHAOSS/literature equivalent for this metric); the
+        # template falls back to the literal text "project-specific" in
+        # that case rather than rendering nothing.
+        "prior_art": [{"label": pa.label, "url": pa.url} for pa in series.meta.prior_art],
     }
 
 

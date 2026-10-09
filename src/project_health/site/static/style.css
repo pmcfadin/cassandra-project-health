@@ -320,6 +320,17 @@ main {
   color: var(--accent);
 }
 
+/* "Based on" prior-art line (issue #134): same muted treatment as
+   .card-status -- informational, not a verdict or a badge. */
+.card-prior-art {
+  font-size: 0.8rem;
+  color: var(--fg-muted);
+  margin: 0.25rem 0;
+}
+.card-prior-art a {
+  color: var(--accent);
+}
+
 /* Prominent cross-link button (issue #124): "Explore individual threads"
    on /conversations/ -> /conversations/threads/. Deliberately a filled
    pill, not a plain inline link, so it reads as a clear call to action

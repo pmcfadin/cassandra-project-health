@@ -100,6 +100,13 @@ _METRICS: tuple[MetricScoringMeta, ...] = (
     MetricScoringMeta("stale_pr_rate", "responsiveness", 1, "lower", "supporting"),
     MetricScoringMeta("stale_jira_rate", "responsiveness", 1, "lower", "key"),
     MetricScoringMeta("median_resolution_latency_jira", "responsiveness", 1, "lower", "supporting"),
+    # issue #134: cohort companion series (CHAOSS "Issue Resolution Duration"
+    # style) -- supporting only, same as the metric above, so it can never
+    # double-weight the same underlying resolution-latency signal into the
+    # composite (SCORING.md's "no metric alone drives status" pattern).
+    MetricScoringMeta(
+        "median_resolution_latency_jira_cohort_12m", "responsiveness", 1, "lower", "supporting"
+    ),
     MetricScoringMeta("pr_merge_lead_time", "responsiveness", 1, "lower", "supporting"),
     MetricScoringMeta("pr_time_to_close", "responsiveness", 1, "lower", "supporting"),
     # --- Organizational diversity (METRICS.md §5) ----------------------------

@@ -32,7 +32,8 @@ _VERSIONS: dict[str, str] = {
     "new_contributors_monthly": "1.1",
     "unique_reviewers_monthly": "1.1",
     "reviewer_hhi": "1.0",
-    "median_resolution_latency_jira": "1.0",
+    "median_resolution_latency_jira": "1.1",
+    "median_resolution_latency_jira_cohort_12m": "1.0",
     "stale_jira_rate": "1.0",
     "pmc_joins_quarterly": "1.0",
     "truck_factor": "1.0",
@@ -71,12 +72,30 @@ _INITIAL_ISSUE_52_CHANGELOG_NOTE = "Initial implementation (issue #52, D6)."
 _INITIAL_ISSUE_35_CHANGELOG_NOTE = "Initial implementation (issue #35)."
 _INITIAL_ISSUE_54_CHANGELOG_NOTE = "Initial implementation (issue #54)."
 
+_MEDIAN_RESOLUTION_LATENCY_JIRA_CHANGELOG_NOTE = (
+    "1.0 -> 1.1 (issue #134, 2026-10-09, reviewer feedback: 'one day where jira resolution "
+    "spikes to 230 days, that's weird'): adds details_json.bulk_closure_days -- a deterministic, "
+    "disclosed-rule annotation (details_json.bulk_closure_rule) flagging calendar days with "
+    ">= 10 resolutions of issues older than 365 days at resolution, so a backlog-sweep closure "
+    "day is visible on the chart rather than read as unexplained latency. value/n/flag formula "
+    "is unchanged from 1.0. See the companion metric_id "
+    "median_resolution_latency_jira_cohort_12m for the trailing-12-month-cohort series that "
+    "excludes backlog sweeps from the median itself."
+)
+_INITIAL_ISSUE_134_COHORT_CHANGELOG_NOTE = (
+    "Initial implementation (issue #134, 2026-10-09): CHAOSS 'Issue Resolution Duration' style "
+    "cohort companion to median_resolution_latency_jira, restricted to issues created within the "
+    "trailing 12 months of their resolution month, so a sweep of years-old backlog issues "
+    "doesn't dominate the median the way it can in the unrestricted metric."
+)
+
 _CHANGELOG_NOTES: dict[str, str] = {
     "active_contributors_monthly": _HEADCOUNT_FLOOR_CHANGELOG_NOTE,
     "new_contributors_monthly": _HEADCOUNT_FLOOR_CHANGELOG_NOTE,
     "unique_reviewers_monthly": _HEADCOUNT_FLOOR_CHANGELOG_NOTE,
     "reviewer_hhi": _INITIAL_M0_CHANGELOG_NOTE,
-    "median_resolution_latency_jira": _INITIAL_M0_CHANGELOG_NOTE,
+    "median_resolution_latency_jira": _MEDIAN_RESOLUTION_LATENCY_JIRA_CHANGELOG_NOTE,
+    "median_resolution_latency_jira_cohort_12m": _INITIAL_ISSUE_134_COHORT_CHANGELOG_NOTE,
     "stale_jira_rate": _INITIAL_M0_CHANGELOG_NOTE,
     "pmc_joins_quarterly": _INITIAL_M0_CHANGELOG_NOTE,
     "truck_factor": _INITIAL_ISSUE_53_CHANGELOG_NOTE,
@@ -165,9 +184,31 @@ _DESCRIPTIONS: dict[str, str] = {
     ),
     "median_resolution_latency_jira": (
         "Median days from JIRA issue creation to resolution, for issues resolved in each "
-        "completed calendar month; details_json carries p90_days and n. Tier: established. "
-        "Dimension: responsiveness. Role: supporting. Direction of good: lower. Window: monthly, "
-        "completed months only. METRICS.md §4."
+        "completed calendar month; details_json carries p90_days and n. VALUE (v1.1, issue "
+        "#134): also carries details_json.bulk_closure_days -- a deterministic, disclosed-rule "
+        "annotation (details_json.bulk_closure_rule) listing this window's calendar days with "
+        ">= 10 resolutions of issues older than 365 days at resolution, so a backlog-sweep "
+        "closure day (e.g. 24 issues created before 2025 all resolved on 2026-04-13) is visible "
+        "on the chart as a fact, not read as unexplained latency; facts only, no interpretation "
+        "(D25). See the companion metric_id median_resolution_latency_jira_cohort_12m for a "
+        "series that excludes backlog-sweep-dominated months from the median itself rather than "
+        "just annotating them. Tier: established. Dimension: responsiveness. Role: supporting. "
+        "Direction of good: lower. Window: monthly, completed months only. METRICS.md §4."
+    ),
+    "median_resolution_latency_jira_cohort_12m": (
+        "CHAOSS 'Issue Resolution Duration' style cohort companion to "
+        "median_resolution_latency_jira (issue #134): median days from JIRA issue creation to "
+        "resolution, for issues resolved in each completed calendar month AND created within the "
+        "trailing 12 months of their own resolution (created_at >= resolved_at - 12 months) -- "
+        "so a month dominated by a sweep of years-old backlog issues reads as a real gap (n=0 or "
+        "a small n from the few recent-cohort issues also resolved that month) instead of the "
+        "sweep pulling the median upward. Dense across the SAME month range as "
+        "median_resolution_latency_jira (computed from that metric's unfiltered resolved-issue "
+        "population), so the two series share one chart x-axis even where the cohort filter "
+        "leaves a month with zero qualifying issues. details_json carries p90_days and n (the "
+        "cohort's own n, not the unfiltered metric's). Tier: established. Dimension: "
+        "responsiveness. Role: supporting. Direction of good: lower. Window: monthly, completed "
+        "months only. METRICS.md §4."
     ),
     "stale_jira_rate": (
         "Share of currently-open JIRA issues (resolved_at is null) with no update in the last "

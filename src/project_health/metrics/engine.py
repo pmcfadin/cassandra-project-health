@@ -79,7 +79,14 @@ DEFINITION_VERSIONS: dict[str, str] = {
     "new_contributors_monthly": "1.1",
     "unique_reviewers_monthly": "1.1",
     "reviewer_hhi": "1.0",
-    "median_resolution_latency_jira": "1.0",
+    # issue #134: 1.0 -> 1.1 adds the `bulk_closure_days` annotation to
+    # details_json (value/n/flag formula itself unchanged).
+    "median_resolution_latency_jira": "1.1",
+    # issue #134: cohort companion series restricted to issues created
+    # within the trailing 12 months of their resolution month, so a
+    # backlog-sweep closure (resolving many issues created years earlier)
+    # doesn't dominate the reading the way it can in the plain metric above.
+    "median_resolution_latency_jira_cohort_12m": "1.0",
     "stale_jira_rate": "1.0",
     "pmc_joins_quarterly": "1.0",
     # issue #53
@@ -121,6 +128,16 @@ HEADCOUNT_METRICS = frozenset(
 FLOOR_RATE_RATIO = 5
 FLOOR_CONCENTRATION = 5
 FLOOR_LATENCY = 5
+
+# Issue #134 (reviewer feedback: "one day where jira resolution spikes to
+# 230 days, that's weird"): a deterministic, disclosed-rule annotation for
+# `median_resolution_latency_jira` -- a calendar day with at least this many
+# JIRA resolutions of issues whose age at resolution exceeds
+# `BULK_CLOSURE_MIN_AGE_DAYS` is flagged as a likely backlog-sweep closure
+# day, not a slow-review day. Facts only (D25): the rule and the day/count
+# are shown; no interpretation of *why* the sweep happened is rendered.
+BULK_CLOSURE_MIN_RESOLUTIONS = 10
+BULK_CLOSURE_MIN_AGE_DAYS = 365
 
 # Issue #52 fixup cycle 1 (orchestrator feedback): a window's organizational
 # concentration metrics (elephant_factor, organizational_hhi,
@@ -632,6 +649,31 @@ def _reviewer_hhi(
     return out
 
 
+def _bulk_closure_days(con: duckdb.DuckDBPyConnection) -> dict[date, int]:
+    """Issue #134: calendar days with >= `BULK_CLOSURE_MIN_RESOLUTIONS` JIRA
+    resolutions of issues older than `BULK_CLOSURE_MIN_AGE_DAYS` at
+    resolution time -- computed once over the full accumulated `issue`
+    history (not scoped to any particular month's window; a sweep day near
+    a month boundary must still be found), then sliced per month by
+    `_median_resolution_latency_jira` below. Deterministic, rule-based, no
+    interpretation (D25) -- just the day and the count of old-issue
+    resolutions that landed on it.
+    """
+    rows = con.execute(
+        """
+        SELECT resolved_at::DATE AS resolved_date, COUNT(*) AS n
+        FROM issue
+        WHERE resolved_at IS NOT NULL
+          AND epoch(resolved_at) - epoch(created_at) > ? * 86400
+        GROUP BY 1
+        HAVING COUNT(*) >= ?
+        ORDER BY 1
+        """,
+        [BULK_CLOSURE_MIN_AGE_DAYS, BULK_CLOSURE_MIN_RESOLUTIONS],
+    ).fetchall()
+    return {resolved_date: n for resolved_date, n in rows}
+
+
 def _median_resolution_latency_jira(
     con: duckdb.DuckDBPyConnection, as_of: date, run_id: str, computed_at: datetime
 ) -> list[dict]:
@@ -652,15 +694,100 @@ def _median_resolution_latency_jira(
     if not by_month:
         return []
 
+    bulk_closure_days = _bulk_closure_days(con)
+
     out = []
     for month in _dense_months(min(by_month), as_of):
         latencies = by_month.get(month, [])
         n = len(latencies)
         median_days = statistics.median(latencies) if latencies else None
         p90_days = _percentile(latencies, 0.90) if latencies else None
+        window_end_ = month_end(month)
+        # issue #134: this window's slice of the deterministic bulk-closure
+        # annotation (facts only -- date + count, no interpretation text).
+        month_bulk_closure_days = [
+            {"date": flagged_date.isoformat(), "count": flagged_count}
+            for flagged_date, flagged_count in sorted(bulk_closure_days.items())
+            if month <= flagged_date <= window_end_
+        ]
         out.append(
             _make_row(
                 metric_id="median_resolution_latency_jira",
+                window_start=month,
+                window_end=window_end_,
+                raw_value=median_days,
+                n=n,
+                floor=FLOOR_LATENCY,
+                run_id=run_id,
+                computed_at=computed_at,
+                details={
+                    "p90_days": p90_days,
+                    "n": n,
+                    "bulk_closure_days": month_bulk_closure_days,
+                    "bulk_closure_rule": (
+                        f">= {BULK_CLOSURE_MIN_RESOLUTIONS} resolutions in one day of issues "
+                        f"older than {BULK_CLOSURE_MIN_AGE_DAYS} days at resolution"
+                    ),
+                },
+            )
+        )
+    return out
+
+
+def _median_resolution_latency_jira_cohort_12m(
+    con: duckdb.DuckDBPyConnection, as_of: date, run_id: str, computed_at: datetime
+) -> list[dict]:
+    """Issue #134 companion series (CHAOSS 'Issue Resolution Duration' style
+    cohort, reviewer feedback: a 230-day spike in the plain metric above was
+    a backlog sweep, not slow review): same month-of-resolution bucketing as
+    `median_resolution_latency_jira`, but restricted to issues whose age at
+    resolution is at most 12 months -- so a sweep of years-old backlog
+    issues cannot pull this series' median upward the way it can the plain
+    metric's. `_dense_months` uses the SAME first-month/as_of range as the
+    plain metric (computed from the unfiltered population, via the caller)
+    so both series share one x-axis, including months where the cohort
+    filter leaves zero qualifying issues.
+    """
+    rows = con.execute(
+        """
+        SELECT
+            date_trunc('month', resolved_at)::DATE AS month_start,
+            epoch(resolved_at) - epoch(created_at) AS latency_seconds
+        FROM issue
+        WHERE resolved_at IS NOT NULL
+          AND created_at >= resolved_at - INTERVAL '12 months'
+        ORDER BY 1
+        """
+    ).fetchall()
+
+    by_month: dict[date, list[float]] = {}
+    for month_start_, latency_seconds in rows:
+        by_month.setdefault(month_start_, []).append(latency_seconds / 86400.0)
+
+    # Dense range matches the plain metric's: every resolved issue (cohort
+    # or not) establishes the first month, so a month with zero cohort-
+    # qualifying resolutions (all of that month's resolutions were
+    # backlog-sweep closures) still renders as a real, explicit gap rather
+    # than vanishing from the chart's x-axis.
+    all_resolved_months = con.execute(
+        """
+        SELECT MIN(date_trunc('month', resolved_at)::DATE)
+        FROM issue
+        WHERE resolved_at IS NOT NULL
+        """
+    ).fetchone()[0]
+    if all_resolved_months is None:
+        return []
+
+    out = []
+    for month in _dense_months(all_resolved_months, as_of):
+        latencies = by_month.get(month, [])
+        n = len(latencies)
+        median_days = statistics.median(latencies) if latencies else None
+        p90_days = _percentile(latencies, 0.90) if latencies else None
+        out.append(
+            _make_row(
+                metric_id="median_resolution_latency_jira_cohort_12m",
                 window_start=month,
                 window_end=month_end(month),
                 raw_value=median_days,
@@ -2022,6 +2149,7 @@ def compute_all(
         rows.extend(_unique_reviewers_monthly(con, as_of, run_id, computed_at))
         rows.extend(_reviewer_hhi(con, as_of, run_id, computed_at, reliable_from))
         rows.extend(_median_resolution_latency_jira(con, as_of, run_id, computed_at))
+        rows.extend(_median_resolution_latency_jira_cohort_12m(con, as_of, run_id, computed_at))
         rows.extend(_stale_jira_rate(con, as_of, run_id, computed_at, threshold_days))
         rows.extend(_truck_factor(con, as_of, run_id, computed_at))
         rows.extend(_contributor_absence_factor(con, as_of, run_id, computed_at))

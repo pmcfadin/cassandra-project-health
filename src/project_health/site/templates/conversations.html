@@ -455,6 +455,15 @@
           <noscript>Enable JavaScript to see the {{ m.name }} history chart, or use the data links below.</noscript>
         </div>
 
+        <p class="card-prior-art">
+          Based on:
+          {% if m.prior_art %}
+          {% for pa in m.prior_art %}<a href="{{ pa.url }}">{{ pa.label }}</a>{% if not loop.last %}, {% endif %}{% endfor %}
+          {% else %}
+          project-specific (no established CHAOSS/literature equivalent)
+          {% endif %}
+        </p>
+
         <p class="card-links">
           <a href="{{ m.json_href }}">JSON</a> &middot; <a href="{{ m.csv_href }}">CSV</a>
         </p>

@@ -22,7 +22,7 @@ import pytest
 from project_health import storage
 from project_health.schema import get_schema, validate
 from project_health.site.generate import generate
-from project_health.site.metrics_meta import GOVERNANCE_METRICS, M0_METRICS, PAGES
+from project_health.site.metrics_meta import GOVERNANCE_METRICS, M0_METRICS, PAGES, PriorArt
 
 SITE_PAGES = ["", "community/", "conversations/", "governance/"]
 
@@ -2256,6 +2256,77 @@ def test_metric_meta_axis_format_and_label_expr_by_kind():
     assert M0_METRICS["active_contributors_monthly"].axis_label_expr is None
     assert M0_METRICS["stale_jira_rate"].axis_label_expr is None
     assert M0_METRICS["median_resolution_latency_jira"].axis_label_expr == "datum.label + ' d'"
+
+
+# --- Prior art "Based on" line (issue #134) ---------------------------------
+
+
+def test_metric_meta_prior_art_label_renders_links_or_project_specific():
+    """Issue #134: a metric with a documented CHAOSS/literature equivalent
+    joins its labels; one with none (METRICS.md says "none exact") falls
+    back to the literal "project-specific" rather than an empty string."""
+    active = M0_METRICS["active_contributors_monthly"]
+    assert active.prior_art == (
+        PriorArt("CHAOSS: Contributors", "https://chaoss.community/kb/metric-contributors/"),
+    )
+    assert active.prior_art_label == "CHAOSS: Contributors"
+
+    assert M0_METRICS["reviewer_hhi"].prior_art == ()
+    assert M0_METRICS["reviewer_hhi"].prior_art_label == "project-specific"
+
+    median_resolution = M0_METRICS["median_resolution_latency_jira"]
+    assert len(median_resolution.prior_art) == 2
+    assert median_resolution.prior_art[0].label == "CHAOSS: Issue Resolution Duration"
+    assert (
+        median_resolution.prior_art[0].url
+        == "https://chaoss.community/kb/metric-issue-resolution-duration/"
+    )
+
+
+def test_cohort_companion_metric_is_registered_in_m0_metrics():
+    """Issue #134: the trailing-12-month cohort companion series has its
+    own card metadata (name, dimension, page), distinct from the plain
+    metric it accompanies."""
+    cohort = M0_METRICS["median_resolution_latency_jira_cohort_12m"]
+    assert cohort.name == "Median JIRA Resolution Latency (12m cohort)"
+    assert cohort.dimension == "responsiveness"
+    assert cohort.page == "community"
+    assert cohort.value_kind == "days"
+    assert cohort.prior_art[0].label == "CHAOSS: Issue Resolution Duration"
+
+
+def test_community_card_shows_based_on_chaoss_link_for_a_mapped_metric(tmp_path):
+    out_dir = _build_site(tmp_path)
+    html_text = _community_html(out_dir)
+
+    idx = html_text.index("Active Contributors")
+    card_html = html_text[idx : idx + 6000].replace("\n", " ")
+    assert "Based on:" in card_html
+    expected_url = "https://chaoss.community/kb/metric-contributors/"
+    expected_link = f'<a href="{expected_url}">CHAOSS: Contributors</a>'
+    assert expected_link in card_html
+
+
+def test_community_card_shows_project_specific_for_an_unmapped_metric(tmp_path):
+    out_dir = _build_site(tmp_path)
+    html_text = _community_html(out_dir)
+
+    idx = html_text.index("Reviewer Concentration (HHI)")
+    card_html = html_text[idx : idx + 6000]
+    assert "Based on:" in card_html
+    assert "project-specific" in card_html
+    # Must not fabricate a CHAOSS link for a metric METRICS.md says has none.
+    assert "chaoss.community" not in card_html.split("Based on:")[1][:200]
+
+
+def test_conversations_card_shows_based_on_line(tmp_path):
+    out_dir = _build_site(tmp_path)
+    html_text = _page_html(out_dir, "conversations/")
+
+    idx = html_text.index("Time to First Reply")
+    card_html = html_text[idx : idx + 6000]
+    assert "Based on:" in card_html
+    assert "chaoss.community/kb/metric-time-to-first-response" in card_html
 
 
 # --- Chart sizing (fixup cycle 1: charts rendered at width=0) ---------------

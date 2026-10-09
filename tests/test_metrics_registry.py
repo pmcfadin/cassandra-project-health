@@ -35,6 +35,8 @@ EXPECTED_METRIC_IDS = {
     "pr_review_engagement",
     "time_to_first_response_jira",
     "stale_pr_rate",
+    # issue #134
+    "median_resolution_latency_jira_cohort_12m",
 }
 
 HEADCOUNT_METRIC_IDS = {
@@ -42,6 +44,13 @@ HEADCOUNT_METRIC_IDS = {
     "new_contributors_monthly",
     "unique_reviewers_monthly",
 }
+
+# issue #134: `median_resolution_latency_jira` bumped 1.0 -> 1.1 (adds the
+# `bulk_closure_days` annotation to details_json; the value/n/flag formula
+# itself is unchanged) -- a third version bucket, distinct from the
+# headcount metrics' own 1.0 -> 1.1 bump (issue #27) and from every
+# still-1.0 metric.
+OTHER_1_1_METRIC_IDS = {"median_resolution_latency_jira"}
 
 
 def test_registry_lists_exactly_the_registered_metrics():
@@ -70,8 +79,15 @@ def test_build_registry_stamps_headcount_metrics_1_1_and_others_1_0():
         assert row["changelog_note"]
         headcount_notes.add(row["changelog_note"])
 
+    other_1_1_notes = set()
+    for metric_id in OTHER_1_1_METRIC_IDS:
+        row = rows_by_id[metric_id]
+        assert row["version"] == "1.1"
+        assert row["changelog_note"]
+        other_1_1_notes.add(row["changelog_note"])
+
     other_notes = set()
-    for metric_id in EXPECTED_METRIC_IDS - HEADCOUNT_METRIC_IDS:
+    for metric_id in EXPECTED_METRIC_IDS - HEADCOUNT_METRIC_IDS - OTHER_1_1_METRIC_IDS:
         row = rows_by_id[metric_id]
         assert row["version"] == "1.0"
         assert row["changelog_note"]
@@ -82,6 +98,14 @@ def test_build_registry_stamps_headcount_metrics_1_1_and_others_1_0():
     assert headcount_notes.isdisjoint(other_notes)
     for note in headcount_notes:
         assert "floor" in note.lower() or "sample" in note.lower()
+
+    # issue #134: median_resolution_latency_jira's own 1.0 -> 1.1 note is
+    # about the bulk-closure annotation, not the headcount floor change --
+    # a distinct explanation from both other buckets.
+    assert other_1_1_notes.isdisjoint(headcount_notes)
+    assert other_1_1_notes.isdisjoint(other_notes)
+    for note in other_1_1_notes:
+        assert "bulk_closure" in note.lower() or "bulk-closure" in note.lower()
 
 
 def test_build_registry_is_a_pure_function_of_changed_at():

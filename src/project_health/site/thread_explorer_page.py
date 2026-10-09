@@ -372,7 +372,27 @@ def _year_outcome_chart_spec(rows: list[dict[str, Any]]) -> str | None:
     of year toggle (issue #124). No CI band/rule layer: unlike the
     Conversation patterns section's rate-based charts, this is a raw
     count of sampled threads, not a population estimate with a confidence
-    interval."""
+    interval.
+
+    Issue #133 fixup: this chart spans every year in the data (15+ once
+    the project's history is long enough) on one un-faceted x-axis, so the
+    small-multiples fix above doesn't apply here -- but the reviewer's
+    "doesn't wrap / can't see the right side" complaint turned out to
+    apply to this chart too, for a different mechanical reason. A plain
+    numeric `width` (what `thread_explorer.js`'s `embedChart` sets from
+    the container's resolved pixel width, same as before) only sizes the
+    *plot body*; Vega-Lite's default `autosize: "pad"` then adds the
+    color legend and axis chrome on top of that, so the rendered chart
+    was always wider than its container once the legend's "escalated,
+    then de-escalated"/"abandoned after friction" labels were counted
+    (measured ~211px of overflow, constant across container widths --
+    confirming it was exactly this, not the bars themselves). Moving the
+    legend below the plot and setting `autosize: {"type": "fit-x", ...}`
+    (which makes Vega-Lite shrink the plot body, not just pad outward, so
+    legend + axis + plot together fit the given width exactly) measured
+    zero overflow at every width from a narrow phone up, including with
+    all 15+ years of bars visible at once -- no horizontal scroll or
+    year-range default needed."""
     values = year_outcome_rows(rows)
     if not values:
         return None
@@ -380,6 +400,7 @@ def _year_outcome_chart_spec(rows: list[dict[str, Any]]) -> str | None:
         "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
         "width": "container",
         "height": 260,
+        "autosize": {"type": "fit-x", "contains": "padding"},
         "data": {"values": values},
         "mark": {"type": "bar"},
         "encoding": {
@@ -398,6 +419,7 @@ def _year_outcome_chart_spec(rows: list[dict[str, Any]]) -> str | None:
                     "domain": list(CHART_OUTCOME_CATEGORIES),
                     "scheme": _OUTCOME_COLOR_SCHEME,
                 },
+                "legend": {"orient": "bottom", "direction": "horizontal", "columns": 2},
             },
             "tooltip": [
                 {"field": "year", "type": "ordinal", "title": "Year"},

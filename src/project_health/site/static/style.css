@@ -1042,8 +1042,11 @@ main {
   flex-wrap: wrap;
   gap: 0.5rem;
 }
+/* Issue #133: taller floor than before -- the color legend moved below
+   the plot (see `_year_outcome_chart_spec`'s own docstring) needs its own
+   vertical room now instead of sharing a row with the plot to its right. */
 .thread-outcome-chart {
-  min-height: 280px;
+  min-height: 340px;
 }
 /* Issue #133: see `.conv-yoy-chart-wrap`'s comment -- same small-multiples
    wrap-not-scroll fix, applied to this chart too (reviewer feedback

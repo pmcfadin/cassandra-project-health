@@ -1029,6 +1029,20 @@ def _render_pages(
     (out_dir / "index.html").write_text(home_html)
 
     # Community (`/community/`).
+    # issue #142, orchestrator review of PR #143 (reviewer feedback: the
+    # site is too verbose): the `open_pr_backlog_*` metric_ids stay
+    # computed and downloadable (`data/<id>.json`/`.csv`, written from the
+    # full `series_by_id` above, untouched by this filter) but are excluded
+    # from this dimension-grouped card grid -- they render only through
+    # `pr_backlog_context`'s own single section below (one stacked chart by
+    # age bucket, one by linked-ticket state, a compact current-month
+    # table, a "Based on" line, a base-branch note), not as 12 separate
+    # Responsiveness cards.
+    community_card_series = [
+        series
+        for series in series_by_page["community"]
+        if series.meta.metric_id not in PR_BACKLOG_METRICS
+    ]
     community_dimensions = [
         {
             "dimension": dimension,
@@ -1037,7 +1051,7 @@ def _render_pages(
                 for s in series_list
             ],
         }
-        for dimension, series_list in _group_by_dimension(series_by_page["community"])
+        for dimension, series_list in _group_by_dimension(community_card_series)
     ]
     # Contributor leaderboard (D19, issue #56) — a ranked top-N table, kept
     # entirely out of the `metric_value`/M0 machinery above; see

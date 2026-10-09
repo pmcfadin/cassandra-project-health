@@ -168,27 +168,30 @@
 <section class="pr-backlog" aria-labelledby="pr-backlog-heading">
   <h2 id="pr-backlog-heading">Open PR backlog</h2>
   <p class="page-intro">
-    A monthly reconstructed snapshot of the open GitHub PR backlog's composition: how old the
-    open PRs are, whether each one's linked JIRA ticket is itself still open, and whether a PR
-    has had any review or comment visible on GitHub at all. Per-bucket history charts are in the
-    Responsiveness group above; this table is the latest completed month's figures side by side.
-  </p>
-  <p class="governance-note">
-    <strong>Methodology and caveats.</strong> A PR counts as open through a given month's end T
-    when it was created at or before T and (has never closed, or closed after T) — reconstructed
-    from each PR's current <code>created_at</code>/<code>closed_at</code>, not a state-history
-    table. A linked ticket's state is read from JIRA's current snapshot of that issue, gated on
-    whether it resolved at or before T. "No GitHub response" counts only what's visible on
-    GitHub — a PR's review may have happened on its linked JIRA ticket instead, which this count
-    cannot see. {{ pr_backlog.base_branch_note }} Full definitions:
-    <a href="{{ pr_backlog.metrics_spec_url }}">METRICS.md</a>.
+    The open GitHub PR backlog by age and by linked-JIRA-ticket state, reconstructed monthly.
+    "No GitHub response" counts only what's visible on GitHub — review may have happened on the
+    linked JIRA ticket instead.
   </p>
 
   {% if pr_backlog.available %}
+  {% if pr_backlog.age_chart_spec %}
+  <h3>By age (last 36 months)</h3>
+  <div class="chart" data-vega-spec='{{ pr_backlog.age_chart_spec }}' role="img" aria-label="Open PR backlog by age bucket, last 36 months">
+    <noscript>Enable JavaScript to see this chart, or use the data links below.</noscript>
+  </div>
+  {% endif %}
+
+  {% if pr_backlog.ticket_chart_spec %}
+  <h3>By linked-ticket state (last 36 months)</h3>
+  <div class="chart" data-vega-spec='{{ pr_backlog.ticket_chart_spec }}' role="img" aria-label="Open PR backlog by linked-ticket state, last 36 months">
+    <noscript>Enable JavaScript to see this chart, or use the data links below.</noscript>
+  </div>
+  {% endif %}
+
   <table class="security-table">
     <thead>
       <tr>
-        <th scope="col">As of</th>
+        <th scope="col">Month</th>
         <th scope="col">Open PRs</th>
         <th scope="col">Drafts</th>
         <th scope="col">No GitHub response</th>
@@ -210,40 +213,11 @@
     </tbody>
   </table>
 
-  <div class="card-grid">
-    <article class="card">
-      <header class="card-header"><h3>By age</h3></header>
-      <table class="security-table">
-        <thead>
-          <tr><th scope="col">Age</th><th scope="col">Count</th></tr>
-        </thead>
-        <tbody>
-          {% for row in pr_backlog.age_rows %}
-          <tr>
-            <td>{{ row.label }}</td>
-            <td>{{ row.count if row.count is not none else "insufficient data" }}</td>
-          </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-    </article>
-    <article class="card">
-      <header class="card-header"><h3>By linked-ticket state</h3></header>
-      <table class="security-table">
-        <thead>
-          <tr><th scope="col">State</th><th scope="col">Count</th></tr>
-        </thead>
-        <tbody>
-          {% for row in pr_backlog.ticket_rows %}
-          <tr>
-            <td>{{ row.label }}</td>
-            <td>{{ row.count if row.count is not none else "insufficient data" }}</td>
-          </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-    </article>
-  </div>
+  <p class="card-prior-art">
+    Based on:
+    {% for pa in pr_backlog.prior_art %}<a href="{{ pa.url }}">{{ pa.label }}</a>{% if not loop.last %}, {% endif %}{% endfor %}
+  </p>
+  <p class="governance-note">{{ pr_backlog.base_branch_note }}</p>
   {% else %}
   <p class="card-empty-state">
     The open PR backlog isn't published yet — it appears once the pipeline has collected GitHub

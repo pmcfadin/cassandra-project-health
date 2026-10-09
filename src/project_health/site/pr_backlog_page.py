@@ -1,20 +1,24 @@
 """Community page "Open PR backlog" section context builder (issue #142).
 
-The per-bucket counts (`metrics_meta.PR_BACKLOG_METRICS`) already render as
-ordinary cards in the Community page's existing Responsiveness group
-(`generate.py`'s standard dimension-grouped grid) -- this module builds the
-section's own **compact current-snapshot table** (the latest completed
-month's age/ticket-state/no-response figures side by side, rather than
-scattered across a dozen separate cards) plus the disclosed "base branch
-split isn't available" note the issue's own real-data check asked for.
+Orchestrator review of PR #143 (reviewer feedback: the site is too
+verbose): the 12 `open_pr_backlog_*` metric_ids stay computed and
+downloadable as `data/<id>.json`/`.csv` (`generate.py` still runs them
+through `_build_series`/the per-metric download loop), but they no longer
+render as 12 separate cards in the Community page's Responsiveness
+dimension grid (`generate._render_pages` excludes
+`metrics_meta.PR_BACKLOG_METRICS`' ids from that card grid specifically).
+Instead, this module builds the section's own compact rendering: one
+stacked chart of the backlog by age bucket over the last 36 months, one
+smaller stacked chart by linked-ticket state, a one-row current-month
+table (total, drafts, no-GitHub-response share), a single "Based on" line,
+and a single sentence disclosing that base branch isn't collected.
 
 D25 (neutral, informational site): every string here avoids verdict/
 pass-fail/threshold/"healthy"/"should"/"cleanup" wording -- counts and a
 share only, framed as "what the record shows."
 
 An honest no-data state (no snapshot for this run, or the computation
-produced zero rows) returns a valid context with `available=False`,
-matching every other optional section on this site.
+produced zero rows) still returns a valid context with `available=False`.
 """
 
 from __future__ import annotations
@@ -41,6 +45,7 @@ from project_health.metrics.pr_backlog import (
     TOTAL,
 )
 from project_health.schema import get_schema, validate
+from project_health.site.metrics_meta import PR_BACKLOG_PRIOR_ART
 
 METRICS_SPEC_URL = (
     "https://github.com/pmcfadin/cassandra-project-health/blob/main/docs/spec/METRICS.md"
@@ -48,24 +53,24 @@ METRICS_SPEC_URL = (
 )
 
 BASE_BRANCH_NOTE = (
-    "Base branch split (trunk vs. release branches vs. other) is not shown: this project's "
-    "GitHub collector does not currently record a PR's base branch, so it cannot be "
-    "reconstructed from existing raw data."
+    "Base branch (trunk vs. release branches) is not collected yet, so it is not shown here."
 )
 
-AGE_BUCKET_LABELS: tuple[tuple[str, str], ...] = (
-    (AGE_LT_30D, "<30 days"),
-    (AGE_30_90D, "30-90 days"),
-    (AGE_90D_1Y, "90 days-1 year"),
-    (AGE_1_3Y, "1-3 years"),
-    (AGE_GT_3Y, ">3 years"),
+CHART_WINDOW_MONTHS = 36
+
+AGE_BUCKET_ORDER: tuple[tuple[str, str], ...] = (
+    (AGE_LT_30D, "<30d"),
+    (AGE_30_90D, "30-90d"),
+    (AGE_90D_1Y, "90d-1y"),
+    (AGE_1_3Y, "1-3y"),
+    (AGE_GT_3Y, ">3y"),
 )
 
-TICKET_STATE_LABELS: tuple[tuple[str, str], ...] = (
-    (TICKET_OPEN, "Linked ticket still open"),
-    (NO_TICKET_KEY, "No ticket key in title"),
-    (TICKET_FIXED, "Linked ticket Fixed"),
-    (TICKET_CLOSED_OTHER, "Linked ticket closed (other)"),
+TICKET_STATE_ORDER: tuple[tuple[str, str], ...] = (
+    (TICKET_OPEN, "Still open"),
+    (TICKET_FIXED, "Fixed"),
+    (TICKET_CLOSED_OTHER, "Closed (other)"),
+    (NO_TICKET_KEY, "No ticket key"),
 )
 
 
@@ -76,12 +81,70 @@ def _read_optional_snapshot_table(data_dir: Path, run_id: str) -> pa.Table:
     return validate("metric_value", pq.read_table(path))
 
 
-def _details(row: dict[str, Any]) -> dict[str, Any]:
-    return json.loads(row["details_json"]) if row.get("details_json") else {}
+def _details(row: dict[str, Any] | None) -> dict[str, Any]:
+    if not row or not row.get("details_json"):
+        return {}
+    return json.loads(row["details_json"])
 
 
 def _fmt_pct(value: float | None) -> str | None:
     return f"{round(value * 100)}%" if value is not None else None
+
+
+def _stacked_chart_spec(
+    rows_by_metric: dict[str, list[dict]],
+    bucket_order: tuple[tuple[str, str], ...],
+    *,
+    height: int,
+) -> str | None:
+    """A small, self-contained multi-series Vega-Lite stacked-bar spec --
+    same "no existing chart here encodes more than one series, so this is
+    its own spec" reasoning `review_responsiveness_page.py`'s own
+    `_trailing12m_chart_spec` documents, restricted to the last
+    `CHART_WINDOW_MONTHS` (36, matching `chart_spec.DEFAULT_WINDOW_MONTHS`)
+    months of data."""
+    all_months = sorted(
+        {
+            row["window_start"]
+            for metric_id, _ in bucket_order
+            for row in rows_by_metric.get(metric_id, [])
+        }
+    )
+    if not all_months:
+        return None
+    recent_months = all_months[-CHART_WINDOW_MONTHS:]
+
+    values: list[dict[str, Any]] = []
+    for metric_id, label in bucket_order:
+        rows_by_month = {r["window_start"]: r for r in rows_by_metric.get(metric_id, [])}
+        for month in recent_months:
+            row = rows_by_month.get(month)
+            count = row["value"] if row and row["value"] is not None else 0
+            values.append({"month": month.isoformat(), "bucket": label, "count": count})
+
+    spec = {
+        "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+        "width": "container",
+        "height": height,
+        "data": {"values": values},
+        "mark": "bar",
+        "encoding": {
+            "x": {"field": "month", "type": "temporal", "title": None},
+            "y": {"field": "count", "type": "quantitative", "title": "Open PRs", "stack": "zero"},
+            "color": {
+                "field": "bucket",
+                "type": "nominal",
+                "title": None,
+                "sort": [label for _, label in bucket_order],
+            },
+            "tooltip": [
+                {"field": "month", "type": "temporal", "title": "Month"},
+                {"field": "bucket", "type": "nominal", "title": "Bucket"},
+                {"field": "count", "type": "quantitative", "title": "Count"},
+            ],
+        },
+    }
+    return json.dumps(spec)
 
 
 def build_pr_backlog_context(data_dir: str | Path, run_id: str) -> dict[str, Any]:
@@ -94,63 +157,52 @@ def build_pr_backlog_context(data_dir: str | Path, run_id: str) -> dict[str, Any
             "available": False,
             "metrics_spec_url": METRICS_SPEC_URL,
             "base_branch_note": BASE_BRANCH_NOTE,
+            "prior_art": PR_BACKLOG_PRIOR_ART,
         }
 
-    rows_by_metric: dict[str, dict] = {}
+    rows_by_metric: dict[str, list[dict]] = {}
     for row in rows:
-        existing = rows_by_metric.get(row["metric_id"])
-        if existing is None or row["window_start"] > existing["window_start"]:
-            rows_by_metric[row["metric_id"]] = row
+        rows_by_metric.setdefault(row["metric_id"], []).append(row)
 
-    total_row = rows_by_metric.get(TOTAL)
-    if total_row is None:
+    total_rows = sorted(rows_by_metric.get(TOTAL, []), key=lambda r: r["window_start"])
+    if not total_rows:
         return {
             "available": False,
             "metrics_spec_url": METRICS_SPEC_URL,
             "base_branch_note": BASE_BRANCH_NOTE,
+            "prior_art": PR_BACKLOG_PRIOR_ART,
         }
 
-    as_of_month = total_row["window_end"]
-    total = int(total_row["value"]) if total_row["value"] is not None else 0
-    drafts_row = rows_by_metric.get(DRAFTS)
+    latest = total_rows[-1]
+    latest_month = latest["window_start"]
+    as_of_month = latest["window_end"]
+    total = int(latest["value"]) if latest["value"] is not None else 0
+
+    drafts_by_month = {r["window_start"]: r for r in rows_by_metric.get(DRAFTS, [])}
+    drafts_row = drafts_by_month.get(latest_month)
     drafts = int(drafts_row["value"]) if drafts_row and drafts_row["value"] is not None else None
 
-    age_rows = [
-        {
-            "label": label,
-            "count": int(rows_by_metric[metric_id]["value"])
-            if metric_id in rows_by_metric and rows_by_metric[metric_id]["value"] is not None
-            else None,
-        }
-        for metric_id, label in AGE_BUCKET_LABELS
-    ]
-    ticket_rows = [
-        {
-            "label": label,
-            "count": int(rows_by_metric[metric_id]["value"])
-            if metric_id in rows_by_metric and rows_by_metric[metric_id]["value"] is not None
-            else None,
-        }
-        for metric_id, label in TICKET_STATE_LABELS
-    ]
-
-    no_response_row = rows_by_metric.get(NO_GITHUB_RESPONSE_SHARE)
+    no_resp_by_month = {
+        r["window_start"]: r for r in rows_by_metric.get(NO_GITHUB_RESPONSE_SHARE, [])
+    }
+    no_resp_row = no_resp_by_month.get(latest_month)
     no_response_share = (
-        _fmt_pct(no_response_row["value"])
-        if no_response_row and no_response_row["value"] is not None
+        _fmt_pct(no_resp_row["value"])
+        if no_resp_row and no_resp_row["value"] is not None
         else None
     )
-    no_response_n = _details(no_response_row).get("n_denominator") if no_response_row else None
+    no_response_n = _details(no_resp_row).get("n_denominator")
 
     return {
         "available": True,
         "as_of_month": as_of_month,
         "total": total,
         "drafts": drafts,
-        "age_rows": age_rows,
-        "ticket_rows": ticket_rows,
         "no_response_share": no_response_share,
         "no_response_n": no_response_n,
-        "metrics_spec_url": METRICS_SPEC_URL,
+        "age_chart_spec": _stacked_chart_spec(rows_by_metric, AGE_BUCKET_ORDER, height=240),
+        "ticket_chart_spec": _stacked_chart_spec(rows_by_metric, TICKET_STATE_ORDER, height=160),
+        "prior_art": PR_BACKLOG_PRIOR_ART,
         "base_branch_note": BASE_BRANCH_NOTE,
+        "metrics_spec_url": METRICS_SPEC_URL,
     }

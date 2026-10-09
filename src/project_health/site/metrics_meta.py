@@ -942,7 +942,7 @@ GOVERNANCE_METRICS: dict[str, MetricMeta] = {
 # here as *adapted from* two CHAOSS metrics instead (Change Requests, and
 # Issue Age applied to change requests rather than issues), per the issue's
 # own verified citation; never claimed as an exact CHAOSS match.
-_PR_BACKLOG_PRIOR_ART: tuple[PriorArt, ...] = (
+PR_BACKLOG_PRIOR_ART: tuple[PriorArt, ...] = (
     PriorArt(
         "CHAOSS: Change Requests (adapted)",
         "https://chaoss.community/kb/metric-change-requests/",
@@ -963,7 +963,7 @@ PR_BACKLOG_METRICS: dict[str, MetricMeta] = {
         value_kind="count",
         page="community",
         sources=("github",),
-        prior_art=_PR_BACKLOG_PRIOR_ART,
+        prior_art=PR_BACKLOG_PRIOR_ART,
     ),
     "open_pr_backlog_drafts": MetricMeta(
         metric_id="open_pr_backlog_drafts",
@@ -974,7 +974,7 @@ PR_BACKLOG_METRICS: dict[str, MetricMeta] = {
         value_kind="count",
         page="community",
         sources=("github",),
-        prior_art=_PR_BACKLOG_PRIOR_ART,
+        prior_art=PR_BACKLOG_PRIOR_ART,
     ),
     "open_pr_backlog_age_lt_30d": MetricMeta(
         metric_id="open_pr_backlog_age_lt_30d",
@@ -985,7 +985,7 @@ PR_BACKLOG_METRICS: dict[str, MetricMeta] = {
         value_kind="count",
         page="community",
         sources=("github",),
-        prior_art=_PR_BACKLOG_PRIOR_ART,
+        prior_art=PR_BACKLOG_PRIOR_ART,
     ),
     "open_pr_backlog_age_30_90d": MetricMeta(
         metric_id="open_pr_backlog_age_30_90d",
@@ -996,7 +996,7 @@ PR_BACKLOG_METRICS: dict[str, MetricMeta] = {
         value_kind="count",
         page="community",
         sources=("github",),
-        prior_art=_PR_BACKLOG_PRIOR_ART,
+        prior_art=PR_BACKLOG_PRIOR_ART,
     ),
     "open_pr_backlog_age_90d_1y": MetricMeta(
         metric_id="open_pr_backlog_age_90d_1y",
@@ -1007,7 +1007,7 @@ PR_BACKLOG_METRICS: dict[str, MetricMeta] = {
         value_kind="count",
         page="community",
         sources=("github",),
-        prior_art=_PR_BACKLOG_PRIOR_ART,
+        prior_art=PR_BACKLOG_PRIOR_ART,
     ),
     "open_pr_backlog_age_1_3y": MetricMeta(
         metric_id="open_pr_backlog_age_1_3y",
@@ -1018,7 +1018,7 @@ PR_BACKLOG_METRICS: dict[str, MetricMeta] = {
         value_kind="count",
         page="community",
         sources=("github",),
-        prior_art=_PR_BACKLOG_PRIOR_ART,
+        prior_art=PR_BACKLOG_PRIOR_ART,
     ),
     "open_pr_backlog_age_gt_3y": MetricMeta(
         metric_id="open_pr_backlog_age_gt_3y",
@@ -1029,7 +1029,7 @@ PR_BACKLOG_METRICS: dict[str, MetricMeta] = {
         value_kind="count",
         page="community",
         sources=("github",),
-        prior_art=_PR_BACKLOG_PRIOR_ART,
+        prior_art=PR_BACKLOG_PRIOR_ART,
     ),
     "open_pr_backlog_ticket_open": MetricMeta(
         metric_id="open_pr_backlog_ticket_open",
@@ -1040,7 +1040,7 @@ PR_BACKLOG_METRICS: dict[str, MetricMeta] = {
         value_kind="count",
         page="community",
         sources=("github", "jira"),
-        prior_art=_PR_BACKLOG_PRIOR_ART,
+        prior_art=PR_BACKLOG_PRIOR_ART,
     ),
     "open_pr_backlog_ticket_fixed": MetricMeta(
         metric_id="open_pr_backlog_ticket_fixed",
@@ -1051,7 +1051,7 @@ PR_BACKLOG_METRICS: dict[str, MetricMeta] = {
         value_kind="count",
         page="community",
         sources=("github", "jira"),
-        prior_art=_PR_BACKLOG_PRIOR_ART,
+        prior_art=PR_BACKLOG_PRIOR_ART,
     ),
     "open_pr_backlog_ticket_closed_other": MetricMeta(
         metric_id="open_pr_backlog_ticket_closed_other",
@@ -1062,7 +1062,7 @@ PR_BACKLOG_METRICS: dict[str, MetricMeta] = {
         value_kind="count",
         page="community",
         sources=("github", "jira"),
-        prior_art=_PR_BACKLOG_PRIOR_ART,
+        prior_art=PR_BACKLOG_PRIOR_ART,
     ),
     "open_pr_backlog_no_ticket_key": MetricMeta(
         metric_id="open_pr_backlog_no_ticket_key",
@@ -1073,7 +1073,7 @@ PR_BACKLOG_METRICS: dict[str, MetricMeta] = {
         value_kind="count",
         page="community",
         sources=("github",),
-        prior_art=_PR_BACKLOG_PRIOR_ART,
+        prior_art=PR_BACKLOG_PRIOR_ART,
     ),
     "open_pr_backlog_no_github_response_share": MetricMeta(
         metric_id="open_pr_backlog_no_github_response_share",
@@ -1084,7 +1084,7 @@ PR_BACKLOG_METRICS: dict[str, MetricMeta] = {
         value_kind="percent",
         page="community",
         sources=("github",),
-        prior_art=_PR_BACKLOG_PRIOR_ART,
+        prior_art=PR_BACKLOG_PRIOR_ART,
     ),
 }
 

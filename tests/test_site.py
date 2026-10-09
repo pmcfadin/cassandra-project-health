@@ -2993,24 +2993,47 @@ def _build_site_with_pr_backlog(
     return out_dir, data_dir
 
 
-def test_community_page_renders_pr_backlog_cards_in_responsiveness_group(tmp_path):
-    """The per-bucket counts render as ordinary cards in the Community
-    page's existing Responsiveness dimension group (PR_BACKLOG_METRICS'
-    own `dimension="responsiveness"`), not a separate ad hoc grid."""
+def test_community_page_pr_backlog_not_rendered_as_individual_cards(tmp_path):
+    """Orchestrator review of PR #143 (reviewer feedback: the site is too
+    verbose): the 12 `open_pr_backlog_*` metric_ids stay computed and
+    downloadable, but render only through the single "Open PR backlog"
+    section below -- never as 12 separate cards in the Responsiveness
+    dimension grid."""
     out_dir, _ = _build_site_with_pr_backlog(tmp_path)
     html_text = _community_html(out_dir)
     assert "Open PR backlog" in html_text
+    # None of the 12 per-bucket card headers render (every one of
+    # PR_BACKLOG_METRICS' names starts with this prefix).
+    assert "<h3>Open PR backlog" not in html_text
     for meta in PR_BACKLOG_METRICS.values():
-        assert meta.name in html_text
+        assert f"<h3>{meta.name}</h3>" not in html_text
+
+    # The metric_ids still exist as downloadable data (JSON/CSV) even
+    # though they don't render as cards.
+    from project_health.metrics.pr_backlog import TOTAL
+
+    assert (out_dir / "data" / f"{TOTAL}.json").is_file()
+    assert (out_dir / "data" / f"{TOTAL}.csv").is_file()
 
 
-def test_community_page_renders_pr_backlog_compact_table(tmp_path):
+def test_community_page_renders_pr_backlog_section(tmp_path):
+    """The single "Open PR backlog" section: two stacked charts (age,
+    linked-ticket state), a one-row compact current-month table, a single
+    "Based on" line, and a single base-branch-gap note."""
     out_dir, _ = _build_site_with_pr_backlog(tmp_path)
     html_text = _community_html(out_dir)
     assert 'id="pr-backlog-heading"' in html_text
-    # The compact current-snapshot table's own figures.
+    # Two chart mounts (age, ticket-state), both carrying real Vega-Lite specs.
+    assert html_text.count('aria-label="Open PR backlog by age bucket') == 1
+    assert html_text.count('aria-label="Open PR backlog by linked-ticket state') == 1
+    assert "data-vega-spec=" in html_text
+    # The compact current-month table's own figures.
     assert ">20<" in html_text or ">20.0<" in html_text  # total open backlog
     assert "30%" in html_text  # no-GitHub-response share
+    # One "Based on" line, citing the adapted CHAOSS metrics.
+    assert "Based on:" in html_text
+    assert "chaoss.community/kb/metric-change-requests" in html_text
+    assert "chaoss.community/kb/metric-issue-age" in html_text
 
 
 def test_community_page_pr_backlog_discloses_base_branch_gap(tmp_path):

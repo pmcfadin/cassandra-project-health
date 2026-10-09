@@ -131,7 +131,13 @@ from project_health.collectors.ponymail import PonyMailCollector
 from project_health.collectors.release import ReleaseCollector
 from project_health.collectors.security import SecurityCollector
 from project_health.config import ProjectConfig
-from project_health.metrics import METRIC_IDS, compute_all, compute_review_responsiveness
+from project_health.metrics import (
+    METRIC_IDS,
+    build_pr_backlog_registry,
+    compute_all,
+    compute_pr_backlog,
+    compute_review_responsiveness,
+)
 from project_health.normalize.affiliation import (
     DEFAULT_GITHUB_COMPANY_LOOKBACK_MONTHS,
     build_affiliation_periods,
@@ -3387,6 +3393,32 @@ def _write_review_responsiveness_snapshot(
     return path
 
 
+def _write_pr_backlog_snapshot(data_dir: Path, run_id: str, table: pa.Table) -> Path:
+    """`snapshots/<run_id>/pr_backlog_metric_value.parquet` (issue #142) --
+    a sibling file to `metrics.parquet`, deliberately not merged into it:
+    `metrics/pr_backlog.py`'s module docstring explains why these metrics
+    stay outside `metrics/registry.py::METRIC_IDS` and the scored/composite
+    system, the same "own snapshot file" treatment
+    `review_responsiveness_metric_value.parquet` gets."""
+    snapshot_dir = Path(data_dir) / "snapshots" / run_id
+    snapshot_dir.mkdir(parents=True, exist_ok=True)
+    path = snapshot_dir / "pr_backlog_metric_value.parquet"
+    pq.write_table(table, path)
+    return path
+
+
+def _write_pr_backlog_registry_snapshot(data_dir: Path, run_id: str, table: pa.Table) -> Path:
+    """`snapshots/<run_id>/pr_backlog_metric_definition_version.parquet`
+    (issue #142) -- the `open_pr_backlog_*` metric_ids' own
+    `metric_definition_version` registry, mirroring
+    `governance_metric_definition_version.parquet`'s treatment."""
+    snapshot_dir = Path(data_dir) / "snapshots" / run_id
+    snapshot_dir.mkdir(parents=True, exist_ok=True)
+    path = snapshot_dir / "pr_backlog_metric_definition_version.parquet"
+    pq.write_table(table, path)
+    return path
+
+
 def _write_leaderboard_snapshot(data_dir: Path, run_id: str, leaderboard_table: pa.Table) -> Path:
     """`snapshots/<run_id>/leaderboard.parquet` (D19, issue #56) — a sibling
     file to `metrics.parquet`, deliberately not merged into it: the
@@ -3790,6 +3822,34 @@ def run_pipeline(
         _write_review_responsiveness_snapshot(data_dir, run_id, review_responsiveness_table)
     except Exception as exc:  # noqa: BLE001 - an informational section must never fail the run.
         _log("review_responsiveness_computation_failed", error=f"{type(exc).__name__}: {exc}")
+
+    # issue #142: open PR backlog composition (age / linked-ticket state /
+    # no-GitHub-response share) -- same independent-step treatment as
+    # review-responsiveness immediately above: never gates the M0 run's
+    # exit code or `status` (deliberately outside `metrics/registry.py::
+    # METRIC_IDS`, see `metrics/pr_backlog.py`'s module docstring). A
+    # computation failure here is logged and skipped rather than failing
+    # the whole run.
+    try:
+        pr_backlog_table = compute_pr_backlog(
+            {
+                "pr": pr,
+                "pr_review": pr_review,
+                "pr_comment": pr_comment,
+                "pr_issue_link": pr_issue_link,
+                "issue": issue,
+                "identity_link": identity_link,
+            },
+            as_of=started_at.date(),
+            run_id=run_id,
+            computed_at=started_at,
+        )
+        _write_pr_backlog_snapshot(data_dir, run_id, pr_backlog_table)
+        _write_pr_backlog_registry_snapshot(
+            data_dir, run_id, build_pr_backlog_registry(started_at)
+        )
+    except Exception as exc:  # noqa: BLE001 - an informational section must never fail the run.
+        _log("pr_backlog_computation_failed", error=f"{type(exc).__name__}: {exc}")
 
     manifest = build_manifest(
         run_id=run_id,

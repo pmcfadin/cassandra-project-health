@@ -929,6 +929,165 @@ GOVERNANCE_METRICS: dict[str, MetricMeta] = {
     ),
 }
 
+# Open PR backlog composition (issue #142): deliberately outside M0_METRICS'
+# scored/composite system (`metrics/pr_backlog.py`'s module docstring) --
+# same `direction_of_good=None` treatment GOVERNANCE_METRICS gets, since
+# these are backlog-composition facts, not a rate this project judges
+# "higher/lower is better". `page="community"`, `dimension="responsiveness"`
+# so these cards render in the Community page's existing Responsiveness
+# group, alongside stale_pr_rate/time_to_first_response_jira/etc.
+#
+# Prior art: CHAOSS's Knowledge Base has no "Change Request Backlog" metric
+# (`kb/metric-change-request-backlog` -- verified 404, 2026-10-09) -- cited
+# here as *adapted from* two CHAOSS metrics instead (Change Requests, and
+# Issue Age applied to change requests rather than issues), per the issue's
+# own verified citation; never claimed as an exact CHAOSS match.
+_PR_BACKLOG_PRIOR_ART: tuple[PriorArt, ...] = (
+    PriorArt(
+        "CHAOSS: Change Requests (adapted)",
+        "https://chaoss.community/kb/metric-change-requests/",
+    ),
+    PriorArt(
+        "CHAOSS: Issue Age (adapted, applied to change requests)",
+        "https://chaoss.community/kb/metric-issue-age/",
+    ),
+)
+
+PR_BACKLOG_METRICS: dict[str, MetricMeta] = {
+    "open_pr_backlog_total": MetricMeta(
+        metric_id="open_pr_backlog_total",
+        name="Open PR backlog",
+        dimension="responsiveness",
+        tier="established",
+        direction_of_good=None,
+        value_kind="count",
+        page="community",
+        sources=("github",),
+        prior_art=_PR_BACKLOG_PRIOR_ART,
+    ),
+    "open_pr_backlog_drafts": MetricMeta(
+        metric_id="open_pr_backlog_drafts",
+        name="Open PR backlog — drafts",
+        dimension="responsiveness",
+        tier="established",
+        direction_of_good=None,
+        value_kind="count",
+        page="community",
+        sources=("github",),
+        prior_art=_PR_BACKLOG_PRIOR_ART,
+    ),
+    "open_pr_backlog_age_lt_30d": MetricMeta(
+        metric_id="open_pr_backlog_age_lt_30d",
+        name="Open PR backlog — age under 30d",
+        dimension="responsiveness",
+        tier="established",
+        direction_of_good=None,
+        value_kind="count",
+        page="community",
+        sources=("github",),
+        prior_art=_PR_BACKLOG_PRIOR_ART,
+    ),
+    "open_pr_backlog_age_30_90d": MetricMeta(
+        metric_id="open_pr_backlog_age_30_90d",
+        name="Open PR backlog — age 30-90d",
+        dimension="responsiveness",
+        tier="established",
+        direction_of_good=None,
+        value_kind="count",
+        page="community",
+        sources=("github",),
+        prior_art=_PR_BACKLOG_PRIOR_ART,
+    ),
+    "open_pr_backlog_age_90d_1y": MetricMeta(
+        metric_id="open_pr_backlog_age_90d_1y",
+        name="Open PR backlog — age 90d-1y",
+        dimension="responsiveness",
+        tier="established",
+        direction_of_good=None,
+        value_kind="count",
+        page="community",
+        sources=("github",),
+        prior_art=_PR_BACKLOG_PRIOR_ART,
+    ),
+    "open_pr_backlog_age_1_3y": MetricMeta(
+        metric_id="open_pr_backlog_age_1_3y",
+        name="Open PR backlog — age 1-3y",
+        dimension="responsiveness",
+        tier="established",
+        direction_of_good=None,
+        value_kind="count",
+        page="community",
+        sources=("github",),
+        prior_art=_PR_BACKLOG_PRIOR_ART,
+    ),
+    "open_pr_backlog_age_gt_3y": MetricMeta(
+        metric_id="open_pr_backlog_age_gt_3y",
+        name="Open PR backlog — age over 3y",
+        dimension="responsiveness",
+        tier="established",
+        direction_of_good=None,
+        value_kind="count",
+        page="community",
+        sources=("github",),
+        prior_art=_PR_BACKLOG_PRIOR_ART,
+    ),
+    "open_pr_backlog_ticket_open": MetricMeta(
+        metric_id="open_pr_backlog_ticket_open",
+        name="Open PR backlog — linked ticket still open",
+        dimension="responsiveness",
+        tier="established",
+        direction_of_good=None,
+        value_kind="count",
+        page="community",
+        sources=("github", "jira"),
+        prior_art=_PR_BACKLOG_PRIOR_ART,
+    ),
+    "open_pr_backlog_ticket_fixed": MetricMeta(
+        metric_id="open_pr_backlog_ticket_fixed",
+        name="Open PR backlog — linked ticket Fixed",
+        dimension="responsiveness",
+        tier="established",
+        direction_of_good=None,
+        value_kind="count",
+        page="community",
+        sources=("github", "jira"),
+        prior_art=_PR_BACKLOG_PRIOR_ART,
+    ),
+    "open_pr_backlog_ticket_closed_other": MetricMeta(
+        metric_id="open_pr_backlog_ticket_closed_other",
+        name="Open PR backlog — linked ticket closed (other)",
+        dimension="responsiveness",
+        tier="established",
+        direction_of_good=None,
+        value_kind="count",
+        page="community",
+        sources=("github", "jira"),
+        prior_art=_PR_BACKLOG_PRIOR_ART,
+    ),
+    "open_pr_backlog_no_ticket_key": MetricMeta(
+        metric_id="open_pr_backlog_no_ticket_key",
+        name="Open PR backlog — no ticket key in title",
+        dimension="responsiveness",
+        tier="established",
+        direction_of_good=None,
+        value_kind="count",
+        page="community",
+        sources=("github",),
+        prior_art=_PR_BACKLOG_PRIOR_ART,
+    ),
+    "open_pr_backlog_no_github_response_share": MetricMeta(
+        metric_id="open_pr_backlog_no_github_response_share",
+        name="Open PR backlog — no GitHub response",
+        dimension="responsiveness",
+        tier="established",
+        direction_of_good=None,
+        value_kind="percent",
+        page="community",
+        sources=("github",),
+        prior_art=_PR_BACKLOG_PRIOR_ART,
+    ),
+}
+
 
 @dataclass(frozen=True)
 class PageMeta:

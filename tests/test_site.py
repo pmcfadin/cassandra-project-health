@@ -27,6 +27,7 @@ from project_health.site.metrics_meta import (
     GOVERNANCE_METRICS,
     M0_METRICS,
     PAGES,
+    PR_BACKLOG_METRICS,
     PriorArt,
 )
 
@@ -2916,3 +2917,138 @@ def test_yoy_chart_row_values_match_synthetic_snapshot(tmp_path):
     assert hostility_row["ci_hi"] == 6.0
     assert hostility_row["messages"] == 50
     assert hostility_row["authors"] == 15
+
+
+# --- Open PR backlog (issue #142) ------------------------------------------
+
+
+def _default_pr_backlog_rows() -> list[dict]:
+    from project_health.metrics.pr_backlog import (
+        AGE_1_3Y,
+        AGE_30_90D,
+        AGE_90D_1Y,
+        AGE_GT_3Y,
+        AGE_LT_30D,
+        DRAFTS,
+        NO_GITHUB_RESPONSE_SHARE,
+        NO_TICKET_KEY,
+        TICKET_CLOSED_OTHER,
+        TICKET_FIXED,
+        TICKET_OPEN,
+        TOTAL,
+    )
+
+    window_start, window_end = date(2026, 8, 1), date(2026, 8, 31)
+    counts = {
+        TOTAL: 20.0,
+        DRAFTS: 2.0,
+        AGE_LT_30D: 4.0,
+        AGE_30_90D: 5.0,
+        AGE_90D_1Y: 6.0,
+        AGE_1_3Y: 3.0,
+        AGE_GT_3Y: 2.0,
+        TICKET_OPEN: 12.0,
+        NO_TICKET_KEY: 5.0,
+        TICKET_FIXED: 2.0,
+        TICKET_CLOSED_OTHER: 1.0,
+    }
+    rows = [
+        _metric_value_row(metric_id, window_start, window_end, value, 20, "ok")
+        for metric_id, value in counts.items()
+    ]
+    rows.append(
+        _metric_value_row(
+            NO_GITHUB_RESPONSE_SHARE,
+            window_start,
+            window_end,
+            0.3,
+            20,
+            "ok",
+            details_json=json.dumps(
+                {"n_hit": 6, "n_denominator": 20, "label": "github_only_review_may_occur_in_jira"}
+            ),
+        )
+    )
+    return rows
+
+
+def _write_pr_backlog_snapshot(data_dir: Path, run_id: str, rows: list[dict]) -> None:
+    table = _metric_value_table(rows)
+    snapshot_dir = data_dir / "snapshots" / run_id
+    snapshot_dir.mkdir(parents=True, exist_ok=True)
+    pq.write_table(table, snapshot_dir / "pr_backlog_metric_value.parquet")
+
+
+def _build_site_with_pr_backlog(
+    tmp_path: Path, *, rows: list[dict] | None = None
+) -> tuple[Path, Path]:
+    data_dir = tmp_path / "data"
+    out_dir = tmp_path / "out"
+    _write_snapshot(data_dir, RUN_ID, _default_rows())
+    _write_pr_backlog_snapshot(
+        data_dir, RUN_ID, _default_pr_backlog_rows() if rows is None else rows
+    )
+    _write_manifest(data_dir, RUN_ID, completed_at=BUILD_TIME - timedelta(hours=1))
+    generate(data_dir, RUN_ID, out_dir, now=BUILD_TIME)
+    return out_dir, data_dir
+
+
+def test_community_page_renders_pr_backlog_cards_in_responsiveness_group(tmp_path):
+    """The per-bucket counts render as ordinary cards in the Community
+    page's existing Responsiveness dimension group (PR_BACKLOG_METRICS'
+    own `dimension="responsiveness"`), not a separate ad hoc grid."""
+    out_dir, _ = _build_site_with_pr_backlog(tmp_path)
+    html_text = _community_html(out_dir)
+    assert "Open PR backlog" in html_text
+    for meta in PR_BACKLOG_METRICS.values():
+        assert meta.name in html_text
+
+
+def test_community_page_renders_pr_backlog_compact_table(tmp_path):
+    out_dir, _ = _build_site_with_pr_backlog(tmp_path)
+    html_text = _community_html(out_dir)
+    assert 'id="pr-backlog-heading"' in html_text
+    # The compact current-snapshot table's own figures.
+    assert ">20<" in html_text or ">20.0<" in html_text  # total open backlog
+    assert "30%" in html_text  # no-GitHub-response share
+
+
+def test_community_page_pr_backlog_discloses_base_branch_gap(tmp_path):
+    """Issue #142's own real-data check: base branch isn't collected, so
+    the page must say so explicitly rather than omit the split silently."""
+    out_dir, _ = _build_site_with_pr_backlog(tmp_path)
+    html_text = _community_html(out_dir)
+    text = _visible_text(html_text).lower()
+    assert "base branch" in text
+    assert "not" in text
+
+
+def test_community_page_honest_empty_state_without_pr_backlog_data(tmp_path):
+    out_dir = _build_site(tmp_path)
+    html_text = _community_html(out_dir)
+    assert 'id="pr-backlog-heading"' in html_text
+    assert "isn&#39;t published yet" in html_text or "isn't published yet" in html_text
+
+
+def test_community_page_pr_backlog_never_renders_verdict_vocabulary(tmp_path):
+    """D25 + the issue's own explicit instruction: no 'healthy'/'should'/
+    'cleanup needed' framing anywhere in this section, matching the
+    project-wide verdict-vocabulary ban."""
+    out_dir, _ = _build_site_with_pr_backlog(tmp_path)
+    html_text = _community_html(out_dir)
+    text = _visible_text(html_text).lower()
+
+    for banned in (
+        "fail",
+        "failing",
+        "pass rate",
+        "exempt",
+        "not in force",
+        "verdict",
+        "threshold",
+        "healthy",
+        "unhealthy",
+        "should",
+        "cleanup needed",
+    ):
+        assert re.search(rf"\b{re.escape(banned)}\b", text) is None, banned

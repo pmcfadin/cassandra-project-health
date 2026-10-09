@@ -1902,7 +1902,10 @@ def test_community_card_shows_backfill_in_progress_note(tmp_path):
     out_dir = _build_site(tmp_path, rows=rows)
     html_text = _community_html(out_dir)
 
-    idx = html_text.index("Time to First Response (JIRA)")
+    # Issue #144: this metric's name also appears earlier, in its section's
+    # collapsed summary row -- `rindex` finds the actual card's own text,
+    # not the summary-row teaser.
+    idx = html_text.index("<h4>Time to First Response (JIRA)</h4>")
     card_html = html_text[idx : idx + 800]
     assert 'class="badge badge--backfill-pending"' in card_html
     assert "backfill pending" in card_html
@@ -1922,7 +1925,7 @@ def test_community_card_omits_backfill_note_when_not_flagged(tmp_path):
     out_dir = _build_site(tmp_path, rows=rows)
     html_text = _community_html(out_dir)
 
-    idx = html_text.index("Time to First Response (JIRA)")
+    idx = html_text.index("<h4>Time to First Response (JIRA)</h4>")
     card_html = html_text[idx : idx + 800]
     assert "badge--backfill-pending" not in card_html
 
@@ -2306,7 +2309,9 @@ def test_community_card_shows_based_on_chaoss_link_for_a_mapped_metric(tmp_path)
     out_dir = _build_site(tmp_path)
     html_text = _community_html(out_dir)
 
-    idx = html_text.index("Active Contributors")
+    # Issue #144: this metric's name also appears earlier, in its section's
+    # collapsed summary row -- `rindex` finds the actual card's own text.
+    idx = html_text.index("<h4>Active Contributors</h4>")
     card_html = html_text[idx : idx + 6000].replace("\n", " ")
     assert "Based on:" in card_html
     expected_url = "https://chaoss.community/kb/metric-contributors/"
@@ -2718,12 +2723,15 @@ def test_community_page_renders_conversation_patterns_card(tmp_path):
     assert 'id="conversation-patterns-summary-heading"' in html_text
     assert "../conversations/#conversation-patterns" in html_text
     assert "preliminary" in html_text.lower()
-    # D19: this card appears directly after the review-responsiveness
-    # section, before the leaderboard section.
+    # D19/issue #144: review-responsiveness and leaderboard are now nested
+    # inside two different collapsible CHAOSS-topic sections (Responsiveness,
+    # Contributor sustainability respectively); this teaser card sits
+    # outside/after all five sections, so it comes after both.
     rr_index = html_text.index('id="review-responsiveness-heading"')
-    conv_index = html_text.index('id="conversation-patterns-summary-heading"')
     leaderboard_index = html_text.index('id="leaderboard-heading"')
-    assert rr_index < conv_index < leaderboard_index
+    conv_index = html_text.index('id="conversation-patterns-summary-heading"')
+    assert rr_index < conv_index
+    assert leaderboard_index < conv_index
 
 
 def test_community_page_honest_empty_state_without_conversation_patterns(tmp_path):
@@ -2776,11 +2784,13 @@ def _build_site_with_yoy_years(tmp_path: Path, years: dict[str, bool]) -> Path:
 
 def _yoy_group_specs(html_text: str) -> dict[str, dict]:
     """Every `data-yoy-chart` element's own Vega-Lite spec, keyed by its
-    panel heading (the immediately preceding `<h4>`) -- so a test can pick
-    out "Constructive / discussion" vs. "Negative" specifically."""
+    panel heading (the immediately preceding `<h5>`, one level deeper than
+    before issue #144 nested this section inside the "Message patterns"
+    collapsible section) -- so a test can pick out "Constructive /
+    discussion" vs. "Negative" specifically."""
     specs = {}
     for match in re.finditer(
-        r"<h4>([^<]+)</h4>\s*<div class=\"conv-yoy-chart-wrap\">\s*"
+        r"<h5>([^<]+)</h5>\s*<div class=\"conv-yoy-chart-wrap\">\s*"
         r"<div class=\"chart conv-yoy-chart\"[^>]*data-vega-spec='(.*?)'",
         html_text,
         re.S,
@@ -2822,14 +2832,28 @@ def test_conversations_page_renders_yoy_section_with_controls(tmp_path):
     assert "2026 (partial)" in html_text
 
 
-def test_yoy_section_appears_directly_after_summary_before_newcomer_section(tmp_path):
+def test_sections_appear_in_issue_144_order(tmp_path):
+    """Issue #144's owner-approved Conversations grouping: Summary ->
+    Newcomer treatment -> How disagreements go -> Message patterns (YoY +
+    facets) -> Method & limits. The year-over-year chart (`conv-yoy`) is
+    nested inside "Message patterns", directly before the by-year facet
+    breakdown (`conv-message-patterns-heading`)."""
     out_dir, _ = _build_site_with_conversation_patterns(tmp_path)
     html_text = _conversations_html(out_dir)
     summary_index = html_text.index('id="conv-summary-heading"')
-    yoy_index = html_text.index('id="conv-yoy-heading"')
     newcomer_index = html_text.index('id="conv-newcomer-heading"')
+    disagreement_index = html_text.index('id="conv-disagreement-heading"')
+    yoy_index = html_text.index('id="conv-yoy-heading"')
     message_patterns_index = html_text.index('id="conv-message-patterns-heading"')
-    assert summary_index < yoy_index < newcomer_index < message_patterns_index
+    method_index = html_text.index('id="conv-method-heading"')
+    assert (
+        summary_index
+        < newcomer_index
+        < disagreement_index
+        < yoy_index
+        < message_patterns_index
+        < method_index
+    )
 
 
 def test_yoy_chart_has_both_panels_with_independent_specs(tmp_path):
@@ -2885,7 +2909,12 @@ def test_yoy_chart_excludes_insufficient_data_years_from_spec_and_notes_them(tmp
     assert "2020" not in years_in_chart
     assert years_in_chart == {"2021", "2022", "2023", "2024", "2025"}
     assert "insufficient_data" in html_text
-    assert "2020" in html_text.split('id="conv-yoy"')[1].split('id="conv-newcomer"')[0]
+    # Issue #144: `conv-yoy` is now nested inside the "Message patterns"
+    # section, directly before the by-year facet breakdown -- the omitted-
+    # year note sits between those two anchors, not before `conv-newcomer`
+    # (which now comes earlier on the page, per the new section order).
+    fragment = html_text.split('id="conv-yoy"')[1].split('id="conv-message-patterns-heading"')[0]
+    assert "2020" in fragment
 
 
 def test_yoy_chart_tooltip_carries_label_year_rate_ci_messages_authors(tmp_path):

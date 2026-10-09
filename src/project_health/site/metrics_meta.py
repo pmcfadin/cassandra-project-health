@@ -1140,6 +1140,215 @@ HOME_CARD_METRIC_LIMIT = 3
 
 
 @dataclass(frozen=True)
+class SectionMeta:
+    """Presentation metadata for one collapsible `<details>` section on a
+    site page (issue #144: "Layout: collapsible sections with summary rows,
+    grouped by CHAOSS practitioner-guide topics"). `section_id` is both the
+    `<details id>` (so `/community/#responsiveness` opens it directly,
+    `static/app.js`) and the key `generate.py` groups a page's metrics by.
+    `chaoss_url` links to the CHAOSS practitioner-guide page this section's
+    topic comes from -- `None` for a section (Governance's) that isn't a
+    CHAOSS-mapped topic. `headline_metric_ids` are the 1-4 metric_ids shown
+    (value, month, n, sparkline) in the section's collapsed summary row --
+    always a subset of whatever this section actually contains, so the
+    summary row's numbers are never anything other than the same already-
+    computed card values the expanded section also shows."""
+
+    section_id: str
+    title: str
+    chaoss_url: str | None
+    headline_metric_ids: tuple[str, ...] = ()
+    # Link text for `chaoss_url`; most sections link a practitioner guide,
+    # Releases links a metric page (no release practitioner guide exists).
+    chaoss_label: str = "CHAOSS practitioner guide"
+
+
+# Community page sections (issue #144's owner-approved grouping, CHAOSS
+# practitioner-guide topics; every URL below curl-verified 200 on
+# 2026-10-09). Order is the page's own section order, top to bottom.
+COMMUNITY_SECTIONS: tuple[SectionMeta, ...] = (
+    SectionMeta(
+        section_id="responsiveness",
+        title="Responsiveness",
+        chaoss_url="https://chaoss.community/practitioner-guide-responsiveness/",
+        headline_metric_ids=(
+            "time_to_first_response_jira",
+            "stale_pr_rate",
+            "open_pr_backlog_total",
+            "median_resolution_latency_jira",
+        ),
+    ),
+    SectionMeta(
+        section_id="contributor-sustainability",
+        title="Contributor sustainability",
+        chaoss_url="https://chaoss.community/practitioner-guide-contributor-sustainability/",
+        headline_metric_ids=(
+            "active_contributors_monthly",
+            "new_contributors_monthly",
+            "contributor_absence_factor",
+            "unique_reviewers_monthly",
+        ),
+    ),
+    SectionMeta(
+        section_id="organizational-participation",
+        title="Organizational participation",
+        chaoss_url="https://chaoss.community/practitioner-guide-organizational-participation/",
+        headline_metric_ids=(
+            "elephant_factor",
+            "organizational_hhi",
+            "single_org_share",
+            "unknown_affiliation_rate",
+        ),
+    ),
+    SectionMeta(
+        section_id="leadership",
+        title="Leadership",
+        chaoss_url="https://chaoss.community/practitioner-guide-diverse-leadership/",
+        headline_metric_ids=("pmc_joins_quarterly",),
+    ),
+    SectionMeta(
+        section_id="releases",
+        title="Releases",
+        # The issue's own citation note: "cite
+        # https://chaoss.community/kb/metric-release-frequency/ (the
+        # 'assessing viability' guide URL 404s; do not link it)".
+        chaoss_url="https://chaoss.community/kb/metric-release-frequency/",
+        chaoss_label="CHAOSS: Release Frequency",
+        headline_metric_ids=(
+            "release_frequency",
+            "days_between_releases",
+            "time_since_last_release",
+        ),
+    ),
+)
+
+# Every `M0_METRICS`/`PR_BACKLOG_METRICS` metric_id with `page == "community"`
+# maps to exactly one of `COMMUNITY_SECTIONS` above -- enforced by
+# `_validate_community_sections` below (import-time fail-fast, like
+# `_prior_art_url`'s validation above) and by
+# `tests/test_site_sections.py`'s own membership test ("no orphan, no
+# duplicate", issue #144's acceptance criterion). `truck_factor` and
+# `pr_review_engagement` aren't named in the issue's own per-section bullet
+# list, but both still need a home: `truck_factor` (bus-factor-adjacent) and
+# `pr_review_engagement` (reviewers-per-PR) are grouped with their nearest
+# named sibling metric's section rather than left without one.
+COMMUNITY_METRIC_SECTION: dict[str, str] = {
+    # Responsiveness.
+    "median_resolution_latency_jira": "responsiveness",
+    "median_resolution_latency_jira_cohort_12m": "responsiveness",
+    "stale_jira_rate": "responsiveness",
+    "pr_merge_lead_time": "responsiveness",
+    "pr_time_to_first_review": "responsiveness",
+    "pr_time_to_close": "responsiveness",
+    "time_to_first_response_jira": "responsiveness",
+    "stale_pr_rate": "responsiveness",
+    "change_request_closure_ratio_pr": "responsiveness",
+    "change_request_closure_ratio_jira_patch": "responsiveness",
+    "open_pr_backlog_total": "responsiveness",
+    "open_pr_backlog_drafts": "responsiveness",
+    "open_pr_backlog_age_lt_30d": "responsiveness",
+    "open_pr_backlog_age_30_90d": "responsiveness",
+    "open_pr_backlog_age_90d_1y": "responsiveness",
+    "open_pr_backlog_age_1_3y": "responsiveness",
+    "open_pr_backlog_age_gt_3y": "responsiveness",
+    "open_pr_backlog_ticket_open": "responsiveness",
+    "open_pr_backlog_ticket_fixed": "responsiveness",
+    "open_pr_backlog_ticket_closed_other": "responsiveness",
+    "open_pr_backlog_no_ticket_key": "responsiveness",
+    "open_pr_backlog_no_github_response_share": "responsiveness",
+    # Contributor sustainability.
+    "active_contributors_monthly": "contributor-sustainability",
+    "new_contributors_monthly": "contributor-sustainability",
+    "unique_reviewers_monthly": "contributor-sustainability",
+    "reviewer_hhi": "contributor-sustainability",
+    "truck_factor": "contributor-sustainability",
+    "contributor_absence_factor": "contributor-sustainability",
+    "contributor_hhi": "contributor-sustainability",
+    "pr_review_engagement": "contributor-sustainability",
+    # Organizational participation.
+    "elephant_factor": "organizational-participation",
+    "organizational_hhi": "organizational-participation",
+    "single_org_share": "organizational-participation",
+    "unknown_affiliation_rate": "organizational-participation",
+    # Leadership.
+    "pmc_joins_quarterly": "leadership",
+    # Releases.
+    "release_frequency": "releases",
+    "release_regularity": "releases",
+    "time_since_last_release": "releases",
+    "days_between_releases": "releases",
+}
+
+
+def _validate_community_sections() -> None:
+    """Fail loudly at import time (not silently at render time) if a
+    community-page metric is missing from `COMMUNITY_METRIC_SECTION`, if the
+    map has a stray entry for a metric that no longer exists or isn't on the
+    community page, or if a `SectionMeta.headline_metric_ids` entry isn't
+    actually assigned to that same section -- the same "collect imperfectly
+    but honestly, not silently" standard `_group_by_page` enforces for
+    `MetricMeta.page` itself."""
+    community_metric_ids = {
+        meta.metric_id
+        for meta in (*M0_METRICS.values(), *PR_BACKLOG_METRICS.values())
+        if meta.page == "community"
+    }
+    mapped_ids = set(COMMUNITY_METRIC_SECTION)
+    missing = community_metric_ids - mapped_ids
+    if missing:
+        raise ValueError(
+            f"community-page metric(s) {sorted(missing)} have no "
+            "COMMUNITY_METRIC_SECTION entry"
+        )
+    stray = mapped_ids - community_metric_ids
+    if stray:
+        raise ValueError(
+            f"COMMUNITY_METRIC_SECTION has entry/entries for non-community "
+            f"metric(s) {sorted(stray)}"
+        )
+    section_ids = {meta.section_id for meta in COMMUNITY_SECTIONS}
+    bad_section_values = set(COMMUNITY_METRIC_SECTION.values()) - section_ids
+    if bad_section_values:
+        raise ValueError(
+            f"COMMUNITY_METRIC_SECTION names unknown section id(s) {sorted(bad_section_values)}"
+        )
+    for meta in COMMUNITY_SECTIONS:
+        for metric_id in meta.headline_metric_ids:
+            if COMMUNITY_METRIC_SECTION.get(metric_id) != meta.section_id:
+                raise ValueError(
+                    f"section {meta.section_id!r} lists headline metric "
+                    f"{metric_id!r}, which isn't assigned to it in "
+                    "COMMUNITY_METRIC_SECTION"
+                )
+
+
+_validate_community_sections()
+
+# Governance page sections (issue #144): "Facts summary (collapsed with
+# headline shares) · Commit history table (expanded by default — it's the
+# page's main content) · References." Not CHAOSS-practitioner-guide-mapped
+# topics like Community's (`chaoss_url=None`), so these are static section
+# metadata only -- no metric-membership map/validation like Community's,
+# since every `GOVERNANCE_METRICS` entry already renders in the one "Facts
+# summary" section (there's nowhere else on this page for one to land).
+GOVERNANCE_SECTIONS: tuple[SectionMeta, ...] = (
+    SectionMeta(
+        section_id="facts-summary",
+        title="Facts summary",
+        chaoss_url=None,
+        headline_metric_ids=(
+            "governance_commits_with_named_reviewer_share",
+            "governance_commits_with_ticket_share",
+            "governance_commits_with_ci_evidence_before_commit_share",
+            "governance_commits_with_checkstyle_success_share",
+        ),
+    ),
+    SectionMeta(section_id="commit-history", title="Commit history", chaoss_url=None),
+    SectionMeta(section_id="references", title="References", chaoss_url=None),
+)
+
+
+@dataclass(frozen=True)
 class ChaossStarterSeries:
     """One labelled series within a CHAOSS Starter Project Health card
     (issue #136, DECISIONS.md D29) -- a single `MetricMeta.metric_id`

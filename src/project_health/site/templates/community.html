@@ -1,18 +1,23 @@
 {% extends "base.html" %}
+{% import "_sections.html" as sections %}
 {% block title %}Community — Cassandra Project Health{% endblock %}
 {% block content %}
 <p class="page-intro">Code and contributor health metrics: sustainability, review capacity, and responsiveness — computed from Git, ASF JIRA and GitHub PR history.</p>
 
 {% include "_chart_window_toggle.html" %}
 
-{% for group in dimensions %}
-  <section class="dimension" aria-labelledby="dim-{{ loop.index }}">
-    <h2 id="dim-{{ loop.index }}">{{ group.dimension | title }}</h2>
+{{ sections.section_nav(community_sections) }}
+
+{% for section in community_sections %}
+{% call sections.section(section.id, section.title, section.chaoss_url, section.summary_items, chaoss_label=section.chaoss_label) %}
+  {% for group in section.dimensions %}
+  <section class="dimension" aria-labelledby="dim-{{ section.id }}-{{ loop.index }}">
+    <h3 id="dim-{{ section.id }}-{{ loop.index }}">{{ group.dimension | title }}</h3>
     <div class="card-grid">
       {% for m in group.metrics %}
       <article class="card">
         <header class="card-header">
-          <h3>{{ m.name }}</h3>
+          <h4>{{ m.name }}</h4>
           <span class="badge badge--tier badge--tier-{{ m.tier }}">{{ m.tier }}</span>
         </header>
 
@@ -59,197 +64,271 @@
       {% endfor %}
     </div>
   </section>
+  {% endfor %}
+
+  {% if section.id == "responsiveness" %}
+  <section class="review-responsiveness" aria-labelledby="review-responsiveness-heading">
+    <h3 id="review-responsiveness-heading">Review responsiveness</h3>
+    <p class="page-intro">
+      How quickly a patch submission gets its first visible review response, split by how many
+      prior submissions the same contributor has -- a first-time submitter, a 2nd-5th submission, or
+      a 6th+ submission. A "submission" is one JIRA issue that ever reached
+      <code>Patch Available</code>, together with any linked GitHub pull request. "First visible
+      response" is the earliest of a JIRA comment, a JIRA status change to
+      <code>Review In Progress</code>/<code>Ready to Commit</code>, or a GitHub PR review/comment,
+      from someone other than the submission's own author -- review that happened somewhere this
+      project doesn't track (a private message, an in-person conversation) is invisible to this
+      section, so "no visible response" means exactly that, not "no response at all."
+    </p>
+    <p class="governance-note">
+      <strong>Methodology and caveats.</strong> The submission's author is reconstructed from JIRA's
+      assignee-change history, which is a best-effort proxy, not a confirmed identity. Shares for
+      "response within 7/30 days" and "no visible response" only count submissions old enough to
+      judge (right-censoring: a submission newer than 7, 30, or 365 days is left out of that
+      share's count entirely, not counted as a miss). These figures are informational only,
+      shown with their own sample size (n) for context. Full definitions:
+      <a href="{{ review_responsiveness.metrics_spec_url }}">METRICS.md</a>.
+    </p>
+
+    {% if review_responsiveness.coverage_note %}
+    <p class="governance-note">{{ review_responsiveness.coverage_note }}</p>
+    {% endif %}
+
+    {% if review_responsiveness.available %}
+    <div class="card-grid">
+      {% for tier in review_responsiveness.tiers %}
+      <article class="card">
+        <header class="card-header">
+          <h4>{{ tier.label }}</h4>
+        </header>
+        {% if tier.years %}
+        <table class="security-table">
+          <thead>
+            <tr>
+              <th scope="col">Year</th>
+              <th scope="col">Submissions</th>
+              <th scope="col">Median days to first response</th>
+              <th scope="col">&le;7d</th>
+              <th scope="col">&le;30d</th>
+              <th scope="col">No visible response</th>
+              <th scope="col">Committed &le;365d</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in tier.years %}
+            <tr>
+              <td>{{ row.year }}</td>
+              <td>{{ row.n_submitted }}</td>
+              <td>{{ row.median_days if row.median_days is not none else "insufficient data" }}</td>
+              <td>{{ row.within_7d_share if row.within_7d_share is not none else "insufficient data" }}</td>
+              <td>{{ row.within_30d_share if row.within_30d_share is not none else "insufficient data" }}</td>
+              <td>{{ row.no_visible_response_share if row.no_visible_response_share is not none else "insufficient data" }}</td>
+              <td>{{ row.committed_within_365d_share if row.committed_within_365d_share is not none else "insufficient data" }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        {% else %}
+        <p class="card-empty-state">insufficient data</p>
+        {% endif %}
+      </article>
+      {% endfor %}
+    </div>
+
+    {% if review_responsiveness.trailing12m_chart_spec %}
+    <h4>Trailing 12-month response-within-30-days share, by tier</h4>
+    <div class="chart" data-vega-spec='{{ review_responsiveness.trailing12m_chart_spec }}' role="img" aria-label="Trailing 12-month response-within-30-days share by submitter tier">
+      <noscript>Enable JavaScript to see this chart.</noscript>
+    </div>
+    {% endif %}
+
+    {% if review_responsiveness.source_breakdown %}
+    <h4>Source of first response ({{ review_responsiveness.tiers[0].years[-1].year if review_responsiveness.tiers[0].years else "" }} and later tiers combined)</h4>
+    <table class="security-table">
+      <thead>
+        <tr>
+          <th scope="col">Source</th>
+          <th scope="col">Count</th>
+          <th scope="col">Share</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for item in review_responsiveness.source_breakdown %}
+        <tr>
+          <td>{{ item.source }}</td>
+          <td>{{ item.count }}</td>
+          <td>{{ item.share }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+    {% else %}
+    <p class="card-empty-state">
+      Review responsiveness isn't published yet -- it appears once the Patch-Available changelog
+      backfill has collected enough JIRA history for this project.
+    </p>
+    {% endif %}
+  </section>
+
+  <section class="pr-backlog" aria-labelledby="pr-backlog-heading">
+    <h3 id="pr-backlog-heading">Open PR backlog</h3>
+    <p class="page-intro">
+      The open apache/cassandra PR backlog by age and by linked-JIRA-ticket state, reconstructed
+      monthly. Scoped to apache/cassandra: other configured repos use their own issue tracker or
+      none, so ticket-key state isn't meaningful for them — see the table below instead.
+    </p>
+
+    {% if pr_backlog.available %}
+    {% if pr_backlog.age_chart_spec %}
+    <h4>By age — apache/cassandra (last 36 months)</h4>
+    <div class="chart" data-vega-spec='{{ pr_backlog.age_chart_spec }}' role="img" aria-label="Open PR backlog by age bucket, apache/cassandra, last 36 months">
+      <noscript>Enable JavaScript to see this chart, or use the data links below.</noscript>
+    </div>
+    {% endif %}
+
+    {% if pr_backlog.ticket_chart_spec %}
+    <h4>By linked-ticket state — apache/cassandra (last 36 months)</h4>
+    <div class="chart" data-vega-spec='{{ pr_backlog.ticket_chart_spec }}' role="img" aria-label="Open PR backlog by linked-ticket state, apache/cassandra, last 36 months">
+      <noscript>Enable JavaScript to see this chart, or use the data links below.</noscript>
+    </div>
+    {% endif %}
+
+    <h4>Current month — apache/cassandra</h4>
+    <table class="security-table">
+      <thead>
+        <tr>
+          <th scope="col">Month</th>
+          <th scope="col">Open PRs</th>
+          <th scope="col">Drafts</th>
+          <th scope="col">No GitHub response</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>{{ pr_backlog.as_of_month }}</td>
+          <td>{{ pr_backlog.total }}</td>
+          <td>{{ pr_backlog.drafts if pr_backlog.drafts is not none else "insufficient data" }}</td>
+          <td>
+            {% if pr_backlog.no_response_share is not none %}
+            {{ pr_backlog.no_response_share }} (n={{ pr_backlog.no_response_n }})
+            {% else %}
+            insufficient data
+            {% endif %}
+          </td>
+        </tr>
+      </tbody>
+    </table>
+
+    {% if pr_backlog.other_repos %}
+    <h4>Other project repositories</h4>
+    <table class="security-table">
+      <thead>
+        <tr>
+          <th scope="col">Repo</th>
+          <th scope="col">Open PRs</th>
+          <th scope="col">Drafts</th>
+          {% for label in pr_backlog.age_bucket_labels %}<th scope="col">{{ label }}</th>{% endfor %}
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in pr_backlog.other_repos %}
+        <tr>
+          <td>{{ row.repo }}</td>
+          <td>{{ row.total if row.total is not none else "insufficient data" }}</td>
+          <td>{{ row.drafts if row.drafts is not none else "insufficient data" }}</td>
+          {% for cell in row.age_cells %}<td>{{ cell if cell is not none else "insufficient data" }}</td>{% endfor %}
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+
+    <p class="card-prior-art">
+      Based on:
+      {% for pa in pr_backlog.prior_art %}<a href="{{ pa.url }}">{{ pa.label }}</a>{% if not loop.last %}, {% endif %}{% endfor %}
+    </p>
+    <p class="governance-note">{{ pr_backlog.base_branch_note }}</p>
+    {% else %}
+    <p class="card-empty-state">
+      The open PR backlog isn't published yet — it appears once the pipeline has collected GitHub
+      PR history for this project.
+    </p>
+    {% endif %}
+  </section>
+  {% endif %}
+
+  {% if section.id == "contributor-sustainability" %}
+  <section class="leaderboard" aria-labelledby="leaderboard-heading">
+    <h3 id="leaderboard-heading">Contributor leaderboard</h3>
+    {% if leaderboard.staleness_badges %}
+    <p class="card-staleness">
+      {% for b in leaderboard.staleness_badges %}
+      <span class="badge badge--{{ b.status }}" role="status">{{ b.text }}</span>
+      {% endfor %}
+    </p>
+    {% endif %}
+    <p class="page-intro">
+      Top contributors by one activity type at a time — commits, reviews, and JIRA issues resolved —
+      over the trailing 12 completed months{% if leaderboard.window_label %} ({{ leaderboard.window_label }}){% endif %}.
+      These are ranked counts of deterministic, public activity, never a blended "contribution score"
+      and never based on any classified label (<a href="{{ decisions_url }}#{{ decisions_d19_anchor }}">DECISIONS.md — D19</a>).
+    </p>
+
+    <p class="governance-note">
+      <strong>Identity-resolution limits.</strong> {{ leaderboard.identity_limitations_note }}
+      <a href="{{ leaderboard.corrections_url }}">Request an identity correction</a>.
+    </p>
+
+    {% if leaderboard.has_data %}
+    <div class="card-grid">
+      {% for list in leaderboard.lists %}
+      <article class="card">
+        <header class="card-header">
+          <h4>{{ list.label }}</h4>
+        </header>
+        {% if list.has_data %}
+        <table class="security-table leaderboard-table">
+          <thead>
+            <tr>
+              <th scope="col">#</th>
+              <th scope="col">Contributor</th>
+              <th scope="col">Organization</th>
+              <th scope="col">Count</th>
+              <th scope="col"></th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in list.rows %}
+            <tr>
+              <td>{{ row.rank }}</td>
+              <td>{{ row.display_name }}</td>
+              <td>{{ row.organization }}</td>
+              <td>{{ row.count }}</td>
+              <td><a href="{{ row.correction_url }}">Report an issue</a></td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        {% else %}
+        <p class="card-empty-state">insufficient data</p>
+        {% endif %}
+      </article>
+      {% endfor %}
+    </div>
+    <p class="card-links">
+      <a href="{{ leaderboard.json_href }}">JSON</a> &middot; <a href="{{ leaderboard.csv_href }}">CSV</a>
+    </p>
+    {% else %}
+    <p class="card-empty-state">
+      The leaderboard is not published yet — it appears once the pipeline has collected git and JIRA
+      history for this project.
+    </p>
+    {% endif %}
+  </section>
+  {% endif %}
+{% endcall %}
 {% endfor %}
-
-<section class="review-responsiveness" aria-labelledby="review-responsiveness-heading">
-  <h2 id="review-responsiveness-heading">Review responsiveness</h2>
-  <p class="page-intro">
-    How quickly a patch submission gets its first visible review response, split by how many
-    prior submissions the same contributor has -- a first-time submitter, a 2nd-5th submission, or
-    a 6th+ submission. A "submission" is one JIRA issue that ever reached
-    <code>Patch Available</code>, together with any linked GitHub pull request. "First visible
-    response" is the earliest of a JIRA comment, a JIRA status change to
-    <code>Review In Progress</code>/<code>Ready to Commit</code>, or a GitHub PR review/comment,
-    from someone other than the submission's own author -- review that happened somewhere this
-    project doesn't track (a private message, an in-person conversation) is invisible to this
-    section, so "no visible response" means exactly that, not "no response at all."
-  </p>
-  <p class="governance-note">
-    <strong>Methodology and caveats.</strong> The submission's author is reconstructed from JIRA's
-    assignee-change history, which is a best-effort proxy, not a confirmed identity. Shares for
-    "response within 7/30 days" and "no visible response" only count submissions old enough to
-    judge (right-censoring: a submission newer than 7, 30, or 365 days is left out of that
-    share's count entirely, not counted as a miss). These figures are informational only,
-    shown with their own sample size (n) for context. Full definitions:
-    <a href="{{ review_responsiveness.metrics_spec_url }}">METRICS.md</a>.
-  </p>
-
-  {% if review_responsiveness.coverage_note %}
-  <p class="governance-note">{{ review_responsiveness.coverage_note }}</p>
-  {% endif %}
-
-  {% if review_responsiveness.available %}
-  <div class="card-grid">
-    {% for tier in review_responsiveness.tiers %}
-    <article class="card">
-      <header class="card-header">
-        <h3>{{ tier.label }}</h3>
-      </header>
-      {% if tier.years %}
-      <table class="security-table">
-        <thead>
-          <tr>
-            <th scope="col">Year</th>
-            <th scope="col">Submissions</th>
-            <th scope="col">Median days to first response</th>
-            <th scope="col">&le;7d</th>
-            <th scope="col">&le;30d</th>
-            <th scope="col">No visible response</th>
-            <th scope="col">Committed &le;365d</th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for row in tier.years %}
-          <tr>
-            <td>{{ row.year }}</td>
-            <td>{{ row.n_submitted }}</td>
-            <td>{{ row.median_days if row.median_days is not none else "insufficient data" }}</td>
-            <td>{{ row.within_7d_share if row.within_7d_share is not none else "insufficient data" }}</td>
-            <td>{{ row.within_30d_share if row.within_30d_share is not none else "insufficient data" }}</td>
-            <td>{{ row.no_visible_response_share if row.no_visible_response_share is not none else "insufficient data" }}</td>
-            <td>{{ row.committed_within_365d_share if row.committed_within_365d_share is not none else "insufficient data" }}</td>
-          </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-      {% else %}
-      <p class="card-empty-state">insufficient data</p>
-      {% endif %}
-    </article>
-    {% endfor %}
-  </div>
-
-  {% if review_responsiveness.trailing12m_chart_spec %}
-  <h3>Trailing 12-month response-within-30-days share, by tier</h3>
-  <div class="chart" data-vega-spec='{{ review_responsiveness.trailing12m_chart_spec }}' role="img" aria-label="Trailing 12-month response-within-30-days share by submitter tier">
-    <noscript>Enable JavaScript to see this chart.</noscript>
-  </div>
-  {% endif %}
-
-  {% if review_responsiveness.source_breakdown %}
-  <h3>Source of first response ({{ review_responsiveness.tiers[0].years[-1].year if review_responsiveness.tiers[0].years else "" }} and later tiers combined)</h3>
-  <table class="security-table">
-    <thead>
-      <tr>
-        <th scope="col">Source</th>
-        <th scope="col">Count</th>
-        <th scope="col">Share</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for item in review_responsiveness.source_breakdown %}
-      <tr>
-        <td>{{ item.source }}</td>
-        <td>{{ item.count }}</td>
-        <td>{{ item.share }}</td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
-  {% endif %}
-  {% else %}
-  <p class="card-empty-state">
-    Review responsiveness isn't published yet -- it appears once the Patch-Available changelog
-    backfill has collected enough JIRA history for this project.
-  </p>
-  {% endif %}
-</section>
-
-<section class="pr-backlog" aria-labelledby="pr-backlog-heading">
-  <h2 id="pr-backlog-heading">Open PR backlog</h2>
-  <p class="page-intro">
-    The open apache/cassandra PR backlog by age and by linked-JIRA-ticket state, reconstructed
-    monthly. Scoped to apache/cassandra: other configured repos use their own issue tracker or
-    none, so ticket-key state isn't meaningful for them — see the table below instead.
-  </p>
-
-  {% if pr_backlog.available %}
-  {% if pr_backlog.age_chart_spec %}
-  <h3>By age — apache/cassandra (last 36 months)</h3>
-  <div class="chart" data-vega-spec='{{ pr_backlog.age_chart_spec }}' role="img" aria-label="Open PR backlog by age bucket, apache/cassandra, last 36 months">
-    <noscript>Enable JavaScript to see this chart, or use the data links below.</noscript>
-  </div>
-  {% endif %}
-
-  {% if pr_backlog.ticket_chart_spec %}
-  <h3>By linked-ticket state — apache/cassandra (last 36 months)</h3>
-  <div class="chart" data-vega-spec='{{ pr_backlog.ticket_chart_spec }}' role="img" aria-label="Open PR backlog by linked-ticket state, apache/cassandra, last 36 months">
-    <noscript>Enable JavaScript to see this chart, or use the data links below.</noscript>
-  </div>
-  {% endif %}
-
-  <h3>Current month — apache/cassandra</h3>
-  <table class="security-table">
-    <thead>
-      <tr>
-        <th scope="col">Month</th>
-        <th scope="col">Open PRs</th>
-        <th scope="col">Drafts</th>
-        <th scope="col">No GitHub response</th>
-      </tr>
-    </thead>
-    <tbody>
-      <tr>
-        <td>{{ pr_backlog.as_of_month }}</td>
-        <td>{{ pr_backlog.total }}</td>
-        <td>{{ pr_backlog.drafts if pr_backlog.drafts is not none else "insufficient data" }}</td>
-        <td>
-          {% if pr_backlog.no_response_share is not none %}
-          {{ pr_backlog.no_response_share }} (n={{ pr_backlog.no_response_n }})
-          {% else %}
-          insufficient data
-          {% endif %}
-        </td>
-      </tr>
-    </tbody>
-  </table>
-
-  {% if pr_backlog.other_repos %}
-  <h3>Other project repositories</h3>
-  <table class="security-table">
-    <thead>
-      <tr>
-        <th scope="col">Repo</th>
-        <th scope="col">Open PRs</th>
-        <th scope="col">Drafts</th>
-        {% for label in pr_backlog.age_bucket_labels %}<th scope="col">{{ label }}</th>{% endfor %}
-      </tr>
-    </thead>
-    <tbody>
-      {% for row in pr_backlog.other_repos %}
-      <tr>
-        <td>{{ row.repo }}</td>
-        <td>{{ row.total if row.total is not none else "insufficient data" }}</td>
-        <td>{{ row.drafts if row.drafts is not none else "insufficient data" }}</td>
-        {% for cell in row.age_cells %}<td>{{ cell if cell is not none else "insufficient data" }}</td>{% endfor %}
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
-  {% endif %}
-
-  <p class="card-prior-art">
-    Based on:
-    {% for pa in pr_backlog.prior_art %}<a href="{{ pa.url }}">{{ pa.label }}</a>{% if not loop.last %}, {% endif %}{% endfor %}
-  </p>
-  <p class="governance-note">{{ pr_backlog.base_branch_note }}</p>
-  {% else %}
-  <p class="card-empty-state">
-    The open PR backlog isn't published yet — it appears once the pipeline has collected GitHub
-    PR history for this project.
-  </p>
-  {% endif %}
-</section>
 
 <section class="conversation-patterns-summary" aria-labelledby="conversation-patterns-summary-heading">
   <h2 id="conversation-patterns-summary-heading">Conversation patterns</h2>
@@ -288,74 +367,6 @@
   <p class="card-empty-state">
     Conversation patterns aren't published yet — they appear once a preliminary classified
     run has been sanitized and published (DECISIONS.md D26).
-  </p>
-  {% endif %}
-</section>
-
-<section class="leaderboard" aria-labelledby="leaderboard-heading">
-  <h2 id="leaderboard-heading">Contributor leaderboard</h2>
-  {% if leaderboard.staleness_badges %}
-  <p class="card-staleness">
-    {% for b in leaderboard.staleness_badges %}
-    <span class="badge badge--{{ b.status }}" role="status">{{ b.text }}</span>
-    {% endfor %}
-  </p>
-  {% endif %}
-  <p class="page-intro">
-    Top contributors by one activity type at a time — commits, reviews, and JIRA issues resolved —
-    over the trailing 12 completed months{% if leaderboard.window_label %} ({{ leaderboard.window_label }}){% endif %}.
-    These are ranked counts of deterministic, public activity, never a blended "contribution score"
-    and never based on any classified label (<a href="{{ decisions_url }}#{{ decisions_d19_anchor }}">DECISIONS.md — D19</a>).
-  </p>
-
-  <p class="governance-note">
-    <strong>Identity-resolution limits.</strong> {{ leaderboard.identity_limitations_note }}
-    <a href="{{ leaderboard.corrections_url }}">Request an identity correction</a>.
-  </p>
-
-  {% if leaderboard.has_data %}
-  <div class="card-grid">
-    {% for list in leaderboard.lists %}
-    <article class="card">
-      <header class="card-header">
-        <h3>{{ list.label }}</h3>
-      </header>
-      {% if list.has_data %}
-      <table class="security-table leaderboard-table">
-        <thead>
-          <tr>
-            <th scope="col">#</th>
-            <th scope="col">Contributor</th>
-            <th scope="col">Organization</th>
-            <th scope="col">Count</th>
-            <th scope="col"></th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for row in list.rows %}
-          <tr>
-            <td>{{ row.rank }}</td>
-            <td>{{ row.display_name }}</td>
-            <td>{{ row.organization }}</td>
-            <td>{{ row.count }}</td>
-            <td><a href="{{ row.correction_url }}">Report an issue</a></td>
-          </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-      {% else %}
-      <p class="card-empty-state">insufficient data</p>
-      {% endif %}
-    </article>
-    {% endfor %}
-  </div>
-  <p class="card-links">
-    <a href="{{ leaderboard.json_href }}">JSON</a> &middot; <a href="{{ leaderboard.csv_href }}">CSV</a>
-  </p>
-  {% else %}
-  <p class="card-empty-state">
-    The leaderboard is not published yet — it appears once the pipeline has collected git and JIRA
-    history for this project.
   </p>
   {% endif %}
 </section>

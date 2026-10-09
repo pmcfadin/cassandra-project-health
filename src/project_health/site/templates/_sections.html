@@ -1,0 +1,68 @@
+{# Reusable collapsible page-section macros (issue #144: "Layout: collapsible
+   sections with summary rows, grouped by CHAOSS practitioner-guide topics").
+
+   Native <details>/<summary> (works with JS disabled, Ctrl+F finds matches
+   once expanded, prints fine) rather than a JS-only accordion. `section()`
+   is the shared shell every page's collapsible section uses -- community.html,
+   conversations.html and governance.html all `{% call %}` it, and issue
+   #145 (peer comparison) reuses it unchanged for its own new /peers/ page,
+   so its signature/markup stays generic (no community-/governance-specific
+   assumptions) rather than growing per-page special cases. #}
+
+{% macro section(section_id, title, chaoss_url=None, summary_items=None, open=False, extra_class="", chaoss_label="CHAOSS practitioner guide") %}
+<details class="page-section {{ extra_class }}" id="{{ section_id }}"{% if open %} open{% endif %}>
+  <summary class="page-section-summary">
+    <span class="page-section-summary-head">
+      <span class="page-section-title">{{ title }}</span>
+      {% if chaoss_url %}
+      <a class="page-section-chaoss-link" href="{{ chaoss_url }}">{{ chaoss_label }}</a>
+      {% endif %}
+    </span>
+    {% if summary_items %}
+    <ul class="section-headline-metrics">
+      {% for item in summary_items %}
+      <li class="section-headline-metric">
+        <span class="section-headline-metric-name">{{ item.name }}</span>
+        {% if item.value_display is not none %}
+        <span class="section-headline-metric-value">{{ item.value_display }}</span>
+        <span class="section-headline-metric-period">
+          {{ item.month_label }}{% if item.n is not none %} &middot; n={{ item.n }}{% endif %}
+        </span>
+        {% else %}
+        <span class="section-headline-metric-value section-headline-metric-value--insufficient">insufficient data</span>
+        {% endif %}
+        {% if item.sparkline_spec_json %}
+        <span class="chart chart--sparkline" data-vega-spec='{{ item.sparkline_spec_json }}' role="img" aria-label="Trend for {{ item.name }}"></span>
+        {% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+  </summary>
+  <div class="page-section-body">
+    {{ caller() }}
+  </div>
+</details>
+{% endmacro %}
+
+{# `sections` is the list of {id, title} dicts a page's sections resolve
+   to, in on-page order -- used for both the sticky jump nav's links and
+   the expand-all/collapse-all controls (issue #144: "Sticky 'Jump to:'
+   section nav at the top of each page", "'Expand all / Collapse all'"). #}
+{% macro section_nav(sections) %}
+{# The expand-all/collapse-all buttons only do anything once static/app.js
+   has attached a click handler (same reasoning _chart_window_toggle.html
+   gives for its own toggle button), so they're hidden with JavaScript
+   disabled rather than sitting there inert. #}
+<noscript><style>.page-section-nav-controls { display: none; }</style></noscript>
+<nav class="page-section-nav" aria-label="Jump to section">
+  <span class="page-section-nav-label">Jump to:</span>
+  {% for item in sections %}
+  <a href="#{{ item.id }}">{{ item.title }}</a>{% if not loop.last %} &middot; {% endif %}
+  {% endfor %}
+  <span class="page-section-nav-controls">
+    <button type="button" class="page-section-expand-all" data-section-expand-all>Expand all</button>
+    <button type="button" class="page-section-collapse-all" data-section-collapse-all>Collapse all</button>
+  </span>
+</nav>
+{% endmacro %}

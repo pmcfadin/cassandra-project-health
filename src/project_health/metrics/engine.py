@@ -658,6 +658,19 @@ def _bulk_closure_days(con: duckdb.DuckDBPyConnection) -> dict[date, int]:
     `_median_resolution_latency_jira` below. Deterministic, rule-based, no
     interpretation (D25) -- just the day and the count of old-issue
     resolutions that landed on it.
+
+    Like every other query against `con`'s registered `issue` table (see
+    this module's own docstring and `compute_all`), this ASSUMES one row
+    per `issue_key` -- `pipeline.py` always deduplicates the raw, append-
+    only `jira/issue` partitions via `_dedupe_issue_rows` before calling
+    `compute_all`. Feeding this function (or `_median_resolution_latency_
+    jira`/`_median_resolution_latency_jira_cohort_12m`) a raw, undeduped
+    `issue` table double- (or N-)counts every issue with more than one
+    partition row -- verified as the exact bug in an orchestrator review of
+    issue #134/PR #137's first real-data check (176 vs. the correct,
+    JQL-matching 127 resolutions for 2026-04); see `tests/test_pipeline.py`
+    `TestDedupe.test_dedupe_issue_rows_boundary_prevents_double_counting_
+    resolution_latency` for the regression test at that exact boundary.
     """
     rows = con.execute(
         """

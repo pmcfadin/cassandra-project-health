@@ -9,9 +9,12 @@ newest-first; a future version bump adds a new dated entry at the top.
 
 Reviewer feedback on the Community page: "one day where jira resolution spikes to 230 days, that's
 weird" and "what were the metric types based off? there's a lot of prior art." A real-data check
-confirmed the spikes are backlog-sweep closures, not slow review -- e.g. 2026-04's 176 resolutions
-include a 24-issue sweep on 2026-04-13 and a 12-issue sweep on 2026-04-14, all of issues created
-well over a year earlier. Two changes, facts only (D25), no interpretation text:
+(against the deduped `issue` table -- one row per `issue_key`, matching `pipeline.py`'s own
+`_dedupe_issue_rows` step before `compute_all`) confirmed the spikes are backlog-sweep closures, not
+slow review: 2026-04's 127 resolutions (matching JIRA's own JQL count) include a 24-issue sweep on
+2026-04-13 and a 10-issue sweep on 2026-04-14, all of issues created well over a year earlier,
+pulling the plain metric's median to 253.0 days. Two changes, facts only (D25), no interpretation
+text:
 
 - **`median_resolution_latency_jira` (1.0 -> 1.1):** `details_json` now also carries
   `bulk_closure_days` -- a deterministic, disclosed rule (`details_json.bulk_closure_rule`) flagging

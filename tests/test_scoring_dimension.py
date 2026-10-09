@@ -99,8 +99,8 @@ def test_insufficient_data_when_every_key_metric_is_insufficient_data():
 
 def test_insufficient_data_when_dimension_has_no_key_metrics_at_all():
     """A dimension whose key metric(s) never produced a row this run (e.g.
-    `release_frequency` isn't implemented yet) is handed an empty mapping by
-    the caller -- treated the same as all-insufficient_data."""
+    too little baseline history yet) is handed an empty mapping by the
+    caller -- treated the same as all-insufficient_data."""
     result = compute_dimension_status("release cadence", {})
     assert result.status == "insufficient_data"
 

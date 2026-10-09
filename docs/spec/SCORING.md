@@ -455,15 +455,18 @@ reproducible and disclosed at every step, per D20:
 
 ### 12.2 Insufficient-data handling: disclosed re-normalization, at two levels
 
-Real Cassandra data at M0 does not yet have a shipped collector for every metric METRICS.md defines — most
-notably, `release_frequency` (release cadence's only key metric, §1) has no release collector yet, so that
-dimension's status and score are `insufficient_data` on every run until it ships. D20 requires this to be shown,
-not hidden behind a reweighted number that looks the same as if every dimension had data:
+Real Cassandra data at M0 does not yet have a shipped collector for every metric METRICS.md defines, and this
+section's own example used to be `release_frequency` (release cadence's only key metric, §1) — issue #135
+shipped its collector (`collectors/release.py`, git tags as the primary/authoritative date, cross-checked
+against `archive.apache.org` for existence only), so that dimension now gets a real status/score like any
+other. A dimension whose only key metric genuinely has no collector yet still needs this same disclosure, not
+hidden behind a reweighted number that looks the same as if every dimension had data:
 
 - **Within a dimension:** the dimension's score is the mean of only its `key` metrics that currently have a
   classifiable (non-`insufficient_data`) status this month (§5.1) — a key metric with no data yet, or too little
   baseline history, simply doesn't contribute to that mean. If *every* key metric in a dimension is
-  `insufficient_data` (release cadence, today), the dimension has no score at all this month, matching §5.4's
+  `insufficient_data` (e.g. a dimension whose collector hasn't shipped yet), the dimension has no score at all
+  this month, matching §5.4's
   "the dimension only reads insufficient data when no key metric has enough data to classify."
 - **Across dimensions:** a dimension with no score this month is dropped entirely from the top-level weighted
   average, and the remaining composite-eligible dimensions' `scoring.yaml` weights are re-normalized to sum to

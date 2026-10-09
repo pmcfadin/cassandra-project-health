@@ -105,6 +105,7 @@ SOURCE_LABELS: dict[str, str] = {
     "ponymail": "Pony Mail",
     "asf_roster": "ASF roster",
     "security": "Security",
+    "release": "Release",
 }
 
 # The contributor leaderboard section (D19, issue #56) has no `metric_id` of
@@ -736,6 +737,76 @@ M0_METRICS: dict[str, MetricMeta] = {
             ),
         ),
     ),
+    # issue #135: release cadence metrics (METRICS.md §6), published as plain
+    # CHAOSS-mapped metrics per DECISIONS.md D29 (no composite/dimension
+    # score). All four read the `release` raw table only (collectors/
+    # release.py) -- the archive.apache.org cross-check is a per-row field
+    # on that same table, not a separate manifest source.
+    "release_frequency": MetricMeta(
+        metric_id="release_frequency",
+        name="Release Frequency",
+        dimension="release cadence",
+        tier="established",
+        direction_of_good="target-range",
+        value_kind="count",
+        page="community",
+        sources=("release",),
+        # Verified live 2026-10-09: chaoss.community/kb/metric-release-frequency/
+        # (redirects to www.chaoss.community) returns HTTP 200, titled "Metric:
+        # Release Frequency" -- an exact-name CHAOSS Knowledge Base match
+        # (corrects METRICS.md §6's earlier "none named identically," written
+        # before this metric had a real collector to check against).
+        prior_art=(
+            PriorArt(
+                "CHAOSS: Release Frequency",
+                "https://chaoss.community/kb/metric-release-frequency/",
+            ),
+        ),
+    ),
+    "release_regularity": MetricMeta(
+        metric_id="release_regularity",
+        name="Release Interval Regularity (CoV)",
+        dimension="release cadence",
+        tier="proxy",
+        direction_of_good="none",
+        value_kind="ratio",
+        page="community",
+        sources=("release",),
+    ),
+    "time_since_last_release": MetricMeta(
+        metric_id="time_since_last_release",
+        name="Time Since Last Release",
+        dimension="release cadence",
+        tier="established",
+        direction_of_good="none",
+        value_kind="days",
+        page="community",
+        sources=("release",),
+    ),
+    # issue #135, D29 follow-up: the "companion days_between_releases
+    # (median gap, trailing 12 months)" the issue itself named, promoted to
+    # its own metric_id (previously only release_regularity's details_json)
+    # now that publication isn't gated by a dimension's 1-3 key-metric cap.
+    "days_between_releases": MetricMeta(
+        metric_id="days_between_releases",
+        name="Days Between Releases (median)",
+        dimension="release cadence",
+        tier="proxy",
+        direction_of_good="none",
+        value_kind="days",
+        page="community",
+        sources=("release",),
+        # Same CHAOSS KB page as release_frequency (verified live 2026-10-09)
+        # -- the closest published prior art for release-timing cadence;
+        # CHAOSS's own metric measures count-over-time, not gap length
+        # directly, so this is cited as the nearest match, not an exact one.
+        prior_art=(
+            PriorArt(
+                "CHAOSS: Release Frequency",
+                "https://chaoss.community/kb/metric-release-frequency/",
+            ),
+        ),
+    ),
 }
 
 # Governance compliance engine (issue #36, D14/D15): one monthly pass-rate
@@ -928,14 +999,15 @@ class ChaossStarterMetric:
     D20's composite score): the landing page leads with this published,
     external standard instead of an in-house composite. `chaoss_url` is
     sourced from the representative series metric's own `MetricMeta.
-    prior_art` (issue #134) wherever one exists, via `_prior_art_url` below
-    -- never a second, independently-maintained copy of the same CHAOSS KB
-    link -- except `release_frequency`, which has no registered metric yet
-    (pending #135) and so keeps a literal URL. Every link here and
-    `chaoss_model_url` were verified live (redirect-then-200, orchestrator,
-    2026-10-09). `mapping_note` states which of this project's own metrics
-    compute each CHAOSS concept for Cassandra -- a plain fact, never
-    intent/recommendation language (D29 item 4)."""
+    prior_art` (issue #134) via `_prior_art_url` below for all four cards
+    (issue #135 registered `release_frequency`'s own `PriorArt` entry,
+    retiring the one literal-URL exception this docstring used to carry) --
+    never a second, independently-maintained copy of the same CHAOSS KB
+    link. Every link here and `chaoss_model_url` were verified live
+    (redirect-then-200, orchestrator, 2026-10-09). `mapping_note` states
+    which of this project's own metrics compute each CHAOSS concept for
+    Cassandra -- a plain fact, never intent/recommendation language (D29
+    item 4)."""
 
     key: str
     chaoss_name: str
@@ -1014,13 +1086,15 @@ CHAOSS_STARTER_METRICS: tuple[ChaossStarterMetric, ...] = (
     ChaossStarterMetric(
         key="release_frequency",
         chaoss_name="Release Frequency",
-        # Not sourced via `_prior_art_url`, unlike the three cards above:
-        # `release_frequency` has no `MetricMeta`/`PriorArt` entry yet
-        # (pending #135) for this to read from -- a literal URL is the only
-        # option until that issue registers the metric.
-        chaoss_url="https://chaoss.community/kb/metric-release-frequency/",
-        mapping_note="Pending #135.",
-        series=(),
-        pending=True,
+        # issue #135: now sourced via `_prior_art_url` like the three cards
+        # above -- `release_frequency` has a real `MetricMeta`/`PriorArt`
+        # entry (collectors/release.py, metrics/release_cadence.py).
+        chaoss_url=_prior_art_url("release_frequency"),
+        mapping_note=(
+            "This project's existing release_frequency metric: count of GA releases "
+            "(collectors/release.py: git tags, excluding alpha/beta/rc) in the trailing-24-month "
+            "window ending each completed month."
+        ),
+        series=(ChaossStarterSeries(metric_id="release_frequency", label=""),),
     ),
 )

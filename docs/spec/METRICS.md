@@ -37,7 +37,7 @@ show the components on request. The activity types this project instruments in P
 | `github_pr` | one pull request opened against `apache/cassandra` | GitHub REST/GraphQL API | Distinct from JIRA issues; Cassandra's PR volume is a subset of total review activity (DECISIONS.md, "Cassandra-specific facts"). |
 | `github_pr_review` | one GitHub review event (approve/request-changes/comment) | GitHub REST API | |
 | `mailing_list_post` | one message to dev@ or user@ | Pony Mail JSON API (metadata only in Phase 1: sender, timestamp, thread id, subject — never body) | |
-| `release` | one published Cassandra release (GA, not RC unless configured) | ASF `dist.apache.org` / GitHub Releases / git tags | |
+| `release` | one published Cassandra release (GA, not RC unless configured) | ASF `dist.apache.org` / GitHub Releases / git tags | **Primary source: git tags**, dated by each tag's own `creatordate` (`collectors/release.py`, issue #135) — apache/cassandra publishes 0 GitHub Releases (verified, DATA-SOURCES.md §3/§5: git tags are GitHub's only release signal there). `archive.apache.org/dist/cassandra/`'s directory listing is used only as an existence cross-check (recorded per-row, `release.archive_verified`) — never for dating: verified live 2026-10-09, several directories (including genuinely-2025 releases `3.0.32`/`3.11.19`) share one bulk-maintenance-touched mtime (`2026-05-01 17:48`) unrelated to their actual release date. RCs/alphas/betas excluded by default. |
 
 A metric labeled e.g. `active_contributors_monthly` must state, in its own definition, which of the above unit
 types it counts as qualifying activity, so a reader can tell whether "contributor" means "committed code" or
@@ -966,7 +966,13 @@ baseline or an improving/stable/declining status (see `SCORING.md` §6). All are
 - **Strengths:** Fully deterministic, low ambiguity.
 - **Weaknesses / gaming risk:** A count alone does not show regularity — a burst of four releases in one quarter
   and none for the next eighteen months reads the same total as evenly spaced releases; see `release_regularity`.
-- **CHAOSS equivalent:** none named identically; adjacent to general CHAOSS "Releases" data collection guidance.
+- **CHAOSS equivalent:** exact-name match -- CHAOSS Knowledge Base "Release Frequency"
+  (`https://chaoss.community/kb/metric-release-frequency/`, verified live 2026-10-09, HTTP 200,
+  page titled "Metric: Release Frequency": "measures the frequency of project software / artifact releases
+  over time"). Corrects this section's earlier "none named identically," written before issue #135 shipped a
+  real collector/metric to check the CHAOSS KB against. CHAOSS's own definition is purely descriptive (a count
+  over time, filterable by release type); it does not itself propose a target-range judgment -- that direction
+  of good is this project's own choice (§4.3), not CHAOSS's.
 
 ### `release_regularity`
 - **Definition:** Coefficient of variation (CoV = standard deviation / mean) of inter-release intervals over the

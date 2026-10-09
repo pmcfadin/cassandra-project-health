@@ -17,11 +17,13 @@ Only metrics with a real computation (`metrics.registry.METRIC_IDS`) can ever
 appear in a `metric_value` snapshot, so `scoring/engine.py` only computes a
 baseline status for a `metric_id` that is in *both* this registry and that
 run's `metric_value` table -- a metric catalogued in METRICS.md but not yet
-implemented (e.g. `release_frequency`, release cadence's only key metric, has
-no collector yet) is listed here for forward-completeness (so scoring picks
-it up automatically the day it ships, with no registry edit needed) but
-simply never appears in any run's baseline-status output until then, exactly
-like any other not-yet-implemented metric's absence from `metric_value`.
+implemented is listed here for forward-completeness (so scoring picks it up
+automatically the day it ships, with no registry edit needed) but simply
+never appears in any run's baseline-status output until then, exactly like
+any other not-yet-implemented metric's absence from `metric_value`.
+`release_frequency` (release cadence's only key metric, §1) was exactly this
+case until issue #135 shipped its collector (`collectors/release.py`) --
+left here as the worked example of the pattern.
 """
 
 from __future__ import annotations

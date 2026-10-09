@@ -54,6 +54,19 @@ def trailing_12m_window(window_end: date) -> tuple[date, date]:
     return start, window_end
 
 
+def trailing_24m_window(window_end: date) -> tuple[date, date]:
+    """The trailing-24-calendar-month window ending at `window_end`
+    (METRICS.md §6: `release_frequency`/`release_regularity`'s window).
+
+    Same convention as `trailing_12m_window`: `window_end` is expected to be
+    a month-end date (the last day of a completed month); the window start
+    is the first day of the month 23 months earlier, so the window spans
+    exactly 24 calendar months.
+    """
+    start = add_months(month_start(window_end), -23)
+    return start, window_end
+
+
 def quarter_start(d: date) -> date:
     """First day of `d`'s calendar quarter (Q1/Q2/Q3/Q4)."""
     quarter_month = ((d.month - 1) // 3) * 3 + 1

@@ -2419,9 +2419,12 @@ def test_home_page_leads_with_chaoss_starter_project_health(tmp_path):
     assert "JIRA patch" in html_text
     assert "dev@" in html_text
 
-    # Release Frequency has no data yet (pending #135) -- honest pending
-    # state, never a fabricated value.
-    assert "Pending #135" in html_text
+    # Release Frequency (issue #135) now has a real collector/metric --
+    # never a "Pending #135" placeholder once data exists.
+    assert "Pending #135" not in html_text
+    release_card = next(c for c in CHAOSS_STARTER_METRICS if c.key == "release_frequency")
+    assert release_card.pending is False
+    assert 'aria-label="History chart for Release Frequency"' in html_text
 
 
 def test_home_page_chaoss_block_shows_values_n_and_chart(tmp_path):
@@ -2431,6 +2434,24 @@ def test_home_page_chaoss_block_shows_values_n_and_chart(tmp_path):
     # value 14.0, n=15).
     assert "n=15" in html_text
     assert 'aria-label="History chart for Contributor Absence Factor"' in html_text
+
+
+def test_home_page_release_frequency_card_shows_real_value_n_and_chart(tmp_path):
+    """Issue #135: the landing page's Release Frequency card must render a
+    real value + n + history chart from the now-implemented metric --
+    never the retired "Pending #135" placeholder state."""
+    out_dir = _build_site(tmp_path)
+    html_text = (out_dir / "index.html").read_text()
+
+    release_card = next(c for c in CHAOSS_STARTER_METRICS if c.key == "release_frequency")
+    assert release_card.pending is False
+    assert release_card.series and release_card.series[0].metric_id == "release_frequency"
+    assert release_card.chaoss_url == "https://chaoss.community/kb/metric-release-frequency/"
+
+    # default-fixture latest point (Aug 2026, value 14.0, n=15) -- same
+    # fixture shape every other CHAOSS starter card renders from.
+    assert 'aria-label="History chart for Release Frequency"' in html_text
+    assert "CHAOSS: Release Frequency" in html_text
 
 
 def _rows_without(metric_id: str) -> list[dict]:

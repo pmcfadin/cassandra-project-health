@@ -56,6 +56,11 @@ _VERSIONS: dict[str, str] = {
     # issue #136, DECISIONS.md D29
     "change_request_closure_ratio_pr": "1.0",
     "change_request_closure_ratio_jira_patch": "1.0",
+    # issue #135
+    "release_frequency": "1.0",
+    "release_regularity": "1.0",
+    "time_since_last_release": "1.0",
+    "days_between_releases": "1.0",
 }
 
 _INITIAL_M0_CHANGELOG_NOTE = "Initial M0 implementation (issue #7)."
@@ -77,6 +82,13 @@ _INITIAL_ISSUE_54_CHANGELOG_NOTE = "Initial implementation (issue #54)."
 _INITIAL_ISSUE_136_CHANGELOG_NOTE = (
     "Initial implementation (issue #136, DECISIONS.md D29 -- CHAOSS Change Request Closure "
     "Ratio)."
+)
+_INITIAL_ISSUE_135_CHANGELOG_NOTE = (
+    "Initial implementation (issue #135): the release cadence collector "
+    "(collectors/release.py -- GA git tags, primary/authoritative date, cross-checked "
+    "against archive.apache.org directory existence) and its four metrics "
+    "(metrics/release_cadence.py), published as plain CHAOSS-mapped metrics per D29 (no "
+    "composite/dimension scoring)."
 )
 
 _MEDIAN_RESOLUTION_LATENCY_JIRA_CHANGELOG_NOTE = (
@@ -122,6 +134,10 @@ _CHANGELOG_NOTES: dict[str, str] = {
     "stale_pr_rate": _INITIAL_ISSUE_54_CHANGELOG_NOTE,
     "change_request_closure_ratio_pr": _INITIAL_ISSUE_136_CHANGELOG_NOTE,
     "change_request_closure_ratio_jira_patch": _INITIAL_ISSUE_136_CHANGELOG_NOTE,
+    "release_frequency": _INITIAL_ISSUE_135_CHANGELOG_NOTE,
+    "release_regularity": _INITIAL_ISSUE_135_CHANGELOG_NOTE,
+    "time_since_last_release": _INITIAL_ISSUE_135_CHANGELOG_NOTE,
+    "days_between_releases": _INITIAL_ISSUE_135_CHANGELOG_NOTE,
 }
 
 # metric_id -> description, condensed from METRICS.md's own "## <id>" sections.
@@ -533,6 +549,70 @@ _DESCRIPTIONS: dict[str, str] = {
         "responsiveness. Role: supporting. Direction of good: higher. Window: monthly. "
         "METRICS.md §0.6 rate/ratio floor (n=5) applies. DECISIONS.md D29, issue #136, "
         "METRICS.md §4."
+    ),
+    # issue #135: release cadence dimension (METRICS.md §6). Published as plain CHAOSS-mapped
+    # metrics per DECISIONS.md D29 (composite/dimension scoring is not published; scoring/
+    # registry.py's "key"/"supporting" role classification stays accurate as a taxonomic fact
+    # about METRICS.md §6, independent of whether a composite score is ever rendered from it).
+    "release_frequency": (
+        "Count of GA releases (collectors/release.py: git tags matching "
+        "<repo>-<major>.<minor>[.<patch>][-final], excluding alpha/beta/rc; date = the tag's "
+        "own creatordate, the primary/authoritative source) in the trailing-24-calendar-month "
+        "window ending at each completed month, dense (one row per completed month from the "
+        "first month any GA release exists through the last completed month before as_of). No "
+        "sample-size floor: a raw count is meaningful at any n including 0 (a 24-month window "
+        "with zero releases is exactly the stagnation signal this metric exists to surface), "
+        "same reasoning as the three headcount metrics above. Tier: established. Dimension: "
+        "release cadence. Role: key (this dimension's only key metric, METRICS.md §6: 'the sole "
+        "reasonably continuous cadence signal'). Direction of good: target-range -- judged "
+        "against this project's own historical range (SCORING.md §4.3), not a monotonic "
+        "direction. Window: trailing-24m, updated monthly. archive.apache.org's directory "
+        "listing is a cross-check for publication existence only (recorded per-row as "
+        "release.archive_verified) -- never used for dating (collectors/release.py's own "
+        "docstring documents a verified 2026-10-09 case where its directory mtimes are "
+        "unreliable for real, recently-touched releases). CHAOSS equivalent: exact-name match, "
+        "CHAOSS Knowledge Base 'Release Frequency' (verified live 2026-10-09) -- CHAOSS's own "
+        "definition is purely descriptive (a count over time); the target-range judgment above "
+        "is this project's own choice, not CHAOSS's. METRICS.md §6."
+    ),
+    "release_regularity": (
+        "Coefficient of variation (CoV = stdev / mean) of inter-release gaps, in days, among "
+        "GA releases falling in the same trailing-24-calendar-month window release_frequency "
+        "uses, dense monthly. Floor of 3 releases (2 intervals) in the window; below that, "
+        "flag='insufficient_data'. details_json also carries mean_days_between_releases, "
+        "median_days_between_releases (also published as its own metric, days_between_releases, "
+        "D29) and n_intervals, for the same audit trail. Tier: proxy. Dimension: "
+        "release cadence. Role: supporting. Direction of good: none -- an intentional long "
+        "freeze (e.g. Cassandra's 4.0 stabilization period) spikes this metric without the "
+        "project being any less healthy (SCORING.md §6); shown as context, never a standalone "
+        "improving/declining signal. Window: trailing-24m, updated monthly. METRICS.md §6."
+    ),
+    "time_since_last_release": (
+        "Days between the most recent GA release and the run's as_of date. One snapshot row per "
+        "run (window_start == window_end == as_of), not a monthly time series -- emits no row at "
+        "all until at least one GA release is known. No population floor (METRICS.md §6: "
+        "'Population & exclusions: none') -- this is a single fact, not a rate/ratio/latency "
+        "statistic computed over a sample. Tier: established. Dimension: release cadence. Role: "
+        "supporting. Direction of good: none -- a long gap can precede a major release (healthy "
+        "build-up) or reflect genuine stagnation, indistinguishable from this metric alone; only "
+        "release_frequency/release_regularity in context can tell them apart. METRICS.md §6."
+    ),
+    "days_between_releases": (
+        "Median gap, in days, between consecutive GA releases falling in the same "
+        "trailing-24-calendar-month window release_frequency uses, dense monthly -- the "
+        "companion figure issue #135 itself named ('a companion days_between_releases "
+        "(median gap, trailing 12 months)'), promoted to its own metric_id (DECISIONS.md D29: "
+        "once composite/dimension scoring stopped gating what gets published, there was no "
+        "longer a reason to fold this into release_regularity's details_json rather than show "
+        "it directly). Same population/floor as release_regularity (3 releases, 2 intervals, "
+        "below that flag='insufficient_data'); details_json also carries "
+        "mean_days_between_releases and n_intervals for the same audit trail. Tier: proxy. "
+        "Dimension: release cadence. Role: supporting. Direction of good: none -- same "
+        "structural-break caveat as release_regularity (an intentional long freeze inflates "
+        "this without the project being less healthy, SCORING.md §6). Window: trailing-24m, "
+        "updated monthly. CHAOSS equivalent: no exact match; the closest published CHAOSS "
+        "Knowledge Base entry is 'Release Frequency' (verified live 2026-10-09), which measures "
+        "count-over-time rather than inter-release gap length directly. METRICS.md §6."
     ),
 }
 

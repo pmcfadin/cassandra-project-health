@@ -457,6 +457,64 @@ SECURITY_ADVISORY = pa.schema(
     ]
 )
 
+# --- Release tables (issue #135, release cadence dimension) ----------------
+#
+# GA (General Availability) releases of the tracked repo, collected from git
+# tags in the already-cloned local working copy (`collectors/git.py`'s
+# `clone_or_fetch`/`workdir` -- `collectors/release.py` reuses that same
+# clone rather than cloning again). `release_date` is always the git tag's
+# own `creatordate` (annotated tag's tagger date, or the pointed-at commit's
+# author date for a lightweight tag) -- the PRIMARY, authoritative date
+# source (see `collectors/release.py`'s module docstring for why
+# `archive.apache.org`'s directory-listing mtime is cross-checked for
+# *existence* only, never used as the date of record: verified live
+# 2026-10-09, several unrelated directories -- including genuinely 2025
+# releases -- share one identical mtime, `2026-05-01 17:48`, from an
+# evident bulk archive-maintenance touch unrelated to any release). One row
+# per GA tag; collected fresh in full on every `release` source run
+# (cheap -- a few hundred tags) and deduped at read time on `release_id`,
+# same append-only-raw pattern as `scorecard_check`/`security_advisory`
+# above.
+
+RELEASE = pa.schema(
+    [
+        # Natural key: the exact git tag name, e.g. "cassandra-5.0.2". Also
+        # unique per GA release (`collectors/release.py` excludes
+        # alpha/beta/rc pre-release tags and known packaging-only duplicate
+        # tags, e.g. "cassandra-2.1.0-deb").
+        pa.field("release_id", pa.string(), nullable=False),
+        pa.field("tag_name", pa.string(), nullable=False),
+        # Normalized version string, e.g. "5.0.2" (the "-final" suffix some
+        # of the earliest tags carry, e.g. "cassandra-0.3.0-final", is
+        # stripped here).
+        pa.field("version", pa.string(), nullable=False),
+        # Release line, e.g. "5.0" -- METRICS.md §6's "optionally per
+        # release line" detail.
+        pa.field("major_minor", pa.string(), nullable=False),
+        # PRIMARY, authoritative release date (git tag creatordate). Every
+        # cadence metric (release_frequency/release_regularity/
+        # time_since_last_release) is computed from this column.
+        pa.field("release_date", pa.date32(), nullable=False),
+        # release_date_source: always 'git_tag' today -- recorded per row
+        # (issue #135: "record source per row") so a future second primary
+        # source doesn't silently become ambiguous.
+        pa.field("release_date_source", pa.string(), nullable=False),
+        # Cross-check only (never authoritative, see module docstring
+        # above): whether a same-named directory exists under
+        # `archive.apache.org/dist/cassandra/` at collection time. `None`
+        # when the archive fetch itself failed (never treated as `False`).
+        pa.field("archive_verified", pa.bool_(), nullable=True),
+        # The archive directory's own listed mtime, informational only --
+        # NOT used as `release_date` (see module docstring: this value is
+        # known to be wrong for some real releases after an ASF archive
+        # maintenance operation bumped it). `None` when unverified/unfetched.
+        pa.field("archive_date", pa.date32(), nullable=True),
+        pa.field("repo", pa.string(), nullable=False),
+        pa.field("source_snapshot_id", pa.string(), nullable=False),
+        pa.field("collected_at", TIMESTAMP_UTC, nullable=False),
+    ]
+)
+
 # --- GitHub profile cache (D6, issue #52) -------------------------------
 
 GITHUB_PROFILE = pa.schema(
@@ -1174,6 +1232,7 @@ TABLE_SCHEMAS: dict[str, pa.Schema] = {
     "message_thread": MESSAGE_THREAD,
     "scorecard_check": SCORECARD_CHECK,
     "security_advisory": SECURITY_ADVISORY,
+    "release": RELEASE,
     "affiliation_period": AFFILIATION_PERIOD,
     "github_commit_author": GITHUB_COMMIT_AUTHOR,
     "github_profile": GITHUB_PROFILE,

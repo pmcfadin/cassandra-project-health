@@ -93,6 +93,47 @@ a raw count is already the complete, meaningful statistic at any n,
 including 0, so they always report `flag='ok'`. Only
 `open_pr_backlog_no_github_response_share`, a share, applies METRICS.md
 §0.6's rate/ratio floor (5).
+
+## Scoped to `apache/cassandra` (orchestrator review of PR #143)
+
+The 12 `open_pr_backlog_*` ids above (`TOTAL`/`DRAFTS`/`AGE_METRIC_IDS`/
+`TICKET_METRIC_IDS`/`NO_GITHUB_RESPONSE_SHARE`) are computed from
+`PRIMARY_REPO` ("apache/cassandra") PRs **only**, not every
+`pull_requests.repos` entry `projects/cassandra.yaml` configures. Two
+reasons, both from real-data review: (1) the issue's own verified
+orchestrator snapshot (549 open PRs) is itself `apache/cassandra`-only,
+so combining in the other 6 configured repos' PRs made this module's own
+headline number silently stop matching the number it was built to
+reproduce; (2) the linked-ticket-state bucket is meaningless outside
+`apache/cassandra` -- `apache/cassandra-java-driver` uses its own JIRA
+project (`CASSJAVA`), `apache/cassandra-sidecar`/`-analytics` likewise
+have their own, and some configured repos (e.g. `-website`, `-dtest`)
+reference `apache/cassandra`'s own CASSANDRA-NNNNN keys in their titles
+at best inconsistently -- a PR from any of those repos would read as
+`no_ticket_key` for a reason that has nothing to do with whether its
+*own* project tracks it, inflating that bucket with repos it was never
+meant to describe.
+
+Every **other** configured repo still gets its own total/drafts/age-bucket
+counts (no ticket-state, no no-GitHub-response share -- the former for
+the reason above, the latter because it was never asked for and this repo
+breakdown is meant to stay small) via `_other_repo_rows`, one row per
+`(metric, repo)` pair, with metric_id
+`other_repo_metric_id(TOTAL, "apache/cassandra-dtest")` ->
+`"open_pr_backlog_total__cassandra_dtest"` and `details_json.repo`
+carrying the full repo string. These rows are written into the exact same
+`pr_backlog_metric_value.parquet` snapshot as the 12 `apache/cassandra`
+ids, so they're downloadable the same raw-data way, but -- same
+"computed and discoverable in the snapshot, never given an individual
+per-metric-id `data/<id>.json`/`.csv` file" treatment
+`review_responsiveness.py`'s ~30 per-tier/per-window ids already get --
+deliberately **not** added to `ALL_METRIC_IDS`, `build_pr_backlog_registry`,
+or `metrics_meta.PR_BACKLOG_METRICS`: the repo set is read from whatever
+distinct `pr.repo` values actually exist in the data (not a hardcoded
+list), so a metric_id set that's only knowable after reading the data
+can't also be a static registry entry. `site/pr_backlog_page.py`'s own
+"Other project repositories" table is how this project actually renders
+them.
 """
 
 from __future__ import annotations
@@ -110,6 +151,13 @@ from project_health.metrics.windows import month_end, month_start
 from project_health.schema import get_schema, validate
 
 DEFINITION_VERSION = "1.0"
+
+# The `open_pr_backlog_*` ids below are scoped to this one repo (see module
+# docstring "Scoped to apache/cassandra"). Every other repo
+# `projects/cassandra.yaml`'s `pull_requests.repos` configures still gets
+# its own total/drafts/age-bucket rows (`_other_repo_rows`), just under a
+# different, per-repo metric_id (`other_repo_metric_id`).
+PRIMARY_REPO = "apache/cassandra"
 
 TOTAL = "open_pr_backlog_total"
 DRAFTS = "open_pr_backlog_drafts"
@@ -143,6 +191,22 @@ _AGE_LT30D_DAYS = 30
 _AGE_30_90D_DAYS = 90
 _AGE_90D_1Y_DAYS = 365
 _AGE_1_3Y_DAYS = 365 * 3
+
+
+def _repo_slug(repo: str) -> str:
+    """`"apache/cassandra-dtest"` -> `"cassandra_dtest"` -- the repo's own
+    short name (the `owner/` prefix dropped, hyphens underscored) so it
+    reads naturally as a metric_id suffix."""
+    return repo.split("/")[-1].replace("-", "_")
+
+
+def other_repo_metric_id(base_metric_id: str, repo: str) -> str:
+    """The per-repo metric_id a non-`PRIMARY_REPO` repo's row uses, e.g.
+    `other_repo_metric_id(TOTAL, "apache/cassandra-dtest")` ->
+    `"open_pr_backlog_total__cassandra_dtest"`. See module docstring
+    "Scoped to apache/cassandra" for why these are never in
+    `ALL_METRIC_IDS`."""
+    return f"{base_metric_id}__{_repo_slug(repo)}"
 
 
 def _age_bucket(age_days: float) -> str:
@@ -310,30 +374,17 @@ def _row(
     }
 
 
-def compute_pr_backlog(
-    tables: dict[str, pa.Table],
-    *,
+def _primary_repo_rows(
+    prs: list[_PR],
+    issue_state: dict[str, tuple[str | None, datetime | None]],
     as_of: date,
     run_id: str,
     computed_at: datetime,
-) -> pa.Table:
-    """Every `open_pr_backlog_*` `metric_value` row for this run (issue #142).
-
-    Kept as its own entry point (not wired into `metrics/engine.py::
-    compute_all`) -- see module docstring. Callers (`pipeline.py`) write
-    this table to its own snapshot file, mirroring
-    `review_responsiveness_metric_value.parquet`'s treatment, not the main
-    `metrics.parquet`/`METRIC_IDS`-checked path.
-    """
-    con = _connect(tables)
-    try:
-        prs = _build_prs(con)
-        issue_state = _issue_state_by_key(con)
-    finally:
-        con.close()
-
+) -> list[dict[str, Any]]:
+    """The 12 `apache/cassandra`-scoped `open_pr_backlog_*` rows -- `prs`
+    must already be filtered to `PRIMARY_REPO` by the caller."""
     if not prs:
-        return get_schema("metric_value").empty_table()
+        return []
 
     first_month = month_start(min(pr.created_at.date() for pr in prs))
     months = _dense_months(first_month, as_of)
@@ -432,9 +483,131 @@ def compute_pr_backlog(
                 },
             )
         )
+    return rows
+
+
+def _other_repo_rows(
+    repo: str,
+    prs: list[_PR],
+    as_of: date,
+    run_id: str,
+    computed_at: datetime,
+) -> list[dict[str, Any]]:
+    """Total/drafts/age-bucket rows for one non-`PRIMARY_REPO` repo -- no
+    ticket-state, no no-GitHub-response share (see module docstring
+    "Scoped to apache/cassandra"). `prs` must already be filtered to this
+    one `repo` by the caller."""
+    if not prs:
+        return []
+
+    first_month = month_start(min(pr.created_at.date() for pr in prs))
+    months = _dense_months(first_month, as_of)
+
+    rows: list[dict[str, Any]] = []
+    for month in months:
+        window_end = month_end(month)
+        as_of_dt = _end_of_day(window_end)
+        open_prs = [
+            pr
+            for pr in prs
+            if pr.created_at <= as_of_dt and (pr.closed_at is None or pr.closed_at > as_of_dt)
+        ]
+        n_open = len(open_prs)
+        n_drafts = sum(1 for pr in open_prs if pr.is_draft)
+        age_counts: dict[str, int] = {mid: 0 for mid in AGE_METRIC_IDS}
+        for pr in open_prs:
+            age_days = (as_of_dt - pr.created_at).total_seconds() / 86400.0
+            age_counts[_age_bucket(age_days)] += 1
+
+        rows.append(
+            _row(
+                metric_id_=other_repo_metric_id(TOTAL, repo),
+                window_start=month,
+                window_end=window_end,
+                raw_value=float(n_open),
+                n=n_open,
+                floor=0,
+                run_id=run_id,
+                computed_at=computed_at,
+                details={"repo": repo},
+            )
+        )
+        rows.append(
+            _row(
+                metric_id_=other_repo_metric_id(DRAFTS, repo),
+                window_start=month,
+                window_end=window_end,
+                raw_value=float(n_drafts),
+                n=n_open,
+                floor=0,
+                run_id=run_id,
+                computed_at=computed_at,
+                details={"repo": repo, "n_open": n_open},
+            )
+        )
+        for mid in AGE_METRIC_IDS:
+            rows.append(
+                _row(
+                    metric_id_=other_repo_metric_id(mid, repo),
+                    window_start=month,
+                    window_end=window_end,
+                    raw_value=float(age_counts[mid]),
+                    n=n_open,
+                    floor=0,
+                    run_id=run_id,
+                    computed_at=computed_at,
+                    details={"repo": repo, "n_open": n_open},
+                )
+            )
+    return rows
+
+
+def compute_pr_backlog(
+    tables: dict[str, pa.Table],
+    *,
+    as_of: date,
+    run_id: str,
+    computed_at: datetime,
+) -> pa.Table:
+    """Every `open_pr_backlog_*` `metric_value` row for this run (issue
+    #142): the 12 `PRIMARY_REPO`-scoped ids, plus one total/drafts/
+    age-bucket row set per other repo found in `pr` (see module docstring
+    "Scoped to apache/cassandra").
+
+    Kept as its own entry point (not wired into `metrics/engine.py::
+    compute_all`) -- see module docstring. Callers (`pipeline.py`) write
+    this table to its own snapshot file, mirroring
+    `review_responsiveness_metric_value.parquet`'s treatment, not the main
+    `metrics.parquet`/`METRIC_IDS`-checked path.
+    """
+    con = _connect(tables)
+    try:
+        prs = _build_prs(con)
+        issue_state = _issue_state_by_key(con)
+    finally:
+        con.close()
+
+    if not prs:
+        return get_schema("metric_value").empty_table()
+
+    primary_prs = [pr for pr in prs if pr.repo == PRIMARY_REPO]
+    other_prs_by_repo: dict[str, list[_PR]] = {}
+    for pr in prs:
+        if pr.repo != PRIMARY_REPO:
+            other_prs_by_repo.setdefault(pr.repo, []).append(pr)
+
+    rows: list[dict[str, Any]] = _primary_repo_rows(
+        primary_prs, issue_state, as_of, run_id, computed_at
+    )
+    for repo, repo_prs in other_prs_by_repo.items():
+        rows.extend(_other_repo_rows(repo, repo_prs, as_of, run_id, computed_at))
 
     schema = get_schema("metric_value")
-    return validate("metric_value", pa.Table.from_pylist(rows, schema=schema))
+    return (
+        validate("metric_value", pa.Table.from_pylist(rows, schema=schema))
+        if rows
+        else schema.empty_table()
+    )
 
 
 # --- Registry (`metric_definition_version` rows, mirrors

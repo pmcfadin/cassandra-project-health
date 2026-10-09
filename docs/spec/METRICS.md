@@ -1332,6 +1332,23 @@ looks like -- age distribution, whether a linked ticket is itself still open, an
 has had any GitHub-visible response at all. Facts only -- no thresholds, no "healthy"/"should"/
 "cleanup needed" framing, no verdict.
 
+### Scoped to apache/cassandra (orchestrator review of PR #143, second round)
+
+Every `open_pr_backlog_*` id below is computed from `apache/cassandra` PRs only, not every
+`pull_requests.repos` entry `projects/cassandra.yaml` configures (seven total). Two reasons: the
+issue's own verified orchestrator snapshot (549 open PRs) is itself `apache/cassandra`-only, and
+the linked-ticket-state bucket is meaningless for a repo tracked by a different JIRA project
+(`apache/cassandra-java-driver` uses `CASSJAVA`, `-sidecar`/`-analytics` have their own) or none
+at all -- combining repos either silently stopped matching the number this module exists to
+reproduce, or inflated "no ticket key" with PRs that were never going to carry a CASSANDRA-NNNNN
+key regardless of how well-reviewed they are. Every other configured repo still gets its own
+total/drafts/age-bucket counts (no ticket-state, no no-GitHub-response share) via a per-repo
+metric_id (`other_repo_metric_id`, e.g. `open_pr_backlog_total__cassandra_dtest`) -- computed and
+written into the same snapshot, discoverable via `details_json.repo`, but (like
+`review_responsiveness.py`'s ~30 per-tier/per-window ids) never added to `ALL_METRIC_IDS` or
+given an individual `data/<id>.json`/`.csv` download; `site/pr_backlog_page.py`'s own "Other
+project repositories" table is how this project renders them.
+
 ### Monthly reconstruction (not a rate over new activity)
 
 Every row is a **snapshot as of a completed month's end** `T`: a PR is open as of `T` when

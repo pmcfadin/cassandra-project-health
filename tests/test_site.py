@@ -2936,6 +2936,7 @@ def _default_pr_backlog_rows() -> list[dict]:
         TICKET_FIXED,
         TICKET_OPEN,
         TOTAL,
+        other_repo_metric_id,
     )
 
     window_start, window_end = date(2026, 8, 1), date(2026, 8, 31)
@@ -2969,6 +2970,35 @@ def _default_pr_backlog_rows() -> list[dict]:
             ),
         )
     )
+
+    # One "other repo" (apache/cassandra-dtest): total/drafts/age buckets
+    # only, no ticket-state, no no-GitHub-response share (orchestrator's
+    # second review: these columns are apache/cassandra-only concepts).
+    other_repo = "apache/cassandra-dtest"
+    other_counts = {
+        TOTAL: 5.0,
+        DRAFTS: 1.0,
+        AGE_LT_30D: 1.0,
+        AGE_30_90D: 2.0,
+        AGE_90D_1Y: 1.0,
+        AGE_1_3Y: 1.0,
+        AGE_GT_3Y: 0.0,
+    }
+    for metric_id, value in other_counts.items():
+        details = {"repo": other_repo}
+        if metric_id != TOTAL:
+            details["n_open"] = 5
+        rows.append(
+            _metric_value_row(
+                other_repo_metric_id(metric_id, other_repo),
+                window_start,
+                window_end,
+                value,
+                5,
+                "ok",
+                details_json=json.dumps(details),
+            )
+        )
     return rows
 
 
@@ -3034,6 +3064,40 @@ def test_community_page_renders_pr_backlog_section(tmp_path):
     assert "Based on:" in html_text
     assert "chaoss.community/kb/metric-change-requests" in html_text
     assert "chaoss.community/kb/metric-issue-age" in html_text
+
+
+def test_community_page_pr_backlog_scoped_to_apache_cassandra(tmp_path):
+    """Orchestrator's second review: the issue's own verified 549-open-PR
+    snapshot, and the linked-ticket-state bucket, are apache/cassandra-only
+    -- the charts, the current-month table, and the headline count must say
+    so explicitly, not just compute it that way silently."""
+    out_dir, _ = _build_site_with_pr_backlog(tmp_path)
+    html_text = _community_html(out_dir)
+    assert 'aria-label="Open PR backlog by age bucket, apache/cassandra' in html_text
+    assert 'aria-label="Open PR backlog by linked-ticket state, apache/cassandra' in html_text
+    assert "Current month — apache/cassandra" in html_text or "apache/cassandra" in html_text
+
+
+def test_community_page_renders_other_project_repositories_table(tmp_path):
+    """The "Other project repositories" table: one row per non-
+    apache/cassandra repo, with total/drafts/age-bucket columns only --
+    no ticket-state column, since other repos use their own issue tracker
+    or none."""
+    out_dir, _ = _build_site_with_pr_backlog(tmp_path)
+    html_text = _community_html(out_dir)
+    assert "Other project repositories" in html_text
+    section = html_text.split("Other project repositories", 1)[1]
+    other_table = section.split("</table>", 1)[0]
+
+    assert "cassandra-dtest" in other_table
+    # The fixture's apache/cassandra-dtest row: total=5, drafts=1.
+    assert ">5<" in other_table
+    assert ">1<" in other_table
+    # No ticket-state column in this table (checked structurally: the
+    # table immediately following the "Other project repositories"
+    # heading has no "Still open"/"Fixed"/"No ticket key" header cell).
+    for ticket_label in ("Still open", "Fixed", "Closed (other)", "No ticket key"):
+        assert ticket_label not in other_table
 
 
 def test_community_page_pr_backlog_discloses_base_branch_gap(tmp_path):

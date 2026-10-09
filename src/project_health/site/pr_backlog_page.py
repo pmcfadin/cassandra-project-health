@@ -8,10 +8,25 @@ render as 12 separate cards in the Community page's Responsiveness
 dimension grid (`generate._render_pages` excludes
 `metrics_meta.PR_BACKLOG_METRICS`' ids from that card grid specifically).
 Instead, this module builds the section's own compact rendering: one
-stacked chart of the backlog by age bucket over the last 36 months, one
-smaller stacked chart by linked-ticket state, a one-row current-month
-table (total, drafts, no-GitHub-response share), a single "Based on" line,
-and a single sentence disclosing that base branch isn't collected.
+stacked chart of the `PRIMARY_REPO` (apache/cassandra) backlog by age
+bucket over the last 36 months, one smaller stacked chart by
+linked-ticket state, a one-row current-month table (total, drafts,
+no-GitHub-response share), a single "Based on" line, and a single
+sentence disclosing that base branch isn't collected.
+
+## Second orchestrator review: scoped to apache/cassandra, plus one more table
+
+The charts/table/headline above are apache/cassandra-only (`metrics/
+pr_backlog.py`'s own `PRIMARY_REPO` scoping -- the issue's own verified
+549-open-PR snapshot is itself apache/cassandra-only, and the
+linked-ticket-state bucket is meaningless for a repo tracked by a
+different JIRA project, or none). This module also builds one more
+table, "Other project repositories" (`_other_repos_table`): each other
+configured repo's own current total/drafts/age-bucket counts (no
+ticket-state column, for the reason above), read from the same
+`pr_backlog_metric_value.parquet` snapshot's `other_repo_metric_id` rows
+-- discovered from whichever repos the data actually has (`details_json.
+repo`), not a hardcoded list.
 
 D25 (neutral, informational site): every string here avoids verdict/
 pass-fail/threshold/"healthy"/"should"/"cleanup" wording -- counts and a
@@ -39,10 +54,12 @@ from project_health.metrics.pr_backlog import (
     DRAFTS,
     NO_GITHUB_RESPONSE_SHARE,
     NO_TICKET_KEY,
+    PRIMARY_REPO,
     TICKET_CLOSED_OTHER,
     TICKET_FIXED,
     TICKET_OPEN,
     TOTAL,
+    other_repo_metric_id,
 )
 from project_health.schema import get_schema, validate
 from project_health.site.metrics_meta import PR_BACKLOG_PRIOR_ART
@@ -147,6 +164,63 @@ def _stacked_chart_spec(
     return json.dumps(spec)
 
 
+AGE_BUCKET_LABELS: tuple[str, ...] = tuple(label for _, label in AGE_BUCKET_ORDER)
+
+
+def _other_repos_table(rows: list[dict], rows_by_metric: dict[str, list[dict]]) -> list[dict]:
+    """One row per non-`PRIMARY_REPO` repo found in the snapshot (via
+    `details_json.repo`, not a hardcoded repo list) -- current total,
+    drafts, and age-bucket counts, no ticket-state column (see module
+    docstring)."""
+    repos: set[str] = set()
+    for row in rows:
+        repo = _details(row).get("repo")
+        if repo and repo != PRIMARY_REPO:
+            repos.add(repo)
+
+    table_rows: list[dict[str, Any]] = []
+    for repo in sorted(repos):
+        total_rows = sorted(
+            rows_by_metric.get(other_repo_metric_id(TOTAL, repo), []),
+            key=lambda r: r["window_start"],
+        )
+        if not total_rows:
+            continue
+        latest = total_rows[-1]
+        latest_month = latest["window_start"]
+        total = int(latest["value"]) if latest["value"] is not None else None
+
+        drafts_by_month = {
+            r["window_start"]: r for r in rows_by_metric.get(other_repo_metric_id(DRAFTS, repo), [])
+        }
+        drafts_row = drafts_by_month.get(latest_month)
+        drafts = (
+            int(drafts_row["value"]) if drafts_row and drafts_row["value"] is not None else None
+        )
+
+        age_cells: list[int | None] = []
+        for metric_id, _ in AGE_BUCKET_ORDER:
+            bucket_by_month = {
+                r["window_start"]: r
+                for r in rows_by_metric.get(other_repo_metric_id(metric_id, repo), [])
+            }
+            bucket_row = bucket_by_month.get(latest_month)
+            age_cells.append(
+                int(bucket_row["value"]) if bucket_row and bucket_row["value"] is not None else None
+            )
+
+        table_rows.append(
+            {
+                "repo": repo.split("/")[-1],
+                "as_of_month": latest["window_end"],
+                "total": total,
+                "drafts": drafts,
+                "age_cells": age_cells,
+            }
+        )
+    return table_rows
+
+
 def build_pr_backlog_context(data_dir: str | Path, run_id: str) -> dict[str, Any]:
     data_dir = Path(data_dir)
     table = _read_optional_snapshot_table(data_dir, run_id)
@@ -195,6 +269,7 @@ def build_pr_backlog_context(data_dir: str | Path, run_id: str) -> dict[str, Any
 
     return {
         "available": True,
+        "primary_repo": PRIMARY_REPO,
         "as_of_month": as_of_month,
         "total": total,
         "drafts": drafts,
@@ -202,6 +277,8 @@ def build_pr_backlog_context(data_dir: str | Path, run_id: str) -> dict[str, Any
         "no_response_n": no_response_n,
         "age_chart_spec": _stacked_chart_spec(rows_by_metric, AGE_BUCKET_ORDER, height=240),
         "ticket_chart_spec": _stacked_chart_spec(rows_by_metric, TICKET_STATE_ORDER, height=160),
+        "other_repos": _other_repos_table(rows, rows_by_metric),
+        "age_bucket_labels": AGE_BUCKET_LABELS,
         "prior_art": PR_BACKLOG_PRIOR_ART,
         "base_branch_note": BASE_BRANCH_NOTE,
         "metrics_spec_url": METRICS_SPEC_URL,

@@ -24,12 +24,14 @@ from project_health.metrics.pr_backlog import (
     FLOOR_RATE_RATIO,
     NO_GITHUB_RESPONSE_SHARE,
     NO_TICKET_KEY,
+    PRIMARY_REPO,
     TICKET_CLOSED_OTHER,
     TICKET_FIXED,
     TICKET_OPEN,
     TOTAL,
     build_pr_backlog_registry,
     compute_pr_backlog,
+    other_repo_metric_id,
 )
 from project_health.pipeline import _dedupe_issue_rows
 from tests.fixtures.metrics.builders import issues, pr_comments, pr_issue_link, pr_reviews, prs
@@ -465,6 +467,132 @@ def test_no_github_response_share_below_floor_is_insufficient_data():
     assert row["flag"] == "insufficient_data"
     assert row["value"] is None
     assert FLOOR_RATE_RATIO == 5
+
+
+# --- Scoped to apache/cassandra (orchestrator review of PR #143) ----------
+
+
+def test_primary_repo_constant_is_apache_cassandra():
+    assert PRIMARY_REPO == "apache/cassandra" == REPO
+
+
+def test_primary_ids_exclude_other_repos_prs():
+    """A PR from a differently-tracked repo must never inflate the
+    apache/cassandra-scoped headline count, age buckets, or ticket-state
+    buckets -- the exact bug the orchestrator's real-data review caught
+    (549 apache/cassandra vs. 716 across all 7 configured repos)."""
+    pr_rows = [
+        {"repo": REPO, "number": 1, "author_raw_value": "a", "created_at": _ts(2026, 1, 1)},
+        {
+            "repo": "apache/cassandra-dtest",
+            "number": 1,
+            "author_raw_value": "b",
+            "created_at": _ts(2026, 1, 1),
+        },
+    ]
+    tables = _empty_tables(pr=prs(pr_rows))
+    result = compute_pr_backlog(
+        tables, as_of=date(2026, 2, 1), run_id=RUN_ID, computed_at=_ts(2026, 2, 1)
+    )
+    assert _row_for_month(result, TOTAL, 2026, 1)["value"] == 1.0
+
+
+def test_other_repo_rows_use_their_own_metric_id_and_repo_detail():
+    pr_rows = [
+        {
+            "repo": "apache/cassandra-dtest",
+            "number": 1,
+            "author_raw_value": "a",
+            "created_at": _ts(2026, 1, 5),
+            "is_draft": True,
+        },
+        {
+            "repo": "apache/cassandra-dtest",
+            "number": 2,
+            "author_raw_value": "b",
+            "created_at": _ts(2026, 1, 6),
+        },
+    ]
+    tables = _empty_tables(pr=prs(pr_rows))
+    result = compute_pr_backlog(
+        tables, as_of=date(2026, 2, 1), run_id=RUN_ID, computed_at=_ts(2026, 2, 1)
+    )
+
+    other_total_id = other_repo_metric_id(TOTAL, "apache/cassandra-dtest")
+    assert other_total_id == "open_pr_backlog_total__cassandra_dtest"
+    total_row = _row_for_month(result, other_total_id, 2026, 1)
+    assert total_row is not None
+    assert total_row["value"] == 2.0
+    assert _details(total_row)["repo"] == "apache/cassandra-dtest"
+
+    drafts_row = _row_for_month(
+        result, other_repo_metric_id(DRAFTS, "apache/cassandra-dtest"), 2026, 1
+    )
+    assert drafts_row["value"] == 1.0
+
+
+def test_other_repo_rows_have_no_ticket_state_or_response_share_ids():
+    """Per module docstring: another repo's open-PR rows never get a
+    ticket-state or no-GitHub-response-share metric_id at all -- those are
+    apache/cassandra-only concepts."""
+    pr_rows = [
+        {
+            "repo": "apache/cassandra-java-driver",
+            "number": 1,
+            "author_raw_value": "a",
+            "created_at": _ts(2026, 1, 5),
+        }
+    ]
+    tables = _empty_tables(pr=prs(pr_rows))
+    result = compute_pr_backlog(
+        tables, as_of=date(2026, 2, 1), run_id=RUN_ID, computed_at=_ts(2026, 2, 1)
+    )
+    emitted_ids = {r["metric_id"] for r in result.to_pylist()}
+    ticket_and_response_bases = (
+        TICKET_OPEN,
+        TICKET_FIXED,
+        TICKET_CLOSED_OTHER,
+        NO_TICKET_KEY,
+        NO_GITHUB_RESPONSE_SHARE,
+    )
+    for base in ticket_and_response_bases:
+        assert other_repo_metric_id(base, "apache/cassandra-java-driver") not in emitted_ids
+    # And the apache/cassandra-scoped ids themselves never appear, since no
+    # apache/cassandra PR exists in this scenario.
+    assert TOTAL not in emitted_ids
+
+
+def test_other_repo_age_buckets_computed_independently_per_repo():
+    pr_rows = [
+        {
+            "repo": "apache/cassandra-dtest",
+            "number": 1,
+            "author_raw_value": "a",
+            "created_at": _ts(2026, 1, 25),  # ~5 days old at month end -> <30d
+        },
+        {
+            "repo": "apache/cassandra-accord",
+            "number": 1,
+            "author_raw_value": "b",
+            "created_at": _ts(2025, 1, 1),  # >1 year old at month end -> 1-3y
+        },
+    ]
+    tables = _empty_tables(pr=prs(pr_rows))
+    result = compute_pr_backlog(
+        tables, as_of=date(2026, 2, 1), run_id=RUN_ID, computed_at=_ts(2026, 2, 1)
+    )
+    dtest_lt30 = _row_for_month(
+        result, other_repo_metric_id(AGE_LT_30D, "apache/cassandra-dtest"), 2026, 1
+    )
+    accord_lt30 = _row_for_month(
+        result, other_repo_metric_id(AGE_LT_30D, "apache/cassandra-accord"), 2026, 1
+    )
+    accord_1_3y = _row_for_month(
+        result, other_repo_metric_id(AGE_1_3Y, "apache/cassandra-accord"), 2026, 1
+    )
+    assert dtest_lt30["value"] == 1.0
+    assert accord_lt30["value"] == 0.0
+    assert accord_1_3y["value"] == 1.0
 
 
 # --- Base branch: deliberately not emitted --------------------------------

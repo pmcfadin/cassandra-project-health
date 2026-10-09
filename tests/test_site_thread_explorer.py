@@ -563,7 +563,10 @@ class TestThreadExplorerChartsRendering:
         )
         assert match is not None
         spec = json.loads(html_module.unescape(match.group(1)))
-        assert spec["encoding"]["x"]["sort"] == [
+        # Issue #133: small multiples -- one mini-chart per label, faceted,
+        # independent y-scale per label, one flat color per panel.
+        assert spec["facet"]["field"] == "label_display"
+        assert spec["facet"]["sort"] == [
             "Acknowledgment",
             "Compromise offer",
             "Constructive counterargument",
@@ -571,8 +574,9 @@ class TestThreadExplorerChartsRendering:
             "Resolution marker",
             "Technical disagreement",
         ]
-        assert spec["encoding"]["color"]["field"] == "year"
-        assert spec["encoding"]["color"]["scale"]["scheme"] == "blues"
+        assert spec["resolve"]["scale"]["y"] == "independent"
+        assert spec["spec"]["mark"]["type"] == "bar"
+        assert "color" not in spec["spec"]["encoding"]
 
     def test_no_charts_section_when_no_threads_snapshot(self, tmp_path):
         out_dir, _ = _build_site_without_threads(tmp_path)

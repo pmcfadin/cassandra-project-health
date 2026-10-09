@@ -320,7 +320,7 @@ def label_year_share_rows(
 ) -> list[dict[str, Any]]:
     """Long-format `{label, label_display, year, count, total, share}` rows
     for the "threads with >=1 flagged message, by label, year over year"
-    grouped-bar chart (issue #124). `share` is this year's (within `rows`)
+    small-multiples chart (issue #124, #133). `share` is this year's (within `rows`)
     fraction of threads with at least one message classified >=0.5 for
     `label` -- `count / total`, `total` being every row in `rows` for that
     year regardless of label. `rows` is whatever the caller passes in --
@@ -410,52 +410,61 @@ def _year_outcome_chart_spec(rows: list[dict[str, Any]]) -> str | None:
 
 
 def _label_year_group_spec(rows: list[dict[str, Any]], labels: tuple[str, ...]) -> str | None:
-    """Grouped-bar Vega-Lite spec for one panel (constructive or negative)
-    of the "threads with >=1 flagged message, by label, year over year"
-    chart -- same visual language as `conversation_patterns_page.
-    _yoy_group_spec` (issue #120): x = human-readable label in the group's
-    own fixed order, dodged by year, color = year on a sequential "blues"
-    ramp. No CI rule layer (see `_year_outcome_chart_spec`'s docstring --
-    same reasoning: a raw sample share, not a population rate)."""
+    """Faceted small-multiples Vega-Lite spec for one panel (constructive
+    or negative) of the "threads with >=1 flagged message, by label, year
+    over year" chart -- same visual language as `conversation_patterns_page.
+    _yoy_group_spec` (issue #133, amending #120/#124's shared original
+    grouped-bar-dodged-by-year design, after the same reviewer feedback
+    applied to both: "graphs don't wrap", "colour should run along the
+    x-axis, not the dodge/color group"): one mini-chart per label, x =
+    year, y = share of that year's threads. One flat color per panel, not
+    color-by-year -- time is already the x-axis. `thread_explorer.js`'s
+    `applyFacetColumns` computes `facet.columns`/`spec.width` from the
+    container's resolved pixel width on every embed/resize/filter-change,
+    so panels wrap instead of ever scrolling horizontally.
+
+    Independent y-scale per label (`resolve.scale.y: "independent"`), same
+    reasoning as `_yoy_group_spec`'s own docstring: labels' shares differ
+    enough in magnitude that a shared scale would flatten the rarer ones.
+
+    No CI band (see `_year_outcome_chart_spec`'s docstring -- same
+    reasoning: a raw sample share, not a population rate)."""
     values = label_year_share_rows(rows, labels)
     if not values:
         return None
     label_order = [_humanize_label(label) for label in labels]
     spec = {
         "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
-        "width": "container",
-        "height": 260,
-        "data": {"values": values},
-        "mark": {"type": "bar"},
-        "encoding": {
-            "x": {
-                "field": "label_display",
-                "type": "nominal",
-                "title": None,
-                "sort": label_order,
-                "axis": {"labelAngle": -40, "labelLimit": 130, "labelPadding": 4},
-            },
-            "xOffset": {"field": "year", "type": "ordinal"},
-            "y": {
-                "field": "share",
-                "type": "quantitative",
-                "title": "Share of year's threads",
-                "axis": {"format": "%"},
-            },
-            "color": {
-                "field": "year",
-                "type": "ordinal",
-                "title": "Year",
-                "scale": {"scheme": "blues"},
-            },
-            "tooltip": [
-                {"field": "label_display", "type": "nominal", "title": "Label"},
-                {"field": "year", "type": "ordinal", "title": "Year"},
-                {"field": "share", "type": "quantitative", "title": "Share", "format": ".1%"},
-                {"field": "count", "type": "quantitative", "title": "Threads flagged"},
-                {"field": "total", "type": "quantitative", "title": "Threads (year total)"},
-            ],
+        "facet": {
+            "field": "label_display",
+            "type": "nominal",
+            "title": None,
+            "sort": label_order,
         },
+        "columns": 2,
+        "resolve": {"scale": {"y": "independent"}},
+        "spec": {
+            "width": 220,
+            "height": 140,
+            "mark": {"type": "bar", "color": "#2b6cb0"},
+            "encoding": {
+                "x": {"field": "year", "type": "ordinal", "title": "Year"},
+                "y": {
+                    "field": "share",
+                    "type": "quantitative",
+                    "title": "Share of year's threads",
+                    "axis": {"format": "%"},
+                },
+                "tooltip": [
+                    {"field": "label_display", "type": "nominal", "title": "Label"},
+                    {"field": "year", "type": "ordinal", "title": "Year"},
+                    {"field": "share", "type": "quantitative", "title": "Share", "format": ".1%"},
+                    {"field": "count", "type": "quantitative", "title": "Threads flagged"},
+                    {"field": "total", "type": "quantitative", "title": "Threads (year total)"},
+                ],
+            },
+        },
+        "data": {"values": values},
     }
     return json.dumps(spec)
 

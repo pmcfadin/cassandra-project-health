@@ -160,6 +160,66 @@
     return out;
   }
 
+  // --- Small-multiples facet sizing (issue #133) ---------------------------
+  //
+  // `thread_explorer_page._label_year_group_spec` produces a faceted
+  // Vega-Lite spec (one mini-chart per label) with no top-level `width` --
+  // mirrors `app.js`'s own `applyFacetColumns` (same reasoning: compute
+  // `facet.columns`/`spec.width` from the container's resolved pixel width
+  // so panels wrap instead of ever needing a horizontal scrollbar). Kept as
+  // its own copy here rather than imported -- this file and `app.js` are
+  // two separate, non-module `<script>`s with no shared loader, same
+  // reasoning the `CONSTRUCTIVE_LABELS`/`NEGATIVE_LABELS` constants above
+  // are already duplicated rather than shared.
+  //
+  // `FACET_PANEL_TOTAL_MIN`/`FACET_AXIS_OVERHEAD`/`FACET_GAP` are
+  // empirically measured (see `app.js`'s own copy of this function for
+  // the full write-up): each facet column's own y-axis gutter
+  // (`resolve.scale.y: "independent"`) plus Vega-Lite's own inter-column
+  // facet spacing adds real width on top of `spec.width` alone, measured
+  // by compiling real specs with `vl2vg` and checking the rendered SVG's
+  // width at a sweep of container widths from 320px to 1920px.
+  var FACET_PANEL_TOTAL_MIN = 210;
+  var FACET_AXIS_OVERHEAD = 65;
+  var FACET_GAP = 24;
+  var FACET_MAX_COLUMNS = 3;
+  var FACET_MIN_BODY_WIDTH = 90;
+
+  function applyFacetColumns(spec, width) {
+    if (!spec.facet || !spec.spec) {
+      return spec;
+    }
+    var facetField = spec.facet.field;
+    var labelCount = 1;
+    if (facetField && spec.data && Array.isArray(spec.data.values)) {
+      var seen = {};
+      spec.data.values.forEach(function (row) {
+        if (row && row[facetField] != null) {
+          seen[row[facetField]] = true;
+        }
+      });
+      labelCount = Math.max(1, Object.keys(seen).length);
+    }
+    var maxColumns = Math.max(1, Math.min(labelCount, FACET_MAX_COLUMNS));
+    var columns = Math.max(
+      1,
+      Math.min(
+        maxColumns,
+        Math.floor((width + FACET_GAP) / (FACET_PANEL_TOTAL_MIN + FACET_GAP))
+      )
+    );
+    var panelWidth = Math.max(
+      FACET_MIN_BODY_WIDTH,
+      Math.floor((width - (columns - 1) * FACET_GAP) / columns) - FACET_AXIS_OVERHEAD
+    );
+    var next = JSON.parse(JSON.stringify(spec));
+    // `columns` is a top-level sibling of `facet`/`spec`, not nested
+    // inside `facet` -- see `app.js`'s own copy of this function for why.
+    next.columns = columns;
+    next.spec = Object.assign({}, next.spec, { width: panelWidth });
+    return next;
+  }
+
   var CHART_KEYS = ["outcome", "label-constructive", "label-negative"];
   var chartEmbeds = {};
   var chartBaseSpecs = {};
@@ -219,7 +279,9 @@
       delete chartEmbeds[key];
     }
     var width = el.clientWidth || el.getBoundingClientRect().width || 300;
-    var resolvedSpec = Object.assign({}, spec, { width: width });
+    var resolvedSpec = spec.facet
+      ? applyFacetColumns(spec, width)
+      : Object.assign({}, spec, { width: width });
     window
       .vegaEmbed(el, resolvedSpec, { actions: false, renderer: "svg" })
       .then(function (result) {

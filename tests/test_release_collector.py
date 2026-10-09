@@ -31,8 +31,10 @@ def config():
     return load_project("projects/cassandra.yaml")
 
 
-def _init_repo(repo_path: Path) -> None:
-    repo_path.mkdir(parents=True, exist_ok=True)
+def _git_env() -> dict[str, str]:
+    """Environment with a fixed git identity, so committing and creating
+    annotated tags works on machines with no user.name/user.email configured
+    (e.g. CI runners)."""
     env = os.environ.copy()
     env.update(
         {
@@ -42,6 +44,12 @@ def _init_repo(repo_path: Path) -> None:
             "GIT_COMMITTER_EMAIL": "test@example.com",
         }
     )
+    return env
+
+
+def _init_repo(repo_path: Path) -> None:
+    repo_path.mkdir(parents=True, exist_ok=True)
+    env = _git_env()
     subprocess.run(
         ["git", "init", "-b", "trunk"], cwd=repo_path, env=env, check=True, capture_output=True
     )
@@ -69,7 +77,7 @@ def _tag(repo_path: Path, name: str, tagger_date: str, annotated: bool = True) -
     falls back to the pointed-at commit's own (fixed, `_init_repo`-time)
     author date.
     """
-    env = os.environ.copy()
+    env = _git_env()
     env["GIT_COMMITTER_DATE"] = tagger_date
     env["GIT_AUTHOR_DATE"] = tagger_date
     args = ["git", "-C", str(repo_path), "tag"]

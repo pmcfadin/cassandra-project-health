@@ -1290,6 +1290,11 @@ was checked with `curl` to return HTTP 200 at the time it was added.
   `pr_time_to_first_review` (GitHub-only variant), `review_latency` (§3).
 - [Responsiveness practitioner guide](https://www.chaoss.community/practitioner-guide-responsiveness/) —
   `time_to_first_response_jira`/`time_to_first_response_pr`.
+- [Change Requests](https://chaoss.community/kb/metric-change-requests/) (adapted) and
+  [Issue Age](https://chaoss.community/kb/metric-issue-age/) (adapted, applied to change
+  requests) — `open_pr_backlog_*` (§12). CHAOSS's Knowledge Base has no "Change Request
+  Backlog" metric (`kb/metric-change-request-backlog` verified 404, 2026-10-09) — these two are
+  cited as the closest adapted starting points, never as an exact match.
 
 ### Papers and other literature cited
 
@@ -1312,3 +1317,120 @@ five fact-based trend metrics (§9) are outside this CHAOSS/literature catalog e
 Cassandra's own published rules (D24), cited separately per rule in `governance-policy.yaml`, not against
 CHAOSS or external literature — so they also render "project-specific" on their cards rather than a
 mismatched CHAOSS link.
+
+---
+
+## 12. Open PR backlog (descriptive only, not in the Summary Table, issue #142)
+
+Registered separately from every metric in §1-§8 (`metrics/pr_backlog.py`, v1.0, issue #142) --
+deliberately outside the Summary Table, `metrics/registry.py`'s `METRIC_IDS`, and the
+scored/composite system (SCORING.md): no dimension-score role, no `role`/`key`/`supporting`
+classification. Same treatment §9's governance fact metrics and §10's review-responsiveness
+metrics get, for an analogous reason (D25): this is backlog *composition*, not a rate this
+project judges "higher/lower is better." Answers, from data, what the open-PR backlog actually
+looks like -- age distribution, whether a linked ticket is itself still open, and whether a PR
+has had any GitHub-visible response at all. Facts only -- no thresholds, no "healthy"/"should"/
+"cleanup needed" framing, no verdict.
+
+### Scoped to apache/cassandra (orchestrator review of PR #143, second round)
+
+Every `open_pr_backlog_*` id below is computed from `apache/cassandra` PRs only, not every
+`pull_requests.repos` entry `projects/cassandra.yaml` configures (seven total). Two reasons: the
+issue's own verified orchestrator snapshot (549 open PRs) is itself `apache/cassandra`-only, and
+the linked-ticket-state bucket is meaningless for a repo tracked by a different JIRA project
+(`apache/cassandra-java-driver` uses `CASSJAVA`, `-sidecar`/`-analytics` have their own) or none
+at all -- combining repos either silently stopped matching the number this module exists to
+reproduce, or inflated "no ticket key" with PRs that were never going to carry a CASSANDRA-NNNNN
+key regardless of how well-reviewed they are. Every other configured repo still gets its own
+total/drafts/age-bucket counts (no ticket-state, no no-GitHub-response share) via a per-repo
+metric_id (`other_repo_metric_id`, e.g. `open_pr_backlog_total__cassandra_dtest`) -- computed and
+written into the same snapshot, discoverable via `details_json.repo`, but (like
+`review_responsiveness.py`'s ~30 per-tier/per-window ids) never added to `ALL_METRIC_IDS` or
+given an individual `data/<id>.json`/`.csv` download; `site/pr_backlog_page.py`'s own "Other
+project repositories" table is how this project renders them.
+
+### Monthly reconstruction (not a rate over new activity)
+
+Every row is a **snapshot as of a completed month's end** `T`: a PR is open as of `T` when
+`pr.created_at <= T` and (`pr.closed_at` is null or `pr.closed_at > T`) -- the only historical
+reconstruction GitHub's own data supports here, since M0 has no PR state-history table, only
+each PR's current `closed_at`/`merged_at`. Dense across every completed month from the first
+month any PR was created through the last completed month before the run's `as_of` date
+(`metrics/engine.py::_dense_months`).
+
+- **`open_pr_backlog_total`** / **`open_pr_backlog_drafts`**: plain headcounts of the open-as-of-`T`
+  backlog, and the subset with `pr.is_draft = true`.
+- **Age buckets** (`open_pr_backlog_age_lt_30d` / `_30_90d` / `_90d_1y` / `_1_3y` / `_gt_3y`):
+  `T - pr.created_at`, bucketed at 30 days / 90 days / 1 year / 3 years.
+- **Linked-ticket state** (`open_pr_backlog_ticket_open` / `_ticket_fixed` /
+  `_ticket_closed_other` / `_no_ticket_key`): the ticket key(s) a PR names are
+  `pr.linked_issue_keys` (issue #102) unioned with `pr_issue_link` (issue #105's historical
+  backfill), the same union `review_responsiveness.py::_build_submissions` performs. A PR naming
+  no key is `no_ticket_key`. For a PR naming one or more keys, each key's state comes from the
+  `issue` table -- already deduped to one row per key via `pipeline._dedupe_issue_rows`'s "latest
+  `updated_at`" rule before this module ever sees it -- gated on `resolved_at <= T`: unresolved,
+  or resolved after `T`, contributes `ticket_open`; resolved at or before `T` with
+  `resolution == 'Fixed'` contributes `ticket_fixed`; any other resolution at or before `T`
+  contributes `ticket_closed_other`. Multiple disagreeing keys on one PR (rare) resolve
+  `ticket_fixed` > `ticket_closed_other` > `ticket_open`, a disclosed priority, not a claim about
+  which key is authoritative.
+  - **KNOWN LIMITATION:** `issue.resolution`/`resolved_at` are each issue's *current* snapshot,
+    not a changelog entry, so a ticket that was `Fixed` and later reopened would misclassify an
+    earlier month the same way `review_responsiveness.py`'s own "no historical reopen tracking"
+    simplification does. `jira_changelog` carries the history to fix this properly; doing so is
+    out of this issue's scope (no new collection) and is left as a reasonable follow-up.
+- **`open_pr_backlog_no_github_response_share`**: among the open-as-of-`T` backlog, the share
+  with no `pr_review`/`pr_comment` from someone other than the PR's own author, at or before `T`.
+  Labelled "GitHub only" everywhere it renders -- a PR's actual review may have happened on its
+  linked JIRA ticket instead, invisible to this count, the same GitHub-only-slice caveat every
+  other GitHub-PR-only M0 metric carries (DECISIONS.md "Cassandra-specific facts").
+
+### Base branch split: not available (disclosed gap, no new collection)
+
+The request that produced this issue included a base-branch split (trunk vs. release branches
+vs. other), but `schema/tables.py`'s `PR` table has no base-ref column and
+`collectors/github.py`'s GraphQL query never requests `baseRefName` -- there is no raw data,
+cached or freshly re-fetchable without a schema/collector change, this module could reconstruct
+that split from. Per this issue's own "build from existing raw data, no new collection"
+constraint, no base-branch metric is emitted at all; `site/pr_backlog_page.py`'s rendered note
+and this section both say so directly, as a fact about collector coverage, not a verdict. Adding
+a `pr.base_ref_name` column (a new, additive, nullable field, backfillable only for PRs
+re-collected going forward -- GitHub's API does not expose a historical base ref for a PR
+collected without it) is a reasonable follow-up issue, not done here.
+
+### Population & exclusions, floors
+
+§0.5 bot exclusion already applies at GitHub collection time (`collectors/github.py::
+_is_bot_login`) for `pr_review`/`pr_comment`, same convention `dev_metrics.py`/
+`review_responsiveness.py` document -- no additional bot filtering needed here.
+`open_pr_backlog_total`/`_drafts`/the five age-bucket counts/the four ticket-state counts are
+plain headcounts (§0.6's own headcount exemption, same as `active_contributors_monthly`): no
+sample-size floor, always `flag='ok'`, any n including 0. Only
+`open_pr_backlog_no_github_response_share`, a share, applies §0.6's default rate/ratio floor (5).
+
+### Window
+
+Monthly, dense, snapshot-as-of-month-end (not a rate over the month's new activity -- same
+"SNAPSHOT METRIC, NOT A WINDOWED RATE" distinction `truck_factor` makes for itself in §2).
+
+### Required data / source
+
+GitHub PR/PR-review/PR-comment API (`pr`, `pr_review`, `pr_comment`, `pr_issue_link`); ASF JIRA
+REST API (`issue.resolution`/`resolved_at`, for the linked-ticket-state bucket).
+
+### Strengths / weaknesses
+
+**Strengths:** a direct, auditable picture of backlog composition and age, complementary to
+`stale_pr_rate`'s single current-snapshot staleness share. **Weaknesses / gaming risk:** the
+linked-ticket-state bucket inherits JIRA's current-snapshot limitation above (no historical
+reopen tracking); the no-GitHub-response share is GitHub-only and cannot see JIRA-side review
+activity on the same ticket, so it should always be read as "no response visible on GitHub," not
+"no response at all."
+
+### CHAOSS equivalent
+
+Adapted from [Change Requests](https://chaoss.community/kb/metric-change-requests/) and
+[Issue Age](https://chaoss.community/kb/metric-issue-age/) (applied to change requests rather
+than issues) -- CHAOSS's Knowledge Base has no "Change Request Backlog" metric
+(`kb/metric-change-request-backlog` verified 404, 2026-10-09); these two are the closest
+published starting points, never claimed as an exact match. See §11's index.

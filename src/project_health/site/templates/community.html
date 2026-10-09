@@ -165,6 +165,92 @@
   {% endif %}
 </section>
 
+<section class="pr-backlog" aria-labelledby="pr-backlog-heading">
+  <h2 id="pr-backlog-heading">Open PR backlog</h2>
+  <p class="page-intro">
+    The open apache/cassandra PR backlog by age and by linked-JIRA-ticket state, reconstructed
+    monthly. Scoped to apache/cassandra: other configured repos use their own issue tracker or
+    none, so ticket-key state isn't meaningful for them — see the table below instead.
+  </p>
+
+  {% if pr_backlog.available %}
+  {% if pr_backlog.age_chart_spec %}
+  <h3>By age — apache/cassandra (last 36 months)</h3>
+  <div class="chart" data-vega-spec='{{ pr_backlog.age_chart_spec }}' role="img" aria-label="Open PR backlog by age bucket, apache/cassandra, last 36 months">
+    <noscript>Enable JavaScript to see this chart, or use the data links below.</noscript>
+  </div>
+  {% endif %}
+
+  {% if pr_backlog.ticket_chart_spec %}
+  <h3>By linked-ticket state — apache/cassandra (last 36 months)</h3>
+  <div class="chart" data-vega-spec='{{ pr_backlog.ticket_chart_spec }}' role="img" aria-label="Open PR backlog by linked-ticket state, apache/cassandra, last 36 months">
+    <noscript>Enable JavaScript to see this chart, or use the data links below.</noscript>
+  </div>
+  {% endif %}
+
+  <h3>Current month — apache/cassandra</h3>
+  <table class="security-table">
+    <thead>
+      <tr>
+        <th scope="col">Month</th>
+        <th scope="col">Open PRs</th>
+        <th scope="col">Drafts</th>
+        <th scope="col">No GitHub response</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>{{ pr_backlog.as_of_month }}</td>
+        <td>{{ pr_backlog.total }}</td>
+        <td>{{ pr_backlog.drafts if pr_backlog.drafts is not none else "insufficient data" }}</td>
+        <td>
+          {% if pr_backlog.no_response_share is not none %}
+          {{ pr_backlog.no_response_share }} (n={{ pr_backlog.no_response_n }})
+          {% else %}
+          insufficient data
+          {% endif %}
+        </td>
+      </tr>
+    </tbody>
+  </table>
+
+  {% if pr_backlog.other_repos %}
+  <h3>Other project repositories</h3>
+  <table class="security-table">
+    <thead>
+      <tr>
+        <th scope="col">Repo</th>
+        <th scope="col">Open PRs</th>
+        <th scope="col">Drafts</th>
+        {% for label in pr_backlog.age_bucket_labels %}<th scope="col">{{ label }}</th>{% endfor %}
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in pr_backlog.other_repos %}
+      <tr>
+        <td>{{ row.repo }}</td>
+        <td>{{ row.total if row.total is not none else "insufficient data" }}</td>
+        <td>{{ row.drafts if row.drafts is not none else "insufficient data" }}</td>
+        {% for cell in row.age_cells %}<td>{{ cell if cell is not none else "insufficient data" }}</td>{% endfor %}
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+
+  <p class="card-prior-art">
+    Based on:
+    {% for pa in pr_backlog.prior_art %}<a href="{{ pa.url }}">{{ pa.label }}</a>{% if not loop.last %}, {% endif %}{% endfor %}
+  </p>
+  <p class="governance-note">{{ pr_backlog.base_branch_note }}</p>
+  {% else %}
+  <p class="card-empty-state">
+    The open PR backlog isn't published yet — it appears once the pipeline has collected GitHub
+    PR history for this project.
+  </p>
+  {% endif %}
+</section>
+
 <section class="conversation-patterns-summary" aria-labelledby="conversation-patterns-summary-heading">
   <h2 id="conversation-patterns-summary-heading">Conversation patterns</h2>
   {% if conversation_patterns.available %}

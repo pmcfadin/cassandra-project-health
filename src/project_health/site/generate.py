@@ -71,11 +71,13 @@ from project_health.site.metrics_meta import (
     HOME_CARD_METRIC_LIMIT,
     M0_METRICS,
     PAGES,
+    PR_BACKLOG_METRICS,
     SECURITY_SOURCES,
     MetricMeta,
     PageMeta,
     format_days,
 )
+from project_health.site.pr_backlog_page import build_pr_backlog_context
 
 # Pinned CDN versions (cdn.jsdelivr.net) — issue #8: pinned, not `@latest`,
 # so a chart never silently changes rendering behavior underneath a
@@ -221,6 +223,13 @@ def generate(
         data_dir, run_id, "governance_metric_value.parquet"
     )
     series_by_id.update(_build_series(governance_metrics_table, GOVERNANCE_METRICS))
+
+    # Open PR backlog composition (issue #142, PR_BACKLOG_METRICS) -- same
+    # "own snapshot file, optional" treatment governance metrics get above.
+    pr_backlog_metrics_table = _read_optional_metric_value_table(
+        data_dir, run_id, "pr_backlog_metric_value.parquet"
+    )
+    series_by_id.update(_build_series(pr_backlog_metrics_table, PR_BACKLOG_METRICS))
 
     out_dir.mkdir(parents=True, exist_ok=True)
     data_out = out_dir / "data"
@@ -1020,6 +1029,20 @@ def _render_pages(
     (out_dir / "index.html").write_text(home_html)
 
     # Community (`/community/`).
+    # issue #142, orchestrator review of PR #143 (reviewer feedback: the
+    # site is too verbose): the `open_pr_backlog_*` metric_ids stay
+    # computed and downloadable (`data/<id>.json`/`.csv`, written from the
+    # full `series_by_id` above, untouched by this filter) but are excluded
+    # from this dimension-grouped card grid -- they render only through
+    # `pr_backlog_context`'s own single section below (one stacked chart by
+    # age bucket, one by linked-ticket state, a compact current-month
+    # table, a "Based on" line, a base-branch note), not as 12 separate
+    # Responsiveness cards.
+    community_card_series = [
+        series
+        for series in series_by_page["community"]
+        if series.meta.metric_id not in PR_BACKLOG_METRICS
+    ]
     community_dimensions = [
         {
             "dimension": dimension,
@@ -1028,7 +1051,7 @@ def _render_pages(
                 for s in series_list
             ],
         }
-        for dimension, series_list in _group_by_dimension(series_by_page["community"])
+        for dimension, series_list in _group_by_dimension(community_card_series)
     ]
     # Contributor leaderboard (D19, issue #56) — a ranked top-N table, kept
     # entirely out of the `metric_value`/M0 machinery above; see
@@ -1043,12 +1066,19 @@ def _render_pages(
     # `metrics/review_responsiveness.py`'s module docstring for why), same
     # "own small additive call" pattern as the leaderboard immediately above.
     review_responsiveness_context = build_review_responsiveness_context(data_dir, run_id)
+    # Open PR backlog (issue #142) -- the per-bucket counts already render
+    # as ordinary cards in the Responsiveness group above (`PR_BACKLOG_
+    # METRICS`); this is the section's own compact current-snapshot table
+    # plus the disclosed "base branch split isn't available" note, same
+    # "own small additive call" pattern as review-responsiveness above.
+    pr_backlog_context = build_pr_backlog_context(data_dir, run_id)
     community_html = env.get_template("community.html").render(
         current_page="community",
         base_prefix=SUBPAGE_BASE_PREFIX,
         dimensions=community_dimensions,
         leaderboard=leaderboard_context,
         review_responsiveness=review_responsiveness_context,
+        pr_backlog=pr_backlog_context,
         conversation_patterns=conversation_patterns_context,
         thread_explorer=thread_explorer_context,
         **common_ctx,

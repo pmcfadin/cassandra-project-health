@@ -27,6 +27,7 @@ from project_health.site.metrics_meta import (
     GOVERNANCE_METRICS,
     M0_METRICS,
     PAGES,
+    PR_BACKLOG_METRICS,
     PriorArt,
 )
 
@@ -2916,3 +2917,225 @@ def test_yoy_chart_row_values_match_synthetic_snapshot(tmp_path):
     assert hostility_row["ci_hi"] == 6.0
     assert hostility_row["messages"] == 50
     assert hostility_row["authors"] == 15
+
+
+# --- Open PR backlog (issue #142) ------------------------------------------
+
+
+def _default_pr_backlog_rows() -> list[dict]:
+    from project_health.metrics.pr_backlog import (
+        AGE_1_3Y,
+        AGE_30_90D,
+        AGE_90D_1Y,
+        AGE_GT_3Y,
+        AGE_LT_30D,
+        DRAFTS,
+        NO_GITHUB_RESPONSE_SHARE,
+        NO_TICKET_KEY,
+        TICKET_CLOSED_OTHER,
+        TICKET_FIXED,
+        TICKET_OPEN,
+        TOTAL,
+        other_repo_metric_id,
+    )
+
+    window_start, window_end = date(2026, 8, 1), date(2026, 8, 31)
+    counts = {
+        TOTAL: 20.0,
+        DRAFTS: 2.0,
+        AGE_LT_30D: 4.0,
+        AGE_30_90D: 5.0,
+        AGE_90D_1Y: 6.0,
+        AGE_1_3Y: 3.0,
+        AGE_GT_3Y: 2.0,
+        TICKET_OPEN: 12.0,
+        NO_TICKET_KEY: 5.0,
+        TICKET_FIXED: 2.0,
+        TICKET_CLOSED_OTHER: 1.0,
+    }
+    rows = [
+        _metric_value_row(metric_id, window_start, window_end, value, 20, "ok")
+        for metric_id, value in counts.items()
+    ]
+    rows.append(
+        _metric_value_row(
+            NO_GITHUB_RESPONSE_SHARE,
+            window_start,
+            window_end,
+            0.3,
+            20,
+            "ok",
+            details_json=json.dumps(
+                {"n_hit": 6, "n_denominator": 20, "label": "github_only_review_may_occur_in_jira"}
+            ),
+        )
+    )
+
+    # One "other repo" (apache/cassandra-dtest): total/drafts/age buckets
+    # only, no ticket-state, no no-GitHub-response share (orchestrator's
+    # second review: these columns are apache/cassandra-only concepts).
+    other_repo = "apache/cassandra-dtest"
+    other_counts = {
+        TOTAL: 5.0,
+        DRAFTS: 1.0,
+        AGE_LT_30D: 1.0,
+        AGE_30_90D: 2.0,
+        AGE_90D_1Y: 1.0,
+        AGE_1_3Y: 1.0,
+        AGE_GT_3Y: 0.0,
+    }
+    for metric_id, value in other_counts.items():
+        details = {"repo": other_repo}
+        if metric_id != TOTAL:
+            details["n_open"] = 5
+        rows.append(
+            _metric_value_row(
+                other_repo_metric_id(metric_id, other_repo),
+                window_start,
+                window_end,
+                value,
+                5,
+                "ok",
+                details_json=json.dumps(details),
+            )
+        )
+    return rows
+
+
+def _write_pr_backlog_snapshot(data_dir: Path, run_id: str, rows: list[dict]) -> None:
+    table = _metric_value_table(rows)
+    snapshot_dir = data_dir / "snapshots" / run_id
+    snapshot_dir.mkdir(parents=True, exist_ok=True)
+    pq.write_table(table, snapshot_dir / "pr_backlog_metric_value.parquet")
+
+
+def _build_site_with_pr_backlog(
+    tmp_path: Path, *, rows: list[dict] | None = None
+) -> tuple[Path, Path]:
+    data_dir = tmp_path / "data"
+    out_dir = tmp_path / "out"
+    _write_snapshot(data_dir, RUN_ID, _default_rows())
+    _write_pr_backlog_snapshot(
+        data_dir, RUN_ID, _default_pr_backlog_rows() if rows is None else rows
+    )
+    _write_manifest(data_dir, RUN_ID, completed_at=BUILD_TIME - timedelta(hours=1))
+    generate(data_dir, RUN_ID, out_dir, now=BUILD_TIME)
+    return out_dir, data_dir
+
+
+def test_community_page_pr_backlog_not_rendered_as_individual_cards(tmp_path):
+    """Orchestrator review of PR #143 (reviewer feedback: the site is too
+    verbose): the 12 `open_pr_backlog_*` metric_ids stay computed and
+    downloadable, but render only through the single "Open PR backlog"
+    section below -- never as 12 separate cards in the Responsiveness
+    dimension grid."""
+    out_dir, _ = _build_site_with_pr_backlog(tmp_path)
+    html_text = _community_html(out_dir)
+    assert "Open PR backlog" in html_text
+    # None of the 12 per-bucket card headers render (every one of
+    # PR_BACKLOG_METRICS' names starts with this prefix).
+    assert "<h3>Open PR backlog" not in html_text
+    for meta in PR_BACKLOG_METRICS.values():
+        assert f"<h3>{meta.name}</h3>" not in html_text
+
+    # The metric_ids still exist as downloadable data (JSON/CSV) even
+    # though they don't render as cards.
+    from project_health.metrics.pr_backlog import TOTAL
+
+    assert (out_dir / "data" / f"{TOTAL}.json").is_file()
+    assert (out_dir / "data" / f"{TOTAL}.csv").is_file()
+
+
+def test_community_page_renders_pr_backlog_section(tmp_path):
+    """The single "Open PR backlog" section: two stacked charts (age,
+    linked-ticket state), a one-row compact current-month table, a single
+    "Based on" line, and a single base-branch-gap note."""
+    out_dir, _ = _build_site_with_pr_backlog(tmp_path)
+    html_text = _community_html(out_dir)
+    assert 'id="pr-backlog-heading"' in html_text
+    # Two chart mounts (age, ticket-state), both carrying real Vega-Lite specs.
+    assert html_text.count('aria-label="Open PR backlog by age bucket') == 1
+    assert html_text.count('aria-label="Open PR backlog by linked-ticket state') == 1
+    assert "data-vega-spec=" in html_text
+    # The compact current-month table's own figures.
+    assert ">20<" in html_text or ">20.0<" in html_text  # total open backlog
+    assert "30%" in html_text  # no-GitHub-response share
+    # One "Based on" line, citing the adapted CHAOSS metrics.
+    assert "Based on:" in html_text
+    assert "chaoss.community/kb/metric-change-requests" in html_text
+    assert "chaoss.community/kb/metric-issue-age" in html_text
+
+
+def test_community_page_pr_backlog_scoped_to_apache_cassandra(tmp_path):
+    """Orchestrator's second review: the issue's own verified 549-open-PR
+    snapshot, and the linked-ticket-state bucket, are apache/cassandra-only
+    -- the charts, the current-month table, and the headline count must say
+    so explicitly, not just compute it that way silently."""
+    out_dir, _ = _build_site_with_pr_backlog(tmp_path)
+    html_text = _community_html(out_dir)
+    assert 'aria-label="Open PR backlog by age bucket, apache/cassandra' in html_text
+    assert 'aria-label="Open PR backlog by linked-ticket state, apache/cassandra' in html_text
+    assert "Current month — apache/cassandra" in html_text or "apache/cassandra" in html_text
+
+
+def test_community_page_renders_other_project_repositories_table(tmp_path):
+    """The "Other project repositories" table: one row per non-
+    apache/cassandra repo, with total/drafts/age-bucket columns only --
+    no ticket-state column, since other repos use their own issue tracker
+    or none."""
+    out_dir, _ = _build_site_with_pr_backlog(tmp_path)
+    html_text = _community_html(out_dir)
+    assert "Other project repositories" in html_text
+    section = html_text.split("Other project repositories", 1)[1]
+    other_table = section.split("</table>", 1)[0]
+
+    assert "cassandra-dtest" in other_table
+    # The fixture's apache/cassandra-dtest row: total=5, drafts=1.
+    assert ">5<" in other_table
+    assert ">1<" in other_table
+    # No ticket-state column in this table (checked structurally: the
+    # table immediately following the "Other project repositories"
+    # heading has no "Still open"/"Fixed"/"No ticket key" header cell).
+    for ticket_label in ("Still open", "Fixed", "Closed (other)", "No ticket key"):
+        assert ticket_label not in other_table
+
+
+def test_community_page_pr_backlog_discloses_base_branch_gap(tmp_path):
+    """Issue #142's own real-data check: base branch isn't collected, so
+    the page must say so explicitly rather than omit the split silently."""
+    out_dir, _ = _build_site_with_pr_backlog(tmp_path)
+    html_text = _community_html(out_dir)
+    text = _visible_text(html_text).lower()
+    assert "base branch" in text
+    assert "not" in text
+
+
+def test_community_page_honest_empty_state_without_pr_backlog_data(tmp_path):
+    out_dir = _build_site(tmp_path)
+    html_text = _community_html(out_dir)
+    assert 'id="pr-backlog-heading"' in html_text
+    assert "isn&#39;t published yet" in html_text or "isn't published yet" in html_text
+
+
+def test_community_page_pr_backlog_never_renders_verdict_vocabulary(tmp_path):
+    """D25 + the issue's own explicit instruction: no 'healthy'/'should'/
+    'cleanup needed' framing anywhere in this section, matching the
+    project-wide verdict-vocabulary ban."""
+    out_dir, _ = _build_site_with_pr_backlog(tmp_path)
+    html_text = _community_html(out_dir)
+    text = _visible_text(html_text).lower()
+
+    for banned in (
+        "fail",
+        "failing",
+        "pass rate",
+        "exempt",
+        "not in force",
+        "verdict",
+        "threshold",
+        "healthy",
+        "unhealthy",
+        "should",
+        "cleanup needed",
+    ):
+        assert re.search(rf"\b{re.escape(banned)}\b", text) is None, banned

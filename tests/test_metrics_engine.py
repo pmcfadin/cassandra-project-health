@@ -1367,13 +1367,204 @@ def test_median_resolution_latency_jira_is_dense_across_a_gap_month():
         assert gap_row["n"] == 0
         assert gap_row["value"] is None
         assert gap_row["flag"] == "insufficient_data"
-        assert _details(gap_row) == {"p90_days": None, "n": 0}
+        # issue #134: details_json also carries the (empty, for a gap
+        # month) bulk-closure annotation fields.
+        details = _details(gap_row)
+        assert details["p90_days"] is None
+        assert details["n"] == 0
+        assert details["bulk_closure_days"] == []
 
 
 def _days(n: int):
     from datetime import timedelta
 
     return timedelta(days=n)
+
+
+# --- issue #134: bulk-closure annotation + trailing-12m cohort companion ----
+
+
+def test_median_resolution_latency_jira_bulk_closure_days_annotation():
+    """Reviewer feedback (issue #134): 'one day where jira resolution spikes
+    to 230 days, that's weird'. A day with >= 10 resolutions of issues older
+    than 365 days at resolution is a backlog-sweep closure, not slow review
+    -- it must show up as a deterministic, disclosed-rule annotation
+    (date + count, no interpretation) in the same month's details_json."""
+    as_of = date(2026, 5, 1)
+    issue_rows = [
+        # Establishes March 2026 as a real, dense month with no sweep day
+        # at all -- its bulk_closure_days must be an explicit empty list.
+        {
+            "issue_key": "CASSANDRA-MARCH-1",
+            "created_at": _ts(2026, 3, 1, hh=0),
+            "updated_at": _ts(2026, 3, 5, hh=0),
+            "resolved_at": _ts(2026, 3, 5, hh=0),
+        },
+    ]
+    # 12 old issues (created 2024-01-01, ~2.3 years before resolution),
+    # all resolved the same day -- a backlog sweep.
+    for i in range(12):
+        issue_rows.append(
+            {
+                "issue_key": f"CASSANDRA-OLD-{i}",
+                "created_at": _ts(2024, 1, 1, hh=0),
+                "updated_at": _ts(2026, 4, 13, hh=0),
+                "resolved_at": _ts(2026, 4, 13, hh=0),
+            }
+        )
+    # 3 recent-cohort issues resolved the same month, on a different day,
+    # each created ~110 days before resolution (well within 12 months) --
+    # not part of any sweep, and not old enough to flag.
+    for i in range(3):
+        issue_rows.append(
+            {
+                "issue_key": f"CASSANDRA-NEW-{i}",
+                "created_at": _ts(2026, 1, 1, hh=0),
+                "updated_at": _ts(2026, 4, 20, hh=0),
+                "resolved_at": _ts(2026, 4, 20, hh=0),
+            }
+        )
+    issue_table = issues(issue_rows)
+
+    result = compute_all(
+        {"issue": issue_table},
+        as_of=as_of,
+        run_id=RUN_ID,
+        computed_at=COMPUTED_AT,
+        config=CONFIG,
+    )
+
+    rows = {r["window_start"]: r for r in _rows_for(result, "median_resolution_latency_jira")}
+    april = rows[date(2026, 4, 1)]
+    assert april["n"] == 15
+    assert april["flag"] == "ok"
+
+    details = _details(april)
+    assert details["bulk_closure_days"] == [{"date": "2026-04-13", "count": 12}]
+    assert "10" in details["bulk_closure_rule"]
+    assert "365" in details["bulk_closure_rule"]
+
+    # A month with no qualifying sweep day carries an empty list, not a
+    # missing key or null.
+    march = rows[date(2026, 3, 1)]
+    assert _details(march)["bulk_closure_days"] == []
+
+
+def test_median_resolution_latency_jira_cohort_12m_excludes_backlog_sweep():
+    """The CHAOSS 'Issue Resolution Duration' style cohort companion
+    (median_resolution_latency_jira_cohort_12m) must not be dragged up by
+    the same backlog sweep the plain metric's bulk-closure annotation
+    flags -- its median comes only from issues created within 12 months of
+    their own resolution."""
+    as_of = date(2026, 5, 1)
+    issue_rows = []
+    # 12 very old issues (created 2018-01-01, resolved 2026-04-13): a
+    # backlog sweep that would pull the plain metric's April median to
+    # ~3,026 days if it dominated. Excluded from the cohort entirely.
+    for i in range(12):
+        issue_rows.append(
+            {
+                "issue_key": f"CASSANDRA-OLD-{i}",
+                "created_at": _ts(2018, 1, 1, hh=0),
+                "updated_at": _ts(2026, 4, 13, hh=0),
+                "resolved_at": _ts(2026, 4, 13, hh=0),
+            }
+        )
+    # 3 recent-cohort issues, each resolved ~10 days after creation --
+    # comfortably within the trailing-12-month cohort window.
+    for i in range(3):
+        issue_rows.append(
+            {
+                "issue_key": f"CASSANDRA-NEW-{i}",
+                "created_at": _ts(2026, 4, 1, hh=0),
+                "updated_at": _ts(2026, 4, 11, hh=0),
+                "resolved_at": _ts(2026, 4, 11, hh=0),
+            }
+        )
+    issue_table = issues(issue_rows)
+
+    result = compute_all(
+        {"issue": issue_table},
+        as_of=as_of,
+        run_id=RUN_ID,
+        computed_at=COMPUTED_AT,
+        config=CONFIG,
+    )
+
+    plain = {
+        r["window_start"]: r for r in _rows_for(result, "median_resolution_latency_jira")
+    }[date(2026, 4, 1)]
+    # The backlog sweep dominates the plain (unfiltered) metric: n=15,
+    # median pulled far above the 3 recent issues' ~10-day latency.
+    assert plain["n"] == 15
+    assert plain["value"] > 1000.0
+
+    cohort_rows = {
+        r["window_start"]: r
+        for r in _rows_for(result, "median_resolution_latency_jira_cohort_12m")
+    }
+    april_cohort = cohort_rows[date(2026, 4, 1)]
+    # Only the 3 recent-cohort issues qualify -- below the latency floor
+    # (5), so insufficient_data, but the cohort's own n (not the plain
+    # metric's 15) proves the backlog sweep was excluded, not just hidden.
+    assert april_cohort["n"] == 3
+    assert april_cohort["flag"] == "insufficient_data"
+    assert april_cohort["value"] is None
+
+
+def test_median_resolution_latency_jira_cohort_12m_is_dense_like_the_plain_metric():
+    """The cohort series shares the plain metric's dense month range (from
+    the plain metric's own first resolved-issue month through the last
+    completed month), including a month where every resolution that month
+    was a backlog-sweep closure (cohort n=0 there, not a missing row)."""
+    as_of = date(2024, 6, 1)
+    issue_rows = [
+        # January 2024: a lone backlog-sweep closure, created years earlier
+        # -- the cohort excludes it, so January's cohort row is a real
+        # n=0 gap even though the plain metric has n=1 that month.
+        {
+            "issue_key": "CASSANDRA-OLD-1",
+            "created_at": _ts(2018, 1, 1, hh=0),
+            "updated_at": _ts(2024, 1, 3, hh=0),
+            "resolved_at": _ts(2024, 1, 3, hh=0),
+        },
+        # April 2024: a recent-cohort issue.
+        {
+            "issue_key": "CASSANDRA-NEW-1",
+            "created_at": _ts(2024, 4, 1, hh=0),
+            "updated_at": _ts(2024, 4, 5, hh=0),
+            "resolved_at": _ts(2024, 4, 5, hh=0),
+        },
+    ]
+    issue_table = issues(issue_rows)
+
+    result = compute_all(
+        {"issue": issue_table},
+        as_of=as_of,
+        run_id=RUN_ID,
+        computed_at=COMPUTED_AT,
+        config=CONFIG,
+    )
+
+    plain_months = {
+        r["window_start"] for r in _rows_for(result, "median_resolution_latency_jira")
+    }
+    cohort_months = {
+        r["window_start"]
+        for r in _rows_for(result, "median_resolution_latency_jira_cohort_12m")
+    }
+    expected_months = {date(2024, m, 1) for m in (1, 2, 3, 4, 5)}
+    assert plain_months == expected_months
+    assert cohort_months == expected_months
+
+    cohort_rows = {
+        r["window_start"]: r
+        for r in _rows_for(result, "median_resolution_latency_jira_cohort_12m")
+    }
+    assert cohort_rows[date(2024, 1, 1)]["n"] == 0
+    assert cohort_rows[date(2024, 1, 1)]["value"] is None
+    assert cohort_rows[date(2024, 1, 1)]["flag"] == "insufficient_data"
+    assert cohort_rows[date(2024, 4, 1)]["n"] == 1
 
 
 # --- stale_jira_rate -----------------------------------------------------

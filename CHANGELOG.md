@@ -3,6 +3,40 @@
 Metric-definition changelog (ARCHITECTURE.md §4.4 / D2 rule 6: "nothing changes silently"). Entries are ordered
 newest-first; a future version bump adds a new dated entry at the top.
 
+## 2026-10-09
+
+### median_resolution_latency_jira: 1.0 -> 1.1 (bulk-closure annotation); new metric_id median_resolution_latency_jira_cohort_12m (1.0)
+
+Reviewer feedback on the Community page: "one day where jira resolution spikes to 230 days, that's
+weird" and "what were the metric types based off? there's a lot of prior art." A real-data check
+(against the deduped `issue` table -- one row per `issue_key`, matching `pipeline.py`'s own
+`_dedupe_issue_rows` step before `compute_all`) confirmed the spikes are backlog-sweep closures, not
+slow review: 2026-04's 127 resolutions (matching JIRA's own JQL count) include a 24-issue sweep on
+2026-04-13 and a 10-issue sweep on 2026-04-14, all of issues created well over a year earlier,
+pulling the plain metric's median to 253.0 days. Two changes, facts only (D25), no interpretation
+text:
+
+- **`median_resolution_latency_jira` (1.0 -> 1.1):** `details_json` now also carries
+  `bulk_closure_days` -- a deterministic, disclosed rule (`details_json.bulk_closure_rule`) flagging
+  any calendar day in the window with >= 10 resolutions of issues older than 365 days at resolution,
+  as `{"date": ..., "count": ...}`. The metric's own value/n/flag formula is unchanged; this is purely
+  an added annotation for the chart tooltip.
+- **New metric_id `median_resolution_latency_jira_cohort_12m` (1.0):** a CHAOSS "Issue Resolution
+  Duration" style cohort companion series, restricted to issues created within the trailing 12 months
+  of their own resolution month, so a backlog sweep of years-old issues cannot pull the *median itself*
+  upward. Shares the plain metric's dense month range (a month where every resolution was a sweep
+  closure renders as a real n=0 gap). Registered at `registry.py`/`scoring/registry.py` (role:
+  supporting, same as the plain metric -- never double-weighted into the composite) and
+  `site/metrics_meta.py` (page: community).
+
+Also adds a "Based on" prior-art line to every M0 metric's site card (`site/metrics_meta.py`'s new
+`MetricMeta.prior_art`/`PriorArt`), transcribed from METRICS.md's own per-metric CHAOSS/literature
+citations -- "project-specific" where METRICS.md documents no established equivalent, never an
+invented one -- plus a new METRICS.md §11 "Prior art summary" index. This is presentation metadata
+only; no `metric_value` row or `definition_version` is affected.
+
+Closes #134.
+
 ## 2026-09-27
 
 ### governance-policy.yaml v1 -> v2: every rule and exemption sourced from official Cassandra rules (D24, issue #93)

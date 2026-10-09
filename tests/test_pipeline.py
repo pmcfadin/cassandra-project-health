@@ -1161,6 +1161,129 @@ class TestDedupe:
 
             assert deduped.to_pylist()[0]["resolution"] == "Fixed"
 
+    def test_dedupe_issue_rows_boundary_prevents_double_counting_resolution_latency(self, config):
+        """Orchestrator review of issue #134/PR #137: the raw `jira/issue`
+        table holds several rows per `issue_key` (a nightly delta row plus
+        later backfill rewrites, append-only across partitions) --
+        `run_pipeline` always calls `_dedupe_issue_rows` before handing the
+        `issue` table to `metrics.engine.compute_all` (this module, `issue =
+        _dedupe_issue_rows(storage.read_table(data_dir, "jira", "issue"))`).
+        A verification script that reads the raw table directly and skips
+        this dedupe step double-counts every duplicated issue -- exactly the
+        bug an orchestrator review of the real-data check in PR #137 caught
+        (176 vs the correct 127 for 2026-04). This test proves the boundary:
+        feeding `compute_all` RAW (undeduped, 2-rows-per-issue) data would
+        double both `median_resolution_latency_jira`'s `n` and its
+        `bulk_closure_days` counts, and the trailing-12m cohort companion's
+        `n` -- while feeding it the same data run through
+        `_dedupe_issue_rows` first (exactly as `run_pipeline` does) counts
+        each issue exactly once."""
+        from project_health.metrics.engine import compute_all
+
+        schema = get_schema("issue")
+        as_of = date(2026, 5, 1)
+        run_id = "run-boundary-test"
+        computed_at = datetime(2026, 5, 1, 6, 0, tzinfo=timezone.utc)
+
+        def _dup_rows(issue_key: str, created_at: datetime, resolved_at: datetime) -> list[dict]:
+            """Two raw partition rows for the same issue -- a nightly row
+            and a later backfill rewrite -- same shape `_dedupe_issue_rows`
+            collapses to one, per its own two tests above."""
+            return [
+                {
+                    "issue_key": issue_key,
+                    "summary": None,
+                    "status": "Resolved",
+                    "status_category": None,
+                    "priority": None,
+                    "issue_type": "Bug",
+                    "created_at": created_at,
+                    "updated_at": resolved_at,
+                    "resolved_at": resolved_at,
+                    "reporter_identity_id": None,
+                    "reporter_raw": None,
+                    "assignee_identity_id": None,
+                    "assignee_raw": None,
+                    "resolution": None,
+                    "source_snapshot_id": "run-nightly:jira",
+                },
+                {
+                    "issue_key": issue_key,
+                    "summary": None,
+                    "status": "Resolved",
+                    "status_category": None,
+                    "priority": None,
+                    "issue_type": "Bug",
+                    "created_at": created_at,
+                    "updated_at": resolved_at,
+                    "resolved_at": resolved_at,
+                    "reporter_identity_id": None,
+                    "reporter_raw": None,
+                    "assignee_identity_id": None,
+                    "assignee_raw": None,
+                    "resolution": "Fixed",
+                    "source_snapshot_id": "run-backfill:jira",
+                },
+            ]
+
+        rows: list[dict] = []
+        # 12 old issues (created 2024-01-01), all resolved 2026-04-13 -- a
+        # bulk-closure day. Each appears twice (nightly + backfill rewrite).
+        for i in range(12):
+            rows += _dup_rows(
+                f"CASSANDRA-OLD-{i}",
+                datetime(2024, 1, 1, tzinfo=timezone.utc),
+                datetime(2026, 4, 13, tzinfo=timezone.utc),
+            )
+        # 3 recent-cohort issues resolved the same month, each also
+        # duplicated across partitions.
+        for i in range(3):
+            rows += _dup_rows(
+                f"CASSANDRA-NEW-{i}",
+                datetime(2026, 1, 1, tzinfo=timezone.utc),
+                datetime(2026, 4, 20, tzinfo=timezone.utc),
+            )
+        raw_table = validate("issue", pa.Table.from_pylist(rows, schema=schema))
+        assert raw_table.num_rows == 30  # 15 issues x 2 duplicate rows each
+
+        # --- The bug: compute_all fed the RAW, undeduped table double-counts.
+        raw_result = compute_all(
+            {"issue": raw_table}, as_of=as_of, run_id=run_id, computed_at=computed_at, config=config
+        )
+        raw_april = {
+            r["window_start"]: r
+            for r in raw_result.to_pylist()
+            if r["metric_id"] == "median_resolution_latency_jira"
+        }[date(2026, 4, 1)]
+        assert raw_april["n"] == 30
+        raw_bulk_days = json.loads(raw_april["details_json"])["bulk_closure_days"]
+        assert raw_bulk_days == [{"date": "2026-04-13", "count": 24}]
+
+        # --- The fix: run_pipeline's own boundary, `_dedupe_issue_rows`
+        # before `compute_all`, counts each issue exactly once.
+        deduped_table = _dedupe_issue_rows(raw_table)
+        assert deduped_table.num_rows == 15
+
+        deduped_result = compute_all(
+            {"issue": deduped_table},
+            as_of=as_of,
+            run_id=run_id,
+            computed_at=computed_at,
+            config=config,
+        )
+        deduped_rows_by_metric: dict[str, dict] = {
+            (r["metric_id"], r["window_start"]): r for r in deduped_result.to_pylist()
+        }
+        april = deduped_rows_by_metric[("median_resolution_latency_jira", date(2026, 4, 1))]
+        assert april["n"] == 15
+        bulk_days = json.loads(april["details_json"])["bulk_closure_days"]
+        assert bulk_days == [{"date": "2026-04-13", "count": 12}]
+
+        cohort_april = deduped_rows_by_metric[
+            ("median_resolution_latency_jira_cohort_12m", date(2026, 4, 1))
+        ]
+        assert cohort_april["n"] == 3
+
     def test_dedupe_jira_review_events_keeps_latest_occurred_at_per_issue_and_reviewer(self):
         schema = get_schema("review_event")
         base = {

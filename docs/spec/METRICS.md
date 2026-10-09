@@ -813,8 +813,27 @@ baseline or an improving/stable/declining status (see `SCORING.md` §6). All are
 - **Strengths:** Captures end-to-end resolution speed, complementary to first-response latency.
 - **Weaknesses / gaming risk:** Skewed heavily by a few very old issues resolved in a batch cleanup; median (not
   mean) mitigates but does not eliminate this — reported with P90 alongside to show tail behavior.
-- **CHAOSS equivalent:** adjacent to [Change Request Closure Ratio](https://chaoss.community/kb/metric-change-request-closure-ratio/)
+- **CHAOSS equivalent:** [Issue Resolution Duration](https://chaoss.community/kb/metric-issue-resolution-duration/);
+  also adjacent to [Change Request Closure Ratio](https://chaoss.community/kb/metric-change-request-closure-ratio/)
   and general responsiveness guidance.
+- **Issue #134 (reviewer feedback: "one day where jira resolution spikes to 230 days, that's weird; what were the
+  metric types based off? there's a lot of prior art"):** real-data check found the backlog-sweep pattern this
+  metric's own Weaknesses note already warned about — e.g. 2026-04's 253-day median came from 127 resolved issues,
+  49 of them created before 2025, with 24 of those all resolved on 2026-04-13 (a single bulk-closure day). Facts
+  only (D25), no interpretation text, two fixes:
+  - **`details_json.bulk_closure_days`** (`definition_version` 1.1): a deterministic, disclosed rule —
+    `details_json.bulk_closure_rule` states it verbatim — flags any calendar day in the window with ≥10
+    resolutions of issues older than 365 days at resolution, as `{"date": ..., "count": ...}`. Shown on the chart
+    as a fact (the day and the count), never as a claim about *why* the sweep happened.
+  - **`median_resolution_latency_jira_cohort_12m`** (new metric_id, CHAOSS "Issue Resolution Duration" style
+    cohort): the same monthly bucketing, restricted to issues created within the trailing 12 months of their own
+    resolution — so a backlog sweep of years-old issues cannot pull the *median itself* upward the way it does in
+    the plain metric above. Reported as a companion series on the same chart (same dimension/page), sharing the
+    plain metric's dense month range so a month where every resolution was a backlog-sweep closure still renders
+    as a real `n=0` gap rather than vanishing. `details_json` carries `p90_days`/`n` as usual, with `n` being the
+    cohort's own (smaller) population. Tier/role/direction-of-good/window match the plain metric; see
+    `metrics/engine.py::_median_resolution_latency_jira_cohort_12m` and `registry.py` for the full version/
+    changelog record (D2 rule 6 — this is a version bump + changelog entry, not a silent redefinition).
 
 ---
 
@@ -1213,3 +1232,65 @@ adds a structured extraction, done at the same moment: every `CASSANDRA-NNNNN`-s
 the title (the same regex the git-commit-trailer parser already uses), stored as `pr.linked_issue_keys` —
 never the title text itself. This is the only way to join a GitHub PR back to the JIRA issue it names
 once the raw title is gone.
+
+---
+
+## 11. Prior art summary (issue #134)
+
+Reviewer feedback on the Community/Conversations pages asked "what were the metric types based off?
+there's a lot of prior art." Every metric's own section above already states its CHAOSS equivalent (or
+literature citation, or "none exact"/"project-specific") in its own words — this section is a single,
+skimmable index of exactly those citations, nothing more. The site's per-metric cards show a "Based on"
+line sourced from this same material (`site/metrics_meta.py`'s `MetricMeta.prior_art`, transcribed from
+the per-metric prose above — never paraphrased into a stronger match than that prose claims, and never a
+fabricated citation where a metric's own section says there is no established equivalent). Every URL below
+was checked with `curl` to return HTTP 200 at the time it was added.
+
+### CHAOSS Knowledge Base metrics used
+
+- [Contributors](https://chaoss.community/kb/metric-contributors/) — `active_contributors_monthly`.
+- [New Contributors](https://www.chaoss.community/kb/metric-new-contributors/) — `new_contributors_monthly`.
+- [Change Request Reviews](https://chaoss.community/kb/metric-change-request-reviews/) (adjacent) —
+  `unique_reviewers_monthly`, `pr_review_engagement`.
+- [Issue Resolution Duration](https://chaoss.community/kb/metric-issue-resolution-duration/) —
+  `median_resolution_latency_jira`, `median_resolution_latency_jira_cohort_12m`.
+- [Change Request Closure Ratio](https://chaoss.community/kb/metric-change-request-closure-ratio/)
+  (adjacent) — `median_resolution_latency_jira`, `pr_merge_lead_time`.
+- [Change Requests](https://chaoss.community/kb/metric-change-requests/) (adjacent) — `pr_time_to_close`,
+  `stale_pr_rate`, `stale_jira_rate`.
+- [Change Requests Declined](https://chaoss.community/kb/metric-change-requests-declined/) (adjacent) —
+  `stale_pr_rate`, `stale_jira_rate`.
+- [Contributor Absence Factor / Bus Factor](https://chaoss.community/kb/metric-bus-factor/) —
+  `contributor_absence_factor` (exact formula); adjacent for `truck_factor`, `contributor_hhi`.
+- [Elephant Factor](https://www.chaoss.community/kb/metric-elephant-factor/) and the
+  [wg-risk elephant-factor note](https://github.com/chaoss/wg-risk/blob/main/focus-areas/business-risk/elephant-factor.md)
+  — `elephant_factor`.
+- [Organizational Diversity](https://www.chaoss.community/kb/metric-organizational-diversity/) —
+  `organizational_hhi`, `single_org_share`.
+- [Time to First Response](https://www.chaoss.community/kb/metric-time-to-first-response/) —
+  `time_to_first_response_jira`, `time_to_first_reply_devlist` (applied to email),
+  `pr_time_to_first_review` (GitHub-only variant), `review_latency` (§3).
+- [Responsiveness practitioner guide](https://www.chaoss.community/practitioner-guide-responsiveness/) —
+  `time_to_first_response_jira`/`time_to_first_response_pr`.
+
+### Papers and other literature cited
+
+- Avelino, G., Passos, L., Hora, A., & Valente, M. T. (2016). *A Novel Approach for Estimating Truck
+  Factors.* 24th IEEE/ACM ICPC. https://arxiv.org/abs/1604.06766 — `truck_factor`'s DOA algorithm.
+- Ferreira, Avelino, et al. (2019). *Algorithms for estimating truck factors: a comparative study.*
+  Software Quality Journal. https://doi.org/10.1007/s11219-019-09457-2 — `truck_factor`'s validation
+  context.
+- Rhoades, S. A. (1993). *The Herfindahl-Hirschman Index.* Federal Reserve Bulletin (general HHI
+  methodology, not CHAOSS-specific); see also the U.S. DOJ/FTC's own explainer,
+  https://www.justice.gov/atr/herfindahl-hirschman-index — `contributor_hhi`/`reviewer_hhi`/
+  `organizational_hhi`'s shared HHI math.
+
+### No established equivalent ("project-specific")
+
+METRICS.md's own per-metric sections say "none exact," "none directly," or "none standardized" for these
+— the site shows "project-specific" on their cards rather than inventing a citation: `reviewer_hhi`,
+`pmc_joins_quarterly`, `unknown_affiliation_rate`, `unanswered_thread_rate_devlist`. The Governance page's
+five fact-based trend metrics (§9) are outside this CHAOSS/literature catalog entirely — they describe
+Cassandra's own published rules (D24), cited separately per rule in `governance-policy.yaml`, not against
+CHAOSS or external literature — so they also render "project-specific" on their cards rather than a
+mismatched CHAOSS link.

@@ -140,6 +140,26 @@ SECURITY_SOURCES: tuple[str, ...] = ("security",)
 
 
 @dataclass(frozen=True)
+class PriorArt:
+    """One prior-art reference for a metric's site "Based on" line (issue
+    #134 reviewer feedback: "what were the metric types based off? there's a
+    lot of prior art"). `label` is a short display string -- a CHAOSS
+    Knowledge Base metric name (optionally "(adjacent)"/"(applied to ...)"
+    when this project's metric isn't an exact match) or a paper/author
+    citation; `url` is a live link, curl-verified to return HTTP 200 at the
+    time it was added here. Every entry below is transcribed from this
+    exact metric's own "CHAOSS equivalent" line (or literature citation) in
+    `docs/spec/METRICS.md`'s per-metric section -- never paraphrased into a
+    stronger match than that section itself claims, and never a fabricated
+    citation where METRICS.md says "none exact"/"project-specific" (see
+    `MetricMeta.prior_art`, which renders "project-specific" for an empty
+    tuple instead of inventing one)."""
+
+    label: str
+    url: str
+
+
+@dataclass(frozen=True)
 class MetricMeta:
     metric_id: str
     name: str
@@ -173,6 +193,24 @@ class MetricMeta:
     # unknown_affiliation_rate) is a curated, PR-reviewed static file, not a
     # collected source with its own manifest status, so it's never listed here.
     sources: tuple[str, ...] = ()
+    # prior_art (issue #134): zero or more `PriorArt` references for this
+    # metric's card "Based on" line, transcribed from METRICS.md's own
+    # per-metric "CHAOSS equivalent"/citation prose. Empty tuple (the
+    # default) means METRICS.md itself says "none exact"/"none
+    # directly"/"no single CHAOSS metric" for this metric -- rendered on
+    # the site as "project-specific" rather than left blank or guessed at.
+    prior_art: tuple[PriorArt, ...] = ()
+
+    @property
+    def prior_art_label(self) -> str:
+        """"Based on" line display text: joined prior-art labels, or the
+        literal "project-specific" when METRICS.md documents no established
+        CHAOSS/literature equivalent for this metric (issue #134 -- "where a
+        metric has no prior art, say 'project-specific' rather than
+        inventing one")."""
+        if not self.prior_art:
+            return "project-specific"
+        return ", ".join(pa.label for pa in self.prior_art)
 
     def format_value(self, value: float) -> str:
         """Format `value` for display (the card's big number)."""
@@ -240,6 +278,7 @@ M0_METRICS: dict[str, MetricMeta] = {
         value_kind="count",
         page="community",
         sources=("git",),
+        prior_art=(PriorArt("CHAOSS: Contributors", "https://chaoss.community/kb/metric-contributors/"),),
     ),
     "new_contributors_monthly": MetricMeta(
         metric_id="new_contributors_monthly",
@@ -250,6 +289,12 @@ M0_METRICS: dict[str, MetricMeta] = {
         value_kind="count",
         page="community",
         sources=("git",),
+        prior_art=(
+            PriorArt(
+                "CHAOSS: New Contributors",
+                "https://www.chaoss.community/kb/metric-new-contributors/",
+            ),
+        ),
     ),
     # (fixup: orchestrator review of issue #86) `pmc_joins_quarterly` is
     # registered in `metrics.registry.METRIC_IDS` and computed every run
@@ -266,6 +311,8 @@ M0_METRICS: dict[str, MetricMeta] = {
         value_kind="count",
         page="community",
         sources=("asf_roster",),
+        # METRICS.md: "none standardized; ASF-specific ground-truth measurement."
+        prior_art=(),
     ),
     # `unique_reviewers_monthly`'s `value`/`n` (`union_count`,
     # `metrics/engine.py::_unique_reviewers_monthly`) is a DISTINCT count of
@@ -286,6 +333,12 @@ M0_METRICS: dict[str, MetricMeta] = {
         value_kind="count",
         page="community",
         sources=("git", "jira"),
+        prior_art=(
+            PriorArt(
+                "CHAOSS: Change Request Reviews (adjacent)",
+                "https://chaoss.community/kb/metric-change-request-reviews/",
+            ),
+        ),
     ),
     # `reviewer_hhi`'s `value`/`n` (`hhi_commit_trailer`/`n_commit_trailer`,
     # `metrics/engine.py::_reviewer_hhi`) is computed from `commit_trailer`
@@ -308,6 +361,8 @@ M0_METRICS: dict[str, MetricMeta] = {
         value_kind="ratio",
         page="community",
         sources=("git",),
+        # METRICS.md: "CHAOSS equivalent: none exact." -- no link to cite.
+        prior_art=(),
     ),
     "median_resolution_latency_jira": MetricMeta(
         metric_id="median_resolution_latency_jira",
@@ -318,6 +373,38 @@ M0_METRICS: dict[str, MetricMeta] = {
         value_kind="days",
         page="community",
         sources=("jira",),
+        prior_art=(
+            PriorArt(
+                "CHAOSS: Issue Resolution Duration",
+                "https://chaoss.community/kb/metric-issue-resolution-duration/",
+            ),
+            PriorArt(
+                "CHAOSS: Change Request Closure Ratio (adjacent)",
+                "https://chaoss.community/kb/metric-change-request-closure-ratio/",
+            ),
+        ),
+    ),
+    # issue #134: cohort companion series (CHAOSS "Issue Resolution
+    # Duration" style), restricted to issues created within the trailing 12
+    # months of their resolution month -- see metrics/engine.py's
+    # `_median_resolution_latency_jira_cohort_12m`. Rendered on the same
+    # chart/page as the plain metric above (same dimension/page), not a
+    # separate card elsewhere.
+    "median_resolution_latency_jira_cohort_12m": MetricMeta(
+        metric_id="median_resolution_latency_jira_cohort_12m",
+        name="Median JIRA Resolution Latency (12m cohort)",
+        dimension="responsiveness",
+        tier="established",
+        direction_of_good="lower",
+        value_kind="days",
+        page="community",
+        sources=("jira",),
+        prior_art=(
+            PriorArt(
+                "CHAOSS: Issue Resolution Duration",
+                "https://chaoss.community/kb/metric-issue-resolution-duration/",
+            ),
+        ),
     ),
     "stale_jira_rate": MetricMeta(
         metric_id="stale_jira_rate",
@@ -328,6 +415,16 @@ M0_METRICS: dict[str, MetricMeta] = {
         value_kind="percent",
         page="community",
         sources=("jira",),
+        prior_art=(
+            PriorArt(
+                "CHAOSS: Change Requests (adjacent)",
+                "https://chaoss.community/kb/metric-change-requests/",
+            ),
+            PriorArt(
+                "CHAOSS: Change Requests Declined (adjacent)",
+                "https://chaoss.community/kb/metric-change-requests-declined/",
+            ),
+        ),
     ),
     # issue #53
     "truck_factor": MetricMeta(
@@ -339,6 +436,17 @@ M0_METRICS: dict[str, MetricMeta] = {
         value_kind="count",
         page="community",
         sources=("git",),
+        prior_art=(
+            PriorArt(
+                "CHAOSS: Contributor Absence Factor / Bus Factor (adjacent)",
+                "https://chaoss.community/kb/metric-bus-factor/",
+            ),
+            PriorArt(
+                "Avelino, Passos, Hora & Valente (2016), A Novel Approach for Estimating "
+                "Truck Factors",
+                "https://arxiv.org/abs/1604.06766",
+            ),
+        ),
     ),
     "contributor_absence_factor": MetricMeta(
         metric_id="contributor_absence_factor",
@@ -349,6 +457,12 @@ M0_METRICS: dict[str, MetricMeta] = {
         value_kind="count",
         page="community",
         sources=("git",),
+        prior_art=(
+            PriorArt(
+                "CHAOSS: Contributor Absence Factor",
+                "https://chaoss.community/kb/metric-bus-factor/",
+            ),
+        ),
     ),
     "contributor_hhi": MetricMeta(
         metric_id="contributor_hhi",
@@ -359,6 +473,12 @@ M0_METRICS: dict[str, MetricMeta] = {
         value_kind="ratio",
         page="community",
         sources=("git",),
+        prior_art=(
+            PriorArt(
+                "DOJ/FTC: Herfindahl-Hirschman Index",
+                "https://www.justice.gov/atr/herfindahl-hirschman-index",
+            ),
+        ),
     ),
     # issue #52 (D6 organizational-diversity metrics, METRICS.md §5).
     #
@@ -388,6 +508,17 @@ M0_METRICS: dict[str, MetricMeta] = {
         value_kind="count",
         page="community",
         sources=("git", "github_commit_authors", "github_profile"),
+        prior_art=(
+            PriorArt(
+                "CHAOSS: Elephant Factor",
+                "https://www.chaoss.community/kb/metric-elephant-factor/",
+            ),
+            PriorArt(
+                "CHAOSS wg-risk: Elephant Factor",
+                "https://github.com/chaoss/wg-risk/blob/main/focus-areas/business-risk/"
+                "elephant-factor.md",
+            ),
+        ),
     ),
     "organizational_hhi": MetricMeta(
         metric_id="organizational_hhi",
@@ -398,6 +529,12 @@ M0_METRICS: dict[str, MetricMeta] = {
         value_kind="ratio",
         page="community",
         sources=("git", "github_commit_authors", "github_profile"),
+        prior_art=(
+            PriorArt(
+                "CHAOSS: Organizational Diversity",
+                "https://www.chaoss.community/kb/metric-organizational-diversity/",
+            ),
+        ),
     ),
     "single_org_share": MetricMeta(
         metric_id="single_org_share",
@@ -408,6 +545,12 @@ M0_METRICS: dict[str, MetricMeta] = {
         value_kind="percent",
         page="community",
         sources=("git", "github_commit_authors", "github_profile"),
+        prior_art=(
+            PriorArt(
+                "CHAOSS: Organizational Diversity",
+                "https://www.chaoss.community/kb/metric-organizational-diversity/",
+            ),
+        ),
     ),
     "unknown_affiliation_rate": MetricMeta(
         metric_id="unknown_affiliation_rate",
@@ -418,6 +561,9 @@ M0_METRICS: dict[str, MetricMeta] = {
         value_kind="percent",
         page="community",
         sources=("git", "github_commit_authors", "github_profile"),
+        # METRICS.md: "none directly; a transparency companion metric this
+        # project adds on top of the CHAOSS organizational metrics."
+        prior_art=(),
     ),
     # issue #35: dev@ mailing-list responsiveness (D16), metadata only.
     "time_to_first_reply_devlist": MetricMeta(
@@ -429,6 +575,12 @@ M0_METRICS: dict[str, MetricMeta] = {
         value_kind="days",
         page="conversations",
         sources=("ponymail",),
+        prior_art=(
+            PriorArt(
+                "CHAOSS: Time to First Response (applied to email)",
+                "https://www.chaoss.community/kb/metric-time-to-first-response/",
+            ),
+        ),
     ),
     "unanswered_thread_rate_devlist": MetricMeta(
         metric_id="unanswered_thread_rate_devlist",
@@ -439,6 +591,9 @@ M0_METRICS: dict[str, MetricMeta] = {
         value_kind="percent",
         page="conversations",
         sources=("ponymail",),
+        # METRICS.md: "adjacent to CHAOSS responsiveness metrics; no exact
+        # named equivalent for 'unanswered thread rate' specifically."
+        prior_art=(),
     ),
     # issue #54: GitHub-PR development metrics + JIRA responsiveness
     "pr_merge_lead_time": MetricMeta(
@@ -450,6 +605,12 @@ M0_METRICS: dict[str, MetricMeta] = {
         value_kind="days",
         page="community",
         sources=("github",),
+        prior_art=(
+            PriorArt(
+                "CHAOSS: Change Request Closure Ratio (adjacent)",
+                "https://chaoss.community/kb/metric-change-request-closure-ratio/",
+            ),
+        ),
     ),
     "pr_time_to_first_review": MetricMeta(
         metric_id="pr_time_to_first_review",
@@ -460,6 +621,12 @@ M0_METRICS: dict[str, MetricMeta] = {
         value_kind="days",
         page="community",
         sources=("github",),
+        prior_art=(
+            PriorArt(
+                "CHAOSS: Time to First Response (GitHub-only variant)",
+                "https://www.chaoss.community/kb/metric-time-to-first-response/",
+            ),
+        ),
     ),
     "pr_time_to_close": MetricMeta(
         metric_id="pr_time_to_close",
@@ -470,6 +637,12 @@ M0_METRICS: dict[str, MetricMeta] = {
         value_kind="days",
         page="community",
         sources=("github",),
+        prior_art=(
+            PriorArt(
+                "CHAOSS: Change Requests (adjacent)",
+                "https://chaoss.community/kb/metric-change-requests/",
+            ),
+        ),
     ),
     "pr_review_engagement": MetricMeta(
         metric_id="pr_review_engagement",
@@ -480,6 +653,12 @@ M0_METRICS: dict[str, MetricMeta] = {
         value_kind="avg",
         page="community",
         sources=("github",),
+        prior_art=(
+            PriorArt(
+                "CHAOSS: Change Request Reviews (adjacent)",
+                "https://chaoss.community/kb/metric-change-request-reviews/",
+            ),
+        ),
     ),
     "time_to_first_response_jira": MetricMeta(
         metric_id="time_to_first_response_jira",
@@ -490,6 +669,16 @@ M0_METRICS: dict[str, MetricMeta] = {
         value_kind="days",
         page="community",
         sources=("jira",),
+        prior_art=(
+            PriorArt(
+                "CHAOSS: Time to First Response",
+                "https://www.chaoss.community/kb/metric-time-to-first-response/",
+            ),
+            PriorArt(
+                "CHAOSS: Responsiveness practitioner guide",
+                "https://www.chaoss.community/practitioner-guide-responsiveness/",
+            ),
+        ),
     ),
     "stale_pr_rate": MetricMeta(
         metric_id="stale_pr_rate",
@@ -500,6 +689,16 @@ M0_METRICS: dict[str, MetricMeta] = {
         value_kind="percent",
         page="community",
         sources=("github",),
+        prior_art=(
+            PriorArt(
+                "CHAOSS: Change Requests (adjacent)",
+                "https://chaoss.community/kb/metric-change-requests/",
+            ),
+            PriorArt(
+                "CHAOSS: Change Requests Declined (adjacent)",
+                "https://chaoss.community/kb/metric-change-requests-declined/",
+            ),
+        ),
     ),
 }
 

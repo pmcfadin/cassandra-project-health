@@ -1,0 +1,136 @@
+name: Peers
+
+# Issue #145, DECISIONS.md D30: a separate, weekly (Sunday) collection run
+# for the five owner-chosen peer projects -- apache/kafka, apache/spark,
+# apache/flink, apache/pulsar, apache/datafusion -- plus the matching
+# metrics recomputed for Cassandra itself, kept entirely out of
+# `nightly.yml`'s own ~3-minute budget. `collectors/github.py::
+# GitHubCollector`'s existing shared rate-limit-floor budgeting covers
+# every peer repo in one call; an initial backfill may still legitimately
+# span several Sunday runs before every peer's commit/PR/release history
+# is fully collected -- resumable via each peer's own watermark
+# (`project_health.storage`), same "a flaky/slow source stops cleanly,
+# never a hard failure" discipline `nightly.yml` documents for its own
+# sources.
+on:
+  schedule:
+    - cron: '41 7 * * 0'
+  workflow_dispatch:
+
+# Shares `nightly.yml`'s own concurrency group: both write to the same
+# `data` branch, and a queued run waiting behind an in-progress one avoids
+# a half-committed Parquet partition the same way `nightly.yml`'s own
+# comment explains.
+concurrency:
+  group: data-branch-writer
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    # Five peer repos' GitHub PR/review/comment collection (one shared
+    # GraphQL budget) + five disk-safe shallow git clones (built and
+    # deleted one at a time) + five REST-API GA-tag/independent-source
+    # fetches; 60 minutes mirrors `nightly.yml`'s own headroom.
+    timeout-minutes: 60
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v7
+        with:
+          path: main
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v10.2.0
+        with:
+          python-version: '3.12'
+
+      - name: Install project-health
+        working-directory: main
+        run: |
+          uv sync --locked
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
+
+      - name: Check whether the data branch exists
+        id: data-branch
+        working-directory: main
+        run: |
+          if git ls-remote --exit-code --heads origin data > /dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout data branch
+        if: steps.data-branch.outputs.exists == 'true'
+        uses: actions/checkout@v7
+        with:
+          ref: data
+          path: data
+
+      # Should never happen in practice (nightly.yml creates this branch on
+      # its own first run, which runs daily vs. this workflow's weekly
+      # cadence) -- guarded anyway so a first-ever run of this workflow
+      # alone doesn't fail outright.
+      - name: Create orphan data branch (first run)
+        if: steps.data-branch.outputs.exists == 'false'
+        run: |
+          set -euo pipefail
+          mkdir -p data
+          cd data
+          git init -q -b data
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          mkdir -p raw snapshots manifests state
+          touch raw/.gitkeep snapshots/.gitkeep manifests/.gitkeep state/.gitkeep
+          git add raw/.gitkeep snapshots/.gitkeep manifests/.gitkeep state/.gitkeep
+          git commit -q -m "chore: initialize orphan data branch"
+          git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git push -q origin data
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Run peer collection
+        id: peers
+        working-directory: main
+        continue-on-error: true
+        env:
+          # Same token precedence as nightly.yml's own GitHub PR collector.
+          GH_PAT: ${{ secrets.GH_PAT }}
+          GITHUB_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+        run: |
+          project-health peers-collect \
+            --peers projects/peers.yaml \
+            --data-dir ../data \
+            --workdir ../work/peers \
+            --run-id "peers-$(date -u +%Y%m%dT%H%M%SZ)"
+
+      - name: Commit and push data branch
+        working-directory: data
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if ! git remote get-url origin > /dev/null 2>&1; then
+            git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          fi
+          git add raw/peers snapshots/peers manifests state
+          if git diff --cached --quiet; then
+            echo "No new peer data to commit"
+          else
+            git commit -m "data: weekly peer-context collection run ($(date -u +%Y-%m-%dT%H:%M:%SZ))"
+            git push origin HEAD:data
+          fi
+
+      # `nightly.yml`'s own next run regenerates the site (reading whatever
+      # peers snapshot this run just published) and deploys it -- this
+      # workflow never touches GitHub Pages itself, since its schedule
+      # (weekly) is slower than the site's own (nightly).
+      - name: Fail the job if peer collection failed
+        if: steps.peers.outcome != 'success'
+        run: exit 1

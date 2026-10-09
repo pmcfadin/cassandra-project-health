@@ -5,6 +5,19 @@ newest-first; a future version bump adds a new dated entry at the top.
 
 ## 2026-10-09
 
+### New metric_id time_to_first_response_pr (1.0) -- peer context (issue #145, DECISIONS.md D30)
+
+Added for the new `/peers/` page: median/P90 days from a GitHub PR's `created_at` to the
+earliest non-author, non-bot `pr_review.submitted_at` *or* `pr_comment.created_at`, whichever
+is first (`metrics/peer_metrics.py`). Computed by the same code for Cassandra and five
+owner-chosen peer projects (apache/kafka, apache/spark, apache/flink, apache/pulsar,
+apache/datafusion) so the six projects' numbers are genuinely comparable -- a deliberately new
+metric, not a reuse of the existing `pr_time_to_first_review` (reviews only, already wired to
+the landing page's own "Time to First Response" card, D29): two different, each internally
+consistent, numbers for two different purposes. Registered in `metrics/engine.py`'s
+`DEFINITION_VERSIONS` (the shared lookup every `_make_row` call uses, regardless of which
+module calls it) so `_make_row` can stamp it the same way every other metric_id is stamped.
+
 ### median_resolution_latency_jira: 1.0 -> 1.1 (bulk-closure annotation); new metric_id median_resolution_latency_jira_cohort_12m (1.0)
 
 Reviewer feedback on the Community page: "one day where jira resolution spikes to 230 days, that's

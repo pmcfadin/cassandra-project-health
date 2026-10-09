@@ -1,0 +1,126 @@
+# Peer-context configuration (issue #145, DECISIONS.md D30).
+#
+# A deliberately small, separate config -- NOT a `projects/<id>.yaml`
+# (`project_health.config.load_project`'s `ProjectConfig` requires a full
+# `reviewer_extraction`/JIRA/mailing-list shape this page has no use for).
+# Loaded by `project_health.peers.config.load_peers`.
+#
+# Peers are the owner's choice (DECISIONS.md D30): comparable ASF top-level
+# projects of a similar scale, picked for apples-to-apples GitHub-PR +
+# git-commit + GA-release data, not a ranking. DataFusion is used in place
+# of HBase per the owner's 2026-10-09 decision.
+#
+# `tag_prefix` values below are verified live against each repo's real tag
+# history via the GitHub REST tags API, 2026-10-09 (see peer_metrics'/
+# collect's own module docstrings for the exact GA-tag inclusion rule reused
+# from `collectors/release.py::list_ga_tags`/`_ga_version`):
+#   - kafka:      "" -- GA tags are bare `major.minor.patch` (e.g. "4.3.1");
+#                 older incubator-era tags ("kafka-0.7.2-incubating-...")
+#                 don't match the GA pattern and are excluded, same as any
+#                 other non-matching tag.
+#   - spark:      "v" -- GA tags "vX.Y.Z" (e.g. "v4.2.0"); "-rcN"/"-previewN"
+#                 suffixes don't match the bare major.minor[.patch] pattern
+#                 and are excluded.
+#   - flink:      "release-" -- GA tags "release-X.Y.Z" (e.g.
+#                 "release-2.3.0"); "-rcN" suffixes excluded the same way.
+#   - pulsar:     "v" -- GA tags "vX.Y.Z" (e.g. "v4.2.5"); "-candidate-N"/
+#                 "-MN" (milestone) suffixes excluded the same way.
+#   - datafusion: "" -- GA tags are bare `major.minor.patch` (e.g. "55.2.0");
+#                 "-rcN" suffixes excluded the same way; unrelated tag
+#                 families ("python-0.4.0", "ballista-0.7.0") don't start
+#                 with a digit and never match at all.
+#
+# `release_verification` is the independent source each peer's git-tag GA
+# count is cross-checked against for the real run (issue #145 acceptance:
+# "verify per-year counts against an independent source ... and paste
+# them"), never the authoritative `release_date` (git tag date stays
+# primary, same as `collectors/release.py`'s own archive.apache.org
+# cross-check for Cassandra):
+#   - kafka/spark/flink use ASF JIRA -- `type: jira`, each project's own
+#     JIRA `project_key`, verified live (`/rest/api/2/project/<key>/
+#     versions` returns released versions with dates, unauthenticated).
+#   - pulsar uses GitHub Releases -- `type: github_releases`, verified live
+#     (apache/pulsar publishes real Releases with `published_at` dates).
+#   - datafusion does **not** use GitHub Releases, despite the issue's own
+#     suggestion: verified live 2026-10-09, apache/datafusion publishes
+#     **zero** GitHub Releases (same situation DATA-SOURCES.md already
+#     documents for apache/cassandra itself -- `/releases/latest` 404s,
+#     `/releases` returns `[]`). The closest genuinely independent source
+#     actually available is the `datafusion` PyPI package's own release
+#     history (`https://pypi.org/pypi/datafusion/json`), published through
+#     a wholly separate pipeline (PyPI, not GitHub) -- `type: pypi`,
+#     verified live (45 releases with `upload_time_iso_8601`). This is an
+#     existence/timing cross-check only, same caveat as every other
+#     peer's: a patch release that never got its own PyPI build (rare, but
+#     possible for a bindings package) won't appear here even though its
+#     git tag and GitHub-visible release both exist.
+
+peers:
+  - id: kafka
+    display_name: Apache Kafka
+    repo: apache/kafka
+    default_branch: trunk
+    tag_prefix: ""
+    release_verification:
+      type: jira
+      base_url: https://issues.apache.org/jira
+      project_key: KAFKA
+
+  - id: spark
+    display_name: Apache Spark
+    repo: apache/spark
+    default_branch: master
+    tag_prefix: "v"
+    release_verification:
+      type: jira
+      base_url: https://issues.apache.org/jira
+      project_key: SPARK
+
+  - id: flink
+    display_name: Apache Flink
+    repo: apache/flink
+    default_branch: master
+    tag_prefix: "release-"
+    release_verification:
+      type: jira
+      base_url: https://issues.apache.org/jira
+      project_key: FLINK
+
+  - id: pulsar
+    display_name: Apache Pulsar
+    repo: apache/pulsar
+    default_branch: master
+    tag_prefix: "v"
+    release_verification:
+      type: github_releases
+
+  - id: datafusion
+    display_name: Apache DataFusion
+    repo: apache/datafusion
+    default_branch: main
+    tag_prefix: ""
+    release_verification:
+      type: pypi
+      package: datafusion
+
+# Shared knobs (issue #145's disk/budget constraints):
+collection:
+  # Metrics need "last 36 months, monthly" (issue #145); contributor_absence_
+  # factor's own trailing-12m window means the first dense month needs 12
+  # months of commit history *before* the 36-month display window starts --
+  # so the git clone walks back 36 + 12 = 48 months, never full history
+  # (disk is tight on the collection machine; see `peers/git_clone.py`).
+  commit_lookback_months: 48
+  # GitHub GraphQL PR/review/comment collector reuses `collectors/
+  # github.py::GitHubCollector` unmodified, pointed at every peer repo in
+  # one `collect()` call so the *same* shared rate-limit-floor budgeting
+  # that call already implements for Cassandra's own multi-repo config
+  # applies across peers too (module docstring "Rate-limit budgeting").
+  github_rate_limit_floor: 500
+  # Generic GitHub/git bot identities (not Cassandra-specific) -- dependabot
+  # and GitHub Actions service accounts appear on every peer the same way.
+  bot_patterns:
+    - field: git_author_email
+      regex: '(?i)noreply@github\.com$|\[bot\]'
+    - field: github_login
+      regex: '(?i)-bot$|^dependabot|^github-actions'

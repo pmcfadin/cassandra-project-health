@@ -338,3 +338,51 @@ https://chaoss.community/kb/metrics-model-starter-project-health/ (verified live
 **Coordination:** #134 (prior-art citations, resolution cohort) and #135 (release_frequency)
 were in flight and touch `metrics_meta`/registry/landing; this work rebases onto `main` after
 they merge. The Release Frequency card shows a plain pending state until #135 ships.
+
+## D30. Peer context is facts; no targets; peers chosen by owner (issue #145)
+
+Owner decision (2026-10-09): give readers context for Cassandra's own numbers without inventing
+targets. Peers: **apache/kafka, apache/spark, apache/flink, apache/pulsar, apache/datafusion**
+(the owner chose DataFusion over HBase). The same five metrics D29's CHAOSS Starter Project
+Health block already established the pattern for (Time to First Response, Change Request
+Closure Ratio, Contributor Absence Factor, Release Frequency) plus Open PR backlog by age
+bucket (issue #142), computed by the **same code** for Cassandra and every peer, on its own
+page, `/peers/`, linked from the site nav and the Community page.
+
+- **No targets, no ranking.** CHAOSS's own published metrics models deliberately set no
+  targets and rank nothing (the same fact D29 already cites for dropping this project's own
+  composite score) -- this page states that plainly, in a standing banner: "CHAOSS does not set
+  targets or rank projects." No color-coding implying good/bad, no composite across the five
+  metrics, no sort order implying rank, no verdict vocabulary (D25). Cassandra's own line is
+  drawn with a heavier stroke in every chart (never color alone) so it reads distinctly without
+  reading as "the one that matters."
+- **Peers are an owner choice, not a benchmark panel.** Comparable ASF top-level projects at a
+  broadly similar scale, picked by the owner for having real GitHub-PR activity, a real git
+  history, and real GA releases -- not a statistically representative sample, and not an
+  implied "these are the right projects." `projects/peers.yaml` is a plain, documented config
+  file; a reader who wants a different comparison set can point the same code at a different
+  repo.
+- **No issue-tracker metrics in v1.** Cassandra/Kafka/Spark/Flink use ASF JIRA; Pulsar and
+  DataFusion use GitHub Issues -- the two trackers aren't comparable without substantially more
+  normalization work than this issue's scope covers, so no issue-tracker-based metric appears
+  for any of the six projects on this page.
+- **Disk-safe collection, a separate weekly workflow.** The collection machine's own disk
+  constraint (issue #145) rules out a full clone of any peer repo -- git history comes from a
+  bare, blobless, shallow-since clone of the default branch only, deleted immediately after
+  each peer's commit walk; GA releases come from the GitHub REST Tags API, no clone at all.
+  `.github/workflows/peers.yml` runs weekly (Sunday), separately from `nightly.yml`'s own
+  ~3-minute daily budget, sharing the same `data`-branch concurrency group and the GitHub PR
+  collector's existing shared rate-limit-floor budgeting (no new budgeting code).
+- **Independent-source release verification, disclosed where the plan didn't match reality.**
+  Each peer's git-tag-derived GA count is cross-checked against ASF JIRA's own released
+  versions (Kafka/Spark/Flink) or GitHub Releases (Pulsar). DataFusion was planned to use
+  GitHub Releases too, but verified live (2026-10-09) to publish **zero** GitHub Releases --
+  same situation DATA-SOURCES.md already documents for apache/cassandra itself. Rather than
+  silently dropping the cross-check, DataFusion uses its own PyPI package's release history
+  instead, a genuinely independent system, disclosed in `projects/peers.yaml`'s own comment and
+  in METRICS.md §13 -- "collect imperfectly but honestly, not silently," the same discipline
+  `collectors/jira.py`/`collectors/release.py` document for their own limitations.
+- **Fits the collapsible-section layout once #144 ships.** Issue #144 (collapsible sections,
+  grouped by CHAOSS practitioner-guide topic) was still in flight when this shipped; `/peers/`
+  is built with plain `<section>` elements for now and rebases onto #144's section macro once
+  that issue merges, per the issue's own coordination note.

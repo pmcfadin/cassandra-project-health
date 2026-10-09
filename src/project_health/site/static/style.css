@@ -1013,17 +1013,18 @@ main {
   font: inherit;
 }
 
-/* Rotated axis labels need real width to stay legible; a narrow phone
-   viewport scrolls horizontally within this box rather than the page
-   itself (issue #120), same reasoning as `.conv-patterns-table-wrap`. */
+/* Issue #133: small multiples (one mini-chart per label, computed/sized by
+   `app.js`'s `applyFacetColumns`) wrap to however many columns fit the
+   container instead of ever needing the horizontal scroll this used to
+   rely on (issue #120's original grouped-bar design) -- `overflow-x: auto`
+   stays only as a defensive fallback, never the primary mechanism. */
 .conv-yoy-chart-wrap {
   overflow-x: auto;
   max-width: 100%;
   margin-bottom: 1rem;
 }
 .conv-yoy-chart {
-  min-width: 34rem;
-  min-height: 320px;
+  min-height: 160px;
 }
 
 /* --- Thread explorer charts (issue #124) -------------------------------- */
@@ -1041,16 +1042,21 @@ main {
   flex-wrap: wrap;
   gap: 0.5rem;
 }
+/* Issue #133: taller floor than before -- the color legend moved below
+   the plot (see `_year_outcome_chart_spec`'s own docstring) needs its own
+   vertical room now instead of sharing a row with the plot to its right. */
 .thread-outcome-chart {
-  min-height: 280px;
+  min-height: 340px;
 }
+/* Issue #133: see `.conv-yoy-chart-wrap`'s comment -- same small-multiples
+   wrap-not-scroll fix, applied to this chart too (reviewer feedback
+   covered both #120's and #124's label charts). */
 .thread-label-chart-wrap {
   overflow-x: auto;
   max-width: 100%;
 }
 .thread-label-chart {
-  min-width: 34rem;
-  min-height: 280px;
+  min-height: 160px;
 }
 @media (max-width: 640px) {
   .thread-chart-toolbar {

@@ -104,6 +104,77 @@
   });
   updateToggleButtons();
 
+  // --- Small-multiples facet sizing (issue #133) -------------------------
+  //
+  // `conversation_patterns_page._yoy_group_spec` (and `thread_explorer.js`'s
+  // own copy of this same function, for the thread-explorer label chart)
+  // produce a Vega-Lite *faceted* spec -- one mini-chart per label -- with
+  // no top-level `width` (a faceted spec's width lives on `spec.width`,
+  // the per-panel view, not the top level `embedChart` used to override
+  // for the old single-view bar chart). This computes `facet.columns` and
+  // `spec.width` from the container's own resolved pixel width so panels
+  // wrap to however many columns actually fit -- down to one on a narrow
+  // phone -- instead of ever needing a horizontal scrollbar (reviewer
+  // feedback on #120/#124: "labels graphs don't wrap (can't see those on
+  // right)").
+  //
+  // `FACET_PANEL_TOTAL_MIN`/`FACET_AXIS_OVERHEAD`/`FACET_GAP` are
+  // empirically measured, not guessed: each facet column in one of these
+  // specs needs its own y-axis gutter (`resolve.scale.y: "independent"`
+  // gives every panel its own scale/ticks, so Vega-Lite draws a full axis
+  // per column, not just the leftmost one) plus Vega-Lite's own ~20px
+  // inter-column facet spacing, on top of the plot body width
+  // (`spec.width`) this function sets. Compiling real specs at this
+  // panel's exact mark/encoding shape with `vl2vg`/measuring the
+  // resulting SVG's rendered width (not guessed from the Vega-Lite docs)
+  // at a sweep of container widths from 320px to 1920px is what these
+  // numbers come from -- `FACET_AXIS_OVERHEAD`/`FACET_GAP` carry a margin
+  // above the measured ~45-58px/~20px so a few extra characters in a
+  // tick label never tips a column over the container edge.
+  var FACET_PANEL_TOTAL_MIN = 210;
+  var FACET_AXIS_OVERHEAD = 65;
+  var FACET_GAP = 24;
+  var FACET_MAX_COLUMNS = 3;
+  var FACET_MIN_BODY_WIDTH = 90;
+
+  function applyFacetColumns(spec, width) {
+    if (!spec.facet || !spec.spec) {
+      return spec;
+    }
+    var facetField = spec.facet.field;
+    var labelCount = 1;
+    if (facetField && spec.data && Array.isArray(spec.data.values)) {
+      var seen = {};
+      spec.data.values.forEach(function (row) {
+        if (row && row[facetField] != null) {
+          seen[row[facetField]] = true;
+        }
+      });
+      labelCount = Math.max(1, Object.keys(seen).length);
+    }
+    var maxColumns = Math.max(1, Math.min(labelCount, FACET_MAX_COLUMNS));
+    var columns = Math.max(
+      1,
+      Math.min(
+        maxColumns,
+        Math.floor((width + FACET_GAP) / (FACET_PANEL_TOTAL_MIN + FACET_GAP))
+      )
+    );
+    var panelWidth = Math.max(
+      FACET_MIN_BODY_WIDTH,
+      Math.floor((width - (columns - 1) * FACET_GAP) / columns) - FACET_AXIS_OVERHEAD
+    );
+    var next = JSON.parse(JSON.stringify(spec));
+    // `columns` is a top-level sibling of `facet`/`spec` in Vega-Lite's
+    // standalone facet-operator form -- nested inside `facet` itself, the
+    // compiler silently ignores it and lays out every panel in one row
+    // (verified by compiling with `vl2vg`; see `_yoy_group_spec`'s own
+    // docstring for the write-up).
+    next.columns = columns;
+    next.spec = Object.assign({}, next.spec, { width: panelWidth });
+    return next;
+  }
+
   // --- Year-over-year chart controls (issue #120) ------------------------
   //
   // `conversation_patterns_page._yoy_group_spec` ships each panel's *whole*
@@ -191,7 +262,9 @@
     // so instead of trusting "container" mode, resolve a concrete pixel
     // width from the container's own layout right now and pass that.
     var width = el.clientWidth || el.getBoundingClientRect().width || 300;
-    var resolvedSpec = Object.assign({}, spec, { width: width });
+    var resolvedSpec = spec.facet
+      ? applyFacetColumns(spec, width)
+      : Object.assign({}, spec, { width: width });
 
     window
       .vegaEmbed(el, resolvedSpec, { actions: false, renderer: "svg" })

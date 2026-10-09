@@ -69,7 +69,7 @@ VENUE_LABELS: dict[str, str] = {
 }
 
 # Issue #120's own two panels, in this fixed display order -- also the
-# fixed x-axis label order for each panel's grouped-bar chart (never the
+# fixed facet order for each panel's small-multiples chart (never the
 # alphabetical `SORTED_LABELS` order).
 _YOY_LABEL_GROUPS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     ("constructive", "Constructive / discussion", CONSTRUCTIVE_LABELS),
@@ -311,7 +311,15 @@ def _small_multiples_spec(
     """A faceted (small-multiples, one panel per label) Vega-Lite spec:
     year on x, count per 1,000 messages on y, with a shaded 95% CI band
     layered under the point/line -- issue #118 §2 item 4's "line charts
-    with CI bands ... as separate small-multiple groups"."""
+    with CI bands ... as separate small-multiple groups".
+
+    Issue #133 fixup: `columns` is a **top-level** sibling of `facet`/
+    `spec` in Vega-Lite's standalone facet-operator form, not a property
+    of the `facet` field definition itself -- nested where this function
+    originally put it, the compiler silently drops it and lays out every
+    panel in a single unbroken row, which is almost certainly the real
+    cause of the reviewer's original "doesn't wrap" complaint (verified
+    by compiling this exact spec with `vl2vg` before/after moving it)."""
     values: list[dict[str, Any]] = []
     for label in labels:
         for year in years:
@@ -335,7 +343,8 @@ def _small_multiples_spec(
 
     spec = {
         "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
-        "facet": {"field": "label", "type": "nominal", "columns": 2, "title": None},
+        "facet": {"field": "label", "type": "nominal", "title": None},
+        "columns": 2,
         "spec": {
             "width": 220,
             "height": 130,
@@ -432,7 +441,7 @@ def _message_patterns_by_venue(
 def _yoy_rows(
     snapshot: dict[str, Any], venues: list[str]
 ) -> tuple[list[dict[str, Any]], dict[str, list[str]]]:
-    """Long-format rows for the year-over-year grouped-bar chart (issue
+    """Long-format rows for the year-over-year small-multiples chart (issue
     #120): one row per (venue, cutoff, label, year) cell that clears the
     §5.1 floor, across every venue and every cutoff the snapshot carries --
     filtering down to a single venue/cutoff/year-range is left to the
@@ -512,10 +521,32 @@ def _yoy_year_options(years: list[str], now: datetime) -> list[dict[str, str]]:
 def _yoy_group_spec(
     rows: list[dict[str, Any]], group_id: str, labels: tuple[str, ...]
 ) -> str | None:
-    """A grouped-bar-chart-with-error-bars Vega-Lite spec for one panel
-    (constructive or negative): x = human-readable label, dodged by year,
-    color = year on a sequential single-hue ramp (older lighter, newer
-    darker -- issue #120), with a `rule` layer for each bar's 95% CI.
+    """A faceted small-multiples Vega-Lite spec for one panel group
+    (constructive or negative): one mini-chart per label, x = year, y =
+    per-1,000-messages rate, with a shaded 95% CI band -- issue #133
+    (reviewer feedback on #120's original grouped-bar-dodged-by-year
+    design): "graph colours are graded over y-axis [dodge group], but ...
+    x-axis makes more sense" for the time dimension, and that design's
+    horizontal-scroll escape hatch for narrow viewports hid every label
+    past whatever fit on screen first ("labels graphs don't wrap"). Color
+    is now one flat hue per panel, same visual language as
+    `_small_multiples_spec`'s message-patterns-by-year chart, rather than
+    color-by-year -- time is already the x-axis, so a second encoding of
+    the same dimension would be redundant.
+
+    `app.js`'s `applyFacetColumns` computes `facet.columns`/`spec.width`
+    from the container's resolved pixel width on every embed/resize, so
+    panels wrap to however many columns actually fit (down to one on a
+    narrow phone) instead of ever scrolling horizontally.
+
+    Independent y-scale per label (`resolve.scale.y: "independent"`):
+    labels in the same group differ in rate by an order of magnitude or
+    more (e.g. "acknowledgment" vs. "resolution_marker"), so a scale
+    shared across the whole group would flatten a rarer label's own
+    year-over-year trend to a near-zero line -- exactly what a reader
+    comparing one label's years to each other needs to see. (A shared
+    scale is still the right choice for comparing magnitude *across*
+    labels, which the venue summary table above already does in text.)
 
     `data.values` carries every venue/cutoff/year row for this group (not
     pre-filtered to a default range/venue/cutoff) -- `app.js`'s
@@ -538,38 +569,41 @@ def _yoy_group_spec(
     ]
     spec = {
         "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
-        "width": "container",
-        "height": 280,
-        "data": {"values": group_rows},
-        "encoding": {
-            "x": {
-                "field": "label_display",
-                "type": "nominal",
-                "title": None,
-                "sort": label_order,
-                "axis": {"labelAngle": -40, "labelLimit": 130, "labelPadding": 4},
-            },
-            "xOffset": {"field": "year", "type": "ordinal"},
-            "y": {"field": "per_1000", "type": "quantitative", "title": "per 1,000 messages"},
-            "color": {
-                "field": "year",
-                "type": "ordinal",
-                "title": "Year",
-                "scale": {"scheme": "blues"},
-            },
-            "tooltip": tooltip,
+        "facet": {
+            "field": "label_display",
+            "type": "nominal",
+            "title": None,
+            "sort": label_order,
         },
-        "layer": [
-            {"mark": {"type": "bar"}},
-            {
-                "mark": {"type": "rule"},
-                "encoding": {
-                    "y": {"field": "ci_lo", "type": "quantitative"},
-                    "y2": {"field": "ci_hi", "type": "quantitative"},
-                    "color": {"value": "rgba(0, 0, 0, 0.55)"},
+        "columns": 2,
+        "resolve": {"scale": {"y": "independent"}},
+        "spec": {
+            "width": 220,
+            "height": 140,
+            "layer": [
+                {
+                    "mark": {"type": "area", "opacity": 0.18, "color": "#2b6cb0"},
+                    "encoding": {
+                        "x": {"field": "year", "type": "ordinal", "title": "Year"},
+                        "y": {
+                            "field": "ci_lo",
+                            "type": "quantitative",
+                            "title": "per 1,000 messages",
+                        },
+                        "y2": {"field": "ci_hi"},
+                    },
                 },
-            },
-        ],
+                {
+                    "mark": {"type": "line", "point": True, "color": "#2b6cb0"},
+                    "encoding": {
+                        "x": {"field": "year", "type": "ordinal"},
+                        "y": {"field": "per_1000", "type": "quantitative"},
+                        "tooltip": tooltip,
+                    },
+                },
+            ],
+        },
+        "data": {"values": group_rows},
     }
     return json.dumps(spec)
 
@@ -577,7 +611,7 @@ def _yoy_group_spec(
 def _yoy_context(
     snapshot: dict[str, Any], venues: list[str], venue_meta: list[dict[str, str]], now: datetime
 ) -> dict[str, Any] | None:
-    """Issue #120: the year-over-year grouped-bar chart context -- both
+    """Issue #120: the year-over-year small-multiples chart context -- both
     panels' specs, the shared From/To year + venue + (optional) cutoff
     controls, and each venue's insufficient-data-years note.
 

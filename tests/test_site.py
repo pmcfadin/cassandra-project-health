@@ -2837,16 +2837,21 @@ def test_yoy_section_appears_directly_after_summary_before_newcomer_section(tmp_
 
 
 def test_yoy_chart_has_both_panels_with_independent_specs(tmp_path):
+    """Issue #133: small multiples -- one mini-chart per label, faceted,
+    independent y-scale per label, one flat color per panel (no
+    color-by-year; time is already the x-axis)."""
     out_dir = _build_site_with_yoy_years(tmp_path, {str(y): False for y in range(2021, 2027)})
     html_text = _conversations_html(out_dir)
     specs = _yoy_group_specs(html_text)
 
     assert set(specs) == {"Constructive / discussion", "Negative"}
     for spec in specs.values():
-        assert spec["layer"][0]["mark"]["type"] == "bar"
-        assert spec["layer"][1]["mark"]["type"] == "rule"
-        assert spec["encoding"]["color"]["field"] == "year"
-        assert spec["encoding"]["color"]["scale"]["scheme"] == "blues"
+        assert spec["facet"]["field"] == "label_display"
+        assert spec["resolve"]["scale"]["y"] == "independent"
+        assert spec["spec"]["layer"][0]["mark"]["type"] == "area"
+        assert spec["spec"]["layer"][1]["mark"]["type"] == "line"
+        assert "color" not in spec["spec"]["layer"][1]["encoding"]
+        assert "encoding" not in spec or "color" not in spec.get("encoding", {})
 
 
 def test_yoy_chart_label_order_matches_fixed_group_order_not_alphabetical(tmp_path):
@@ -2854,7 +2859,7 @@ def test_yoy_chart_label_order_matches_fixed_group_order_not_alphabetical(tmp_pa
     html_text = _conversations_html(out_dir)
     specs = _yoy_group_specs(html_text)
 
-    assert specs["Constructive / discussion"]["encoding"]["x"]["sort"] == [
+    assert specs["Constructive / discussion"]["facet"]["sort"] == [
         "Acknowledgment",
         "Compromise offer",
         "Constructive counterargument",
@@ -2862,7 +2867,7 @@ def test_yoy_chart_label_order_matches_fixed_group_order_not_alphabetical(tmp_pa
         "Resolution marker",
         "Technical disagreement",
     ]
-    assert specs["Negative"]["encoding"]["x"]["sort"] == [
+    assert specs["Negative"]["facet"]["sort"] == [
         "Dismissiveness",
         "Hostility",
         "Personal attack",
@@ -2891,7 +2896,10 @@ def test_yoy_chart_tooltip_carries_label_year_rate_ci_messages_authors(tmp_path)
     out_dir = _build_site_with_yoy_years(tmp_path, {"2024": False})
     html_text = _conversations_html(out_dir)
     specs = _yoy_group_specs(html_text)
-    tooltip_fields = {t["field"] for t in specs["Constructive / discussion"]["encoding"]["tooltip"]}
+    tooltip_fields = {
+        t["field"]
+        for t in specs["Constructive / discussion"]["spec"]["layer"][1]["encoding"]["tooltip"]
+    }
     assert {"label_display", "year", "per_1000", "ci_lo", "ci_hi", "messages", "authors"} <= (
         tooltip_fields
     )

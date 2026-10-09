@@ -88,3 +88,16 @@ def _block_real_network(request: pytest.FixtureRequest, monkeypatch: pytest.Monk
         httpx.AsyncHTTPTransport, "handle_async_request", _blocked_handle_async_request
     )
     monkeypatch.setattr(socket.socket, "connect", _blocked_connect)
+
+
+@pytest.fixture(autouse=True)
+def _fixed_git_identity(monkeypatch):
+    """Give every test a git author/committer identity.
+
+    Fixtures that commit or create annotated tags otherwise depend on the
+    machine's user.name/user.email, which CI runners don't have (#140).
+    """
+    for var in ("GIT_AUTHOR_NAME", "GIT_COMMITTER_NAME"):
+        monkeypatch.setenv(var, "Test Author")
+    for var in ("GIT_AUTHOR_EMAIL", "GIT_COMMITTER_EMAIL"):
+        monkeypatch.setenv(var, "test@example.com")

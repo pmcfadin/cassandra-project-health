@@ -29,6 +29,7 @@ from tests.fixtures.metrics.builders import (
     identity_link_for,
     issue_comments,
     issues,
+    jira_changelog,
     messages,
     pr_reviews,
     prs,
@@ -2534,6 +2535,117 @@ def test_stale_pr_rate_golden_single_snapshot_row():
     assert details["n_stale"] == 3
     assert details["threshold_days"] == 90
     assert {r["repo"] for r in details["by_repo"]} == {"apache/cassandra"}
+
+
+# --- issue #136, DECISIONS.md D29: change_request_closure_ratio_pr --------
+
+
+def test_change_request_closure_ratio_pr_golden():
+    # January 2024: 5 opened (meets the n=5 floor), 3 closed in January, 1
+    # more closes in February.
+    pr_rows = [
+        {"repo": "apache/cassandra", "number": i, "created_at": _ts(2024, 1, i)}
+        for i in range(1, 6)
+    ]
+    pr_rows[0]["closed_at"] = _ts(2024, 1, 20)
+    pr_rows[0]["merged"] = True
+    pr_rows[0]["merged_at"] = _ts(2024, 1, 20)
+    pr_rows[1]["closed_at"] = _ts(2024, 1, 22)
+    pr_rows[1]["merged"] = True
+    pr_rows[1]["merged_at"] = _ts(2024, 1, 22)
+    pr_rows[2]["closed_at"] = _ts(2024, 1, 25)  # declined, never merged
+    pr_rows[4]["closed_at"] = _ts(2024, 2, 1)
+
+    result = compute_all(
+        {"pr": prs(pr_rows)}, as_of=AS_OF, run_id=RUN_ID, computed_at=COMPUTED_AT, config=CONFIG
+    )
+
+    rows = _rows_for(result, "change_request_closure_ratio_pr")
+    assert [r["window_start"] for r in rows] == [date(2024, 1, 1), date(2024, 2, 1)]
+
+    jan, feb = rows
+    assert jan["n"] == 5
+    assert jan["value"] == pytest.approx(0.6)  # 3 closed / 5 opened
+    assert jan["flag"] == "ok"
+    assert _details(jan) == {"n_opened": 5, "n_closed": 3}
+
+    # February: 0 PRs opened -> undefined ratio, insufficient_data, never a
+    # false zero, even though one PR closed in February.
+    assert feb["n"] == 0
+    assert feb["value"] is None
+    assert feb["flag"] == "insufficient_data"
+    assert _details(feb) == {"n_opened": 0, "n_closed": 1}
+
+
+# --- issue #136, DECISIONS.md D29: change_request_closure_ratio_jira_patch -
+
+
+def test_change_request_closure_ratio_jira_patch_golden():
+    # 5 issues enter Patch Available in January 2024 (meets the n=5 floor);
+    # 3 of them resolve in January, 2 are still unresolved.
+    issue_rows = [
+        {
+            "issue_key": f"CASSANDRA-{n}",
+            "created_at": _ts(2023, 12, 1),
+            "updated_at": _ts(2024, 1, 20),
+            "resolved_at": _ts(2024, 1, 20) if n in (1, 2, 3) else None,
+        }
+        for n in range(1, 6)
+    ]
+    changelog_rows = [
+        {
+            "issue_key": f"CASSANDRA-{n}",
+            "changed_at": _ts(2024, 1, n),
+            "field": "status",
+            "to_value": "Patch Available",
+        }
+        for n in range(1, 6)
+    ]
+    # A later, second Patch Available entry for issue 2 must not be
+    # double-counted as a second "opened" -- only the first (MIN) counts.
+    changelog_rows.append(
+        {
+            "issue_key": "CASSANDRA-2",
+            "changed_at": _ts(2024, 1, 20),
+            "field": "status",
+            "to_value": "Patch Available",
+        }
+    )
+
+    result = compute_all(
+        {"issue": issues(issue_rows), "jira_changelog": jira_changelog(changelog_rows)},
+        as_of=AS_OF,
+        run_id=RUN_ID,
+        computed_at=COMPUTED_AT,
+        config=CONFIG,
+    )
+
+    rows = _rows_for(result, "change_request_closure_ratio_jira_patch")
+    # Dense months anchor off issue.created_at (Dec 2023 here), not off the
+    # Patch Available transitions themselves -- a month with JIRA issue
+    # history but zero Patch Available entries yet must still be a real,
+    # dense insufficient_data row, never a missing one (see this metric's
+    # own docstring on why an empty row list would wrongly degrade the run).
+    assert [r["window_start"] for r in rows] == [
+        date(2023, 12, 1),
+        date(2024, 1, 1),
+        date(2024, 2, 1),
+    ]
+
+    dec, jan, feb = rows
+    assert dec["n"] == 0
+    assert dec["value"] is None
+    assert dec["flag"] == "insufficient_data"
+
+    assert jan["n"] == 5
+    assert jan["value"] == pytest.approx(0.6)  # 3 closed / 5 opened
+    assert jan["flag"] == "ok"
+    assert _details(jan) == {"n_opened": 5, "n_closed": 3}
+
+    # February: no new Patch Available entries -> insufficient_data.
+    assert feb["n"] == 0
+    assert feb["value"] is None
+    assert feb["flag"] == "insufficient_data"
 
 
 # --- No per-person values (D2 rule 4 spirit) ----------------------------

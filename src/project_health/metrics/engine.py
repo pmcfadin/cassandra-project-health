@@ -108,6 +108,9 @@ DEFINITION_VERSIONS: dict[str, str] = {
     "pr_review_engagement": "1.0",
     "time_to_first_response_jira": "1.0",
     "stale_pr_rate": "1.0",
+    # issue #136, DECISIONS.md D29: CHAOSS "Change Request Closure Ratio"
+    "change_request_closure_ratio_pr": "1.0",
+    "change_request_closure_ratio_jira_patch": "1.0",
 }
 
 # Headcount metrics are plain counts, not rate/ratio/concentration/latency

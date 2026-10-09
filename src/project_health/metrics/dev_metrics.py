@@ -32,6 +32,16 @@ otherwise):
   here, not in `engine.py`, purely to keep this module self-contained.
 - `stale_pr_rate` -- METRICS.md §4: share of currently-open PRs with no
   update in 90+ days, one snapshot row per run (mirrors `stale_jira_rate`).
+- `change_request_closure_ratio_pr` / `change_request_closure_ratio_jira_patch`
+  -- DECISIONS.md D29, METRICS.md §4: CHAOSS "Change Request Closure Ratio"
+  (closed/opened in the period), reported as two labelled series since
+  Cassandra's reviewed changes are committed via JIRA, not GitHub PRs alone
+  (DECISIONS.md "Cassandra-specific facts"). `_pr` buckets GitHub PRs by
+  their own created/closed month; `_jira_patch` buckets JIRA's patch-
+  submission population (an issue's first entry into `Patch Available`,
+  the same event `review_responsiveness.py`'s own
+  `_first_patch_available_actor` uses to define a patch submission) by its
+  entry month (opened) and its `issue.resolved_at` month (closed).
 
 ## Why raw GitHub logins, not `resolved_identity` -- except for self-review exclusion
 
@@ -581,6 +591,146 @@ def _stale_pr_rate(
     ]
 
 
+def _change_request_closure_ratio_pr(
+    con: duckdb.DuckDBPyConnection, as_of: date, run_id: str, computed_at: datetime
+) -> list[dict]:
+    """CHAOSS 'Change Request Closure Ratio' (closed/opened in the period,
+    DECISIONS.md D29, METRICS.md §4), GitHub-PR series: for each completed
+    calendar month, the count of PRs *closed* (merged or declined, per
+    CHAOSS's own "credit maintainers for closing out things that won't be
+    merged" guidance -- `pr_time_to_close`'s own Population note makes the
+    same choice) in that month, divided by the count of PRs *opened*
+    (created) in that same month. Dense from the first month any PR was
+    opened through the last completed month before `as_of`. `n` is the
+    opened count (the ratio's own denominator) -- a month with zero opened
+    PRs has an undefined ratio and is reported as `insufficient_data`, never
+    a false zero. The ratio is not bounded at 1.0 (METRICS.md's own
+    Weaknesses note: a ratio above 1 can reflect a one-time backlog
+    cleanup, not sustained closure keeping pace with new PRs)."""
+    opened_rows = con.execute(
+        "SELECT date_trunc('month', created_at)::DATE AS m, COUNT(*) FROM pr GROUP BY 1"
+    ).fetchall()
+    if not opened_rows:
+        return []
+    opened_by_month: dict[date, int] = dict(opened_rows)
+    closed_by_month: dict[date, int] = dict(
+        con.execute(
+            "SELECT date_trunc('month', closed_at)::DATE AS m, COUNT(*) FROM pr "
+            "WHERE closed_at IS NOT NULL GROUP BY 1"
+        ).fetchall()
+    )
+
+    out = []
+    for month in _dense_months(min(opened_by_month), as_of):
+        n_opened = opened_by_month.get(month, 0)
+        n_closed = closed_by_month.get(month, 0)
+        raw_value = (n_closed / n_opened) if n_opened else None
+        out.append(
+            _make_row(
+                metric_id="change_request_closure_ratio_pr",
+                window_start=month,
+                window_end=month_end(month),
+                raw_value=raw_value,
+                n=n_opened,
+                floor=FLOOR_RATE_RATIO,
+                run_id=run_id,
+                computed_at=computed_at,
+                details={"n_opened": n_opened, "n_closed": n_closed},
+            )
+        )
+    return out
+
+
+def _change_request_closure_ratio_jira_patch(
+    con: duckdb.DuckDBPyConnection, as_of: date, run_id: str, computed_at: datetime
+) -> list[dict]:
+    """CHAOSS 'Change Request Closure Ratio' (DECISIONS.md D29), JIRA-patch
+    series: Cassandra's reviewed code changes are committed via JIRA, not
+    GitHub PRs alone (DECISIONS.md "Cassandra-specific facts"), so this
+    series tracks the same closed/opened ratio over JIRA's own patch-
+    submission population instead -- 'opened' is an issue's *first*
+    transition into `Patch Available` (`jira_changelog`, `field='status'`,
+    `to_value='Patch Available'` -- the same event `review_responsiveness.
+    py`'s own `_first_patch_available_actor` uses to define a patch
+    submission), bucketed by that transition's own month; 'closed' is that
+    same issue's resolution (`issue.resolved_at`), bucketed by its own
+    month. An issue that enters `Patch Available` more than once (e.g. a
+    reopened patch) is counted once, at its first entry -- the same
+    'patch submission' population `review_responsiveness.py` already
+    establishes. `n` is the opened count.
+
+    Dense months are anchored off `issue.created_at` (the same anchor
+    `_time_to_first_response_jira` uses), never off the Patch Available
+    transitions themselves: a project/run with JIRA issue history but zero
+    Patch Available transitions yet (e.g. the changelog backfill hasn't
+    started) must still report a real, dense `insufficient_data` series
+    (n=0 every month) rather than an empty row list -- an empty list would
+    make `metrics.registry.METRIC_IDS`'s "registered metric produced zero
+    rows" check mark the whole M0 run `degraded`, which a genuinely
+    in-progress backfill must never do (same reasoning
+    `review_responsiveness.py`'s own metrics stay entirely outside
+    `METRIC_IDS` for)."""
+    month_rows = con.execute(
+        "SELECT DISTINCT date_trunc('month', created_at)::DATE AS m FROM issue"
+    ).fetchall()
+    if not month_rows:
+        return []
+    first_month = min(m for (m,) in month_rows)
+
+    opened_by_month: dict[date, int] = dict(
+        con.execute(
+            """
+            WITH first_pa AS (
+                SELECT issue_key, MIN(changed_at) AS first_pa_at
+                FROM jira_changelog
+                WHERE field = 'status' AND to_value = 'Patch Available'
+                GROUP BY 1
+            )
+            SELECT date_trunc('month', first_pa_at)::DATE AS m, COUNT(*)
+            FROM first_pa
+            GROUP BY 1
+            """
+        ).fetchall()
+    )
+    closed_by_month: dict[date, int] = dict(
+        con.execute(
+            """
+            WITH first_pa AS (
+                SELECT issue_key, MIN(changed_at) AS first_pa_at
+                FROM jira_changelog
+                WHERE field = 'status' AND to_value = 'Patch Available'
+                GROUP BY 1
+            )
+            SELECT date_trunc('month', i.resolved_at)::DATE AS m, COUNT(*)
+            FROM issue i
+            JOIN first_pa p ON p.issue_key = i.issue_key
+            WHERE i.resolved_at IS NOT NULL
+            GROUP BY 1
+            """
+        ).fetchall()
+    )
+
+    out = []
+    for month in _dense_months(first_month, as_of):
+        n_opened = opened_by_month.get(month, 0)
+        n_closed = closed_by_month.get(month, 0)
+        raw_value = (n_closed / n_opened) if n_opened else None
+        out.append(
+            _make_row(
+                metric_id="change_request_closure_ratio_jira_patch",
+                window_start=month,
+                window_end=month_end(month),
+                raw_value=raw_value,
+                n=n_opened,
+                floor=FLOOR_RATE_RATIO,
+                run_id=run_id,
+                computed_at=computed_at,
+                details={"n_opened": n_opened, "n_closed": n_closed},
+            )
+        )
+    return out
+
+
 def compute_dev_metrics(
     con: duckdb.DuckDBPyConnection,
     as_of: date,
@@ -588,7 +738,8 @@ def compute_dev_metrics(
     computed_at: datetime,
     stale_pr_threshold_days: int = DEFAULT_STALE_PR_THRESHOLD_DAYS,
 ) -> list[dict]:
-    """All six issue #54 metrics' `metric_value` row dicts, in one call --
+    """All six issue #54 metrics' `metric_value` row dicts, plus the two
+    issue #136/D29 `change_request_closure_ratio_*` series, in one call --
     `metrics.engine.compute_all`'s single integration point for this module.
     """
     rows: list[dict] = []
@@ -598,4 +749,6 @@ def compute_dev_metrics(
     rows.extend(_pr_review_engagement(con, as_of, run_id, computed_at))
     rows.extend(_time_to_first_response_jira(con, as_of, run_id, computed_at))
     rows.extend(_stale_pr_rate(con, as_of, run_id, computed_at, stale_pr_threshold_days))
+    rows.extend(_change_request_closure_ratio_pr(con, as_of, run_id, computed_at))
+    rows.extend(_change_request_closure_ratio_jira_patch(con, as_of, run_id, computed_at))
     return rows

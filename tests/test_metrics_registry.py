@@ -37,6 +37,9 @@ EXPECTED_METRIC_IDS = {
     "stale_pr_rate",
     # issue #134
     "median_resolution_latency_jira_cohort_12m",
+    # issue #136, DECISIONS.md D29
+    "change_request_closure_ratio_pr",
+    "change_request_closure_ratio_jira_patch",
 }
 
 HEADCOUNT_METRIC_IDS = {

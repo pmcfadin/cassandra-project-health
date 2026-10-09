@@ -1,5 +1,14 @@
 # SCORING.md — Scoring and Aggregation Design
 
+**Status: superseded for published output (DECISIONS.md D29, 2026-10-09, reverses D20 and the published parts of
+D4).** The composite score, dimension scores and improving/declining/stable status labels this document specifies
+are no longer computed by the nightly pipeline or rendered on any page — `pipeline.py` no longer calls
+`scoring/engine.py`, and `site/generate.py` no longer calls `site/scoring_page.py`. The landing page instead leads
+with the published CHAOSS "Starter Project Health" metrics model (see D29). This document, `scoring.yaml`, and the
+`src/project_health/scoring/` library code all stay in the repo, unmodified, as dormant, documented code — D29
+explicitly chose "keep dormant" over "delete," since the self-baseline math below is reusable, reviewed work, not
+a mistake. Everything below this notice describes that dormant design, not current published behavior.
+
 Status: draft for review. Companion to `docs/spec/DECISIONS.md` (binding, especially D2 and D4) and
 `docs/spec/METRICS.md` (deliverable #2, defines every metric referenced below). Worked-example numbers throughout
 this document are **illustrative only** — clearly labeled, invented for exposition, not derived from real

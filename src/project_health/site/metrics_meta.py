@@ -700,6 +700,30 @@ M0_METRICS: dict[str, MetricMeta] = {
             ),
         ),
     ),
+    # issue #136, DECISIONS.md D29: CHAOSS "Change Request Closure Ratio"
+    # (closed/opened in the period), reported as two labelled series since
+    # Cassandra's reviewed changes are committed via JIRA, not GitHub PRs
+    # alone -- see `metrics/dev_metrics.py`'s own module docstring.
+    "change_request_closure_ratio_pr": MetricMeta(
+        metric_id="change_request_closure_ratio_pr",
+        name="Change Request Closure Ratio — GitHub PR",
+        dimension="responsiveness",
+        tier="proxy",
+        direction_of_good="higher",
+        value_kind="ratio",
+        page="community",
+        sources=("github",),
+    ),
+    "change_request_closure_ratio_jira_patch": MetricMeta(
+        metric_id="change_request_closure_ratio_jira_patch",
+        name="Change Request Closure Ratio — JIRA Patch Submissions",
+        dimension="responsiveness",
+        tier="established",
+        direction_of_good="higher",
+        value_kind="ratio",
+        page="community",
+        sources=("jira",),
+    ),
 }
 
 # Governance compliance engine (issue #36, D14/D15): one monthly pass-rate
@@ -871,3 +895,95 @@ PAGES: dict[str, PageMeta] = {
 # before linking through for the rest (D13: "one summary card per page:
 # its headline metrics ... and a link").
 HOME_CARD_METRIC_LIMIT = 3
+
+
+@dataclass(frozen=True)
+class ChaossStarterSeries:
+    """One labelled series within a CHAOSS Starter Project Health card
+    (issue #136, DECISIONS.md D29) -- a single `MetricMeta.metric_id`
+    already registered in `M0_METRICS` above, shown with its own label
+    (e.g. "GitHub PR" vs. "JIRA") so a multi-venue CHAOSS concept is never
+    collapsed into one number."""
+
+    metric_id: str
+    label: str
+
+
+@dataclass(frozen=True)
+class ChaossStarterMetric:
+    """Presentation metadata for one of the four CHAOSS "Starter Project
+    Health" metrics-model metrics (issue #136, DECISIONS.md D29, reversing
+    D20's composite score): the landing page leads with this published,
+    external standard instead of an in-house composite. `chaoss_url` and
+    `chaoss_model_url` were verified live (HTTP 200) by the orchestrator on
+    2026-10-09. `mapping_note` states which of this project's own metrics
+    compute each CHAOSS concept for Cassandra -- a plain fact, never
+    intent/recommendation language (D29 item 4)."""
+
+    key: str
+    chaoss_name: str
+    chaoss_url: str
+    mapping_note: str
+    series: tuple[ChaossStarterSeries, ...]
+    # True for a CHAOSS metric this project hasn't implemented yet (Release
+    # Frequency, pending #135) -- the card shows `mapping_note` only, no
+    # series/chart/value.
+    pending: bool = False
+
+
+CHAOSS_STARTER_MODEL_URL = "https://chaoss.community/kb/metrics-model-starter-project-health/"
+
+# Order matches the CHAOSS Starter Project Health model's own listing
+# (verified live, 2026-10-09).
+CHAOSS_STARTER_METRICS: tuple[ChaossStarterMetric, ...] = (
+    ChaossStarterMetric(
+        key="time_to_first_response",
+        chaoss_name="Time to First Response",
+        chaoss_url="https://chaoss.community/kb/metric-time-to-first-response/",
+        mapping_note=(
+            "Computed for Cassandra from three venues, shown separately: GitHub PR time to "
+            "first review, JIRA time to first response, and dev@ time to first reply."
+        ),
+        series=(
+            ChaossStarterSeries(metric_id="pr_time_to_first_review", label="GitHub PR"),
+            ChaossStarterSeries(metric_id="time_to_first_response_jira", label="JIRA"),
+            ChaossStarterSeries(metric_id="time_to_first_reply_devlist", label="dev@"),
+        ),
+    ),
+    ChaossStarterMetric(
+        key="change_request_closure_ratio",
+        chaoss_name="Change Request Closure Ratio",
+        chaoss_url="https://chaoss.community/kb/metric-change-request-closure-ratio/",
+        mapping_note=(
+            "Computed for Cassandra from two venues, shown separately, since reviewed changes "
+            "are committed via JIRA as well as GitHub: GitHub pull requests, and JIRA issues "
+            "entering Patch Available (Cassandra's patch-submission equivalent of a change "
+            "request)."
+        ),
+        series=(
+            ChaossStarterSeries(metric_id="change_request_closure_ratio_pr", label="GitHub PR"),
+            ChaossStarterSeries(
+                metric_id="change_request_closure_ratio_jira_patch", label="JIRA patch"
+            ),
+        ),
+    ),
+    ChaossStarterMetric(
+        key="contributor_absence_factor",
+        chaoss_name="Contributor Absence Factor",
+        chaoss_url="https://chaoss.community/kb/metric-contributor-absence-factor/",
+        mapping_note=(
+            "This project's existing contributor_absence_factor metric: the smallest number "
+            "of contributors whose combined trailing-12-month commits reach 50% of all "
+            "commits."
+        ),
+        series=(ChaossStarterSeries(metric_id="contributor_absence_factor", label=""),),
+    ),
+    ChaossStarterMetric(
+        key="release_frequency",
+        chaoss_name="Release Frequency",
+        chaoss_url="https://chaoss.community/kb/metric-release-frequency/",
+        mapping_note="Pending #135.",
+        series=(),
+        pending=True,
+    ),
+)

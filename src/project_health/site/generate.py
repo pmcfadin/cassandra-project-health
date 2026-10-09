@@ -6,8 +6,10 @@
 `project_health.site.manifest.load_manifest`) and writes a fully static,
 multi-page site (D13):
 
-- `/` (`index.html`) — a home page with one summary card per top-level
-  page: its headline metrics (latest value, month) and a link.
+- `/` (`index.html`) — a home page leading with the published CHAOSS
+  "Starter Project Health" metrics model (issue #136, DECISIONS.md D29,
+  reversing D20's in-house composite score), then one summary card per
+  top-level page: its headline metrics (latest value, month) and a link.
 - `/community/` — one dimension-grouped card per M0 metric (contributor
   sustainability, reviewer capacity, responsiveness), each with a tier
   badge, a Vega-Lite history chart, and downloadable
@@ -61,9 +63,10 @@ from project_health.site.manifest import RunManifest, load_manifest
 from project_health.site.governance_page import build_governance_page_context
 from project_health.site.leaderboard_page import build_leaderboard_page_context
 from project_health.site.review_responsiveness_page import build_review_responsiveness_context
-from project_health.site.scoring_page import build_scoring_page_context
 from project_health.site.staleness import source_staleness_badges
 from project_health.site.metrics_meta import (
+    CHAOSS_STARTER_METRICS,
+    CHAOSS_STARTER_MODEL_URL,
     GOVERNANCE_METRICS,
     HOME_CARD_METRIC_LIMIT,
     M0_METRICS,
@@ -798,6 +801,10 @@ def _card_context(
         # window's end date collapses to a plain month label, e.g. "Aug
         # 2026", rather than the raw ISO end-of-window date.
         "latest_month_label": latest.window_end.strftime("%b %Y") if latest else None,
+        # issue #136: the CHAOSS Starter Project Health landing block shows
+        # each series' own sample size (D29 item 3, "current value, small
+        # trend chart, n"), reusing this same card shell.
+        "latest_n": latest.n if latest else None,
         # issue #79/#35 + orchestrator review of issue #57, merged into one
         # flag/badge rather than two: a card's "backfill pending" tag fires
         # if either the chronologically truest-latest window (which may
@@ -874,6 +881,50 @@ def _summary_card_context(
     }
 
 
+# --- CHAOSS Starter Project Health block (issue #136, DECISIONS.md D29) ----
+#
+# D29 reverses D20: the landing page no longer publishes an in-house
+# composite score. It leads instead with the published CHAOSS "Starter
+# Project Health" metrics model -- four metrics, each mapped onto one or
+# more of this project's own already-computed M0 metrics
+# (`metrics_meta.CHAOSS_STARTER_METRICS`). Reuses `_card_context` (the same
+# latest-value/chart/staleness-badge/JSON-CSV shell every other card on
+# this site uses) rather than inventing a second rendering path, so this
+# block's own `data/<metric_id>.json`/`.csv` downloads are the same files
+# the top-level per-metric-id loop in `generate()` already writes.
+
+
+def _chaoss_starter_cards(
+    series_by_id: dict[str, MetricSeries],
+    last_completed_month: date,
+    manifest: RunManifest,
+) -> list[dict[str, Any]]:
+    cards = []
+    for meta in CHAOSS_STARTER_METRICS:
+        series_cards = []
+        for s in meta.series:
+            series = series_by_id.get(s.metric_id)
+            if series is None:
+                continue
+            series_cards.append(
+                {
+                    "label": s.label,
+                    **_card_context(series, HOME_BASE_PREFIX, last_completed_month, manifest),
+                }
+            )
+        cards.append(
+            {
+                "key": meta.key,
+                "chaoss_name": meta.chaoss_name,
+                "chaoss_url": meta.chaoss_url,
+                "mapping_note": meta.mapping_note,
+                "pending": meta.pending,
+                "series": series_cards,
+            }
+        )
+    return cards
+
+
 def _common_page_context(manifest: RunManifest, build_time: datetime) -> dict[str, Any]:
     """Context shared by every page's template render: the freshness
     banner, per-source badges, footer attribution, and pinned asset
@@ -901,6 +952,7 @@ def _common_page_context(manifest: RunManifest, build_time: datetime) -> dict[st
         "decisions_d19_anchor": DECISIONS_D19_ANCHOR,
         "governance_spec_url": GOVERNANCE_SPEC_URL,
         "governance_security_anchor": GOVERNANCE_SECURITY_ANCHOR,
+        "chaoss_starter_model_url": CHAOSS_STARTER_MODEL_URL,
         "vega_version": VEGA_VERSION,
         "vega_lite_version": VEGA_LITE_VERSION,
         "vega_embed_version": VEGA_EMBED_VERSION,
@@ -954,18 +1006,15 @@ def _render_pages(
         _summary_card_context(page, series_by_page[page_id], last_completed_month, manifest)
         for page_id, page in PAGES.items()
     ]
-    # Composite health score + dimension breakdown (D20, issue #57) — a
-    # small, additive call, same reasoning as the leaderboard's own wiring
-    # immediately below: `scoring_page.py` and `scoring/engine.py` are the
-    # only things that read/write this data.
-    scoring_context = build_scoring_page_context(
-        data_dir, run_id, out_dir, base_prefix=HOME_BASE_PREFIX
-    )
+    # CHAOSS Starter Project Health block (issue #136, DECISIONS.md D29) —
+    # the landing page leads with this published external standard instead
+    # of the retired in-house composite score (D20, reversed by D29).
+    chaoss_starter_cards = _chaoss_starter_cards(series_by_id, last_completed_month, manifest)
     home_html = env.get_template("home.html").render(
         current_page="home",
         base_prefix=HOME_BASE_PREFIX,
         summary_cards=summary_cards,
-        scoring=scoring_context,
+        chaoss_starter_cards=chaoss_starter_cards,
         **common_ctx,
     )
     (out_dir / "index.html").write_text(home_html)

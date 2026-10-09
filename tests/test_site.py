@@ -2367,102 +2367,71 @@ def test_generate_raises_if_snapshot_missing(tmp_path):
         generate(data_dir, RUN_ID, tmp_path / "out")
 
 
-# --- Orchestrator review fixups (issue #57): composite scale note, stale-
-# point "backfill pending" flag, sub-day duration formatting -------------
+# --- Issue #136, DECISIONS.md D29: composite score retired, landing page
+# leads with CHAOSS Starter Project Health instead -------------------------
 
 
-def _write_scoring_snapshot(
-    data_dir: Path,
-    run_id: str,
-    *,
-    composite: float | None = 56.4,
-    has_declining_dimension: bool = True,
-) -> None:
-    """A minimal, real `composite_score.parquet` + `dimension_status.parquet`
-    pair (D20, issue #57) -- just enough for `scoring_page.py` to report
-    `has_data=True` so the home page's composite section renders."""
-    computed_at = datetime(2026, 9, 25, 6, 30, tzinfo=UTC)
-    dimensions = [
-        "contributor sustainability",
-        "reviewer capacity",
-        "responsiveness",
-        "organizational diversity",
-        "release cadence",
-    ]
-    breakdown = [
-        {
-            "dimension": dim,
-            "weight": 0.2,
-            "renormalized_weight": 0.2,
-            "score": 55.0,
-            "status": (
-                "declining"
-                if (dim == "reviewer capacity" and has_declining_dimension)
-                else "stable"
-            ),
-            "included": True,
-            "key_metrics_scored": 1,
-            "key_metrics_total": 1,
-        }
-        for dim in dimensions
-    ]
-    composite_row = {
-        "window_end": date(2026, 8, 31),
-        "composite": composite,
-        "dimensions_included": 5,
-        "dimensions_total": 5,
-        "has_declining_dimension": has_declining_dimension,
-        "dimensions_json": json.dumps(breakdown),
-        "scoring_version": "1.0.0",
-        "run_id": run_id,
-        "computed_at": computed_at,
-    }
-    dimension_rows = [
-        {
-            "dimension": entry["dimension"],
-            "window_end": date(2026, 8, 31),
-            "status": entry["status"],
-            "driven_by": "reviewer_hhi" if entry["status"] == "declining" else None,
-            "score": entry["score"],
-            "key_metrics_scored": entry["key_metrics_scored"],
-            "key_metrics_total": entry["key_metrics_total"],
-            "scoring_version": "1.0.0",
-            "run_id": run_id,
-            "computed_at": computed_at,
-        }
-        for entry in breakdown
-    ]
-    snapshot_dir = data_dir / "snapshots" / run_id
-    snapshot_dir.mkdir(parents=True, exist_ok=True)
-    composite_table = validate(
-        "composite_score",
-        pa.Table.from_pylist([composite_row], schema=get_schema("composite_score")),
-    )
-    dimension_table = validate(
-        "dimension_status",
-        pa.Table.from_pylist(dimension_rows, schema=get_schema("dimension_status")),
-    )
-    pq.write_table(composite_table, snapshot_dir / "composite_score.parquet")
-    pq.write_table(dimension_table, snapshot_dir / "dimension_status.parquet")
+def test_home_page_never_renders_composite_or_status_vocabulary(tmp_path):
+    """D29 (2026-10-09, reverses D20): the site stops publishing the
+    composite/dimension scores and the improving/declining/stable status
+    labels anywhere, including the landing page. Extends the project's
+    existing verdict-vocabulary test pattern with the exact words D29 names."""
+    out_dir = _build_site(tmp_path)
+    html_text = (out_dir / "index.html").read_text()
+    text = _visible_text(html_text).lower()
+
+    for banned in ("improving", "declining", "health score"):
+        assert re.search(rf"\b{re.escape(banned)}\b", text) is None, banned
+    # "stable" only as a *status* word; banned outright is safe here since
+    # no M0 metric name/description on the home page legitimately uses it.
+    assert "stable" not in text
+    assert "/ 100" not in html_text
+    assert "composite" not in text
 
 
-def test_composite_scale_note_shown_on_home_page(tmp_path):
-    """Orchestrator review of issue #57 fix 1: the composite must never be
-    shown without a plain-language explanation of its self-baselined scale,
-    both for the composite itself and for each dimension's own score."""
-    data_dir = tmp_path / "data"
-    _write_snapshot(data_dir, RUN_ID, _default_rows())
-    _write_manifest(data_dir, RUN_ID, completed_at=BUILD_TIME - timedelta(hours=1))
-    _write_scoring_snapshot(data_dir, RUN_ID)
-    out_dir = tmp_path / "out"
-    generate(data_dir, RUN_ID, out_dir, now=BUILD_TIME)
+def test_home_page_leads_with_chaoss_starter_project_health(tmp_path):
+    """D29 item 3: the landing page leads with the CHAOSS "Starter Project
+    Health" metrics model -- its four metrics, each with a link to the
+    published CHAOSS definition and a mapping note for how it's computed
+    for Cassandra."""
+    out_dir = _build_site(tmp_path)
     html_text = (out_dir / "index.html").read_text()
 
-    assert "typical for Cassandra" in html_text
-    assert "not comparable" in html_text.lower()
-    assert "LFX Insights" in html_text
-    # The same scale note explicitly says it covers each dimension's score.
-    assert "each dimension" in html_text.lower() or "dimension's score" in html_text.lower()
+    assert "CHAOSS Starter Project Health" in html_text
+    assert "https://chaoss.community/kb/metrics-model-starter-project-health/" in html_text
+    for chaoss_name, chaoss_url in (
+        ("Time to First Response", "https://chaoss.community/kb/metric-time-to-first-response/"),
+        (
+            "Change Request Closure Ratio",
+            "https://chaoss.community/kb/metric-change-request-closure-ratio/",
+        ),
+        (
+            "Contributor Absence Factor",
+            "https://chaoss.community/kb/metric-contributor-absence-factor/",
+        ),
+        ("Release Frequency", "https://chaoss.community/kb/metric-release-frequency/"),
+    ):
+        assert chaoss_name in html_text
+        assert f'href="{chaoss_url}"' in html_text
+
+    # Change Request Closure Ratio and Time to First Response are each shown
+    # as two/three labelled series, not collapsed into one number.
+    assert "GitHub PR" in html_text
+    assert "JIRA patch" in html_text
+    assert "dev@" in html_text
+
+    # Release Frequency has no data yet (pending #135) -- honest pending
+    # state, never a fabricated value.
+    assert "Pending #135" in html_text
+
+
+def test_home_page_chaoss_block_shows_values_n_and_chart(tmp_path):
+    out_dir = _build_site(tmp_path)
+    html_text = (out_dir / "index.html").read_text()
+    # contributor_absence_factor's default-fixture latest point (Aug 2026,
+    # value 14.0, n=15).
+    assert "n=15" in html_text
+    assert 'aria-label="History chart for Contributor Absence Factor"' in html_text
 
 
 def _rows_without(metric_id: str) -> list[dict]:
@@ -2545,7 +2514,12 @@ def test_format_days_shows_days_hours_and_minutes_by_magnitude():
 def test_card_shows_duration_in_hours_not_a_misleading_zero_days(tmp_path):
     """A real sub-day median (0.03 days, issue #57 orchestrator review) must
     never render as "0.0 days" on the Conversations card or the home
-    summary card."""
+    summary card. A literal, standalone "0.0 days" is checked with a
+    not-preceded-by-another-digit pattern (issue #136 fixup: the home
+    page's own CHAOSS Starter Project Health block, added by that issue,
+    legitimately embeds other metrics' chart tooltip strings like "10.0
+    days"/"14.0 days" on the home page now -- a bare substring check would
+    false-positive on those)."""
     rows = _rows_without("time_to_first_reply_devlist")
     rows.append(
         _metric_value_row(
@@ -2555,9 +2529,10 @@ def test_card_shows_duration_in_hours_not_a_misleading_zero_days(tmp_path):
     out_dir = _build_site(tmp_path, rows=rows)
     conversations_html = (out_dir / "conversations" / "index.html").read_text()
     home_html = (out_dir / "index.html").read_text()
-    assert "0.0 days" not in conversations_html
+    zero_days = re.compile(r"(?<![0-9.])0\.0 days")
+    assert zero_days.search(conversations_html) is None
     assert "43 min" in conversations_html
-    assert "0.0 days" not in home_html
+    assert zero_days.search(home_html) is None
     assert "43 min" in home_html
 
 

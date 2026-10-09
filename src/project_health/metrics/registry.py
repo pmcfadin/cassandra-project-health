@@ -53,6 +53,9 @@ _VERSIONS: dict[str, str] = {
     "pr_review_engagement": "1.0",
     "time_to_first_response_jira": "1.0",
     "stale_pr_rate": "1.0",
+    # issue #136, DECISIONS.md D29
+    "change_request_closure_ratio_pr": "1.0",
+    "change_request_closure_ratio_jira_patch": "1.0",
 }
 
 _INITIAL_M0_CHANGELOG_NOTE = "Initial M0 implementation (issue #7)."
@@ -71,6 +74,10 @@ _INITIAL_ISSUE_53_CHANGELOG_NOTE = "Initial implementation (issue #53)."
 _INITIAL_ISSUE_52_CHANGELOG_NOTE = "Initial implementation (issue #52, D6)."
 _INITIAL_ISSUE_35_CHANGELOG_NOTE = "Initial implementation (issue #35)."
 _INITIAL_ISSUE_54_CHANGELOG_NOTE = "Initial implementation (issue #54)."
+_INITIAL_ISSUE_136_CHANGELOG_NOTE = (
+    "Initial implementation (issue #136, DECISIONS.md D29 -- CHAOSS Change Request Closure "
+    "Ratio)."
+)
 
 _MEDIAN_RESOLUTION_LATENCY_JIRA_CHANGELOG_NOTE = (
     "1.0 -> 1.1 (issue #134, 2026-10-09, reviewer feedback: 'one day where jira resolution "
@@ -113,6 +120,8 @@ _CHANGELOG_NOTES: dict[str, str] = {
     "pr_review_engagement": _INITIAL_ISSUE_54_CHANGELOG_NOTE,
     "time_to_first_response_jira": _INITIAL_ISSUE_54_CHANGELOG_NOTE,
     "stale_pr_rate": _INITIAL_ISSUE_54_CHANGELOG_NOTE,
+    "change_request_closure_ratio_pr": _INITIAL_ISSUE_136_CHANGELOG_NOTE,
+    "change_request_closure_ratio_jira_patch": _INITIAL_ISSUE_136_CHANGELOG_NOTE,
 }
 
 # metric_id -> description, condensed from METRICS.md's own "## <id>" sections.
@@ -493,6 +502,37 @@ _DESCRIPTIONS: dict[str, str] = {
         "staleness key slot, for the same JIRA-is-primary-venue reason as "
         "time_to_first_response_jira). Direction of good: lower. METRICS.md §0.6 rate/ratio "
         "floor (n=5 open PRs) applies. METRICS.md §4."
+    ),
+    "change_request_closure_ratio_pr": (
+        "CHAOSS 'Change Request Closure Ratio' (closed/opened in the period), GitHub-PR "
+        "series: for each completed calendar month, the count of PRs closed (merged or "
+        "declined -- CHAOSS credits maintainers for closing out things that won't be merged, "
+        "same Population choice as pr_time_to_close) in that month, divided by the count of "
+        "PRs opened (created) in that same month. details_json carries n_opened and n_closed. "
+        "Dense monthly. n is the opened count; a month with zero opened PRs is "
+        "insufficient_data, never a false zero. The value is not bounded at 1.0 -- a ratio "
+        "above 1 can reflect a one-time backlog cleanup rather than sustained closure keeping "
+        "pace with new PRs (METRICS.md §4's own Weaknesses note). Tier: proxy -- GitHub PRs "
+        "cover only part of Cassandra's actual review activity, same caveat as every other "
+        "GitHub-PR-only M0 metric. Dimension: responsiveness. Role: supporting. Direction of "
+        "good: higher. Window: monthly. METRICS.md §0.6 rate/ratio floor (n=5) applies. "
+        "DECISIONS.md D29, issue #136, METRICS.md §4."
+    ),
+    "change_request_closure_ratio_jira_patch": (
+        "CHAOSS 'Change Request Closure Ratio', JIRA-patch series: Cassandra's reviewed code "
+        "changes are committed via JIRA, not GitHub PRs alone, so this series tracks the same "
+        "closed/opened ratio over JIRA's own patch-submission population instead of GitHub "
+        "PRs. 'Opened' is an issue's first transition into Patch Available (jira_changelog, "
+        "field='status', to_value='Patch Available' -- the same event review_responsiveness."
+        "py's _first_patch_available_actor uses to define a patch submission), bucketed by "
+        "that transition's own month; 'closed' is that same issue's resolution "
+        "(issue.resolved_at), bucketed by its own month. An issue entering Patch Available "
+        "more than once is counted once, at its first entry. details_json carries n_opened "
+        "and n_closed. Dense monthly. n is the opened count; a month with zero newly-opened "
+        "patch submissions is insufficient_data. Tier: established. Dimension: "
+        "responsiveness. Role: supporting. Direction of good: higher. Window: monthly. "
+        "METRICS.md §0.6 rate/ratio floor (n=5) applies. DECISIONS.md D29, issue #136, "
+        "METRICS.md §4."
     ),
 }
 

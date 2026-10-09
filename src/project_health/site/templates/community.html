@@ -39,8 +39,6 @@
           {% endif %}
         </p>
 
-        <p class="card-status">Status: baseline scoring arrives in M3.</p>
-
         <div class="chart" data-vega-spec='{{ m.vega_spec_json }}' role="img" aria-label="History chart for {{ m.name }}">
           <noscript>Enable JavaScript to see the {{ m.name }} history chart, or use the data links below.</noscript>
         </div>
@@ -81,9 +79,8 @@
     assignee-change history, which is a best-effort proxy, not a confirmed identity. Shares for
     "response within 7/30 days" and "no visible response" only count submissions old enough to
     judge (right-censoring: a submission newer than 7, 30, or 365 days is left out of that
-    share's count entirely, not counted as a miss). These figures are informational only -- they
-    are not part of this site's composite score, and are shown with their own sample size (n)
-    for context. Full definitions:
+    share's count entirely, not counted as a miss). These figures are informational only,
+    shown with their own sample size (n) for context. Full definitions:
     <a href="{{ review_responsiveness.metrics_spec_url }}">METRICS.md</a>.
   </p>
 

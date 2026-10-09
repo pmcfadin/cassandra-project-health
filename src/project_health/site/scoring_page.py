@@ -1,5 +1,12 @@
 """Home-page composite score + dimension breakdown context builder (D20,
-issue #57).
+issue #57) -- DORMANT as of issue #136 / DECISIONS.md D29 (2026-10-09).
+
+`site/generate.py` no longer imports or calls `build_scoring_page_context`:
+D29 retires the composite score and dimension statuses from every
+published page (see `scoring/__init__.py`'s own docstring for the full
+rationale and what stays dormant vs. what was actually removed). This
+module's code is kept, unmodified, as dormant library code -- it is simply
+never called.
 
 `build_scoring_page_context` turns one run's `snapshots/<run_id>/
 {composite_score,dimension_status,metric_baseline_status}.parquet`

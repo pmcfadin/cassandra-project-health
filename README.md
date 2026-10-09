@@ -6,7 +6,10 @@ Automated health reporting for Apache Cassandra and other open-source projects. 
 
 See [docs/M0-LIMITATIONS.md](docs/M0-LIMITATIONS.md) for known limitations. For architecture and design decisions, see [docs/spec/](docs/spec/).
 
-**Live dashboard:** https://pmcfadin.github.io/cassandra-project-health/
+**Live dashboard:** https://pmcfadin.github.io/cassandra-project-health/ — the landing page leads with the
+published [CHAOSS Starter Project Health](https://chaoss.community/kb/metrics-model-starter-project-health/)
+metrics model (DECISIONS.md D29); this project publishes raw metrics only, never a composite score or a
+status verdict.
 
 ## Local Quickstart
 

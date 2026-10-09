@@ -159,7 +159,8 @@ each `none`/debatable assignment is in that metric's own section below, not just
 | `time_to_first_response_jira` | Time to First Response — JIRA Issue | responsiveness | established | 1 | monthly | lower | **key** |
 | `time_to_first_reply_devlist` | Time to First Reply — dev@ Thread | responsiveness | established | 1 | monthly | lower | **key** |
 | `unanswered_thread_rate_devlist` | Unanswered Thread Rate — dev@ | responsiveness | established | 1 | monthly | lower | supporting |
-| `change_request_closure_ratio` | Change Request Closure Ratio | responsiveness | established | 1 | monthly | higher | supporting |
+| `change_request_closure_ratio_pr` | Change Request Closure Ratio — GitHub PR | responsiveness | proxy | 1 | monthly | higher | supporting |
+| `change_request_closure_ratio_jira_patch` | Change Request Closure Ratio — JIRA Patch Submissions | responsiveness | established | 1 | monthly | higher | supporting |
 | `stale_pr_rate` | Stale PR Rate | responsiveness | established | 1 | monthly | lower | supporting |
 | `stale_jira_rate` | Stale JIRA Issue Rate | responsiveness | established | 1 | monthly | lower | **key** |
 | `median_resolution_latency_jira` | Median JIRA Resolution Latency | responsiveness | established | 1 | monthly | lower | supporting |
@@ -745,21 +746,32 @@ baseline or an improving/stable/declining status (see `SCORING.md` §6). All are
 - **CHAOSS equivalent:** adjacent to CHAOSS responsiveness metrics; no exact named equivalent for "unanswered
   thread rate" specifically.
 
-### `change_request_closure_ratio`
-- **Definition:** Ratio of change requests (PRs, and JIRA issues of type bug/improvement in Cassandra's tracker)
-  closed to those opened in the window — is the project keeping up with incoming change requests, per CHAOSS's
-  own framing.
-- **Direction of good:** higher. **Role:** supporting (responsiveness) — informative but excluded from `key`
-  because, as its own Weaknesses note says, a ratio above 1 can reflect a one-time backlog cleanup rather than a
-  sustained change, making it a noisier veto candidate than `stale_jira_rate`.
-- **Formula:** `ClosureRatio(m) = closed(m) / opened(m)`.
-- **Population & exclusions:** §0.5, §0.6; "closed" includes both merged/resolved and explicitly declined/won't-fix
-  — CHAOSS's guidance explicitly credits maintainers for closing out things that won't be merged, not only merges.
+### `change_request_closure_ratio_pr` / `change_request_closure_ratio_jira_patch` (issue #136, DECISIONS.md D29)
+- **Definition:** CHAOSS's Change Request Closure Ratio — closed/opened in the period — reported as two labelled
+  series, never collapsed into one number, since Cassandra's reviewed changes are committed via JIRA as well as
+  GitHub PRs (DECISIONS.md, "Cassandra-specific facts"): `_pr` is GitHub PRs (opened = `pr.created_at`'s month,
+  closed = `pr.closed_at`'s month, merged or declined); `_jira_patch` is JIRA's own patch-submission population —
+  opened = an issue's *first* transition into `Patch Available` (`jira_changelog`, same event
+  `review_responsiveness.py`'s `_first_patch_available_actor` uses to define a patch submission), closed = that
+  same issue's resolution (`issue.resolved_at`), each bucketed by its own month.
+- **Direction of good:** higher, for both. **Role:** supporting (responsiveness) — informative but excluded from
+  `key` because, as the Weaknesses note below says, a ratio above 1 can reflect a one-time backlog cleanup rather
+  than a sustained change, making it a noisier veto candidate than `stale_jira_rate`.
+- **Formula:** `ClosureRatio(m) = closed(m) / opened(m)`, computed independently for each series.
+- **Population & exclusions:** §0.5, §0.6 (floor 5, applied to the opened count — the ratio's own denominator). For
+  `_pr`, "closed" includes both merged and explicitly declined/won't-fix PRs — CHAOSS's guidance explicitly credits
+  maintainers for closing out things that won't be merged, not only merges (same choice `pr_time_to_close` makes).
+  For `_jira_patch`, an issue that enters `Patch Available` more than once (e.g. a reopened patch) is counted once,
+  at its first entry.
 - **Window:** monthly.
-- **Required data / source:** GitHub PR API; ASF JIRA REST API.
-- **Strengths:** Established CHAOSS metric with clear guidance on including declines as legitimate closure activity.
+- **Required data / source:** GitHub PR API (`_pr`); ASF JIRA REST API (`_jira_patch`).
+- **Strengths:** Established CHAOSS metric with clear guidance on including declines as legitimate closure
+  activity; showing both venues side by side discloses which share of Cassandra's actual review/closure activity
+  each series actually covers, rather than letting the GitHub-only slice stand in for the whole project.
 - **Weaknesses / gaming risk:** A ratio > 1 in one month can reflect closing an old backlog, not current health;
-  always shown with the raw opened/closed counts (D2.3).
+  always shown with the raw opened/closed counts (`details_json.n_opened`/`n_closed`, D2.3). `_pr` is tier `proxy`
+  (GitHub PRs cover only part of Cassandra's actual review activity, same caveat as every other GitHub-PR-only M0
+  metric); `_jira_patch` is tier `established`.
 - **CHAOSS equivalent:** [Change Request Closure Ratio](https://chaoss.community/kb/metric-change-request-closure-ratio/).
 
 ### `stale_pr_rate` / `stale_jira_rate`
@@ -794,7 +806,7 @@ baseline or an improving/stable/declining status (see `SCORING.md` §6). All are
 - **Definition:** Median and P90 days from a GitHub PR's `created_at` to `closed_at` (merged or declined), for PRs closed in a completed calendar month, bucketed by close month.
 - **Direction of good:** lower. **Role:** supporting (responsiveness).
 - **Formula:** Median/P90 of `t_closed − t_opened` over PRs closed in the window; `details_json.n_merged` carries the subset that were also merged, so a reader can see how much of a month's "closed" figure was actually merged vs. declined.
-- **Population & exclusions:** §0.5, §0.6 (floor 5). Includes both merged and declined-without-merging closes, per CHAOSS's own "credit maintainers for closing out things that won't be merged" guidance (`change_request_closure_ratio`'s Strengths note).
+- **Population & exclusions:** §0.5, §0.6 (floor 5). Includes both merged and declined-without-merging closes, per CHAOSS's own "credit maintainers for closing out things that won't be merged" guidance (`change_request_closure_ratio_pr`'s Strengths note).
 - **Window:** monthly.
 - **Required data / source:** GitHub PR API.
 - **Strengths:** Broader than `pr_merge_lead_time` — captures the full "how long does a PR stay open" picture, including declines.

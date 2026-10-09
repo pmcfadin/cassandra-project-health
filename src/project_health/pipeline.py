@@ -100,8 +100,6 @@ import pyarrow.parquet as pq
 
 from project_health import storage
 from project_health.leaderboard import build_leaderboards
-from project_health.scoring.config import load_scoring_config
-from project_health.scoring.engine import ScoringOutput, compute_scoring
 from project_health.collectors.asf_roster import AsfRosterCollector
 from project_health.collectors.git import (
     GitCollector,
@@ -3307,29 +3305,6 @@ def _write_leaderboard_snapshot(data_dir: Path, run_id: str, leaderboard_table: 
     return path
 
 
-def _write_scoring_snapshot(
-    data_dir: Path, run_id: str, scoring_result: ScoringOutput
-) -> dict[str, Path]:
-    """`snapshots/<run_id>/{metric_baseline_status,dimension_status,
-    composite_score}.parquet` (D20, issue #57) — three sibling files to
-    `metrics.parquet`, one per `scoring/engine.py` output table, each with
-    its own schema (`schema/tables.py`) and read only by
-    `site/scoring_page.py`, never by `metrics.registry`/`site/generate.py`'s
-    M0 metric-card machinery."""
-    snapshot_dir = Path(data_dir) / "snapshots" / run_id
-    snapshot_dir.mkdir(parents=True, exist_ok=True)
-    paths = {}
-    for name, table in (
-        ("metric_baseline_status", scoring_result.metric_baseline_status),
-        ("dimension_status", scoring_result.dimension_status),
-        ("composite_score", scoring_result.composite_score),
-    ):
-        path = snapshot_dir / f"{name}.parquet"
-        pq.write_table(table, path)
-        paths[name] = path
-    return paths
-
-
 # --- Orchestration ----------------------------------------------------------
 
 
@@ -3788,45 +3763,14 @@ def run_pipeline(
             _log("leaderboard_failed", run_id=run_id, error=str(exc))
             manifest["leaderboard"] = {"status": "failed", "reason": str(exc)}
 
-    # --- Baseline status + versioned composite score (D20, issue #57) -------
-    # A separate, additive step, wired the same way the leaderboard is
-    # immediately above: never gates the M0 run's exit code or `status`.
-    # Scoring is a presentation/synthesis layer computed entirely from
-    # `metrics_table` (already-validated `metric_value` rows) plus this
-    # project's own accumulated `snapshots/*/metrics.parquet` history for the
-    # two snapshot-style key metrics (`scoring/engine.py`'s own module
-    # docstring) — it can never itself surface a genuinely new data problem
-    # that `metrics_missing`/a source badge wouldn't already show.
-    if metrics_table is not None:
-        try:
-            scoring_config = load_scoring_config()
-            scoring_result = compute_scoring(
-                data_dir=data_dir,
-                run_id=run_id,
-                current_metrics_table=metrics_table,
-                config=scoring_config,
-                as_of=started_at.date(),
-                computed_at=started_at,
-            )
-            _write_scoring_snapshot(data_dir, run_id, scoring_result)
-            composite_row = scoring_result.composite_score.to_pylist()[0]
-            manifest["scoring"] = {
-                "status": "ok",
-                "scoring_version": scoring_config.scoring_version,
-                "composite": composite_row["composite"],
-                "dimensions_included": composite_row["dimensions_included"],
-                "dimensions_total": composite_row["dimensions_total"],
-                "has_declining_dimension": composite_row["has_declining_dimension"],
-            }
-            _log(
-                "scoring_computed",
-                run_id=run_id,
-                scoring_version=scoring_config.scoring_version,
-                composite=composite_row["composite"],
-            )
-        except Exception as exc:  # noqa: BLE001 - never gate the M0 run on this (see above)
-            _log("scoring_failed", run_id=run_id, error=str(exc))
-            manifest["scoring"] = {"status": "failed", "reason": str(exc)}
+    # --- Baseline status + versioned composite score: retired (DECISIONS.md
+    # D29, issue #136, reversing D20). The nightly no longer computes or
+    # publishes a composite score, dimension statuses, or an
+    # improving/declining/stable verdict -- see D29 for why (no widely
+    # accepted standard for a composite OSS health score) and
+    # `scoring/__init__.py` for what stays in the repo, dormant, vs. this
+    # call site, which is simply gone. `manifest["scoring"]` is no longer
+    # written by this run.
 
     out_path = manifest_path(data_dir, run_id)
     out_path.parent.mkdir(parents=True, exist_ok=True)

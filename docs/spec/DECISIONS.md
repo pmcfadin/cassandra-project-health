@@ -282,3 +282,59 @@ decide which conversations to read. It is not part of this system's published ou
   so the owner judges from the source, and the report says the classifier is uncalibrated (#47).
 - Everything published stays bound by §7.3: no per-person scores, counts or rankings on the site or
   in any public artifact.
+
+## D29. Remove composite score; landing page leads with CHAOSS Starter Project Health model (metrics only)
+
+Owner decision (2026-10-09) — reverses D20, and the published parts of D4. Reviewer: "pure
+metrics, metrics alone… shit gets messy once you imply what this will change." There is no
+widely accepted standard for a composite OSS health score (LFX Insights / OSS Compass /
+OpenSSF Scorecard each use their own editorial weights; CHAOSS deliberately groups metrics
+into models without scoring). So the site stops publishing the composite score, dimension
+scores, and improving/declining/stable status labels, and leads with a published standard
+instead.
+
+**Verified standard:** CHAOSS **Starter Project Health** metrics model —
+https://chaoss.community/kb/metrics-model-starter-project-health/ (verified live, HTTP 200,
+2026-10-09). Its four metrics, verbatim from the page:
+1. Time to First Response — https://chaoss.community/kb/metric-time-to-first-response/
+2. Change Request Closure Ratio — https://chaoss.community/kb/metric-change-request-closure-ratio/
+3. Contributor Absence Factor — https://chaoss.community/kb/metric-contributor-absence-factor/
+4. Release Frequency — https://chaoss.community/kb/metric-release-frequency/
+(all verified live, HTTP 200)
+
+**Build:**
+1. **Stop publishing** the composite/dimension scores and status labels: removed from the
+   landing page, every page, the site's JSON/CSV downloads, and the nightly's published
+   outputs (`pipeline.run_pipeline` no longer calls `scoring.engine.compute_scoring` or writes
+   the `{metric_baseline_status,dimension_status,composite_score}.parquet` snapshots;
+   `site/generate.py` no longer calls `site/scoring_page.py` or renders a composite section).
+   The scoring library code (`src/project_health/scoring/`, `site/scoring_page.py`,
+   `scoring.yaml`) stays in the repo, unmodified, as dormant code rather than deleted — the
+   underlying self-baseline math is reusable, documented work, not a mistake, and D29
+   explicitly allows keeping it dormant. The 'status' vocabulary (improving/declining/stable/
+   insufficient_data as a *status*, "health score", "/ 100") is deleted from every rendered
+   page. The existing verdict-vocabulary test pattern is extended to forbid these words too.
+2. **New metric `change_request_closure_ratio_{pr,jira_patch}`** per CHAOSS's own definition
+   (closed/opened in the period), monthly: (a) GitHub PRs on apache/cassandra; (b) JIRA patch
+   submissions (issues entering `Patch Available` opened vs. resolved) — Cassandra's reviewed
+   changes are committed via JIRA as well as GitHub, so both are shown, labelled separately,
+   never collapsed into one number. METRICS.md §4, `metrics/dev_metrics.py`,
+   `metrics/registry.py`, `site/metrics_meta.py`, and golden tests.
+3. **Landing page**: title, one neutral line ("Metrics for the Apache Cassandra project.
+   Definitions follow CHAOSS where one exists."), then a "CHAOSS Starter Project Health" block
+   with the four metrics — each: current value, small trend chart, n, a link to its CHAOSS
+   definition, and a mapping note for how it's computed for Cassandra (Time to First Response
+   = PR first review + JIRA first response + dev@ first reply, shown together as three
+   labelled series; Contributor Absence Factor = the existing `contributor_absence_factor`
+   metric; Release Frequency = pending #135, shown as a plain "not yet published" state rather
+   than a fabricated value). Then plain links to the other pages. The long explanatory text is
+   cut; methodology stays on the methodology page.
+4. **No intent language anywhere**: no "will help/improve/change", no recommendations, no
+   interpretation — swept from templates and `metrics_meta` descriptions.
+5. `docs/spec/SCORING.md` is marked superseded for published output (the design and the
+   underlying scoring library remain, for the dormant code's own documentation); README.md
+   updated to describe the CHAOSS-first landing page instead of the composite score.
+
+**Coordination:** #134 (prior-art citations, resolution cohort) and #135 (release_frequency)
+were in flight and touch `metrics_meta`/registry/landing; this work rebases onto `main` after
+they merge. The Release Frequency card shows a plain pending state until #135 ships.

@@ -111,6 +111,11 @@ DEFINITION_VERSIONS: dict[str, str] = {
     # issue #136, DECISIONS.md D29: CHAOSS "Change Request Closure Ratio"
     "change_request_closure_ratio_pr": "1.0",
     "change_request_closure_ratio_jira_patch": "1.0",
+    # issue #135 (metrics/release_cadence.py)
+    "release_frequency": "1.0",
+    "release_regularity": "1.0",
+    "time_since_last_release": "1.0",
+    "days_between_releases": "1.0",
 }
 
 # Headcount metrics are plain counts, not rate/ratio/concentration/latency
@@ -242,6 +247,9 @@ def _connect(tables: dict[str, pa.Table]) -> duckdb.DuckDBPyConnection:
         # `review_responsiveness.py::_build_submissions` for a PR collected
         # before that column existed.
         "pr_issue_link",
+        # issue #135: GA release history (release cadence dimension) --
+        # see metrics/release_cadence.py.
+        "release",
     ):
         con.register(name, _table_or_empty(tables, name))
     con.execute(
@@ -2147,6 +2155,7 @@ def compute_all(
     # module is already fully initialized, so the deferred import resolves
     # cleanly.
     from project_health.metrics.dev_metrics import compute_dev_metrics
+    from project_health.metrics.release_cadence import compute_release_cadence
 
     con = _connect(tables)
     try:
@@ -2194,6 +2203,9 @@ def compute_all(
         # time_to_first_response_jira, sharing this same threshold_days with
         # stale_jira_rate (METRICS.md §4's shared "default 90 days" default).
         rows.extend(compute_dev_metrics(con, as_of, run_id, computed_at, threshold_days))
+        # issue #135 (metrics/release_cadence.py): release cadence
+        # dimension's three metrics, computed from the `release` raw table.
+        rows.extend(compute_release_cadence(con, as_of, run_id, computed_at))
     finally:
         con.close()
 

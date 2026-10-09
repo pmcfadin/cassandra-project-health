@@ -98,8 +98,10 @@ def test_compute_scoring_end_to_end_shapes_and_excludes_quarterly_metric(tmp_pat
     assert reviewer_capacity_row["status"] == "declining"
     assert reviewer_capacity_row["driven_by"] == "reviewer_hhi"
 
-    # release cadence has no implemented key metric at all yet
-    # (`release_frequency` has no collector) -- always insufficient_data.
+    # This scenario's synthetic `current_metrics_table` carries no
+    # `release_frequency` row at all (release cadence's only key metric,
+    # issue #135) -- same "no row this run -> insufficient_data" handling
+    # as any other key metric missing from a given run's snapshot.
     release_row = next(
         row for row in result.dimension_status.to_pylist() if row["dimension"] == "release cadence"
     )

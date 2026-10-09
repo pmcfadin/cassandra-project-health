@@ -28,6 +28,7 @@ from project_health.collectors.asf_roster import AsfRosterCollector
 from project_health.collectors.github import GitHubCollector
 from project_health.collectors.jira import JiraCollector
 from project_health.collectors.ponymail import PonyMailCollector
+from project_health.collectors.release import ReleaseCollector
 from project_health.collectors.security import SecurityCollector
 from project_health.config import FlexibleSection, load_project
 from project_health.pipeline import (
@@ -39,6 +40,7 @@ from project_health.pipeline import (
     _dedupe_pr_issue_link_rows,
     _dedupe_pr_review_rows,
     _dedupe_pr_rows,
+    _dedupe_release_rows,
     _dedupe_roster_entries,
     _dedupe_security_advisories,
     _github_pr_issue_link_backfill_budget,
@@ -355,6 +357,24 @@ def git_workdir(tmp_path):
         check=True,
         capture_output=True,
     )
+    # issue #135: one baseline GA release tag, so every pre-existing test
+    # that activates the `release` source alongside this fixture gets a
+    # real (non-empty) `release_frequency`/`release_regularity`/
+    # `time_since_last_release` -- a registered metric with zero rows
+    # marks the whole run `degraded` (pipeline.py's own "metrics_missing"
+    # contract), the same reason every other registered metric's source
+    # is always populated with at least one real row across this fixture's
+    # many callers. `release_workdir` below adds its own, differently
+    # versioned tags on top for release-specific scenarios.
+    env = os.environ.copy()
+    env["GIT_COMMITTER_DATE"] = "2024-02-01T00:00:00"
+    env["GIT_AUTHOR_DATE"] = "2024-02-01T00:00:00"
+    subprocess.run(
+        ["git", "-C", str(repo), "tag", "-a", "cassandra-1.0.0", "-m", "tag cassandra-1.0.0"],
+        env=env,
+        check=True,
+        capture_output=True,
+    )
     return repo
 
 
@@ -547,7 +567,7 @@ class TestEndToEnd:
             # governance compliance scoring gets its own dedicated coverage in
             # TestGovernanceIntegration below rather than every call site here
             # needing an offline governance evidence-source stub.
-            sources=["git", "jira", "asf_roster", "ponymail", "github"],
+            sources=["git", "jira", "asf_roster", "ponymail", "release", "github"],
             site_out=site_out,
             now=NOW,
             code_sha="abc1234",
@@ -557,6 +577,7 @@ class TestEndToEnd:
             github_commit_author_collector_factory=_github_commit_author_factory(),
             github_profile_collector_factory=_github_profile_factory(),
             github_collector_factory=_github_factory(),
+            release_collector_factory=_release_factory(),
         )
 
         # exit_code is 0 (ok) because all metrics are now computable with roster data
@@ -728,7 +749,7 @@ class TestReproducibility:
             # governance compliance scoring gets its own dedicated coverage in
             # TestGovernanceIntegration below rather than every call site here
             # needing an offline governance evidence-source stub.
-            sources=["git", "jira", "asf_roster", "github"],
+            sources=["git", "jira", "asf_roster", "release", "github"],
             now=NOW,
             code_sha="abc1234",
             jira_collector_factory=_jira_factory(transport_1),
@@ -737,6 +758,7 @@ class TestReproducibility:
             github_commit_author_collector_factory=_github_commit_author_factory(),
             github_profile_collector_factory=_github_profile_factory(),
             github_collector_factory=_github_factory(),
+            release_collector_factory=_release_factory(),
         )
         # Exit code is 0 (ok) because all metrics are computable with roster data
         assert first.exit_code == 0
@@ -759,7 +781,7 @@ class TestReproducibility:
             # governance compliance scoring gets its own dedicated coverage in
             # TestGovernanceIntegration below rather than every call site here
             # needing an offline governance evidence-source stub.
-            sources=["git", "jira", "asf_roster", "github"],
+            sources=["git", "jira", "asf_roster", "release", "github"],
             now=NOW.replace(hour=7),
             code_sha="abc1234",
             jira_collector_factory=_jira_factory(transport_2),
@@ -768,6 +790,7 @@ class TestReproducibility:
             github_commit_author_collector_factory=_github_commit_author_factory(),
             github_profile_collector_factory=_github_profile_factory(),
             github_collector_factory=_github_factory(),
+            release_collector_factory=_release_factory(),
         )
         # Exit code is 0 (ok) because all metrics are computable with roster data
         assert second.exit_code == 0
@@ -830,7 +853,7 @@ class TestPartialFailure:
             # governance compliance scoring gets its own dedicated coverage in
             # TestGovernanceIntegration below rather than every call site here
             # needing an offline governance evidence-source stub.
-            sources=["git", "jira", "asf_roster", "github"],
+            sources=["git", "jira", "asf_roster", "release", "github"],
             now=NOW,
             code_sha="abc1234",
             jira_collector_factory=_jira_factory(good_transport),
@@ -839,6 +862,7 @@ class TestPartialFailure:
             github_commit_author_collector_factory=_github_commit_author_factory(),
             github_profile_collector_factory=_github_profile_factory(),
             github_collector_factory=_github_factory(),
+            release_collector_factory=_release_factory(),
         )
         assert first.manifest["sources"]["jira"]["status"] == "ok"
 
@@ -851,7 +875,7 @@ class TestPartialFailure:
             # governance compliance scoring gets its own dedicated coverage in
             # TestGovernanceIntegration below rather than every call site here
             # needing an offline governance evidence-source stub.
-            sources=["git", "jira", "asf_roster", "github"],
+            sources=["git", "jira", "asf_roster", "release", "github"],
             now=NOW.replace(hour=7),
             code_sha="abc1234",
             jira_collector_factory=_jira_factory(broken_transport, max_retries=2),
@@ -860,6 +884,7 @@ class TestPartialFailure:
             github_commit_author_collector_factory=_github_commit_author_factory(),
             github_profile_collector_factory=_github_profile_factory(),
             github_collector_factory=_github_factory(),
+            release_collector_factory=_release_factory(),
         )
 
         # A JIRA source outage still produces valid metrics via prior JIRA data
@@ -910,7 +935,7 @@ class TestFileChangeEventBackfillGap:
             # issue #36: this test exercises the file_change_event watermark
             # fix specifically; governance's own coverage lives in
             # TestGovernanceIntegration below.
-            sources=["git", "jira", "asf_roster", "github"],
+            sources=["git", "jira", "asf_roster", "release", "github"],
             now=NOW,
             code_sha="abc1234",
             jira_collector_factory=_jira_factory(transport),
@@ -918,6 +943,7 @@ class TestFileChangeEventBackfillGap:
             github_commit_author_collector_factory=_github_commit_author_factory(),
             github_profile_collector_factory=_github_profile_factory(),
             github_collector_factory=_github_factory(),
+            release_collector_factory=_release_factory(),
         )
         assert first.exit_code == 0
         assert first.manifest["metrics_missing"] == []
@@ -945,7 +971,7 @@ class TestFileChangeEventBackfillGap:
             config=config,
             data_dir=data_dir,
             workdir=git_workdir,
-            sources=["git", "jira", "asf_roster", "github"],
+            sources=["git", "jira", "asf_roster", "release", "github"],
             now=NOW.replace(hour=7),
             code_sha="abc1234",
             jira_collector_factory=_jira_factory(_paginated_transport({0: EMPTY_PAGE})),
@@ -953,6 +979,7 @@ class TestFileChangeEventBackfillGap:
             github_commit_author_collector_factory=_github_commit_author_factory(),
             github_profile_collector_factory=_github_profile_factory(),
             github_collector_factory=_github_factory(),
+            release_collector_factory=_release_factory(),
         )
 
         assert second.exit_code == 0
@@ -1060,7 +1087,7 @@ class TestDegradedMetrics:
             # governance compliance scoring gets its own dedicated coverage in
             # TestGovernanceIntegration below rather than every call site here
             # needing an offline governance evidence-source stub.
-            sources=["git", "jira", "asf_roster", "github"],
+            sources=["git", "jira", "asf_roster", "release", "github"],
             site_out=site_out,
             now=NOW,
             code_sha="abc1234",
@@ -1070,6 +1097,7 @@ class TestDegradedMetrics:
             github_commit_author_collector_factory=_github_commit_author_factory(),
             github_profile_collector_factory=_github_profile_factory(),
             github_collector_factory=_github_factory(),
+            release_collector_factory=_release_factory(),
         )
 
         assert result.exit_code != 0
@@ -1417,6 +1445,53 @@ class TestDedupe:
         assert by_id["CVE-2025-26467"]["summary"] == "re-fetched, newer metadata"
         assert by_id["CVE-2026-27314"]["summary"] == "unrelated CVE"
 
+    def test_dedupe_release_rows_keeps_latest_collected_at_per_release_id(self):
+        schema = get_schema("release")
+        base = {
+            "tag_name": "cassandra-5.0.2",
+            "version": "5.0.2",
+            "major_minor": "5.0",
+            "release_date": date(2024, 10, 19),
+            "release_date_source": "git_tag",
+            "archive_verified": None,
+            "archive_date": None,
+            "repo": "apache/cassandra",
+        }
+        rows = [
+            {
+                **base,
+                "release_id": "cassandra-5.0.2",
+                "archive_verified": None,
+                "collected_at": datetime(2026, 9, 1, tzinfo=timezone.utc),
+                "source_snapshot_id": "run-1:release",
+            },
+            {
+                **base,
+                "release_id": "cassandra-5.0.2",
+                "archive_verified": True,
+                "archive_date": date(2024, 10, 19),
+                "collected_at": datetime(2026, 9, 25, tzinfo=timezone.utc),
+                "source_snapshot_id": "run-2:release",
+            },
+            {
+                **base,
+                "release_id": "cassandra-5.0.3",
+                "version": "5.0.3",
+                "release_date": date(2025, 2, 3),
+                "collected_at": datetime(2026, 9, 1, tzinfo=timezone.utc),
+                "source_snapshot_id": "run-1:release",
+            },
+        ]
+        table = validate("release", pa.Table.from_pylist(rows, schema=schema))
+
+        deduped = _dedupe_release_rows(table)
+
+        assert deduped.num_rows == 2
+        by_id = {r["release_id"]: r for r in deduped.to_pylist()}
+        assert by_id["cassandra-5.0.2"]["archive_verified"] is True
+        assert by_id["cassandra-5.0.2"]["source_snapshot_id"] == "run-2:release"
+        assert by_id["cassandra-5.0.3"]["version"] == "5.0.3"
+
     def test_dedupe_functions_are_noop_on_empty_tables(self):
         assert _dedupe_issue_rows(get_schema("issue").empty_table()).num_rows == 0
         assert _dedupe_jira_review_events(get_schema("review_event").empty_table()).num_rows == 0
@@ -1433,6 +1508,7 @@ class TestDedupe:
             _dedupe_governance_commit_records(get_schema("commit_record").empty_table()).num_rows
             == 0
         )
+        assert _dedupe_release_rows(get_schema("release").empty_table()).num_rows == 0
 
     def test_dedupe_commit_trailer_review_events_keeps_highest_parser_version_per_commit(self):
         """Issue #77: a commit reparsed under a newer `PARSER_VERSION` must
@@ -2186,7 +2262,7 @@ class TestGovernanceIntegration:
             config=_with_governance(config),
             data_dir=data_dir,
             workdir=git_workdir,
-            sources=["git", "jira", "asf_roster", "governance", "github"],
+            sources=["git", "jira", "asf_roster", "governance", "release", "github"],
             jira_collector_factory=_jira_factory(
                 _paginated_transport({0: PAGE_1, 5: PAGE_2, 10: EMPTY_PAGE})
             ),
@@ -2196,6 +2272,7 @@ class TestGovernanceIntegration:
             governance_jira_comments_factory=lambda base_url: jira_stub,
             governance_github_checks_factory=lambda owner, repo: github_stub,
             github_collector_factory=_github_factory(),
+            release_collector_factory=_release_factory(),
         )
 
         assert result.exit_code == 0
@@ -2288,7 +2365,7 @@ class TestGovernanceIntegration:
             config=config,
             data_dir=data_dir,
             workdir=git_workdir,
-            sources=["git", "jira", "asf_roster", "governance", "github"],
+            sources=["git", "jira", "asf_roster", "governance", "release", "github"],
             jira_collector_factory=_jira_factory(
                 _paginated_transport({0: PAGE_1, 5: PAGE_2, 10: EMPTY_PAGE})
             ),
@@ -2298,6 +2375,7 @@ class TestGovernanceIntegration:
             governance_jira_comments_factory=lambda base_url: _StubJiraComments({}),
             governance_github_checks_factory=lambda owner, repo: _StubGitHubChecks({}),
             github_collector_factory=_github_factory(),
+            release_collector_factory=_release_factory(),
         )
 
         assert result.exit_code == 0
@@ -2627,13 +2705,14 @@ class TestSecurityIntegration:
             config=config,
             data_dir=data_dir,
             workdir=git_workdir,
-            sources=["git", "jira", "asf_roster", "security", "github"],
+            sources=["git", "jira", "asf_roster", "security", "release", "github"],
             now=NOW,
             code_sha="abc1234",
             jira_collector_factory=_jira_factory(transport),
             asf_roster_collector_factory=_roster_factory(),
             security_collector_factory=_security_factory(),
             github_collector_factory=_github_factory(),
+            release_collector_factory=_release_factory(),
         )
 
         assert result.exit_code == 0
@@ -2660,13 +2739,14 @@ class TestSecurityIntegration:
             config=config,
             data_dir=data_dir,
             workdir=git_workdir,
-            sources=["git", "jira", "asf_roster", "security", "github"],
+            sources=["git", "jira", "asf_roster", "security", "release", "github"],
             now=NOW,
             code_sha="abc1234",
             jira_collector_factory=_jira_factory(transport),
             asf_roster_collector_factory=_roster_factory(),
             security_collector_factory=_security_factory(_always_503_transport()),
             github_collector_factory=_github_factory(),
+            release_collector_factory=_release_factory(),
         )
 
         assert result.exit_code == 0
@@ -2875,7 +2955,7 @@ class TestGitHubIntegration:
             config=config,
             data_dir=data_dir,
             workdir=git_workdir,
-            sources=["git", "jira", "asf_roster", "github"],
+            sources=["git", "jira", "asf_roster", "release", "github"],
             now=NOW,
             code_sha="abc1234",
             jira_collector_factory=_jira_factory(
@@ -2883,6 +2963,7 @@ class TestGitHubIntegration:
             ),
             asf_roster_collector_factory=_roster_factory(),
             github_collector_factory=_github_factory(),
+            release_collector_factory=_release_factory(),
         )
 
         assert result.exit_code == 0
@@ -2915,7 +2996,7 @@ class TestGitHubIntegration:
             config=config,
             data_dir=data_dir,
             workdir=git_workdir,
-            sources=["git", "jira", "asf_roster", "github"],
+            sources=["git", "jira", "asf_roster", "release", "github"],
             now=NOW,
             code_sha="abc1234",
             jira_collector_factory=_jira_factory(
@@ -2923,6 +3004,7 @@ class TestGitHubIntegration:
             ),
             asf_roster_collector_factory=_roster_factory(),
             github_collector_factory=_github_factory(),
+            release_collector_factory=_release_factory(),
         )
 
         raw = storage.read_watermark(data_dir, "github")
@@ -2978,7 +3060,7 @@ class TestGitHubIntegration:
             config=small_config,
             data_dir=data_dir,
             workdir=git_workdir,
-            sources=["git", "jira", "asf_roster", "github"],
+            sources=["git", "jira", "asf_roster", "release", "github"],
             now=NOW,
             code_sha="abc1234",
             jira_collector_factory=_jira_factory(
@@ -2986,6 +3068,7 @@ class TestGitHubIntegration:
             ),
             asf_roster_collector_factory=_roster_factory(),
             github_collector_factory=github_factory,
+            release_collector_factory=_release_factory(),
         )
 
         github = result.manifest["sources"]["github"]
@@ -3323,7 +3406,7 @@ class TestPrIssueLinkEndToEnd:
             config=config,
             data_dir=data_dir,
             workdir=git_workdir,
-            sources=["git", "jira", "asf_roster", "github"],
+            sources=["git", "jira", "asf_roster", "release", "github"],
             now=NOW,
             code_sha="abc1234",
             jira_collector_factory=_jira_factory(
@@ -3331,6 +3414,7 @@ class TestPrIssueLinkEndToEnd:
             ),
             asf_roster_collector_factory=_roster_factory(),
             github_collector_factory=_github_factory(),
+            release_collector_factory=_release_factory(),
         )
 
         assert result.exit_code == 0
@@ -3342,3 +3426,199 @@ class TestPrIssueLinkEndToEnd:
         # the correct, honest outcome; the table must still be readable.
         link_table = storage.read_table(data_dir, "github", "pr_issue_link")
         assert link_table.num_rows == 0
+
+
+# --- release source wiring (issue #135, release cadence dimension) ----------
+#
+# Same convention as security above: every other test in this file opts out
+# of "release" via its own explicit `sources=` list, so it gets its own
+# dedicated coverage here, with a mocked archive.apache.org transport and a
+# `git_workdir`-alike fixture that also carries GA tags.
+
+
+def _tag_release(repo_path: Path, name: str, tagger_date: str) -> None:
+    env = os.environ.copy()
+    env["GIT_COMMITTER_DATE"] = tagger_date
+    env["GIT_AUTHOR_DATE"] = tagger_date
+    subprocess.run(
+        ["git", "-C", str(repo_path), "tag", "-a", name, "-m", f"tag {name}"],
+        env=env,
+        check=True,
+        capture_output=True,
+    )
+
+
+@pytest.fixture
+def release_workdir(git_workdir):
+    """`git_workdir` (a real local repo, self-referential `origin`, already
+    carrying one baseline GA tag `cassandra-1.0.0`) plus two more GA
+    release tags and one pre-release tag -- so one `run_pipeline` call can
+    exercise both the `git` and `release` sources against the exact same
+    clone, the same way production's nightly workflow does
+    (pipeline._collect_release's own docstring). Three total GA tags:
+    `cassandra-1.0.0` (from `git_workdir`), `cassandra-5.0.0`,
+    `cassandra-5.0.1`; `cassandra-5.0-rc1` is excluded as a pre-release."""
+    _tag_release(git_workdir, "cassandra-5.0.0", "2024-09-05T20:19:17")
+    _tag_release(git_workdir, "cassandra-5.0.1", "2024-10-01T08:43:00")
+    _tag_release(git_workdir, "cassandra-5.0-rc1", "2024-08-26T14:12:00")
+    return git_workdir
+
+
+def _archive_transport(html: str = "", status: int = 200) -> httpx.MockTransport:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(status, text=html)
+
+    return httpx.MockTransport(handler)
+
+
+RELEASE_ARCHIVE_HTML = """
+<a href="5.0.0/">5.0.0/</a>              2024-09-05 18:25    -
+<a href="5.0.1/">5.0.1/</a>              2024-10-01 08:43    -
+"""
+
+
+def _release_factory(transport: httpx.MockTransport | None = None):
+    transport = transport or _archive_transport(RELEASE_ARCHIVE_HTML)
+
+    def factory(config):
+        return ReleaseCollector(config, transport=transport, max_retries=1, sleep_fn=lambda s: None)
+
+    return factory
+
+
+def _run_release_pipeline(
+    *, data_dir, config, workdir, release_collector_factory, now=NOW
+):
+    """Runs every M0-registered-metric source (git/jira/asf_roster/github)
+    PLUS `release`, so no OTHER registered metric goes `metrics_missing`
+    merely because this test's own sources list omitted it -- same reason
+    `TestSecurityIntegration` above runs the full set rather than
+    `["git", "release"]` alone."""
+    return run_pipeline(
+        config=config,
+        data_dir=data_dir,
+        workdir=workdir,
+        sources=["git", "jira", "asf_roster", "release", "github"],
+        now=now,
+        code_sha="abc1234",
+        jira_collector_factory=_jira_factory(
+            _paginated_transport({0: PAGE_1, 5: PAGE_2, 10: EMPTY_PAGE})
+        ),
+        asf_roster_collector_factory=_roster_factory(),
+        github_collector_factory=_github_factory(),
+        release_collector_factory=release_collector_factory,
+    )
+
+
+class TestReleaseIntegration:
+    def test_release_source_produces_a_release_partition(self, tmp_path, config, release_workdir):
+        data_dir = tmp_path / "data"
+
+        result = _run_release_pipeline(
+            data_dir=data_dir,
+            config=config,
+            workdir=release_workdir,
+            release_collector_factory=_release_factory(),
+        )
+
+        assert result.exit_code == 0
+        assert result.manifest["status"] == "ok"
+        assert result.manifest["sources"]["release"]["status"] == "ok"
+        # Three GA tags (git_workdir's own baseline `cassandra-1.0.0` plus
+        # this fixture's `5.0.0`/`5.0.1`) -- the rc1 pre-release is excluded.
+        assert result.manifest["sources"]["release"]["records_collected"] == 3
+        assert result.manifest["sources"]["release"]["archive_checked"] is True
+
+        release_raw_dir = data_dir / "raw" / "release" / "release"
+        assert list(release_raw_dir.glob("date=*/part-*.parquet"))
+
+        release_table = storage.read_table(data_dir, "release", "release")
+        assert sorted(release_table.column("release_id").to_pylist()) == [
+            "cassandra-1.0.0",
+            "cassandra-5.0.0",
+            "cassandra-5.0.1",
+        ]
+
+    def test_release_cadence_metrics_appear_in_the_snapshot(
+        self, tmp_path, config, release_workdir
+    ):
+        data_dir = tmp_path / "data"
+
+        result = _run_release_pipeline(
+            data_dir=data_dir,
+            config=config,
+            workdir=release_workdir,
+            release_collector_factory=_release_factory(),
+        )
+
+        assert result.exit_code == 0
+        metrics_table = pq.read_table(
+            next((data_dir / "snapshots" / result.run_id).glob("metrics.parquet"))
+        )
+        metric_ids = set(metrics_table.column("metric_id").to_pylist())
+        assert "release_frequency" in metric_ids
+        assert "release_regularity" in metric_ids
+        assert "time_since_last_release" in metric_ids
+        assert "days_between_releases" in metric_ids
+        # release_frequency/release_regularity/time_since_last_release are
+        # now all registered (metrics.registry.METRIC_IDS) and computed --
+        # never "metrics_missing" simply because this run's window is short.
+        assert result.manifest.get("metrics_missing", []) == []
+
+    def test_archive_outage_does_not_fail_the_release_source(
+        self, tmp_path, config, release_workdir
+    ):
+        """The archive cross-check is informational only (module docstring,
+        collectors/release.py) -- its own outage must never fail the
+        release source, which still has the primary git-tag signal."""
+        data_dir = tmp_path / "data"
+
+        result = _run_release_pipeline(
+            data_dir=data_dir,
+            config=config,
+            workdir=release_workdir,
+            release_collector_factory=_release_factory(_always_503_transport()),
+        )
+
+        assert result.exit_code == 0
+        assert result.manifest["sources"]["release"]["status"] == "ok"
+        assert result.manifest["sources"]["release"]["archive_checked"] is False
+        release_table = storage.read_table(data_dir, "release", "release")
+        for row in release_table.to_pylist():
+            assert row["archive_verified"] is None
+
+    def test_second_run_accumulates_release_history_without_duplicating_at_read_time(
+        self, tmp_path, config, release_workdir
+    ):
+        data_dir = tmp_path / "data"
+        factory = _release_factory()
+
+        first = _run_release_pipeline(
+            data_dir=data_dir,
+            config=config,
+            workdir=release_workdir,
+            release_collector_factory=factory,
+        )
+        assert first.exit_code == 0
+
+        second = _run_release_pipeline(
+            data_dir=data_dir,
+            config=config,
+            workdir=release_workdir,
+            release_collector_factory=factory,
+            now=NOW + timedelta(days=1),
+        )
+        assert second.exit_code == 0
+
+        # Two runs each wrote their own raw partition (append-only)...
+        release_raw_dir = data_dir / "raw" / "release" / "release"
+        assert len(list(release_raw_dir.glob("date=*/part-*.parquet"))) == 2
+        # ...but read-time dedup (`_dedupe_release_rows`, applied the same
+        # way `run_pipeline` itself applies it before metrics compute)
+        # still collapses back to exactly one row per `release_id`.
+        release_table = _dedupe_release_rows(storage.read_table(data_dir, "release", "release"))
+        assert sorted(release_table.column("release_id").to_pylist()) == [
+            "cassandra-1.0.0",
+            "cassandra-5.0.0",
+            "cassandra-5.0.1",
+        ]

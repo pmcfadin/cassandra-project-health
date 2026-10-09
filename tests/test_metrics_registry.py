@@ -40,6 +40,11 @@ EXPECTED_METRIC_IDS = {
     # issue #136, DECISIONS.md D29
     "change_request_closure_ratio_pr",
     "change_request_closure_ratio_jira_patch",
+    # issue #135
+    "release_frequency",
+    "release_regularity",
+    "time_since_last_release",
+    "days_between_releases",
 }
 
 HEADCOUNT_METRIC_IDS = {

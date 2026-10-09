@@ -216,6 +216,11 @@ class ProjectConfig(BaseModel):
     pull_requests: FlexibleSection | None = None
     mailing_lists: MailingListsConfig | None = None
     roster: FlexibleSection | None = None
+    # `releases:` (issue #135, release cadence dimension) — a
+    # `FlexibleSection` like `roster`/`security`: `collectors/release.py`
+    # reads its own `archive_url` field directly, core only needs to pass
+    # it through. GA tags come from the repo's own local clone (`repos[0]`),
+    # not from this section.
     releases: FlexibleSection | None = None
     # `security:` (issue #55, D21 item 3) — OpenSSF Scorecard + CVE/advisory
     # collector endpoints; a `FlexibleSection` like `roster`, since its full

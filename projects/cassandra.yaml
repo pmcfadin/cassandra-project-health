@@ -92,8 +92,14 @@ roster:
   podling: false
 
 releases:
-  type: github_releases
-  repos: [apache/cassandra]
+  type: git_tags_cross_checked_archive   # selects collectors/release.py
+  # GA tags come from `repos[0]`'s own local clone -- GitHub Releases is
+  # NOT used (verified live, DATA-SOURCES.md §3/§5: apache/cassandra
+  # publishes 0 GitHub Releases; git tags are GitHub's only release
+  # signal). archive.apache.org's directory listing below is an existence
+  # cross-check only, never the date of record -- see
+  # collectors/release.py's module docstring.
+  archive_url: https://archive.apache.org/dist/cassandra/
 
 # OpenSSF Scorecard + CVE/advisory collector (issue #55, D21 item 3). Both
 # endpoints verified live and anonymous/unauthenticated, 2026-09-25.

@@ -128,6 +128,7 @@ from project_health.collectors.jira import (
     _rows_to_table,
 )
 from project_health.collectors.ponymail import PonyMailCollector
+from project_health.collectors.release import ReleaseCollector
 from project_health.collectors.security import SecurityCollector
 from project_health.config import ProjectConfig
 from project_health.metrics import METRIC_IDS, compute_all, compute_review_responsiveness
@@ -189,6 +190,8 @@ ALL_SOURCES: tuple[str, ...] = (
     "ponymail",
     "governance",
     "security",
+    # issue #135: GA release history (release cadence dimension).
+    "release",
     "github_commit_authors",
     "github_profile",
     # issue #54: wires collectors/github.py (merged as part of issue #51,
@@ -512,6 +515,27 @@ def _dedupe_security_advisories(table: pa.Table) -> pa.Table:
         if current is None or row["collected_at"] > current["collected_at"]:
             best[cve_id] = row
     kept = sorted(best.values(), key=lambda r: r["cve_id"])
+    return pa.Table.from_pylist(kept, schema=table.schema)
+
+
+def _dedupe_release_rows(table: pa.Table) -> pa.Table:
+    """Keep the latest `collected_at` row per `release_id` (issue #135).
+
+    `collectors/release.py`'s `ReleaseCollector` is a full-refresh
+    collector (no watermark: the whole tag list is cheap to re-list every
+    run), so the same `release_id` (git tag name) lands in every run's raw
+    partition -- same "raw is append-only, dedupe at read time over a
+    full-refresh collector" pattern as `_dedupe_security_advisories`.
+    """
+    if table.num_rows == 0:
+        return table
+    best: dict[str, dict[str, Any]] = {}
+    for row in table.to_pylist():
+        release_id = row["release_id"]
+        current = best.get(release_id)
+        if current is None or row["collected_at"] > current["collected_at"]:
+            best[release_id] = row
+    kept = sorted(best.values(), key=lambda r: r["release_id"])
     return pa.Table.from_pylist(kept, schema=table.schema)
 
 
@@ -3102,6 +3126,76 @@ def _collect_security(
         collector.close()
 
 
+def _collect_release(
+    config: ProjectConfig,
+    data_dir: Path,
+    workdir: Path,
+    run_id: str,
+    started_at: datetime,
+    collector_factory: Callable[[ProjectConfig], ReleaseCollector] | None,
+) -> dict[str, Any]:
+    """Collect GA release history (issue #135: release cadence dimension).
+
+    Reuses the SAME local clone `_collect_git` maintains at `workdir`
+    (`clone_or_fetch` is idempotent -- a cheap no-op `git fetch` when `git`
+    already ran this run, and what makes this source collectible on its
+    own when `git` is not in `sources`). No watermark: the whole GA tag
+    list is cheap to re-list every run (collectors/release.py's own
+    docstring: "a few hundred tags"); `_dedupe_release_rows` (above)
+    dedupes at read time on `release_id`, same full-refresh pattern as
+    `security`'s `scorecard_check`/`security_advisory`.
+    """
+    if not config.repos:
+        return {
+            "status": "failed",
+            "records_collected": 0,
+            "last_good_snapshot": read_last_good_snapshot(data_dir, "release"),
+            "reason": "no repos configured under projects/<id>.yaml `repos:`",
+        }
+
+    repo_cfg = config.repos[0]
+    repo_label = f"{repo_cfg.owner}/{repo_cfg.name}"
+    tag_prefix = f"{repo_cfg.name}-"
+    snapshot_id = f"{run_id}:release"
+
+    _log("source_collect_started", source="release", repo=repo_label)
+    collector = (collector_factory or ReleaseCollector)(config)
+    try:
+        clone_or_fetch(github_clone_url(repo_cfg.owner, repo_cfg.name), workdir)
+        result = collector.collect(
+            repo_path=workdir,
+            repo_label=repo_label,
+            tag_prefix=tag_prefix,
+            snapshot_id=snapshot_id,
+        )
+        partition_date = started_at.date()
+        storage.write_partition(
+            data_dir, "release", "release", partition_date, run_id, result.release
+        )
+        record_last_good_snapshot(data_dir, "release", run_id)
+        _log(
+            "source_collect_succeeded",
+            source="release",
+            records_collected=result.release_count,
+            archive_checked=result.archive_checked,
+        )
+        return {
+            "status": "ok",
+            "records_collected": result.release_count,
+            "archive_checked": result.archive_checked,
+        }
+    except Exception as exc:  # noqa: BLE001 - a source outage must never abort the run (§7.3)
+        _log("source_collect_failed", source="release", error=str(exc))
+        return {
+            "status": "failed",
+            "records_collected": 0,
+            "last_good_snapshot": read_last_good_snapshot(data_dir, "release"),
+            "reason": str(exc),
+        }
+    finally:
+        collector.close()
+
+
 def _collect_github_commit_authors(
     config: ProjectConfig,
     data_dir: Path,
@@ -3360,6 +3454,7 @@ def run_pipeline(
     governance_jira_comments_factory: Callable[[str], object] | None = None,
     governance_github_checks_factory: Callable[[str, str], object] | None = None,
     security_collector_factory: Callable[[ProjectConfig], SecurityCollector] | None = None,
+    release_collector_factory: Callable[[ProjectConfig], ReleaseCollector] | None = None,
     github_commit_author_collector_factory: (
         Callable[[ProjectConfig], GitHubCommitAuthorCollector] | None
     ) = None,
@@ -3391,6 +3486,10 @@ def run_pipeline(
     `security_collector_factory`, given, replaces the default
     `SecurityCollector(config)` construction (issue #55) — same offline-test
     injection pattern as the two factories above.
+
+    `release_collector_factory`, given, replaces the default
+    `ReleaseCollector(config)` construction (issue #135) — same
+    offline-test injection pattern as `security_collector_factory`.
 
     `github_commit_author_collector_factory`, given, replaces the default
     `GitHubCommitAuthorCollector(config)` construction (issue #52 fixup
@@ -3463,6 +3562,10 @@ def run_pipeline(
         source_results["security"] = _collect_security(
             config, data_dir, run_id, started_at, security_collector_factory
         )
+    if "release" in active_sources:
+        source_results["release"] = _collect_release(
+            config, data_dir, workdir, run_id, started_at, release_collector_factory
+        )
     if "github_commit_authors" in active_sources:
         source_results["github_commit_authors"] = _collect_github_commit_authors(
             config,
@@ -3534,6 +3637,10 @@ def run_pipeline(
     pr_issue_link = _dedupe_pr_issue_link_rows(
         storage.read_table(data_dir, "github", "pr_issue_link")
     )
+    # issue #135: GA release history (release cadence dimension) -- always
+    # recomputed from the entire accumulated raw cache (D3), same as every
+    # other table read above.
+    release = _dedupe_release_rows(storage.read_table(data_dir, "release", "release"))
 
     overrides = []
     if identity_overrides_path is not None and Path(identity_overrides_path).is_file():
@@ -3607,6 +3714,7 @@ def run_pipeline(
                 "issue_comment": issue_comment,
                 "comment_backfill_checked": comment_backfill_checked,
                 "jira_changelog": jira_changelog,
+                "release": release,
             },
             as_of=started_at.date(),
             run_id=run_id,

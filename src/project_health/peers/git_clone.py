@@ -27,8 +27,20 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import time
+from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+from project_health.collectors.retry import exponential_backoff
+
+# Real-run finding (2026-10-09): apache/datafusion's own clone failed twice
+# in a row with a transient network error ("Recv failure: Operation timed
+# out") -- a plain network hiccup, not anything about that repo in
+# particular. `clone_shallow_bare` retries a handful of times with the same
+# backoff every other collector in this package already uses
+# (`collectors.retry.exponential_backoff`) before giving up.
+DEFAULT_CLONE_MAX_RETRIES = 3
 
 
 def github_clone_url(owner: str, name: str) -> str:
@@ -50,6 +62,8 @@ def clone_shallow_bare(
     *,
     branch: str,
     shallow_since: str,
+    max_retries: int = DEFAULT_CLONE_MAX_RETRIES,
+    sleep_fn: Callable[[float], None] = time.sleep,
 ) -> None:
     """`git clone --bare --filter=blob:none --single-branch --branch
     <branch> --shallow-since=<shallow_since> <remote_url> <local_path>`.
@@ -57,30 +71,40 @@ def clone_shallow_bare(
     `--single-branch` (only `branch`'s history, not every ref) and
     `--filter=blob:none` (trees/commits only, no file contents) combine
     with `--shallow-since` to keep this clone's disk footprint small
-    regardless of the peer repo's overall size. Raises
-    `subprocess.CalledProcessError` on failure -- callers decide whether a
-    failed clone for one peer should stop the whole run or just skip that
-    peer (see `peers.pipeline`).
+    regardless of the peer repo's overall size. Retries up to `max_retries`
+    times on failure (module docstring: a real run saw a transient network
+    timeout, not anything repo-specific), clearing any partial clone
+    directory between attempts; raises `subprocess.CalledProcessError` only
+    once every attempt has failed -- callers decide whether a failed clone
+    for one peer should stop the whole run or just skip that peer (see
+    `peers.pipeline`).
     """
     local_path = Path(local_path)
     local_path.parent.mkdir(parents=True, exist_ok=True)
-    subprocess.run(
-        [
-            "git",
-            "clone",
-            "--bare",
-            "--filter=blob:none",
-            "--single-branch",
-            "--branch",
-            branch,
-            f"--shallow-since={shallow_since}",
-            remote_url,
-            str(local_path),
-        ],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
+    args = [
+        "git",
+        "clone",
+        "--bare",
+        "--filter=blob:none",
+        "--single-branch",
+        "--branch",
+        branch,
+        f"--shallow-since={shallow_since}",
+        remote_url,
+        str(local_path),
+    ]
+
+    attempt = 0
+    while True:
+        attempt += 1
+        try:
+            subprocess.run(args, check=True, capture_output=True, text=True)
+            return
+        except subprocess.CalledProcessError:
+            cleanup(local_path)
+            if attempt >= max_retries:
+                raise
+            sleep_fn(exponential_backoff(attempt))
 
 
 def cleanup(local_path: str | Path) -> None:

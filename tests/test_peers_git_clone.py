@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import subprocess
 from datetime import datetime, timezone
 
+from project_health.peers import git_clone as git_clone_module
 from project_health.peers.git_clone import (
     cleanup,
+    clone_shallow_bare,
     du_bytes,
     github_clone_url,
     shallow_since_date,
@@ -51,3 +54,54 @@ def test_cleanup_removes_directory(tmp_path):
 
 def test_cleanup_nonexistent_path_does_not_raise(tmp_path):
     cleanup(tmp_path / "does-not-exist")
+
+
+def test_clone_shallow_bare_retries_transient_failure(tmp_path, monkeypatch):
+    """Real-run regression (2026-10-09): apache/datafusion's clone failed
+    twice in a row with a transient network timeout, not anything
+    repo-specific -- a retry should recover from a failure that clears up
+    by the next attempt."""
+    calls = {"count": 0}
+
+    def fake_run(args, **kwargs):
+        calls["count"] += 1
+        if calls["count"] < 2:
+            raise subprocess.CalledProcessError(
+                128, args, output="", stderr="fatal: Recv failure: Operation timed out"
+            )
+        return subprocess.CompletedProcess(args, 0)
+
+    sleeps: list[float] = []
+    monkeypatch.setattr(git_clone_module.subprocess, "run", fake_run)
+
+    clone_shallow_bare(
+        "https://github.com/apache/datafusion.git",
+        tmp_path / "clone",
+        branch="main",
+        shallow_since="2022-01-01",
+        max_retries=3,
+        sleep_fn=sleeps.append,
+    )
+    assert calls["count"] == 2
+    assert len(sleeps) == 1
+
+
+def test_clone_shallow_bare_raises_after_exhausting_retries(tmp_path, monkeypatch):
+    def always_fails(args, **kwargs):
+        raise subprocess.CalledProcessError(128, args, output="", stderr="fatal: still down")
+
+    monkeypatch.setattr(git_clone_module.subprocess, "run", always_fails)
+
+    try:
+        clone_shallow_bare(
+            "https://github.com/apache/datafusion.git",
+            tmp_path / "clone",
+            branch="main",
+            shallow_since="2022-01-01",
+            max_retries=2,
+            sleep_fn=lambda _seconds: None,
+        )
+        raised = False
+    except subprocess.CalledProcessError:
+        raised = True
+    assert raised

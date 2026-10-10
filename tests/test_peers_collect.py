@@ -76,7 +76,9 @@ def test_collect_and_write_github_splits_by_repo(tmp_path, monkeypatch):
         peers=[_peer("kafka", "apache/kafka"), _peer("spark", "apache/spark")]
     )
 
-    def fake_created_desc(collector, repo_label, state, window_start, bot_patterns, snapshot_id):
+    def fake_created_desc(
+        collector, repo_label, state, window_start, bot_patterns, snapshot_id, **kwargs
+    ):
         author = "alice" if repo_label == "apache/kafka" else "bob"
         return PassResult(
             pr_rows=[_pr_row(repo_label, 1, author)],
@@ -123,7 +125,9 @@ def test_collect_and_write_github_stops_cleanly_on_budget_floor(tmp_path, monkey
         peers=[_peer("kafka", "apache/kafka"), _peer("spark", "apache/spark")]
     )
 
-    def fake_created_desc(collector, repo_label, state, window_start, bot_patterns, snapshot_id):
+    def fake_created_desc(
+        collector, repo_label, state, window_start, bot_patterns, snapshot_id, **kwargs
+    ):
         return PassResult(
             pr_rows=[_pr_row(repo_label, 1, "alice")],
             review_rows=[],
@@ -160,6 +164,61 @@ def test_collect_and_write_github_stops_cleanly_on_budget_floor(tmp_path, monkey
     # The partial pass's resume cursor was persisted; skipped passes never touch storage.
     kafka_github_source = peer_collect.peer_source("kafka", "github")
     stored = storage.read_watermark(tmp_path, kafka_github_source, table="pr_pass_created_desc")
+    assert PassState.from_json(stored).cursor == "resume-here"
+
+
+def test_page_cap_does_not_block_other_peers(tmp_path, monkeypatch):
+    """Real-run regression (2026-10-09, fixup round 1): apache/kafka's own
+    `created_desc` pass alone consumed the *entire* shared GraphQL budget
+    (96 pages) before reaching its window-start stop condition, leaving
+    every other peer's every pass 'skipped' for the whole run. A page cap
+    reached ('page_capped') must NOT set the same 'budget exhausted,
+    skip everyone else' flag the real rate-limit floor ('partial') does --
+    spark must still get its own turn."""
+    peers_config = PeersConfig(
+        peers=[_peer("kafka", "apache/kafka"), _peer("spark", "apache/spark")]
+    )
+
+    calls: list[str] = []
+
+    def fake_created_desc(
+        collector, repo_label, state, window_start, bot_patterns, snapshot_id, **kwargs
+    ):
+        calls.append(f"created_desc:{repo_label}")
+        return PassResult(
+            pr_rows=[_pr_row(repo_label, 1, "alice")],
+            review_rows=[],
+            comment_rows=[],
+            bot_prs_excluded=0,
+            bot_reviews_excluded=0,
+            bot_comments_excluded=0,
+            status="page_capped",
+            next_state=PassState(cursor="resume-here"),
+        )
+
+    def fake_other_pass(collector, repo_label, *a, **k):
+        calls.append(f"other:{repo_label}")
+        return _empty_pass_result()
+
+    monkeypatch.setattr(peer_collect, "run_created_desc_pass", fake_created_desc)
+    monkeypatch.setattr(peer_collect, "run_open_prs_pass", fake_other_pass)
+    monkeypatch.setattr(peer_collect, "run_closed_search_pass", fake_other_pass)
+
+    report = peer_collect.collect_and_write_github(
+        peers_config, tmp_path, "run1", date(2026, 1, 1), token="x"
+    )
+
+    # Both peers' created_desc pass ran -- page-capping kafka's did not
+    # skip spark the way a real rate-limit floor hit would.
+    assert "created_desc:apache/kafka" in calls
+    assert "created_desc:apache/spark" in calls
+    statuses = {(o.peer_id, o.pass_name): o.status for o in report.pass_outcomes}
+    assert statuses[("kafka", "created_desc")] == "page_capped"
+    assert statuses[("spark", "created_desc")] == "page_capped"
+    assert "skipped" not in statuses.values()
+    # Resumable: still-incomplete passes have their cursor persisted.
+    kafka_source = peer_collect.peer_source("kafka", "github")
+    stored = storage.read_watermark(tmp_path, kafka_source, table="pr_pass_created_desc")
     assert PassState.from_json(stored).cursor == "resume-here"
 
 

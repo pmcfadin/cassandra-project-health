@@ -21,6 +21,17 @@ from pydantic import BaseModel, ConfigDict, Field
 
 DEFAULT_COMMIT_LOOKBACK_MONTHS = 48
 DEFAULT_GITHUB_RATE_LIMIT_FLOOR = 500
+# Real-run finding (2026-10-09, fixup round 1): apache/kafka's own
+# `created_desc` pass alone consumed the whole shared GraphQL budget (96
+# pages, ~4,800 PRs) before reaching its window-start stop condition,
+# leaving every other peer's every pass `'skipped'` for the entire run.
+# Capping each (peer, pass) at this many pages per run means a single
+# high-volume repo can no longer starve the other four of any progress at
+# all -- every peer gets *some* movement on *some* pass each run, even
+# though a repo this size still needs several runs to finish its own
+# `created_desc` backfill (same "it may span multiple runs" acceptance
+# this issue's own "Build" section anticipated).
+DEFAULT_MAX_PAGES_PER_PASS = 20
 
 
 class BotPatternConfig(BaseModel):
@@ -112,6 +123,7 @@ class CollectionConfig(BaseModel):
 
     commit_lookback_months: int = DEFAULT_COMMIT_LOOKBACK_MONTHS
     github_rate_limit_floor: int = DEFAULT_GITHUB_RATE_LIMIT_FLOOR
+    max_pages_per_pass: int = DEFAULT_MAX_PAGES_PER_PASS
     bot_patterns: list[BotPatternConfig] = Field(default_factory=list)
 
 

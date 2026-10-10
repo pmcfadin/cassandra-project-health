@@ -248,12 +248,16 @@ def run_created_desc_pass(
     bot_patterns: list[BotPattern],
     source_snapshot_id: str,
     page_size: int = DEFAULT_PAGE_SIZE,
+    max_pages: int | None = None,
 ) -> PassResult:
     """Pass 1: newest-created-first, stopped at `window_start` (module
     docstring). Restarts fresh from the top whenever `state.high_watermark`
     is set (a prior run already completed this pass once); otherwise
     resumes from `state.cursor` if one is stored (a prior run was cut off
-    mid-walk before ever reaching `window_start`)."""
+    mid-walk before ever reaching `window_start`). `max_pages` (fixup round
+    1, real-run finding: one high-volume repo's own backfill can otherwise
+    consume the *entire* shared budget) caps this call's own page count,
+    reported `'partial'`/resumable exactly like the rate-limit floor."""
     stop_threshold = window_start
     if state.high_watermark is not None:
         hw_date = _parse_gh_timestamp(state.high_watermark).date()
@@ -320,6 +324,14 @@ def run_created_desc_pass(
         if remaining is not None and remaining <= collector.rate_limit_floor:
             status = "partial"
             break
+        if max_pages is not None and pages >= max_pages:
+            # Fixup round 1: a per-(peer, pass) fairness cap, not a genuine
+            # shared-budget exhaustion -- distinct status so the caller
+            # (`peers/collect.py`) moves on to the *next* (peer, pass)
+            # instead of treating this like the rate-limit floor and
+            # skipping everyone else for the rest of the run.
+            status = "page_capped"
+            break
         cursor = page_info["endCursor"]
 
     if status == "completed":
@@ -328,7 +340,7 @@ def run_created_desc_pass(
             high_watermark=(newest_seen.isoformat() if newest_seen else state.high_watermark),
             newest_seen=None,
         )
-    elif status == "partial":
+    elif status in ("partial", "page_capped"):
         next_state = PassState(
             cursor=last_cursor,
             high_watermark=state.high_watermark,
@@ -358,10 +370,12 @@ def run_open_prs_pass(
     bot_patterns: list[BotPattern],
     source_snapshot_id: str,
     page_size: int = DEFAULT_PAGE_SIZE,
+    max_pages: int | None = None,
 ) -> PassResult:
     """Pass 2: every currently-open PR, any age (module docstring). Always
     cheap to redo in full once completed -- `state.cursor` only matters for
-    resuming a run the budget floor cut off mid-walk."""
+    resuming a run the budget floor (or `max_pages`, fixup round 1) cut
+    off mid-walk."""
     cursor = state.cursor
     pr_rows: list[dict] = []
     review_rows: list[dict] = []
@@ -406,6 +420,9 @@ def run_open_prs_pass(
         if remaining is not None and remaining <= collector.rate_limit_floor:
             status = "partial"
             break
+        if max_pages is not None and pages >= max_pages:
+            status = "page_capped"  # fixup round 1: fairness cap, not budget exhaustion
+            break
         cursor = page_info["endCursor"]
 
     next_state = PassState(cursor=None if status == "completed" else last_cursor)
@@ -431,6 +448,7 @@ def run_closed_search_pass(
     bot_patterns: list[BotPattern],
     source_snapshot_id: str,
     page_size: int = SEARCH_PAGE_SIZE,
+    max_pages: int | None = None,
 ) -> PassResult:
     """Pass 3: `is:pr closed:>=<window_start>` via GitHub's search API
     (module docstring) -- PRs created before the window but closed inside
@@ -481,6 +499,9 @@ def run_closed_search_pass(
             break
         if remaining is not None and remaining <= collector.rate_limit_floor:
             status = "partial"
+            break
+        if max_pages is not None and pages >= max_pages:
+            status = "page_capped"  # fixup round 1: fairness cap, not budget exhaustion
             break
         cursor = page_info["endCursor"]
 

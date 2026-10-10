@@ -141,6 +141,41 @@ class TestCreatedDescPass:
         # newest_seen is carried forward for when the backfill eventually completes
         assert result.next_state.newest_seen == "2026-09-20T00:00:00+00:00"
 
+    def test_stops_at_max_pages_with_distinct_status_from_rate_limit(self):
+        """Fixup round 1 (real-run finding, 2026-10-09): a page cap is a
+        per-(peer, pass) fairness limit, not genuine budget exhaustion --
+        it must report a status distinct from `'partial'` (the real
+        rate-limit floor) so `peers/collect.py` knows not to skip every
+        other peer's turn because of it."""
+        pages_seen = 0
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal pages_seen
+            pages_seen += 1
+            return httpx.Response(
+                200,
+                json={
+                    "data": {
+                        "rateLimit": _RATE_LIMIT_OK,  # plenty of budget left
+                        "repository": {
+                            "pullRequests": {
+                                "pageInfo": {"hasNextPage": True, "endCursor": "c1"},
+                                "nodes": [_pr_node(5, "2026-09-20T00:00:00Z")],
+                            }
+                        },
+                    }
+                },
+            )
+
+        collector = _collector(httpx.MockTransport(handler))
+        result = run_created_desc_pass(
+            collector, REPO, PassState(), window_start=date(2026, 1, 1), bot_patterns=[],
+            source_snapshot_id="s1", max_pages=2,
+        )
+        assert result.status == "page_capped"
+        assert pages_seen == 2
+        assert result.next_state.cursor == "c1"
+
     def test_restarts_from_top_using_high_watermark_once_completed(self):
         """A pass that previously completed restarts from the top
         (cursor=None) and stops as soon as it reaches its own

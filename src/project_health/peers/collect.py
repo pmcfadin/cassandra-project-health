@@ -134,9 +134,13 @@ class PeerGithubCollectionReport:
         statuses = {o.status for o in self.pass_outcomes}
         if statuses <= {"completed"}:
             return "ok"
-        if "failed" in statuses or "rate_limited" in statuses:
-            return "partial"
-        return "ok"
+        # Any non-'completed' pass (budget-floor-limited, page-capped for
+        # fairness, skipped because an earlier pass hit the real floor, or
+        # a hard failure) means resumable work remains -- never silently
+        # "ok" (same "a clean, resumable partial backfill is not the same
+        # thing as a failure" distinction `collectors/github.py`'s own
+        # `GitHubCollectionResult.status` docstring draws).
+        return "partial"
 
 
 def _pass_watermark_table(pass_name: str) -> str:
@@ -210,17 +214,35 @@ def collect_and_write_github(
                 state = PassState.from_json(
                     storage.read_watermark(data_dir, source, table=_pass_watermark_table(pass_name))
                 )
+                max_pages = peers_config.collection.max_pages_per_pass
                 if pass_name == "created_desc":
                     result = run_created_desc_pass(
-                        collector, peer.repo, state, window_start, bot_pattern_objs, snapshot_id
+                        collector,
+                        peer.repo,
+                        state,
+                        window_start,
+                        bot_pattern_objs,
+                        snapshot_id,
+                        max_pages=max_pages,
                     )
                 elif pass_name == "open_prs":
                     result = run_open_prs_pass(
-                        collector, peer.repo, state, bot_pattern_objs, snapshot_id
+                        collector,
+                        peer.repo,
+                        state,
+                        bot_pattern_objs,
+                        snapshot_id,
+                        max_pages=max_pages,
                     )
                 else:
                     result = run_closed_search_pass(
-                        collector, peer.repo, state, window_start, bot_pattern_objs, snapshot_id
+                        collector,
+                        peer.repo,
+                        state,
+                        window_start,
+                        bot_pattern_objs,
+                        snapshot_id,
+                        max_pages=max_pages,
                     )
 
                 storage.write_watermark(

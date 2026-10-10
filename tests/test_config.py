@@ -78,6 +78,20 @@ def test_bot_patterns_and_baseline_window():
     assert "jira_username" in fields
 
 
+def test_copilot_reviewer_bot_pattern():
+    """Issue #145 fixup round 2 (orchestrator review of PR #147): added as
+    a precaution -- GitHub's own automated Copilot PR-review account was
+    empirically confirmed on four of the five peer projects (same
+    cross-repo GitHub feature), not verified against Cassandra's own data
+    (this task never pulled the production `data` branch locally)."""
+    from project_health.collectors.github import _is_bot_login
+
+    config = load_project("projects/cassandra.yaml")
+    assert _is_bot_login("copilot-pull-request-reviewer", config.bot_patterns)
+    assert _is_bot_login("copilot-pull-request-reviewer[bot]", config.bot_patterns)
+    assert not _is_bot_login("a-real-committer", config.bot_patterns)
+
+
 def test_truck_factor_excluded_path_globs(tmp_path):
     config = load_project("projects/cassandra.yaml")
     assert config.truck_factor.excluded_path_globs  # non-empty placeholder set

@@ -126,3 +126,42 @@ collection:
       regex: '(?i)noreply@github\.com$|\[bot\]'
     - field: github_login
       regex: '(?i)-bot$|^dependabot|^github-actions'
+    # Issue #145 fixup round 2 (orchestrator review of PR #147): the
+    # generic `-bot$` pattern above requires a hyphen before "bot" and
+    # doesn't match either of these two real CI/automation accounts,
+    # which real-collected-data analysis found posting the first comment
+    # or review on a huge share of PRs, fast:
+    #   - `flinkbot`: apache/flink's own CI greeting bot. Empirically:
+    #     touches 1,096 of 1,101 (99.5%) of Flink's collected PRs, posts
+    #     EXACTLY one comment each (never more), 99.8% of those within 60
+    #     minutes of PR creation (median 8.9 min) -- this was the exact
+    #     leak the orchestrator flagged (Flink's time_to_first_response_pr
+    #     computed as ~0.008 days / ~11 minutes before this fix).
+    #   - `copilot-pull-request-reviewer`: GitHub's own automated Copilot
+    #     PR-review bot. Empirically present across four of the five peers
+    #     (apache/kafka, apache/spark, apache/pulsar, apache/flink) with a
+    #     fast-response signature distinct from every human reviewer in
+    #     the same data (e.g. apache/spark: 93% of its first touches land
+    #     within 60 minutes, vs. 0-21% for every human reviewer measured
+    #     on the same repo). A generic, cross-repo GitHub automation
+    #     account, not specific to any one peer.
+    - field: github_login
+      regex: '(?i)^flinkbot$|^copilot-pull-request-reviewer(\[bot\])?$'
+    # Same empirical sweep, apache/datafusion:
+    #   - `codecov-commenter`: Codecov's own coverage-report bot (its
+    #     GitHub profile name is literally "Codecov Comments Bot", `gh api
+    #     users/codecov-commenter`, verified 2026-10-09). Empirically:
+    #     touches 1,309 of 1,445 (91%) of DataFusion's collected PRs, 63%
+    #     of those within 60 minutes.
+    #   - `adriangbot`: a real GitHub account (type `User`, same as every
+    #     human login here -- not a GitHub App `[bot]` account), but
+    #     behaviorally and nominally distinct from the real human
+    #     contributor `adriangb` active on the same repo: 172 touches with
+    #     43% landing within 60 minutes, versus `adriangb`'s own 80
+    #     touches at 20% within 60 minutes on the same data. Read as
+    #     `adriangb`'s own automation/service account, not confirmed via
+    #     GitHub's own account-type field the way the three bots above
+    #     are -- disclosed as the one pattern here resting on behavioral
+    #     signal plus naming rather than an authoritative bot flag.
+    - field: github_login
+      regex: '(?i)^codecov-commenter$|^adriangbot$'

@@ -402,4 +402,33 @@ an old PR can still be open today; `closed_search`, GitHub's search API for PRs 
 the window but closed inside it) -- each independently resumable across runs, sharing one
 GraphQL point budget. `GitHubCollector` itself is still reused unmodified for its client/token/
 retry machinery and three new additive fetch methods; its own `collect()` and Cassandra's own
-production collection are untouched.
+production collection are untouched. The real run also surfaced a budget-fairness gap (one
+high-volume repo could consume an entire run's shared budget, leaving the rest `'skipped'` --
+fixed with a per-(peer, pass) page cap, `collection.max_pages_per_pass`), a transient clone
+network failure (fixed with a retry), and a search-pass page size that exceeded GitHub's
+500,000-node query-complexity ceiling (lowered from 100 to 90).
+
+**Fixup round 2 (orchestrator review of PR #147).** A real-data spot-check caught apache/
+flink's `time_to_first_response_pr` reading ~0.008 days (~11 minutes) -- implausibly fast for a
+human-review metric. Root cause: `flinkbot` (Flink's own CI greeting bot) posts a comment on
+essentially every PR, and the pre-existing generic bot pattern (`-bot$`) requires a hyphen
+before "bot" that `flinkbot` doesn't have. Rather than patching that one account, every peer's
+real collected PR-comment/review data was swept empirically: for each commenting/reviewing
+account, the share of PRs it touches and the share of its own first-touch latencies landing
+within 60 minutes of PR creation. Four more automation accounts turned up this way across the
+five peers -- `copilot-pull-request-reviewer` (GitHub's own automated Copilot PR reviewer,
+present on four of five peers), `codecov-commenter` (apache/datafusion's coverage bot, GitHub
+profile name literally "Codecov Comments Bot"), and `adriangbot` (apache/datafusion, a
+behaviorally-automated account distinct from the real human `adriangb` active on the same repo,
+disclosed as resting on behavioral signal rather than an authoritative bot flag). The same sweep
+also surfaced several prolific *human* maintainers with a high PR-touch share but no
+fast-response signature (e.g. apache/kafka's `chia7712`, 38% of all PRs but only 3% within five
+minutes) -- confirming "touches a lot of PRs" alone is not a bot signal; "touches almost every
+PR, fast" is. All five new patterns, with their evidence, are in `projects/peers.yaml`'s own
+comment (one more, `copilot-pull-request-reviewer`, added to `projects/cassandra.yaml` as a
+precaution -- disclosed as unverified against Cassandra's own data, since this task never
+pulled the production `data` branch locally). Recomputing `time_to_first_response_pr` from the
+same already-collected real data with these accounts excluded: Flink 0.008 -> 0.334 days,
+DataFusion 0.020 -> 0.840 days (datafusion's own prior number was `codecov-commenter`'s own
+leak); Kafka, Spark, and Pulsar moved by single-digit percent (0.450->0.580, 0.308->0.338,
+0.155->0.156) since those three bots touch a much smaller share of their PRs.

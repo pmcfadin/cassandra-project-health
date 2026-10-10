@@ -544,32 +544,11 @@
 {% endfor %}
 
 <section class="whats-coming" aria-labelledby="conversations-coming-heading">
-  <h2 id="conversations-coming-heading">What's coming</h2>
-
-  <article class="phase-card">
-    <h3>Phase 2a — interaction health</h3>
-    <p>
-      Classified metrics over dev@, user@, JIRA comments and GitHub PR comments, gated on a
-      human-labeled benchmark corpus and the classifier clearing agreement/precision thresholds
-      against it (D1). See
-      <a href="{{ community_health_spec_url }}">docs/spec/COMMUNITY-HEALTH.md</a> for the full spec.
-    </p>
-    <p>
-      These measure <strong>interaction health, not raw sentiment</strong> — a heated technical
-      disagreement is not, by itself, unhealthy. The classifier looks at how disagreements are
-      conducted (do threads reach resolution, do people engage in good faith), not at emotional
-      tone.
-    </p>
-  </article>
-
-  <article class="phase-card">
-    <h3>Phase 2b — ASF Slack</h3>
-    <p>
-      Aggregate-only metrics from ASF Slack, gated on PMC consensus on dev@ and ASF Infra approval
-      of a read-only bot on public channels (D1). Raw Slack text is never committed to this repo or
-      published; only aggregate counts persist, with no quotes, no links and no individual
-      attribution.
-    </p>
-  </article>
+  <h2 id="conversations-coming-heading">Not yet covered</h2>
+  <ul>
+    <li>Classified results above cover dev@ and JIRA comments only (preliminary, <a href="{{ community_health_spec_url }}">COMMUNITY-HEALTH.md</a>, D26). user@ and GitHub PR comments are not classified yet.</li>
+    <li>Cutoffs are not yet calibrated against Cassandra-labelled messages (issue #47).</li>
+    <li>Phase 2b — ASF Slack: not collected. Requires PMC consensus on dev@ and ASF Infra approval of a read-only bot (D1); only aggregate counts would ever be stored.</li>
+  </ul>
 </section>
 {% endblock %}

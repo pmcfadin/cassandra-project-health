@@ -638,13 +638,14 @@ def test_conversations_page_shows_devlist_metric_cards(tmp_path):
     assert "Aug 2026" in html_text
 
 
-def test_conversations_page_explains_whats_coming(tmp_path):
+def test_conversations_page_states_what_is_not_yet_covered(tmp_path):
     out_dir = _build_site(tmp_path)
     html_text = _page_html(out_dir, "conversations/")
 
-    assert "Phase 2a" in html_text
+    assert "Not yet covered" in html_text
+    assert "What's coming" not in html_text
     assert "Phase 2b" in html_text
-    assert "interaction health, not raw sentiment" in html_text.replace("\n", " ")
+    assert "issue #47" in html_text
     assert "COMMUNITY-HEALTH.md" in html_text
 
 
@@ -2656,7 +2657,7 @@ def test_conversations_page_honest_state_without_conversation_patterns_snapshot(
     html_text = _conversations_html(out_dir)
 
     assert 'id="conversation-patterns"' not in html_text
-    assert "Phase 2a" in html_text  # the pre-existing "what's coming" section
+    assert "Not yet covered" in html_text  # the coverage note
 
 
 def test_conversations_page_reads_latest_of_multiple_snapshots(tmp_path):

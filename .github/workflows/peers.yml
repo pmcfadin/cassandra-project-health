@@ -27,7 +27,10 @@ name: Peers
 # shortly before it ran).
 on:
   schedule:
-    - cron: '0 20 * * 0'
+    # Daily at 20:00 UTC, but the `gate` job below lets a non-Sunday run
+    # collect only while some peer still has an unfinished pass (initial
+    # catch-up). Once every peer is settled, only the Sunday run collects.
+    - cron: '0 20 * * *'
   workflow_dispatch:
 
 # Shares `nightly.yml`'s own concurrency group: both write to the same
@@ -42,7 +45,43 @@ permissions:
   contents: write
 
 jobs:
+  gate:
+    runs-on: ubuntu-latest
+    outputs:
+      run: ${{ steps.decide.outputs.run }}
+    steps:
+      - name: Decide whether to collect
+        id: decide
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" != "schedule" ] || [ "$(date -u +%u)" = "7" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"; echo "manual or Sunday run"; exit 0
+          fi
+          git init -q d && cd d
+          if ! git fetch -q --depth=1 "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" data 2>/dev/null; then
+            echo "run=true" >> "$GITHUB_OUTPUT"; echo "no data branch yet"; exit 0
+          fi
+          latest=$(git ls-tree --name-only FETCH_HEAD snapshots/peers/ | sort | tail -1)
+          files=$(git ls-tree -r --name-only FETCH_HEAD "$latest" | grep '/settlement.json$' || true)
+          if [ -z "$files" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"; echo "no settlement files"; exit 0
+          fi
+          # A file that can't be read counts as unsettled (fail toward collecting).
+          unsettled=0
+          while IFS= read -r f; do
+            [ -n "$f" ] || continue
+            if ! content=$(git show "FETCH_HEAD:$f" 2>/dev/null) || printf '%s' "$content" | grep -q 'false'; then
+              unsettled=$((unsettled+1)); echo "unsettled: $f"
+            fi
+          done <<< "$files"
+          if [ "$unsettled" -gt 0 ]; then echo "run=true" >> "$GITHUB_OUTPUT"; else echo "run=false" >> "$GITHUB_OUTPUT"; echo "all peers settled; weekday run skipped"; fi
+
   build:
+    needs: gate
+    if: needs.gate.outputs.run == 'true'
     runs-on: ubuntu-latest
     # Five peer repos' GitHub PR/review/comment collection (one shared
     # GraphQL budget) + five disk-safe shallow git clones (built and

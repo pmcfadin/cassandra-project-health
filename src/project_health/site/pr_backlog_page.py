@@ -154,6 +154,15 @@ def _stacked_chart_spec(
                 "type": "nominal",
                 "title": None,
                 "sort": [label for _, label in bucket_order],
+                # Orchestrator review of PR #157: pinned explicitly (not
+                # just via `sort`) so a bucket's color never depends on
+                # which *other* buckets happen to still be in `data.values`
+                # -- without an explicit `scale.domain`, Vega-Lite derives
+                # the color scale's domain from whatever's actually present
+                # in the (possibly client-side-filtered, `chart_expand.js`
+                # series checkboxes) data, so hiding "<30d" reassigned
+                # "30-90d" its color, "90d-1y" the next one's, and so on.
+                "scale": {"domain": [label for _, label in bucket_order]},
             },
             "tooltip": [
                 {"field": "month", "type": "temporal", "title": "Month"},

@@ -192,6 +192,13 @@ def _trailing12m_chart_spec(rows_by_metric: dict[str, dict[date, dict]]) -> str 
                 # expand dialog's checkboxes and this legend never
                 # disagree.
                 "sort": [TIER_LABELS[t] for t in TIER_ORDER],
+                # Also pinned as an explicit `scale.domain` (second
+                # orchestrator review of PR #157): without it, hiding one
+                # tier in the expand dialog's series checkboxes reassigns
+                # the remaining tiers' colors, since Vega-Lite otherwise
+                # derives the color scale's domain from whatever's left in
+                # `data.values` after that client-side filter.
+                "scale": {"domain": [TIER_LABELS[t] for t in TIER_ORDER]},
             },
             "tooltip": [
                 {"field": "window_end", "type": "temporal", "title": "Window ending"},

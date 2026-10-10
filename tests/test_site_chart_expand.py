@@ -102,6 +102,25 @@ def _encoding_owner(spec: dict) -> dict | None:
     return None
 
 
+def _spec_color_scale_domain(spec: dict) -> list[str] | None:
+    """`encoding.color.scale.domain` specifically (not `sort`) -- orchestrator
+    review of PR #157: a series' color must stay stable regardless of which
+    *other* series the expand dialog's checkboxes currently hide. Without
+    an explicit `scale.domain`, Vega-Lite derives the color scale's domain
+    from whichever values are actually present in `data.values`, so
+    hiding one series reassigns the rest's colors as the domain shrinks
+    and re-indexes into the default scheme. `sort` alone (checked by
+    `_spec_color_domain` above) doesn't fix this -- it only orders an
+    *already-correct* domain, it doesn't pin one."""
+    owner = _encoding_owner(spec)
+    if not owner:
+        return None
+    color = owner.get("encoding", {}).get("color")
+    if not color:
+        return None
+    return color.get("scale", {}).get("domain")
+
+
 def _spec_color_domain(spec: dict) -> list[str] | None:
     """The chart's own declared series order, straight from its spec's
     `encoding.color.sort` (preferred) or `encoding.color.scale.domain` --
@@ -234,6 +253,8 @@ def test_community_page_review_responsiveness_chart_wired(tmp_path):
         "2nd-5th submission",
         "6th+ submission",
     ]
+    spec = _spec_for(html_text, "review-responsiveness-trailing12m")
+    assert _spec_color_scale_domain(spec) == meta["seriesOrder"]
 
 
 def test_community_page_pr_backlog_charts_wired(tmp_path):
@@ -251,6 +272,9 @@ def test_community_page_pr_backlog_charts_wired(tmp_path):
         "Closed (other)",
         "No ticket key",
     ]
+    for chart_id in ("pr-backlog-age", "pr-backlog-ticket"):
+        spec = _spec_for(html_text, chart_id)
+        assert _spec_color_scale_domain(spec) == by_id[chart_id]["seriesOrder"]
 
 
 # --- Conversations page: metric cards, tone-mix, yoy, message patterns -----
@@ -326,7 +350,7 @@ def test_peers_page_charts_wired(tmp_path):
 
     html_text = (out_dir / "peers" / "index.html").read_text()
     entries = _assert_charts_wired(html_text)
-    for _, meta in entries:
+    for chart_id, meta in entries:
         assert meta["timeField"] == "month"
         assert meta["seriesField"] == "project"
         # Cassandra first (D30), never alphabetical ("Apache Cassandra"
@@ -334,6 +358,8 @@ def test_peers_page_charts_wired(tmp_path):
         # tell: it must stay *last*, not alphabetically second).
         assert meta["seriesOrder"][0] == "Apache Cassandra"
         assert meta["seriesOrder"][-1] == "Apache DataFusion"
+        spec = _spec_for(html_text, chart_id)
+        assert _spec_color_scale_domain(spec) == meta["seriesOrder"]
 
 
 # --- No-JS: the Expand button is hidden without JavaScript ------------------

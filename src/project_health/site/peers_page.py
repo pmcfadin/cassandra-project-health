@@ -356,6 +356,20 @@ def _line_chart_spec(
                             for project_id, name in _PEER_ORDER
                             if project_id not in excluded_projects
                         ],
+                        # Also pinned as an explicit `scale.domain` (second
+                        # orchestrator review of PR #157): without it,
+                        # hiding one project in the expand dialog's series
+                        # checkboxes reassigns the remaining projects'
+                        # colors, since Vega-Lite otherwise derives the
+                        # color scale's domain from whatever's left in
+                        # `data.values` after that client-side filter.
+                        "scale": {
+                            "domain": [
+                                name
+                                for project_id, name in _PEER_ORDER
+                                if project_id not in excluded_projects
+                            ]
+                        },
                     },
                     "strokeWidth": {
                         "field": "is_cassandra",

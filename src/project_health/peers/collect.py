@@ -24,6 +24,7 @@ than one peer's clone at a time.
 
 from __future__ import annotations
 
+import subprocess
 import uuid
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
@@ -47,6 +48,21 @@ from project_health.peers.release import (
 )
 from project_health.schema import get_schema, validate
 from project_health import storage
+
+
+def _describe_exception(exc: Exception) -> str:
+    """`str(exc)` plus a `subprocess.CalledProcessError`'s own captured
+    stderr, when there is one -- `str(CalledProcessError)` alone (what a
+    bare `str(exc)` gives) drops the actual git error text (e.g. "fatal:
+    ..."), which is the one piece of information that actually explains a
+    git-clone/log failure (real-run finding, 2026-10-09: a bare message
+    read only "returned non-zero exit status 128," with no way to tell
+    *why* without this)."""
+    message = str(exc)
+    if isinstance(exc, subprocess.CalledProcessError) and exc.stderr:
+        stderr = exc.stderr.strip() if isinstance(exc.stderr, str) else exc.stderr
+        message = f"{message}\nstderr: {stderr}"
+    return message
 
 
 def peer_source(peer_id: str, table_group: str) -> str:
@@ -163,7 +179,7 @@ def collect_and_write_git(
     except Exception as exc:  # noqa: BLE001 - reported, never propagated
         git_clone.cleanup(clone_path)
         return PeerGitCollectionReport(
-            peer_id=peer.id, commits_collected=0, clone_bytes=0, error=str(exc)
+            peer_id=peer.id, commits_collected=0, clone_bytes=0, error=_describe_exception(exc)
         )
 
     clone_bytes = git_clone.du_bytes(clone_path)
@@ -185,7 +201,10 @@ def collect_and_write_git(
     except Exception as exc:  # noqa: BLE001
         git_clone.cleanup(clone_path)
         return PeerGitCollectionReport(
-            peer_id=peer.id, commits_collected=0, clone_bytes=clone_bytes, error=str(exc)
+            peer_id=peer.id,
+            commits_collected=0,
+            clone_bytes=clone_bytes,
+            error=_describe_exception(exc),
         )
 
     git_clone.cleanup(clone_path)

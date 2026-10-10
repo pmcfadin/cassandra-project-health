@@ -187,6 +187,84 @@ def test_disk_budget_skips_remaining_peers(tmp_path, monkeypatch):
     assert report.git_reports == []
 
 
+def test_resolves_token_when_none_given(tmp_path, monkeypatch):
+    """Real-run regression (2026-10-09): `collect_and_write_releases`'
+    plain REST calls have no fallback token resolution of their own (unlike
+    `GitHubCollector`), so a run that leaves `token=None` must still
+    resolve one here -- otherwise release collection runs unauthenticated
+    and hits GitHub's 60 req/hr limit after a few dozen GA tags (verified
+    live against apache/kafka's own tag history)."""
+    peers_config = PeersConfig(peers=[_peer("kafka", "apache/kafka")])
+
+    seen_tokens: list[str | None] = []
+
+    def fake_collect_peer_prs(*a, token=None, **k):
+        seen_tokens.append(token)
+        return _empty_github_result(["apache/kafka"])
+
+    def fake_collect_and_write_releases(*a, token=None, **k):
+        seen_tokens.append(token)
+        return peer_collect.PeerReleaseCollectionReport(
+            peer_id="kafka",
+            release_count=0,
+            verification=VerificationResult(
+                source_type="jira", tag_derived_by_year={}, independent_by_year={}
+            ),
+        )
+
+    monkeypatch.setattr(peer_collect, "collect_peer_prs", fake_collect_peer_prs)
+    monkeypatch.setattr(
+        peer_pipeline, "collect_and_write_releases", fake_collect_and_write_releases
+    )
+    monkeypatch.setattr(peer_collect.git_clone, "clone_shallow_bare", lambda *a, **k: None)
+    monkeypatch.setattr(peer_pipeline, "resolve_github_token", lambda: "resolved-token")
+
+    peer_pipeline.run_peers_collection(
+        peers_config,
+        tmp_path,
+        tmp_path / "work",
+        "run1",
+        as_of=date(2026, 1, 1),
+    )
+
+    assert seen_tokens == ["resolved-token", "resolved-token"]
+
+
+def test_does_not_override_an_explicitly_passed_token(tmp_path, monkeypatch):
+    peers_config = PeersConfig(peers=[_peer("kafka", "apache/kafka")])
+    seen_tokens: list[str | None] = []
+
+    def fake_collect_peer_prs(*a, token=None, **k):
+        seen_tokens.append(token)
+        return _empty_github_result(["apache/kafka"])
+
+    monkeypatch.setattr(peer_collect, "collect_peer_prs", fake_collect_peer_prs)
+    monkeypatch.setattr(peer_collect.git_clone, "clone_shallow_bare", lambda *a, **k: None)
+    monkeypatch.setattr(peer_collect, "fetch_ga_tags", lambda *a, **k: [])
+    monkeypatch.setattr(
+        peer_collect,
+        "verify_release_counts",
+        lambda *a, **k: VerificationResult(
+            source_type="jira", tag_derived_by_year={}, independent_by_year={}
+        ),
+    )
+    def _must_not_be_called() -> str:
+        raise AssertionError("resolve_github_token should not be called when token is given")
+
+    monkeypatch.setattr(peer_pipeline, "resolve_github_token", _must_not_be_called)
+
+    peer_pipeline.run_peers_collection(
+        peers_config,
+        tmp_path,
+        tmp_path / "work",
+        "run1",
+        token="explicit-token",
+        as_of=date(2026, 1, 1),
+    )
+
+    assert seen_tokens == ["explicit-token"]
+
+
 def test_latest_peers_run_id_none_when_no_snapshots(tmp_path):
     assert peer_pipeline.latest_peers_run_id(tmp_path) is None
 
@@ -240,3 +318,44 @@ def test_cassandra_tables_for_comparison_filters_to_primary_repo(tmp_path):
     tables = peer_pipeline._cassandra_tables_for_comparison(tmp_path)
     assert tables["pr"].num_rows == 1
     assert tables["pr"].column("repo").to_pylist() == ["apache/cassandra"]
+
+
+def _release_row(release_id: str, collected_at: datetime) -> dict:
+    return {
+        "release_id": release_id,
+        "tag_name": release_id,
+        "version": release_id,
+        "major_minor": "1.0",
+        "release_date": date(2024, 1, 1),
+        "release_date_source": "git_tag",
+        "archive_verified": None,
+        "archive_date": None,
+        "repo": "apache/kafka",
+        "source_snapshot_id": "s1",
+        "collected_at": collected_at,
+    }
+
+
+def test_peer_tables_dedupes_release_rows_written_by_two_runs(tmp_path):
+    """Real-run regression (2026-10-09): `collect_and_write_releases` has
+    no watermark -- it re-fetches and re-writes every GA tag on every run
+    (same full-refresh design `collectors.release` documents), so the same
+    `release_id` legitimately lands in more than one partition. Reading
+    without dedup inflated every peer's release count ~2x after a second
+    collection run."""
+    from project_health.peers.collect import peer_source
+
+    source = peer_source("kafka", "release")
+    table1 = pa.Table.from_pylist(
+        [_release_row("4.0.0", datetime(2026, 1, 1, tzinfo=timezone.utc))],
+        schema=get_schema("release"),
+    )
+    table2 = pa.Table.from_pylist(
+        [_release_row("4.0.0", datetime(2026, 1, 2, tzinfo=timezone.utc))],
+        schema=get_schema("release"),
+    )
+    storage.write_partition(tmp_path, source, "release", date(2026, 1, 1), "run1", table1)
+    storage.write_partition(tmp_path, source, "release", date(2026, 1, 2), "run2", table2)
+
+    tables = peer_pipeline._peer_tables(tmp_path, "kafka")
+    assert tables["release"].num_rows == 1

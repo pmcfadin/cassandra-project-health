@@ -1523,9 +1523,16 @@ issue-tracker metric is shown for any of the six projects here.
 
 ### Rendering (D30: facts only, no targets, no ranking)
 
-One multi-line chart per metric, every project named in the legend and tooltip, Cassandra's own
-line drawn with a heavier stroke (never color alone, so it still reads in print/greyscale) --
-never a "winner" styling, never a sort order implying rank. A current-month table lists all six
+One collapsible section per metric (`templates/_sections.html`'s `section()`/`section_nav()`
+macros, issue #144, reused unchanged -- that module's own docstring already names this issue as
+a planned reuse). Each section's collapsed summary row names all six projects with their current
+value and a small sparkline; its expanded body holds a multi-line chart, every project named in
+the legend and tooltip, Cassandra's own line drawn with a heavier stroke (never color alone, so
+it still reads in print/greyscale) -- never a "winner" styling, never a sort order implying
+rank. Each section's `chaoss_label` links its own CHAOSS Knowledge Base metric page directly
+(e.g. "CHAOSS: Time to First Response"), not a practitioner guide -- no practitioner-guide topic
+covers "peer comparison," the same `chaoss_label=` override `metrics_meta.COMMUNITY_SECTIONS`'s
+own "Releases" section already uses for an analogous reason. A current-month table lists all six
 projects' latest values side by side. A standing banner states CHAOSS's own position plainly:
 "CHAOSS does not set targets or rank projects." No color-coding implying good/bad, no composite
 score across the five metrics, no verdict vocabulary (D25).

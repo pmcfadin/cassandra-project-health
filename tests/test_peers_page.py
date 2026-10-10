@@ -130,22 +130,39 @@ def test_available_with_snapshot(populated_data_dir):
 
 def test_every_peer_appears_in_at_least_one_chart(populated_data_dir):
     context = build_peers_context(populated_data_dir, run_id="run1")
-    time_to_first_response_chart = next(
-        c for c in context["charts"] if c["metric_id"] == TIME_TO_FIRST_RESPONSE_PR
+    time_to_first_response_section = next(
+        c for c in context["peer_sections"] if c["id"] == TIME_TO_FIRST_RESPONSE_PR
     )
-    assert time_to_first_response_chart["chart_spec"] is not None
+    assert time_to_first_response_section["chart_spec"] is not None
+    assert time_to_first_response_section["chaoss_label"] == "CHAOSS: Time to First Response"
     import json
 
-    spec = json.loads(time_to_first_response_chart["chart_spec"])
+    spec = json.loads(time_to_first_response_section["chart_spec"])
     projects_in_chart = {v["project"] for v in spec["data"]["values"]}
     assert "Apache Cassandra" in projects_in_chart
     assert "Apache Kafka" in projects_in_chart
 
+    # Every project gets a summary-row headline item, named, even one with
+    # no qualifying months this run (issue #144's "section title, CHAOSS
+    # topic link, headline numbers" pattern, reused unchanged for #145).
+    summary_names = {item["name"] for item in time_to_first_response_section["summary_items"]}
+    assert summary_names == {
+        "Apache Cassandra",
+        "Apache Kafka",
+        "Apache Spark",
+        "Apache Flink",
+        "Apache Pulsar",
+        "Apache DataFusion",
+    }
+
 
 def test_backlog_total_chart_present(populated_data_dir):
     context = build_peers_context(populated_data_dir, run_id="run1")
-    backlog_chart = next(c for c in context["charts"] if c["metric_id"] == "open_pr_backlog_total")
-    assert backlog_chart["chart_spec"] is not None
+    backlog_section = next(
+        c for c in context["peer_sections"] if c["id"] == "open_pr_backlog_total"
+    )
+    assert backlog_section["chart_spec"] is not None
+    assert backlog_section["chaoss_label"] == "CHAOSS: Change Requests (adapted)"
 
 
 def test_latest_run_id_used_when_not_given(populated_data_dir):

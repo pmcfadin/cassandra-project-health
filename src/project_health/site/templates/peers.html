@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% import "_sections.html" as sections %}
 {% block title %}Peer context — Cassandra Project Health{% endblock %}
 {% block content %}
 <h2>Peer context</h2>
@@ -16,16 +17,18 @@
   each metric is computed.
 </p>
 
-{% for chart in charts %}
-<section class="peer-metric" id="{{ chart.metric_id }}" aria-labelledby="peer-metric-{{ loop.index }}-heading">
-  <h3 id="peer-metric-{{ loop.index }}-heading">{{ chart.label }}</h3>
-  {% if chart.chart_spec %}
-  <div class="chart" data-vega-spec='{{ chart.chart_spec }}' role="img" aria-label="{{ chart.label }} by project, over time">
+{{ sections.section_nav(peer_sections) }}
+
+{% for section in peer_sections %}
+{% call sections.section(section.id, section.title, section.chaoss_url, section.summary_items, chaoss_label=section.chaoss_label) %}
+  {% if section.chart_spec %}
+  <div class="chart" data-vega-spec='{{ section.chart_spec }}' role="img" aria-label="{{ section.title }} by project, over time">
+    <noscript>Enable JavaScript to see this chart, or use the table below.</noscript>
   </div>
   {% else %}
   <p class="card-empty-state">insufficient data</p>
   {% endif %}
-</section>
+{% endcall %}
 {% endfor %}
 
 <section class="peer-table" aria-labelledby="peer-table-heading">

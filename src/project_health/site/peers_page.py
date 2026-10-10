@@ -2,15 +2,26 @@
 
 Reads the latest `snapshots/peers/<run_id>/<project_id>/{metric_value,
 pr_backlog}.parquet` files (written by `peers.pipeline.run_peers_collection`)
-for Cassandra and every configured peer, and builds one multi-line chart
-per metric (Cassandra's own line visually distinguished, every project
-named in the legend/tooltip -- issue #145's own spec) plus a current-month
-table of all six projects' latest values.
+for Cassandra and every configured peer, and builds one collapsible
+`templates/_sections.html` section per metric -- reusing that macro
+unchanged (issue #144/#145 coordination: its own module docstring already
+says "issue #145 (peer comparison) reuses it unchanged ... so its
+signature/markup stays generic"). Each section's collapsed summary row
+names all six projects (current value + sparkline), and its expanded body
+holds the multi-line comparison chart (every project named in the
+legend/tooltip, Cassandra's own line visually distinguished).
 
 D30 (no targets, no ranking): every string here is a plain fact ("current
 value," "as of month X") -- never "ahead of," "behind," "healthier than,"
 or any comparative verdict language. The CHAOSS disclaimer
 (`CHAOSS_DISCLAIMER`) is rendered once, prominently, at the top of the page.
+Each section's `chaoss_label` links the metric's own CHAOSS Knowledge Base
+page directly (e.g. "CHAOSS: Time to First Response"), not a practitioner
+guide -- there is no single practitioner-guide topic that covers "peer
+comparison," so `COMMUNITY_SECTIONS`' default label would be misleading
+here; this mirrors `metrics_meta.COMMUNITY_SECTIONS`' own "releases"
+section, which links a metric page under the same `chaoss_label=` override
+for the same reason (no release practitioner guide exists).
 
 No snapshot yet -> `available=False`, same "no snapshot -> no page" gate
 `site/generate.py`'s other optional pages (thread explorer, conversation
@@ -69,12 +80,46 @@ _PEER_ORDER: tuple[tuple[str, str], ...] = (
     ("datafusion", "Apache DataFusion"),
 )
 
-METRIC_ORDER: tuple[tuple[str, str], ...] = (
-    (TIME_TO_FIRST_RESPONSE_PR, "Time to First Response (GitHub PRs)"),
-    ("change_request_closure_ratio_pr", "Change Request Closure Ratio"),
-    ("contributor_absence_factor", "Contributor Absence Factor"),
-    ("release_frequency", "Release Frequency (trailing 24 months)"),
+SPARKLINE_MONTHS = 24
+
+# (metric_id, title, value_label, chaoss_url, chaoss_label) -- `chaoss_url`/
+# `chaoss_label` link each section's own CHAOSS Knowledge Base metric page
+# directly (module docstring: no practitioner-guide topic covers "peer
+# comparison"), all curl-verified live 200, 2026-10-09 (same URLs METRICS.md
+# §13 cites).
+METRIC_ORDER: tuple[tuple[str, str, str, str, str], ...] = (
+    (
+        TIME_TO_FIRST_RESPONSE_PR,
+        "Time to First Response (GitHub PRs)",
+        "Time to First Response (GitHub PRs)",
+        "https://chaoss.community/kb/metric-time-to-first-response/",
+        "CHAOSS: Time to First Response",
+    ),
+    (
+        "change_request_closure_ratio_pr",
+        "Change Request Closure Ratio",
+        "Change Request Closure Ratio",
+        "https://chaoss.community/kb/metric-change-request-closure-ratio/",
+        "CHAOSS: Change Request Closure Ratio",
+    ),
+    (
+        "contributor_absence_factor",
+        "Contributor Absence Factor",
+        "Contributor Absence Factor",
+        "https://chaoss.community/kb/metric-contributor-absence-factor/",
+        "CHAOSS: Contributor Absence Factor",
+    ),
+    (
+        "release_frequency",
+        "Release Frequency (trailing 24 months)",
+        "Release Frequency (trailing 24 months)",
+        "https://chaoss.community/kb/metric-release-frequency/",
+        "CHAOSS: Release Frequency",
+    ),
 )
+
+BACKLOG_CHAOSS_URL = "https://chaoss.community/kb/metric-change-requests/"
+BACKLOG_CHAOSS_LABEL = "CHAOSS: Change Requests (adapted)"
 
 
 def _read_optional_table(path: Path, schema_table_name: str) -> pa.Table:
@@ -107,6 +152,50 @@ def _backlog_total_rows(pr_backlog_rows: list[dict], project_id: str) -> list[di
         total_id = other_repo_metric_id(TOTAL, repo)
         age_ids = {other_repo_metric_id(mid, repo): label for mid, label in AGE_BUCKET_ORDER}
     return [r for r in pr_backlog_rows if r["metric_id"] in {total_id, *age_ids}], total_id, age_ids
+
+
+def _peer_sparkline_spec(rows: list[dict], months: int = SPARKLINE_MONTHS) -> dict[str, Any] | None:
+    """A compact, axis-free trend line for one project's summary-row entry
+    -- same shape/size as `generate.py::_sparkline_spec`, adapted to work
+    from raw `metric_value` row dicts (this module never builds a
+    `site.generate.MetricSeries`, since its data spans six projects' worth
+    of independently-snapshotted tables, not one page's own `metrics.
+    parquet`)."""
+    series = sorted(rows, key=lambda r: r["window_start"])[-months:]
+    if not series:
+        return None
+    values = [{"window_end": r["window_end"].isoformat(), "value": r["value"]} for r in series]
+    return {
+        "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+        "width": "container",
+        "height": 28,
+        "autosize": {"type": "fit-x", "contains": "padding"},
+        "background": None,
+        "data": {"values": values},
+        "mark": {"type": "line", "clip": True, "strokeWidth": 1.5},
+        "encoding": {
+            "x": {"field": "window_end", "type": "temporal", "axis": None},
+            "y": {"field": "value", "type": "quantitative", "axis": None},
+        },
+        "config": {"view": {"stroke": None}},
+    }
+
+
+def _peer_headline_item(display_name: str, rows: list[dict]) -> dict[str, Any]:
+    """One summary-row entry (name, latest value/month/n, sparkline) for a
+    single project within one metric's section -- mirrors `generate.py::
+    _section_headline_item`'s shape so `templates/_sections.html`'s macro
+    renders it identically regardless of which page built it."""
+    series = sorted(rows, key=lambda r: r["window_start"])
+    latest = series[-1] if series else None
+    value = latest["value"] if latest else None
+    return {
+        "name": display_name,
+        "value_display": round(value, 2) if value is not None else None,
+        "month_label": latest["window_end"].strftime("%b %Y") if latest else None,
+        "n": latest["n"] if latest else None,
+        "sparkline_spec_json": json.dumps(spec) if (spec := _peer_sparkline_spec(rows)) else None,
+    }
 
 
 def _line_chart_spec(
@@ -190,23 +279,38 @@ def build_peers_context(data_dir: str | Path, run_id: str | None = None) -> dict
     if not any(metric_rows_by_project.values()):
         return {"available": False, "chaoss_disclaimer": CHAOSS_DISCLAIMER}
 
-    charts = []
-    for metric_id, label in METRIC_ORDER:
-        charts.append(
+    sections = []
+    for metric_id, title, value_label, chaoss_url, chaoss_label in METRIC_ORDER:
+        summary_items = [
+            _peer_headline_item(
+                display_name,
+                [
+                    r
+                    for r in metric_rows_by_project.get(project_id, [])
+                    if r["metric_id"] == metric_id
+                ],
+            )
+            for project_id, display_name in _PEER_ORDER
+        ]
+        sections.append(
             {
-                "metric_id": metric_id,
-                "label": label,
+                "id": metric_id,
+                "title": title,
+                "chaoss_url": chaoss_url,
+                "chaoss_label": chaoss_label,
+                "summary_items": summary_items,
                 "chart_spec": _line_chart_spec(
-                    metric_id, metric_rows_by_project, value_label=label
+                    metric_id, metric_rows_by_project, value_label=value_label
                 ),
             }
         )
 
-    # Open PR backlog (total) chart -- its own metric_id per project (see
+    # Open PR backlog (total) section -- its own metric_id per project (see
     # `_backlog_total_rows`), normalized to one shared metric_id
-    # ("open_pr_backlog_total") here purely so `_line_chart_spec` -- which
-    # keys its per-row filter on a single literal metric_id -- can treat
-    # every project's rows the same way despite their differing raw ids.
+    # ("open_pr_backlog_total") here purely so `_line_chart_spec`/the
+    # summary-row builder -- which key their per-row filter on a single
+    # literal metric_id -- can treat every project's rows the same way
+    # despite their differing raw ids.
     backlog_series: dict[str, list[dict]] = {}
     for project_id, _ in _PEER_ORDER:
         rows, total_id, _age_ids = _backlog_total_rows(
@@ -217,10 +321,17 @@ def build_peers_context(data_dir: str | Path, run_id: str | None = None) -> dict
             for r in rows
             if r["metric_id"] == total_id
         ]
-    charts.append(
+    backlog_summary_items = [
+        _peer_headline_item(display_name, backlog_series.get(project_id, []))
+        for project_id, display_name in _PEER_ORDER
+    ]
+    sections.append(
         {
-            "metric_id": "open_pr_backlog_total",
-            "label": "Open PR backlog (total)",
+            "id": "open_pr_backlog_total",
+            "title": "Open PR backlog (total)",
+            "chaoss_url": BACKLOG_CHAOSS_URL,
+            "chaoss_label": BACKLOG_CHAOSS_LABEL,
+            "summary_items": backlog_summary_items,
             "chart_spec": _line_chart_spec(
                 "open_pr_backlog_total", backlog_series, value_label="Open PRs"
             ),
@@ -236,7 +347,7 @@ def build_peers_context(data_dir: str | Path, run_id: str | None = None) -> dict
 
         cells = []
         as_of_month = None
-        for metric_id, _label in METRIC_ORDER:
+        for metric_id, _title, _value_label, _chaoss_url, _chaoss_label in METRIC_ORDER:
             series = sorted(rows_by_metric.get(metric_id, []), key=lambda r: r["window_start"])
             latest = series[-1] if series else None
             if latest and latest["value"] is not None:
@@ -270,7 +381,7 @@ def build_peers_context(data_dir: str | Path, run_id: str | None = None) -> dict
             }
         )
 
-    table_columns = [label for _, label in METRIC_ORDER] + ["Open PR backlog (total)"]
+    table_columns = [title for _, title, *_rest in METRIC_ORDER] + ["Open PR backlog (total)"]
 
     return {
         "available": True,
@@ -280,7 +391,10 @@ def build_peers_context(data_dir: str | Path, run_id: str | None = None) -> dict
         "peers_run_id": run_id,
         "chaoss_disclaimer": CHAOSS_DISCLAIMER,
         "metrics_spec_url": METRICS_SPEC_URL,
-        "charts": charts,
+        # Named `peer_sections`, not `sections` -- `peers.html` does
+        # `{% import "_sections.html" as sections %}`, which would collide
+        # with a context variable of the same name.
+        "peer_sections": sections,
         "table_columns": table_columns,
         "table_rows": table_rows,
     }

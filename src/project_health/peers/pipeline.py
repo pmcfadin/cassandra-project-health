@@ -27,6 +27,7 @@ import pyarrow as pa
 import pyarrow.compute as pc
 import pyarrow.parquet as pq
 
+from project_health.collectors.github import resolve_github_token
 from project_health.metrics.peer_metrics import compute_peer_metrics
 from project_health.peers.collect import (
     PeerGitCollectionReport,
@@ -112,7 +113,32 @@ def _cassandra_tables_for_comparison(data_dir: str | Path) -> dict[str, pa.Table
     project; Cassandra's production config pools several related repos
     into `raw/github/pr`, same "scoped to apache/cassandra" reasoning
     `metrics/pr_backlog.py`'s own module docstring documents for its
-    `PRIMARY_REPO` constant). Read-only -- never written back."""
+    `PRIMARY_REPO` constant). Read-only -- never written back.
+
+    Dedupes `pr`/`pr_review`/`pr_comment`/`release` the same way
+    `pipeline.run_pipeline` itself does before handing them to `metrics.
+    engine.compute_all` -- `storage.read_table` concatenates every raw
+    partition ever written, and both the GitHub PR collector's watermark
+    (a re-fetched PR re-emits its whole reviews/comments connection) and
+    the release collector's full-refresh-every-run design (`collectors.
+    release`'s own module docstring) mean the *same* row legitimately
+    appears in more than one partition by design -- skipping this step
+    silently double- (or triple-, ...) counts every metric that sums rows
+    (real-run finding, 2026-10-09: an undeduped `release` read inflated
+    every peer's release count ~2x after a second collection run).
+    """
+    # Deferred import: `project_health.pipeline` imports `site.generate`,
+    # which imports `site.peers_page`, which imports this module for
+    # `CASSANDRA_PROJECT_ID`/`latest_peers_run_id` -- a module-level import
+    # here would be circular (same "deferred import, not circular" pattern
+    # `metrics.engine.compute_all` uses for its own `dev_metrics`/
+    # `release_cadence` imports).
+    from project_health.pipeline import (
+        _dedupe_pr_comment_rows,
+        _dedupe_pr_review_rows,
+        _dedupe_pr_rows,
+        _dedupe_release_rows,
+    )
 
     def _filter(table: pa.Table) -> pa.Table:
         if table.num_rows == 0 or "repo" not in table.column_names:
@@ -121,24 +147,46 @@ def _cassandra_tables_for_comparison(data_dir: str | Path) -> dict[str, pa.Table
 
     return {
         "contribution_event": _filter(storage.read_table(data_dir, "git", "contribution_event")),
-        "pr": _filter(storage.read_table(data_dir, "github", "pr")),
-        "pr_review": _filter(storage.read_table(data_dir, "github", "pr_review")),
-        "pr_comment": _filter(storage.read_table(data_dir, "github", "pr_comment")),
-        "release": _filter(storage.read_table(data_dir, "release", "release")),
+        "pr": _dedupe_pr_rows(_filter(storage.read_table(data_dir, "github", "pr"))),
+        "pr_review": _dedupe_pr_review_rows(
+            _filter(storage.read_table(data_dir, "github", "pr_review"))
+        ),
+        "pr_comment": _dedupe_pr_comment_rows(
+            _filter(storage.read_table(data_dir, "github", "pr_comment"))
+        ),
+        "release": _dedupe_release_rows(
+            _filter(storage.read_table(data_dir, "release", "release"))
+        ),
     }
 
 
 def _peer_tables(data_dir: str | Path, peer_id: str) -> dict[str, pa.Table]:
+    """One peer's own raw tables -- see `_cassandra_tables_for_comparison`'s
+    docstring for why `pr`/`pr_review`/`pr_comment`/`release` are deduped
+    here (not merely read) before any metric ever sees them."""
     from project_health.peers.collect import peer_source
+    from project_health.pipeline import (
+        _dedupe_pr_comment_rows,
+        _dedupe_pr_review_rows,
+        _dedupe_pr_rows,
+        _dedupe_release_rows,
+    )
 
+    github_source = peer_source(peer_id, "github")
     return {
         "contribution_event": storage.read_table(
             data_dir, peer_source(peer_id, "git"), "contribution_event"
         ),
-        "pr": storage.read_table(data_dir, peer_source(peer_id, "github"), "pr"),
-        "pr_review": storage.read_table(data_dir, peer_source(peer_id, "github"), "pr_review"),
-        "pr_comment": storage.read_table(data_dir, peer_source(peer_id, "github"), "pr_comment"),
-        "release": storage.read_table(data_dir, peer_source(peer_id, "release"), "release"),
+        "pr": _dedupe_pr_rows(storage.read_table(data_dir, github_source, "pr")),
+        "pr_review": _dedupe_pr_review_rows(
+            storage.read_table(data_dir, github_source, "pr_review")
+        ),
+        "pr_comment": _dedupe_pr_comment_rows(
+            storage.read_table(data_dir, github_source, "pr_comment")
+        ),
+        "release": _dedupe_release_rows(
+            storage.read_table(data_dir, peer_source(peer_id, "release"), "release")
+        ),
     }
 
 
@@ -181,6 +229,18 @@ def run_peers_collection(
     started_at = datetime.now(timezone.utc)
     as_of = as_of or started_at.date()
     partition_date = started_at.date()
+    # `collectors.github.GitHubCollector` (used inside `collect_and_write_
+    # github`) already resolves its own token (GH_PAT/GITHUB_TOKEN env, else
+    # `gh auth token`) when given `None` -- but `collect_and_write_releases`'
+    # plain REST calls (`peers/release.py`) do not, and a real run that
+    # forgot to pass a token here hit GitHub's unauthenticated 60 req/hr
+    # limit after only a few dozen GA-tag commit-date lookups (verified
+    # live, 2026-10-09: apache/kafka's own tag history alone exceeded it).
+    # Resolving once, here, means every call this function makes --
+    # GitHub PR collection and every peer's release REST calls alike --
+    # shares one authenticated token, the same convention `GitHubCollector`
+    # already establishes for its own constructor.
+    token = token if token is not None else resolve_github_token()
 
     github_report = collect_and_write_github(
         peers_config,

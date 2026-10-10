@@ -382,7 +382,10 @@ page, `/peers/`, linked from the site nav and the Community page.
   instead, a genuinely independent system, disclosed in `projects/peers.yaml`'s own comment and
   in METRICS.md §13 -- "collect imperfectly but honestly, not silently," the same discipline
   `collectors/jira.py`/`collectors/release.py` document for their own limitations.
-- **Fits the collapsible-section layout once #144 ships.** Issue #144 (collapsible sections,
-  grouped by CHAOSS practitioner-guide topic) was still in flight when this shipped; `/peers/`
-  is built with plain `<section>` elements for now and rebases onto #144's section macro once
-  that issue merges, per the issue's own coordination note.
+- **Uses the collapsible-section layout (#144).** Issue #144 (collapsible sections, grouped by
+  CHAOSS practitioner-guide topic) merged while this was in flight; `/peers/` rebased onto it
+  and reuses `templates/_sections.html`'s `section()`/`section_nav()` macros unchanged, one
+  section per metric. Each section's `chaoss_label` links its own CHAOSS Knowledge Base metric
+  page directly (e.g. "CHAOSS: Time to First Response") rather than a practitioner guide --
+  there is no single practitioner-guide topic for "peer comparison" -- the same `chaoss_label=`
+  override `COMMUNITY_SECTIONS`'s own "Releases" section already uses for the same reason.

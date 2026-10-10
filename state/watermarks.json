@@ -12,5 +12,16 @@
   "jira:patch_available_backfill_covered": "11755",
   "jira:patch_available_backfill_cursor": "CASSANDRA-21731",
   "jira:patch_available_backfill_total": "11754",
+  "peers/datafusion/git": "4e6e564e586f37457316ab4bef74a9766716f6a9",
+  "peers/flink/git": "60846c0cdbf57d5297c44f218025b189d18a2765",
+  "peers/kafka/git": "3de09ca09784900318b56091d46d3803c4d5adc9",
+  "peers/kafka/github:pr_pass_closed_search": "{\"cursor\": null, \"high_watermark\": null, \"newest_seen\": null}",
+  "peers/kafka/github:pr_pass_created_desc": "{\"cursor\": \"Y3Vyc29yOnYyOpK0MjAyNi0wNy0wNlQxNDo1MjowMlrO7mce_A==\", \"high_watermark\": null, \"newest_seen\": \"2026-10-10T02:14:45+00:00\"}",
+  "peers/kafka/github:pr_pass_open_prs": "{\"cursor\": null, \"high_watermark\": null, \"newest_seen\": null}",
+  "peers/pulsar/git": "f2f026c7db79317fb65dafb92b79b730dc83ada6",
+  "peers/spark/git": "215a1460d9d4acdac6f72b42c28ab60b9ff5b7fe",
+  "peers/spark/github:pr_pass_closed_search": "{\"cursor\": \"Y3Vyc29yOjcyMA==\", \"high_watermark\": null, \"newest_seen\": null}",
+  "peers/spark/github:pr_pass_created_desc": "{\"cursor\": \"Y3Vyc29yOnYyOpK0MjAyNi0wOC0yNlQxOToxMjo0MFrPAAAAAQR5dbo=\", \"high_watermark\": null, \"newest_seen\": \"2026-10-10T02:41:04+00:00\"}",
+  "peers/spark/github:pr_pass_open_prs": "{\"cursor\": null, \"high_watermark\": null, \"newest_seen\": null}",
   "ponymail": "{\"dev\": \"2026-09\", \"user\": \"2026-09\"}"
 }

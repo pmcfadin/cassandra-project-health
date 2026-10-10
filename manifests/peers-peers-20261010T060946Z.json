@@ -1,0 +1,431 @@
+{
+  "completed_at": "2026-10-10T06:27:40.683683+00:00",
+  "disk_budget_skipped_peers": [],
+  "git_reports": [
+    {
+      "clone_bytes": 27391655,
+      "commits_collected": 0,
+      "error": null,
+      "peer_id": "kafka"
+    },
+    {
+      "clone_bytes": 52899290,
+      "commits_collected": 0,
+      "error": null,
+      "peer_id": "spark"
+    },
+    {
+      "clone_bytes": 26665719,
+      "commits_collected": 0,
+      "error": null,
+      "peer_id": "flink"
+    },
+    {
+      "clone_bytes": 14180049,
+      "commits_collected": 0,
+      "error": null,
+      "peer_id": "pulsar"
+    },
+    {
+      "clone_bytes": 25279447,
+      "commits_collected": 0,
+      "error": null,
+      "peer_id": "datafusion"
+    }
+  ],
+  "github_overall_status": "partial",
+  "github_pass_outcomes": [
+    {
+      "comment_count": 7028,
+      "error": null,
+      "issue_count": null,
+      "pages_fetched": 19,
+      "pass_name": "created_desc",
+      "peer_id": "kafka",
+      "pr_count": 950,
+      "review_count": 4606,
+      "status": "page_capped"
+    },
+    {
+      "comment_count": 2392,
+      "error": null,
+      "issue_count": null,
+      "pages_fetched": 13,
+      "pass_name": "open_prs",
+      "peer_id": "kafka",
+      "pr_count": 628,
+      "review_count": 1200,
+      "status": "completed"
+    },
+    {
+      "comment_count": 5580,
+      "error": null,
+      "issue_count": 9971,
+      "pages_fetched": 11,
+      "pass_name": "closed_search",
+      "peer_id": "kafka",
+      "pr_count": 990,
+      "review_count": 4229,
+      "status": "completed"
+    },
+    {
+      "comment_count": 3537,
+      "error": null,
+      "issue_count": null,
+      "pages_fetched": 13,
+      "pass_name": "created_desc",
+      "peer_id": "spark",
+      "pr_count": 649,
+      "review_count": 2303,
+      "status": "page_capped"
+    },
+    {
+      "comment_count": 4800,
+      "error": null,
+      "issue_count": null,
+      "pages_fetched": 12,
+      "pass_name": "open_prs",
+      "peer_id": "spark",
+      "pr_count": 590,
+      "review_count": 2532,
+      "status": "completed"
+    },
+    {
+      "comment_count": 5262,
+      "error": null,
+      "issue_count": 15278,
+      "pages_fetched": 11,
+      "pass_name": "closed_search",
+      "peer_id": "spark",
+      "pr_count": 974,
+      "review_count": 3366,
+      "status": "completed"
+    },
+    {
+      "comment_count": 195,
+      "error": null,
+      "issue_count": null,
+      "pages_fetched": 1,
+      "pass_name": "created_desc",
+      "peer_id": "flink",
+      "pr_count": 46,
+      "review_count": 134,
+      "status": "partial"
+    },
+    {
+      "comment_count": 0,
+      "error": "rate limit budget exhausted earlier this run",
+      "issue_count": null,
+      "pages_fetched": 0,
+      "pass_name": "open_prs",
+      "peer_id": "flink",
+      "pr_count": 0,
+      "review_count": 0,
+      "status": "skipped"
+    },
+    {
+      "comment_count": 0,
+      "error": "rate limit budget exhausted earlier this run",
+      "issue_count": null,
+      "pages_fetched": 0,
+      "pass_name": "closed_search",
+      "peer_id": "flink",
+      "pr_count": 0,
+      "review_count": 0,
+      "status": "skipped"
+    },
+    {
+      "comment_count": 0,
+      "error": "rate limit budget exhausted earlier this run",
+      "issue_count": null,
+      "pages_fetched": 0,
+      "pass_name": "created_desc",
+      "peer_id": "pulsar",
+      "pr_count": 0,
+      "review_count": 0,
+      "status": "skipped"
+    },
+    {
+      "comment_count": 0,
+      "error": "rate limit budget exhausted earlier this run",
+      "issue_count": null,
+      "pages_fetched": 0,
+      "pass_name": "open_prs",
+      "peer_id": "pulsar",
+      "pr_count": 0,
+      "review_count": 0,
+      "status": "skipped"
+    },
+    {
+      "comment_count": 0,
+      "error": "rate limit budget exhausted earlier this run",
+      "issue_count": null,
+      "pages_fetched": 0,
+      "pass_name": "closed_search",
+      "peer_id": "pulsar",
+      "pr_count": 0,
+      "review_count": 0,
+      "status": "skipped"
+    },
+    {
+      "comment_count": 0,
+      "error": "rate limit budget exhausted earlier this run",
+      "issue_count": null,
+      "pages_fetched": 0,
+      "pass_name": "created_desc",
+      "peer_id": "datafusion",
+      "pr_count": 0,
+      "review_count": 0,
+      "status": "skipped"
+    },
+    {
+      "comment_count": 0,
+      "error": "rate limit budget exhausted earlier this run",
+      "issue_count": null,
+      "pages_fetched": 0,
+      "pass_name": "open_prs",
+      "peer_id": "datafusion",
+      "pr_count": 0,
+      "review_count": 0,
+      "status": "skipped"
+    },
+    {
+      "comment_count": 0,
+      "error": "rate limit budget exhausted earlier this run",
+      "issue_count": null,
+      "pages_fetched": 0,
+      "pass_name": "closed_search",
+      "peer_id": "datafusion",
+      "pr_count": 0,
+      "review_count": 0,
+      "status": "skipped"
+    }
+  ],
+  "github_peer_order": [
+    "kafka",
+    "spark",
+    "flink",
+    "pulsar",
+    "datafusion"
+  ],
+  "github_rotation_start_index": 0,
+  "github_settled_peers": [],
+  "metrics_by_project": {
+    "cassandra": {
+      "metric_value_rows": 1171,
+      "pr_backlog_rows": 2172
+    },
+    "datafusion": {
+      "metric_value_rows": 247,
+      "pr_backlog_rows": 0
+    },
+    "flink": {
+      "metric_value_rows": 530,
+      "pr_backlog_rows": 0
+    },
+    "kafka": {
+      "metric_value_rows": 570,
+      "pr_backlog_rows": 196
+    },
+    "pulsar": {
+      "metric_value_rows": 412,
+      "pr_backlog_rows": 0
+    },
+    "spark": {
+      "metric_value_rows": 693,
+      "pr_backlog_rows": 448
+    }
+  },
+  "peak_clone_bytes": 52899290,
+  "per_peer_pr_counts": {
+    "datafusion": 0,
+    "flink": 46,
+    "kafka": 2568,
+    "pulsar": 0,
+    "spark": 2213
+  },
+  "release_reports": [
+    {
+      "peer_id": "kafka",
+      "release_count": 70,
+      "verification": {
+        "fetch_error": null,
+        "independent_by_year": {
+          "2011": 1,
+          "2012": 3,
+          "2013": 1,
+          "2014": 2,
+          "2015": 4,
+          "2016": 5,
+          "2017": 6,
+          "2018": 9,
+          "2019": 7,
+          "2020": 5,
+          "2021": 8,
+          "2022": 12,
+          "2023": 8,
+          "2024": 7,
+          "2025": 5,
+          "2026": 8
+        },
+        "source_type": "jira",
+        "tag_derived_by_year": {
+          "2013": 1,
+          "2014": 1,
+          "2017": 1,
+          "2018": 7,
+          "2019": 7,
+          "2020": 6,
+          "2021": 7,
+          "2022": 13,
+          "2023": 7,
+          "2024": 7,
+          "2025": 5,
+          "2026": 8
+        }
+      }
+    },
+    {
+      "peer_id": "spark",
+      "release_count": 97,
+      "verification": {
+        "fetch_error": null,
+        "independent_by_year": {
+          "2012": 5,
+          "2013": 7,
+          "2014": 9,
+          "2015": 9,
+          "2016": 8,
+          "2017": 4,
+          "2018": 7,
+          "2019": 6,
+          "2020": 5,
+          "2021": 7,
+          "2022": 6,
+          "2023": 8,
+          "2024": 6,
+          "2025": 16,
+          "2026": 15
+        },
+        "source_type": "jira",
+        "tag_derived_by_year": {
+          "2012": 5,
+          "2013": 4,
+          "2014": 8,
+          "2015": 10,
+          "2016": 7,
+          "2017": 4,
+          "2018": 6,
+          "2019": 7,
+          "2020": 5,
+          "2021": 6,
+          "2022": 6,
+          "2023": 8,
+          "2024": 6,
+          "2025": 6,
+          "2026": 9
+        }
+      }
+    },
+    {
+      "peer_id": "flink",
+      "release_count": 120,
+      "verification": {
+        "fetch_error": null,
+        "independent_by_year": {
+          "2014": 6,
+          "2015": 6,
+          "2016": 9,
+          "2017": 6,
+          "2018": 16,
+          "2019": 12,
+          "2020": 18,
+          "2021": 21,
+          "2022": 33,
+          "2023": 39,
+          "2024": 33,
+          "2025": 27,
+          "2026": 23
+        },
+        "source_type": "jira",
+        "tag_derived_by_year": {
+          "2014": 4,
+          "2015": 6,
+          "2016": 10,
+          "2017": 7,
+          "2018": 16,
+          "2019": 8,
+          "2020": 10,
+          "2021": 20,
+          "2022": 10,
+          "2023": 9,
+          "2024": 3,
+          "2025": 10,
+          "2026": 7
+        }
+      }
+    },
+    {
+      "peer_id": "pulsar",
+      "release_count": 130,
+      "verification": {
+        "fetch_error": null,
+        "independent_by_year": {
+          "2016": 6,
+          "2017": 19,
+          "2018": 7,
+          "2019": 7,
+          "2020": 6,
+          "2021": 7,
+          "2022": 9,
+          "2023": 12,
+          "2024": 23,
+          "2025": 23,
+          "2026": 18
+        },
+        "source_type": "github_releases",
+        "tag_derived_by_year": {
+          "2016": 6,
+          "2017": 16,
+          "2018": 2,
+          "2019": 6,
+          "2020": 7,
+          "2021": 11,
+          "2022": 11,
+          "2023": 12,
+          "2024": 20,
+          "2025": 23,
+          "2026": 16
+        }
+      }
+    },
+    {
+      "peer_id": "datafusion",
+      "release_count": 74,
+      "verification": {
+        "fetch_error": null,
+        "independent_by_year": {
+          "2020": 2,
+          "2021": 1,
+          "2022": 5,
+          "2023": 13,
+          "2024": 10,
+          "2025": 8,
+          "2026": 6
+        },
+        "source_type": "pypi",
+        "tag_derived_by_year": {
+          "2021": 3,
+          "2022": 9,
+          "2023": 21,
+          "2024": 14,
+          "2025": 14,
+          "2026": 13
+        }
+      }
+    }
+  ],
+  "run_id": "peers-20261010T060946Z",
+  "started_at": "2026-10-10T06:09:48.230653+00:00",
+  "wall_time_seconds": 1072.45303
+}

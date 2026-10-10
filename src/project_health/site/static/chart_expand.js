@@ -178,20 +178,51 @@
   // as literal text, so there's nothing to format.
   var TEMPORAL_AXIS_FORMAT = { month: "%b %Y" };
 
-  // The x-encoding fixup `filteredSpec` applies to whichever chart's x
-  // field is declared in `meta` (issue #156 fixup, orchestrator review of
-  // PR #157): drop the server's own default scale domain/tick step (see
-  // `filteredSpec`'s own comment for why), force a year-inclusive format
-  // on a genuinely temporal field, and keep ordinal-axis labels
-  // (month/quarter/year strings alike) from colliding once this chart's
-  // full history is in view.
-  function applyTimeAxis(xEncoding, meta) {
+  // One tick per calendar month only makes sense up to a point -- beyond
+  // it, "%b %Y" labels start colliding (orchestrator review of PR #157:
+  // "the main chart repeats month labels ... because ticks land every ~2
+  // weeks"). These breakpoints are the same shape as `chart_spec.py`'s
+  // own `month_tick_step` (issue #16), just expressed as fixed steps
+  // instead of a target-tick-count division -- one tick/month up to a
+  // year of data, one per quarter up to three years, one per half-year up
+  // to six, one per year beyond that.
+  function monthTickStep(monthCount) {
+    if (monthCount <= 12) {
+      return 1;
+    }
+    if (monthCount <= 36) {
+      return 3;
+    }
+    if (monthCount <= 72) {
+      return 6;
+    }
+    return 12;
+  }
+
+  // The x-encoding fixup `filteredSpec`/`renderOverview` apply to
+  // whichever chart's x field is declared in `meta` (issue #156 fixup,
+  // orchestrator review of PR #157): drop the server's own default scale
+  // domain (see `filteredSpec`'s own comment for why), force a year-
+  // inclusive format on a genuinely temporal field, pick a tick interval
+  // from the chart's own *currently visible* month span (`monthCount` --
+  // the number of distinct months in whatever `data.values` this
+  // particular rendering actually has, full history for the overview
+  // strip, the current date-range selection for the main chart) rather
+  // than leaving Vega-Lite's default tick placement to land on arbitrary,
+  // non-month-aligned points and repeat the same "%b %Y" label several
+  // times running, and keep ordinal-axis labels (quarter/year strings)
+  // from colliding once this chart's full history is in view.
+  function applyTimeAxis(xEncoding, meta, monthCount) {
     var next = Object.assign({}, xEncoding);
     delete next.scale;
     var axis = Object.assign({}, next.axis);
-    delete axis.tickCount;
     if (next.type === "temporal") {
       axis.format = TEMPORAL_AXIS_FORMAT[meta.timeType] || axis.format;
+    }
+    if (meta.timeType === "month" && monthCount) {
+      axis.tickCount = { interval: "month", step: monthTickStep(monthCount) };
+    } else {
+      delete axis.tickCount;
     }
     if (axis.labelOverlap === undefined) {
       axis.labelOverlap = "parity";
@@ -580,15 +611,23 @@
 
     // A date-range (or series) narrower than the chart's own default
     // encoding scale must not stay visually clipped to that default --
-    // dropping the explicit scale domain/tick step here falls back to
-    // Vega-Lite's own auto-fit over whatever `data.values` now holds,
-    // same "never duplicate the server's own windowing math" reasoning
-    // `params` mirroring above gives for chart-specific controls.
+    // dropping the explicit scale domain here falls back to Vega-Lite's
+    // own auto-fit over whatever `data.values` now holds, same "never
+    // duplicate the server's own windowing math" reasoning `params`
+    // mirroring above gives for chart-specific controls.
     if (meta.timeField) {
       var xOwner = encodingOwner(spec);
       if (xOwner && xOwner.encoding.x) {
+        var visibleMonthCount =
+          meta.timeType === "month"
+            ? distinctSorted(
+                values.map(function (r) {
+                  return r[meta.timeField];
+                })
+              ).length
+            : null;
         xOwner.encoding = Object.assign({}, xOwner.encoding, {
-          x: applyTimeAxis(xOwner.encoding.x, meta),
+          x: applyTimeAxis(xOwner.encoding.x, meta, visibleMonthCount),
         });
       }
     }
@@ -733,7 +772,12 @@
     }
 
     var owner = encodingOwner(spec);
-    var xEncoding = applyTimeAxis(owner.encoding.x, meta);
+    // The overview always shows the chart's *full* history (this
+    // function's own docstring), so its tick step is picked from the
+    // full `state.timeValues` count, not whatever date range the main
+    // chart currently has selected.
+    var overviewMonthCount = meta.timeType === "month" ? state.timeValues.length : null;
+    var xEncoding = applyTimeAxis(owner.encoding.x, meta, overviewMonthCount);
     xEncoding.axis = Object.assign({}, xEncoding.axis, {
       title: null,
       grid: false,

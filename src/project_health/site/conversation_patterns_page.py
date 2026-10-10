@@ -761,7 +761,19 @@ def _tone_mix_chart_spec(rows: list[dict[str, Any]]) -> str | None:
         "height": 220,
         "mark": {"type": "area", "line": True, "opacity": 0.9},
         "encoding": {
-            "x": {"field": "quarter", "type": "ordinal", "title": "Quarter"},
+            "x": {
+                "field": "quarter",
+                "type": "ordinal",
+                "title": "Quarter",
+                # Full history is ~59 quarters (2012Q1-present) -- every
+                # label rendered unthinned overlaps badly at a 390px phone
+                # width (verified: a solid serrated band of text). Vega-
+                # Lite's default ordinal-axis behavior is to draw every
+                # label regardless of fit unless told to thin; `labelOverlap:
+                # "parity"` (drop every other label, alternating) is its
+                # standard fix for a dense ordinal axis like this one.
+                "axis": {"labelAngle": -45, "labelOverlap": "parity"},
+            },
             "y": {
                 "field": "share",
                 "type": "quantitative",
@@ -775,7 +787,24 @@ def _tone_mix_chart_spec(rows: list[dict[str, Any]]) -> str | None:
                 "type": "nominal",
                 "sort": names_in_order,
                 "scale": {"domain": names_in_order, "range": colors_in_order},
-                "legend": {"title": "Tier"},
+                # A right-side legend (Vega-Lite's default orientation) adds
+                # its own width *outside* the chart's own numeric `width`,
+                # which `app.js`'s `embedChart` sets to the container's
+                # exact resolved pixel width -- the legend would then render
+                # past the container edge and get clipped by this card's
+                # `overflow-x: hidden` (verified by rendering this exact
+                # spec: no legend was visible at all, at either 1366 or
+                # 390px, until this changed to bottom/horizontal). A bottom,
+                # horizontal, wrapping legend instead uses vertical space,
+                # which this card's `min-height`-only container always has
+                # room for.
+                "legend": {
+                    "title": "Tier",
+                    "orient": "bottom",
+                    "direction": "horizontal",
+                    "columns": 4,
+                    "labelLimit": 160,
+                },
             },
             "tooltip": [
                 {"field": "quarter", "type": "ordinal", "title": "Quarter"},

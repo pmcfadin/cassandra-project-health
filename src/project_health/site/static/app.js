@@ -308,6 +308,41 @@
     el.addEventListener("change", renderAllCharts);
   });
 
+  // The tier legend's longest label ("Substantive disagreement",
+  // "Non-substantive friction") needs real room -- a fixed `columns: 4`
+  // (fine at a 1366px desktop width) overflowed its own column grid at a
+  // 390px phone width badly enough that the last couple of entries were
+  // clipped by this card's `overflow-x: hidden` instead of wrapping
+  // (verified by rendering the fixed-4-column spec at 390px: "Neutral",
+  // "Attack" were cut off). `TONE_LEGEND_ENTRY_MIN_WIDTH` is a
+  // deliberately generous per-column budget (swatch + the longest label,
+  // measured against this exact label set) so the column count this picks
+  // always has room for every entry's full text, same "measure the real
+  // spec, don't guess" discipline `FACET_PANEL_TOTAL_MIN` above documents
+  // for the small-multiples facet columns.
+  var TONE_LEGEND_ENTRY_MIN_WIDTH = 210;
+  var TONE_LEGEND_MAX_COLUMNS = 4;
+
+  function applyToneLegendColumns(el, spec, width) {
+    if (
+      !el.hasAttribute("data-tone-chart") ||
+      !spec.encoding ||
+      !spec.encoding.color ||
+      !spec.encoding.color.legend
+    ) {
+      return spec;
+    }
+    var columns = Math.max(
+      1,
+      Math.min(TONE_LEGEND_MAX_COLUMNS, Math.floor(width / TONE_LEGEND_ENTRY_MIN_WIDTH))
+    );
+    var next = JSON.parse(JSON.stringify(spec));
+    next.encoding.color.legend = Object.assign({}, next.encoding.color.legend, {
+      columns: columns,
+    });
+    return next;
+  }
+
   // A click anywhere inside the tone-mix controls/chart (both of which
   // live in the section's always-visible `<summary>`) must not also
   // toggle the section open/closed -- same reasoning as the CHAOSS
@@ -353,6 +388,7 @@
     // so instead of trusting "container" mode, resolve a concrete pixel
     // width from the container's own layout right now and pass that.
     var width = el.clientWidth || el.getBoundingClientRect().width || 300;
+    spec = applyToneLegendColumns(el, spec, width);
     var resolvedSpec = spec.facet
       ? applyFacetColumns(spec, width)
       : Object.assign({}, spec, { width: width });

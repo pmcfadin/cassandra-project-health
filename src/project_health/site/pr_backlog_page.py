@@ -62,6 +62,7 @@ from project_health.metrics.pr_backlog import (
     other_repo_metric_id,
 )
 from project_health.schema import get_schema, validate
+from project_health.site import chart_spec
 from project_health.site.metrics_meta import PR_BACKLOG_PRIOR_ART
 
 METRICS_SPEC_URL = (
@@ -153,6 +154,15 @@ def _stacked_chart_spec(
                 "type": "nominal",
                 "title": None,
                 "sort": [label for _, label in bucket_order],
+                # Orchestrator review of PR #157: pinned explicitly (not
+                # just via `sort`) so a bucket's color never depends on
+                # which *other* buckets happen to still be in `data.values`
+                # -- without an explicit `scale.domain`, Vega-Lite derives
+                # the color scale's domain from whatever's actually present
+                # in the (possibly client-side-filtered, `chart_expand.js`
+                # series checkboxes) data, so hiding "<30d" reassigned
+                # "30-90d" its color, "90d-1y" the next one's, and so on.
+                "scale": {"domain": [label for _, label in bucket_order]},
             },
             "tooltip": [
                 {"field": "month", "type": "temporal", "title": "Month"},
@@ -276,7 +286,25 @@ def build_pr_backlog_context(data_dir: str | Path, run_id: str) -> dict[str, Any
         "no_response_share": no_response_share,
         "no_response_n": no_response_n,
         "age_chart_spec": _stacked_chart_spec(rows_by_metric, AGE_BUCKET_ORDER, height=240),
+        "age_chart_id": "pr-backlog-age",
+        "age_chart_meta_json": chart_spec.chart_meta_json(
+            chart_id="pr-backlog-age",
+            title="Open PR backlog by age",
+            time_field="month",
+            time_type="month",
+            series_field="bucket",
+            series_order=[label for _, label in AGE_BUCKET_ORDER],
+        ),
         "ticket_chart_spec": _stacked_chart_spec(rows_by_metric, TICKET_STATE_ORDER, height=160),
+        "ticket_chart_id": "pr-backlog-ticket",
+        "ticket_chart_meta_json": chart_spec.chart_meta_json(
+            chart_id="pr-backlog-ticket",
+            title="Open PR backlog by linked-ticket state",
+            time_field="month",
+            time_type="month",
+            series_field="bucket",
+            series_order=[label for _, label in TICKET_STATE_ORDER],
+        ),
         "other_repos": _other_repos_table(rows, rows_by_metric),
         "age_bucket_labels": AGE_BUCKET_LABELS,
         "prior_art": PR_BACKLOG_PRIOR_ART,

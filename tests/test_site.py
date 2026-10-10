@@ -2824,10 +2824,15 @@ def _yoy_group_specs(html_text: str) -> dict[str, dict]:
     panel heading (the immediately preceding `<h5>`, one level deeper than
     before issue #144 nested this section inside the "Message patterns"
     collapsible section) -- so a test can pick out "Constructive /
-    discussion" vs. "Negative" specifically."""
+    discussion" vs. "Negative" specifically.
+
+    The non-greedy `.*?` between the wrap opening and the chart `<div>`
+    (rather than requiring only whitespace) tolerates issue #156's
+    `.chart-shell`/Expand-button markup now sitting between them.
+    """
     specs = {}
     for match in re.finditer(
-        r"<h5>([^<]+)</h5>\s*<div class=\"conv-yoy-chart-wrap\">\s*"
+        r"<h5>([^<]+)</h5>\s*<div class=\"conv-yoy-chart-wrap\">.*?"
         r"<div class=\"chart conv-yoy-chart\"[^>]*data-vega-spec='(.*?)'",
         html_text,
         re.S,

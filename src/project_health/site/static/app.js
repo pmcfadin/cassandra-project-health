@@ -7,6 +7,27 @@
   // inside the same container.
   var embeddedResults = new WeakMap();
 
+  // Shared "Expand chart" spec registry (issue #156, `static/chart_expand.
+  // js`): every chart this file embeds registers the *exact* resolved spec
+  // (post chart-window/yoy/tone-mix filtering) it just handed `vegaEmbed`,
+  // keyed by that chart's own `data-chart-id` -- so the expand dialog's
+  // starting point for a chart is whatever it's currently showing on the
+  // page, not a second, independently-filtered copy. Defined defensively
+  // (`window.__chartSpecRegistry ||`) since `chart_expand.js` may load
+  // before or after this file depending on page-specific `defer`red
+  // scripts' own ordering -- either file can be first to create it.
+  var chartSpecRegistry = (window.__chartSpecRegistry = window.__chartSpecRegistry || {
+    specs: {},
+    set: function (id, spec) {
+      if (id) {
+        this.specs[id] = spec;
+      }
+    },
+    get: function (id) {
+      return id ? this.specs[id] : undefined;
+    },
+  });
+
   // --- Chart time-window toggle (issue #28) ---------------------------
   //
   // Every chart's spec (`generate.py`/`governance_page.py`,
@@ -393,6 +414,8 @@
       ? applyFacetColumns(spec, width)
       : Object.assign({}, spec, { width: width });
 
+    chartSpecRegistry.set(el.getAttribute("data-chart-id"), resolvedSpec);
+
     window
       .vegaEmbed(el, resolvedSpec, { actions: false, renderer: "svg" })
       .then(function (result) {
@@ -403,6 +426,12 @@
         // page; the noscript fallback / data download links still work.
       });
   }
+
+  // Lets `chart_expand.js` force a chart inside a still-collapsed
+  // `<details class="page-section">` to embed (and so register its spec
+  // above) on demand -- e.g. a deep link straight to a chart nobody has
+  // expanded on this page view yet.
+  chartSpecRegistry.requestEmbed = embedChart;
 
   // A chart inside a collapsed `<details class="page-section">`'s body
   // (issue #144) has zero layout width -- embedding it now would bake in

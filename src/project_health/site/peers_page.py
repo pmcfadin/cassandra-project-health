@@ -83,6 +83,7 @@ from project_health.metrics.pr_backlog import (
 from project_health.metrics.peer_metrics import TIME_TO_FIRST_RESPONSE_PR
 from project_health.peers.collect import PASS_NAMES
 from project_health.peers.pipeline import CASSANDRA_PROJECT_ID, latest_peers_run_id
+from project_health.site import chart_spec
 
 CHAOSS_DISCLAIMER = (
     "CHAOSS does not set targets or rank projects. These numbers are shown for context only "
@@ -339,7 +340,37 @@ def _line_chart_spec(
                 "encoding": {
                     "x": {"field": "month", "type": "temporal", "title": None},
                     "y": {"field": "value", "type": "quantitative", "title": value_label},
-                    "color": {"field": "project", "type": "nominal", "title": None},
+                    "color": {
+                        "field": "project",
+                        "type": "nominal",
+                        "title": None,
+                        # Orchestrator review of PR #157: Cassandra first,
+                        # then the rest in `_PEER_ORDER` -- never
+                        # alphabetical. `build_peers_context`'s own
+                        # `chart_meta_json` call mirrors this exact list
+                        # (minus any gated project) as `series_order`, so
+                        # the expand dialog's checkboxes and this legend
+                        # never disagree.
+                        "sort": [
+                            name
+                            for project_id, name in _PEER_ORDER
+                            if project_id not in excluded_projects
+                        ],
+                        # Also pinned as an explicit `scale.domain` (second
+                        # orchestrator review of PR #157): without it,
+                        # hiding one project in the expand dialog's series
+                        # checkboxes reassigns the remaining projects'
+                        # colors, since Vega-Lite otherwise derives the
+                        # color scale's domain from whatever's left in
+                        # `data.values` after that client-side filter.
+                        "scale": {
+                            "domain": [
+                                name
+                                for project_id, name in _PEER_ORDER
+                                if project_id not in excluded_projects
+                            ]
+                        },
+                    },
                     "strokeWidth": {
                         "field": "is_cassandra",
                         "type": "nominal",
@@ -439,6 +470,17 @@ def build_peers_context(data_dir: str | Path, run_id: str | None = None) -> dict
                     value_label=value_label,
                     excluded_projects=gated_projects,
                 ),
+                "chart_id": metric_id,
+                "chart_meta_json": chart_spec.chart_meta_json(
+                    chart_id=metric_id,
+                    title=f"{title} by project, over time",
+                    time_field="month",
+                    time_type="month",
+                    series_field="project",
+                    series_order=[
+                        name for project_id, name in _PEER_ORDER if project_id not in gated_projects
+                    ],
+                ),
             }
         )
 
@@ -483,6 +525,19 @@ def build_peers_context(data_dir: str | Path, run_id: str | None = None) -> dict
                 backlog_series,
                 value_label="Open PRs",
                 excluded_projects=backlog_gated_projects,
+            ),
+            "chart_id": "open_pr_backlog_total",
+            "chart_meta_json": chart_spec.chart_meta_json(
+                chart_id="open_pr_backlog_total",
+                title="Open PR backlog (total) by project, over time",
+                time_field="month",
+                time_type="month",
+                series_field="project",
+                series_order=[
+                    name
+                    for project_id, name in _PEER_ORDER
+                    if project_id not in backlog_gated_projects
+                ],
             ),
         }
     )

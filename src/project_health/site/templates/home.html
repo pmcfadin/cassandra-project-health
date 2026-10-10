@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% import "_charts.html" as charts %}
 {% block content %}
 <p class="page-intro">Metrics for the Apache Cassandra project. Definitions follow CHAOSS where one exists.</p>
 
@@ -31,9 +32,11 @@
               <span class="value value--insufficient">insufficient data</span>
             {% endif %}
           </p>
-          <div class="chart chart--small" data-vega-spec='{{ s.vega_spec_json }}' role="img" aria-label="History chart for {{ card.chaoss_name }}{% if s.label %} ({{ s.label }}){% endif %}">
+          {% call charts.chart_shell("History chart for " + card.chaoss_name + (" (" + s.label + ")" if s.label else "")) %}
+          <div class="chart chart--small" data-vega-spec='{{ s.vega_spec_json }}' data-chart-id="{{ s.chart_id }}" data-chart-meta='{{ s.chart_meta_json }}' role="img" aria-label="History chart for {{ card.chaoss_name }}{% if s.label %} ({{ s.label }}){% endif %}">
             <noscript>Enable JavaScript to see this history chart, or use the data links below.</noscript>
           </div>
+          {% endcall %}
           <p class="card-prior-art">
             Based on:
             {% if s.prior_art %}

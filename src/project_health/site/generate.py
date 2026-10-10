@@ -835,6 +835,18 @@ def _card_context(
             )
         ),
         "vega_spec_json": json.dumps(_vega_lite_spec(series)),
+        # issue #156: "Expand chart" dialog metadata -- every M0/
+        # conversations/governance per-metric card chart shares this same
+        # shape (a monthly `window_end` series, no series/band), so the
+        # chart_id doubles as this card's own `metric_id`, already unique
+        # per page.
+        "chart_id": series.meta.metric_id,
+        "chart_meta_json": chart_spec.chart_meta_json(
+            chart_id=series.meta.metric_id,
+            title=series.meta.name,
+            time_field="window_end",
+            time_type="month",
+        ),
         "json_href": f"{base_prefix}data/{series.meta.metric_id}.json",
         "csv_href": f"{base_prefix}data/{series.meta.metric_id}.csv",
         # issue #134: "Based on" line -- a list of {label, url} dicts for
@@ -1055,12 +1067,22 @@ def _chaoss_starter_cards(
             series = series_by_id.get(s.metric_id)
             if series is None:
                 continue
-            series_cards.append(
-                {
-                    "label": s.label,
-                    **_card_context(series, HOME_BASE_PREFIX, last_completed_month, manifest),
-                }
+            card = _card_context(series, HOME_BASE_PREFIX, last_completed_month, manifest)
+            # issue #156: a plain `metric_id` chart_id (what `_card_context`
+            # sets by default) isn't guaranteed unique on *this* page --
+            # more than one CHAOSS Starter card can map the same underlying
+            # metric onto a different `meta.key`/series label (`metrics_
+            # meta.CHAOSS_STARTER_METRICS`) -- so this overrides it with
+            # something that is.
+            chart_id = f"chaoss-{meta.key}-{s.metric_id}"
+            card["chart_id"] = chart_id
+            card["chart_meta_json"] = chart_spec.chart_meta_json(
+                chart_id=chart_id,
+                title=f"{meta.chaoss_name}{f' ({s.label})' if s.label else ''}",
+                time_field="window_end",
+                time_type="month",
             )
+            series_cards.append({"label": s.label, **card})
         cards.append(
             {
                 "key": meta.key,
@@ -1303,10 +1325,18 @@ def _render_pages(
     governance_trend_cards = []
     for chart in governance_context.compliance_trends:
         card = governance_cards_by_metric.get(chart["metric_id"])
+        name = card["name"] if card else chart["metric_id"]
+        # issue #156: this chart's own x field is "month" (`governance_page.
+        # py::_trend_vega_spec`), not the M0/conversations cards' "window_end"
+        # -- a different chart_id namespace (`gov-trend-*`) than `card`'s own
+        # (unused here; this section renders `chart["vega_spec_json"]`, not
+        # `card["vega_spec_json"]`) keeps the two from colliding if a reader
+        # ever deep-links to one.
+        chart_id = f"gov-trend-{chart['metric_id']}"
         governance_trend_cards.append(
             {
                 "metric_id": chart["metric_id"],
-                "name": card["name"] if card else chart["metric_id"],
+                "name": name,
                 "latest_value_display": card["latest_value_display"] if card else None,
                 "latest_month_label": card["latest_month_label"] if card else None,
                 # issue #86: the check's own card already computed its
@@ -1318,6 +1348,13 @@ def _render_pages(
                 "csv_href": card["csv_href"] if card else None,
                 "vega_spec_json": chart["vega_spec_json"],
                 "has_data": chart["has_data"],
+                "chart_id": chart_id,
+                "chart_meta_json": chart_spec.chart_meta_json(
+                    chart_id=chart_id, title=f"Monthly rate for {name}", time_field="month",
+                    time_type="month",
+                )
+                if chart["has_data"]
+                else None,
             }
         )
     # Collapsible page sections (issue #144): "Facts summary", "Commit

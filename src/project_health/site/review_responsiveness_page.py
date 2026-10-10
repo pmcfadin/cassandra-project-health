@@ -45,6 +45,7 @@ from project_health.metrics.review_responsiveness import (
     metric_id,
 )
 from project_health.schema import get_schema, validate
+from project_health.site import chart_spec
 
 TIER_LABELS: dict[str, str] = {
     TIER_FIRST: "First-time submitters",
@@ -181,7 +182,24 @@ def _trailing12m_chart_spec(rows_by_metric: dict[str, dict[date, dict]]) -> str 
                 "axis": {"format": "%"},
                 "scale": {"domain": [0, 1]},
             },
-            "color": {"field": "tier", "type": "nominal", "title": "Submitter tier"},
+            "color": {
+                "field": "tier",
+                "type": "nominal",
+                "title": "Submitter tier",
+                # Orchestrator review of PR #157: first-time/2nd-5th/6th+,
+                # never alphabetical -- `chart_meta_json`'s own
+                # `series_order` below mirrors this exact list so the
+                # expand dialog's checkboxes and this legend never
+                # disagree.
+                "sort": [TIER_LABELS[t] for t in TIER_ORDER],
+                # Also pinned as an explicit `scale.domain` (second
+                # orchestrator review of PR #157): without it, hiding one
+                # tier in the expand dialog's series checkboxes reassigns
+                # the remaining tiers' colors, since Vega-Lite otherwise
+                # derives the color scale's domain from whatever's left in
+                # `data.values` after that client-side filter.
+                "scale": {"domain": [TIER_LABELS[t] for t in TIER_ORDER]},
+            },
             "tooltip": [
                 {"field": "window_end", "type": "temporal", "title": "Window ending"},
                 {"field": "tier", "type": "nominal", "title": "Tier"},
@@ -290,6 +308,15 @@ def build_review_responsiveness_context(data_dir: str | Path, run_id: str) -> di
         "coverage_note": _coverage_note(data_dir),
         "tiers": tiers,
         "trailing12m_chart_spec": _trailing12m_chart_spec(rows_by_metric),
+        "trailing12m_chart_id": "review-responsiveness-trailing12m",
+        "trailing12m_chart_meta_json": chart_spec.chart_meta_json(
+            chart_id="review-responsiveness-trailing12m",
+            title="Trailing 12-month response-within-30-days share, by tier",
+            time_field="window_end",
+            time_type="month",
+            series_field="tier",
+            series_order=[TIER_LABELS[t] for t in TIER_ORDER],
+        ),
         "source_breakdown": _source_breakdown_for_latest_year(rows_by_metric),
         "metrics_spec_url": METRICS_SPEC_URL,
     }

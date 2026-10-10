@@ -42,6 +42,7 @@ from typing import Any
 from urllib.parse import urlencode
 
 from project_health.classify.questions import MESSAGE_LEVEL_LABELS
+from project_health.site import chart_spec
 
 SORTED_LABELS: tuple[str, ...] = tuple(sorted(MESSAGE_LEVEL_LABELS))
 
@@ -449,6 +450,8 @@ def _message_patterns_by_venue(
             }
             for year in years
         ]
+        constructive_chart_id = f"msgpat-{venue}-constructive"
+        negative_chart_id = f"msgpat-{venue}-negative"
         out.append(
             {
                 "venue": venue,
@@ -458,8 +461,24 @@ def _message_patterns_by_venue(
                 "constructive_chart_spec": _small_multiples_spec(
                     year_cells, years, CONSTRUCTIVE_LABELS, headline_cutoff
                 ),
+                "constructive_chart_id": constructive_chart_id,
+                "constructive_chart_meta_json": chart_spec.chart_meta_json(
+                    chart_id=constructive_chart_id,
+                    title=f"Constructive label counts by year, {_venue_label(venue)}",
+                    time_field="year",
+                    time_type="year",
+                    has_band=True,
+                ),
                 "negative_chart_spec": _small_multiples_spec(
                     year_cells, years, NEGATIVE_LABELS, headline_cutoff
+                ),
+                "negative_chart_id": negative_chart_id,
+                "negative_chart_meta_json": chart_spec.chart_meta_json(
+                    chart_id=negative_chart_id,
+                    title=f"Negative label counts by year, {_venue_label(venue)}",
+                    time_field="year",
+                    time_type="year",
+                    has_band=True,
                 ),
                 "table_rows": table_rows,
             }
@@ -662,7 +681,39 @@ def _yoy_context(
         spec_json = _yoy_group_spec(rows, group_id, labels)
         if spec_json is None:
             continue
-        groups.append({"id": group_id, "title": group_title, "spec_json": spec_json})
+        chart_id = f"yoy-{group_id}"
+        groups.append(
+            {
+                "id": group_id,
+                "title": group_title,
+                "spec_json": spec_json,
+                "chart_id": chart_id,
+                "chart_meta_json": chart_spec.chart_meta_json(
+                    chart_id=chart_id,
+                    title=f"Year-over-year, {group_title}",
+                    time_field="year",
+                    time_type="year",
+                    params=[
+                        {
+                            "name": "venue",
+                            "selector": '[data-yoy-controls] [data-yoy-control="venue"]',
+                        },
+                        {
+                            "name": "from",
+                            "selector": '[data-yoy-controls] [data-yoy-control="from-year"]',
+                        },
+                        {
+                            "name": "to",
+                            "selector": '[data-yoy-controls] [data-yoy-control="to-year"]',
+                        },
+                        {
+                            "name": "cutoff",
+                            "selector": '[data-yoy-controls] [data-yoy-control="cutoff"]',
+                        },
+                    ],
+                ),
+            }
+        )
     if not groups:
         return None
 
@@ -890,8 +941,32 @@ def _tone_mix_context(
         rows, insufficient_quarters = _tone_mix_rows(snapshot, venue)
         spec_json = _tone_mix_chart_spec(rows)
         if spec_json is not None:
+            chart_id = f"tone-mix-{venue}"
             charts.append(
-                {"venue": venue, "label": _venue_label(venue), "spec_json": spec_json}
+                {
+                    "venue": venue,
+                    "label": _venue_label(venue),
+                    "spec_json": spec_json,
+                    "chart_id": chart_id,
+                    "chart_meta_json": chart_spec.chart_meta_json(
+                        chart_id=chart_id,
+                        title=f"Tone over time, {_venue_label(venue)}",
+                        time_field="quarter",
+                        time_type="quarter",
+                        series_field="tier_name",
+                        series_order=[_TONE_TIER_NAMES[t] for t in _TONE_TIER_ORDER],
+                        params=[
+                            {
+                                "name": "mode",
+                                "selector": '[data-tone-controls] [data-tone-control="mode"]',
+                            },
+                            {
+                                "name": "cutoff",
+                                "selector": '[data-tone-controls] [data-tone-control="cutoff"]',
+                            },
+                        ],
+                    ),
+                }
             )
         sparkline_json = _tone_mix_sparkline_spec(rows, headline_cutoff)
         if sparkline_json is not None:

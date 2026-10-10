@@ -538,7 +538,22 @@ def _ninja_trend_context(commit_rows: list[dict[str, Any]]) -> dict[str, Any]:
     }
     if window is not None:
         spec["usermeta"] = {"chartWindow": window}
-    return {"vega_spec_json": json.dumps(spec), "has_data": bool(records)}
+    has_data = bool(records)
+    return {
+        "vega_spec_json": json.dumps(spec),
+        "has_data": has_data,
+        "chart_id": "gov-ninja-trend",
+        "chart_meta_json": (
+            chart_spec.chart_meta_json(
+                chart_id="gov-ninja-trend",
+                title='Declares "ninja"',
+                time_field="month",
+                time_type="month",
+            )
+            if has_data
+            else None
+        ),
+    }
 
 
 # --- Top-level context --------------------------------------------------------

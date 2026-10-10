@@ -1,4 +1,9 @@
 {% extends "base.html" %}
+{# Imported as `chart_ui`, not `charts` -- this page's own context variable
+   (`thread_explorer_context`) is itself named `charts` (`outcome_spec_json`,
+   `sample_k`, ...), so importing this macro under that same name would
+   shadow it. #}
+{% import "_charts.html" as chart_ui %}
 {% block title %}Thread explorer — Cassandra Project Health{% endblock %}
 {% block content %}
 <section class="thread-explorer" id="thread-explorer" aria-labelledby="thread-explorer-heading">
@@ -51,15 +56,19 @@
         {% endif %}
       </div>
       {% if charts.outcome_spec_json %}
+      {% call chart_ui.chart_shell("Threads per year, by outcome") %}
       <div
         class="chart thread-outcome-chart"
         data-threads-chart="outcome"
         data-threads-chart-spec='{{ charts.outcome_spec_json }}'
+        data-chart-id="{{ charts.outcome_chart_id }}"
+        data-chart-meta='{{ charts.outcome_chart_meta_json }}'
         role="img"
         aria-label="Threads per year, by outcome"
       >
         <noscript>Enable JavaScript to see this chart, or use the table below.</noscript>
       </div>
+      {% endcall %}
       {% endif %}
     </div>
 
@@ -75,27 +84,35 @@
       <div class="thread-label-chart-wrap">
         {% if charts.constructive_spec_json %}
         <h4>Constructive / discussion</h4>
+        {% call chart_ui.chart_shell("Constructive labels, share of flagged threads, year over year") %}
         <div
           class="chart thread-label-chart"
           data-threads-chart="label-constructive"
           data-threads-chart-spec='{{ charts.constructive_spec_json }}'
+          data-chart-id="{{ charts.constructive_chart_id }}"
+          data-chart-meta='{{ charts.constructive_chart_meta_json }}'
           role="img"
           aria-label="Constructive labels, share of flagged threads, year over year"
         >
           <noscript>Enable JavaScript to see this chart, or use the table below.</noscript>
         </div>
+        {% endcall %}
         {% endif %}
         {% if charts.negative_spec_json %}
         <h4>Negative</h4>
+        {% call chart_ui.chart_shell("Negative labels, share of flagged threads, year over year") %}
         <div
           class="chart thread-label-chart"
           data-threads-chart="label-negative"
           data-threads-chart-spec='{{ charts.negative_spec_json }}'
+          data-chart-id="{{ charts.negative_chart_id }}"
+          data-chart-meta='{{ charts.negative_chart_meta_json }}'
           role="img"
           aria-label="Negative labels, share of flagged threads, year over year"
         >
           <noscript>Enable JavaScript to see this chart, or use the table below.</noscript>
         </div>
+        {% endcall %}
         {% endif %}
       </div>
     </div>

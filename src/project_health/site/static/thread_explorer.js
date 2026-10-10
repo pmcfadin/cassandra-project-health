@@ -225,6 +225,23 @@
   var chartBaseSpecs = {};
   var chartShowShare = false; // outcome chart's counts <-> share-of-year toggle
 
+  // Shared "Expand chart" spec registry (issue #156, `static/chart_expand.
+  // js`) -- same registry `static/app.js` writes into, so the expand
+  // dialog reads whichever chart's spec was most recently embedded
+  // regardless of which of these two independent, non-module scripts did
+  // the embedding.
+  var chartSpecRegistry = (window.__chartSpecRegistry = window.__chartSpecRegistry || {
+    specs: {},
+    set: function (id, spec) {
+      if (id) {
+        this.specs[id] = spec;
+      }
+    },
+    get: function (id) {
+      return id ? this.specs[id] : undefined;
+    },
+  });
+
   CHART_KEYS.forEach(function (key) {
     var el = document.querySelector('[data-threads-chart="' + key + '"]');
     if (!el) {
@@ -282,6 +299,7 @@
     var resolvedSpec = spec.facet
       ? applyFacetColumns(spec, width)
       : Object.assign({}, spec, { width: width });
+    chartSpecRegistry.set(el.getAttribute("data-chart-id"), resolvedSpec);
     window
       .vegaEmbed(el, resolvedSpec, { actions: false, renderer: "svg" })
       .then(function (result) {

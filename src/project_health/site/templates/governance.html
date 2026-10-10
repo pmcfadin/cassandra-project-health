@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% import "_sections.html" as sections %}
+{% import "_charts.html" as charts %}
 {% block title %}Governance — Cassandra Project Health{% endblock %}
 {% block content %}
 {% if governance.has_data %}
@@ -102,9 +103,11 @@
         {% endif %}
       </p>
       {% if chart.has_data %}
-      <div class="chart" data-vega-spec='{{ chart.vega_spec_json }}' role="img" aria-label="Monthly rate for {{ chart.name }}">
+      {% call charts.chart_shell("Monthly rate for " + chart.name) %}
+      <div class="chart" data-vega-spec='{{ chart.vega_spec_json }}' data-chart-id="{{ chart.chart_id }}" data-chart-meta='{{ chart.chart_meta_json }}' role="img" aria-label="Monthly rate for {{ chart.name }}">
         <noscript>Enable JavaScript to see the {{ chart.name }} trend chart, or use the data links below.</noscript>
       </div>
+      {% endcall %}
       {% else %}
       <p class="card-empty-state">No monthly data yet.</p>
       {% endif %}
@@ -126,9 +129,11 @@
         not a documented Cassandra rule, shown for context only.
       </p>
       {% if governance.ninja_trend.has_data %}
-      <div class="chart" data-vega-spec='{{ governance.ninja_trend.vega_spec_json }}' role="img" aria-label="Commits declaring ninja per month">
+      {% call charts.chart_shell("Commits declaring ninja per month") %}
+      <div class="chart" data-vega-spec='{{ governance.ninja_trend.vega_spec_json }}' data-chart-id="{{ governance.ninja_trend.chart_id }}" data-chart-meta='{{ governance.ninja_trend.chart_meta_json }}' role="img" aria-label="Commits declaring ninja per month">
         <noscript>Enable JavaScript to see the ninja-declared trend chart.</noscript>
       </div>
+      {% endcall %}
       {% else %}
       <p class="card-empty-state">No monthly data yet.</p>
       {% endif %}

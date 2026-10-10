@@ -1120,6 +1120,62 @@ main {
   margin: 0.15rem 0 0;
 }
 
+/* --- Tone over time (issue #153) ---------------------------------------
+   Lives inside a `<details class="page-section">`'s always-visible
+   `<summary>` (never its collapsible body), so it must stay visible and
+   usable while the summary row itself keeps its own `cursor: pointer`
+   click-to-toggle affordance -- `cursor: default` here, plus `app.js`'s
+   `stopPropagation` guard on `.page-section-summary-extra`, keeps a click
+   on the cutoff/mode selects or the chart from also collapsing the
+   section underneath them. */
+.page-section-summary-extra {
+  cursor: default;
+  margin-top: 0.75rem;
+  max-width: 100%;
+  overflow-x: hidden;
+}
+.conv-tone-mix-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.6rem;
+}
+.conv-tone-mix-title {
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+.conv-tone-mix-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+}
+.conv-tone-mix-controls label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.8rem;
+  color: var(--fg-muted);
+}
+.conv-tone-mix-controls select {
+  padding: 0.3rem 0.45rem;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--fg);
+  font: inherit;
+}
+.conv-tone-mix-chart {
+  min-height: 220px;
+  max-width: 100%;
+  margin-bottom: 0.75rem;
+}
+@media (max-width: 480px) {
+  .conv-tone-mix-chart {
+    min-height: 180px;
+  }
+}
+
 @media (max-width: 480px) {
   .page-section-nav-controls {
     margin-left: 0;

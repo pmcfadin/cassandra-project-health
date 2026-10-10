@@ -2755,6 +2755,42 @@ def test_conversation_patterns_shows_insufficient_data_for_pile_on(tmp_path):
     assert "insufficient data" in html_text
 
 
+# --- Tone over time (issue #153) --------------------------------------------
+
+
+def test_conversations_page_tone_mix_chart_is_in_the_always_visible_summary(tmp_path):
+    """Issue #153: "Place it in the Summary section, visible without
+    expanding (the summary row should carry the chart, not hide it in a
+    collapsed section)" -- the tone-mix chart markup must appear inside
+    the `<summary>` element (before `page-section-body` opens), not after
+    it, for the "conv-summary" section."""
+    out_dir, _ = _build_site_with_conversation_patterns(tmp_path)
+    html_text = _conversations_html(out_dir)
+
+    summary_start = html_text.index('id="conv-summary"')
+    body_start = html_text.index('<div class="page-section-body">', summary_start)
+    tone_chart_index = html_text.index('id="conv-tone-mix"', summary_start)
+    assert summary_start < tone_chart_index < body_start
+    assert 'data-tone-chart' in html_text
+    assert 'data-tone-control="cutoff"' in html_text
+    assert 'data-tone-control="mode"' in html_text
+
+
+def test_conversations_page_tone_mix_chart_stacks_bottom_to_top_with_legend_names(tmp_path):
+    out_dir, _ = _build_site_with_conversation_patterns(tmp_path)
+    html_text = _conversations_html(out_dir)
+    assert "Closing/positive" in html_text
+    assert "Attack" in html_text
+    assert "Tone over time" in html_text
+
+
+def test_community_page_renders_tone_mix_sparkline(tmp_path):
+    out_dir, _ = _build_site_with_conversation_patterns(tmp_path)
+    html_text = _community_html(out_dir)
+    assert "Tone over time" in html_text
+    assert 'data-vega-spec' in html_text
+
+
 # --- Year-over-year grouped-bar chart (issue #120) --------------------------
 
 from project_health.site.conversation_patterns_page import _yoy_default_range  # noqa: E402

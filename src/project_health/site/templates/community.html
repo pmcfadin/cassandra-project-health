@@ -354,6 +354,15 @@
         </li>
         {% endfor %}
       </ul>
+      {% if conversation_patterns.tone_mix and conversation_patterns.tone_mix.sparklines %}
+      <p class="card-status">Tone over time</p>
+      {% for spark in conversation_patterns.tone_mix.sparklines %}
+      <p class="card-status">
+        {{ spark.label }}
+        <span class="chart chart--sparkline" data-vega-spec='{{ spark.spec_json }}' role="img" aria-label="Tone over time, {{ spark.label }}"></span>
+      </p>
+      {% endfor %}
+      {% endif %}
       <p class="card-more">
         <a href="{{ base_prefix }}conversations/#conversation-patterns">See the full page &rarr;</a>
         {% if thread_explorer.available %}

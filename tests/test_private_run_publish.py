@@ -113,6 +113,53 @@ def _thread_metrics_entry() -> dict:
     }
 
 
+TONE_TIERS = ("-2", "-1", "0", "1", "2", "3", "4")
+TONE_TIER_NAMES = {
+    "-2": "Closing/positive",
+    "-1": "Constructive/positive",
+    "0": "Neutral",
+    "1": "Substantive disagreement",
+    "2": "Non-substantive friction",
+    "3": "Hostile",
+    "4": "Attack",
+}
+
+
+def _tone_mix_cell(*, insufficient: bool = False) -> dict:
+    if insufficient:
+        tiers = {tier: None for tier in TONE_TIERS}
+        messages, authors = 5, 2
+    else:
+        # Shares deliberately sum to 1.0 across tiers, matching
+        # `tone_mix.weighted_tier_shares`'s own invariant.
+        shares = {
+            "-2": 0.05,
+            "-1": 0.15,
+            "0": 0.50,
+            "1": 0.15,
+            "2": 0.10,
+            "3": 0.03,
+            "4": 0.02,
+        }
+        tiers = {
+            tier: {
+                "name": TONE_TIER_NAMES[tier],
+                "share": share,
+                "ci95": [max(0.0, share - 0.02), share + 0.02],
+            }
+            for tier, share in shares.items()
+        }
+        messages, authors = 50, 15
+    return {
+        "messages_classified": messages,
+        "distinct_authors": authors,
+        "threads_sampled": 10,
+        "threads_population": 100,
+        "insufficient_data": insufficient,
+        "tiers": tiers,
+    }
+
+
 def _newcomer_entry(*, insufficient: bool = False) -> dict:
     if insufficient:
         return {
@@ -239,6 +286,18 @@ def _sample_aggregates(**overrides) -> dict:
         "newcomer_trend_summary": {
             v: {"windows": {"2017_2019": _newcomer_entry(), "2023_2025": _newcomer_entry()}}
             for v in VENUES
+        },
+        "tone_mix_cutoffs": list(THREAD_CUTOFFS),
+        "tone_mix_headline_cutoff": "0.5",
+        "tone_mix_by_quarter": {
+            v: {
+                "2024Q1": {ck: _tone_mix_cell() for ck in THREAD_CUTOFFS},
+                "2024Q2": {ck: _tone_mix_cell(insufficient=True) for ck in THREAD_CUTOFFS},
+            }
+            for v in VENUES
+        },
+        "tone_mix_by_year": {
+            v: {"2024": {ck: _tone_mix_cell() for ck in THREAD_CUTOFFS}} for v in VENUES
         },
     }
     aggregates.update(overrides)
@@ -392,6 +451,46 @@ def test_sanitize_allows_insufficient_data_cell_with_no_values():
     assert cell["insufficient_data"] is True
     for by_cutoff in cell["cutoff_rates_per_1000_messages"].values():
         assert all(v is None for v in by_cutoff.values())
+
+
+# --- Tone mix (issue #153) --------------------------------------------------
+
+
+def test_sanitize_round_trips_tone_mix_tiers():
+    aggregates = _sample_aggregates()
+    sanitized = sanitize_aggregates(aggregates)
+    cell = sanitized["tone_mix_by_year"]["mailing_list"]["2024"]["0.5"]
+    assert cell["insufficient_data"] is False
+    tier = cell["tiers"]["0"]
+    assert tier["name"] == "Neutral"
+    assert tier["share"] == 0.50
+    assert tier["ci95"] == [0.48, 0.52]
+    # Every tier's share sums to 1.0 -- the stacking invariant.
+    assert sum(entry["share"] for entry in cell["tiers"].values()) == pytest.approx(1.0)
+
+
+def test_sanitize_tone_mix_insufficient_cell_has_no_values():
+    aggregates = _sample_aggregates()
+    sanitized = sanitize_aggregates(aggregates)
+    cell = sanitized["tone_mix_by_quarter"]["mailing_list"]["2024Q2"]["0.5"]
+    assert cell["insufficient_data"] is True
+    assert all(v is None for v in cell["tiers"].values())
+
+
+def test_sanitize_hard_fails_when_insufficient_tone_mix_tier_carries_a_value():
+    aggregates = _sample_aggregates()
+    bad_cell = _tone_mix_cell(insufficient=True)
+    bad_cell["tiers"]["0"] = {"name": "Neutral", "share": 0.5, "ci95": [0.4, 0.6]}
+    aggregates["tone_mix_by_year"]["mailing_list"]["2024"]["0.5"] = bad_cell
+    with pytest.raises(SanitizeError, match="floor"):
+        sanitize_aggregates(aggregates)
+
+
+def test_sanitize_missing_tone_mix_key_raises():
+    aggregates = _sample_aggregates()
+    del aggregates["tone_mix_by_quarter"]
+    with pytest.raises(SanitizeError, match="tone_mix_by_quarter"):
+        sanitize_aggregates(aggregates)
 
 
 # --- Snapshot writer ---------------------------------------------------------

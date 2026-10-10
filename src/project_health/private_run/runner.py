@@ -66,6 +66,7 @@ from project_health.private_run import aggregate, frame, report, sensitivity
 from project_health.private_run import message_index as message_index_module
 from project_health.private_run import thread_aggregate
 from project_health.private_run import thread_export
+from project_health.private_run import tone_mix
 from project_health.private_run.identity import load_or_create_salt
 from project_health.private_run.newcomer import DEFAULT_NEWCOMER_N, is_newcomer
 from project_health.private_run.quarters import quarter_bounds  # noqa: F401  (re-exported for callers)
@@ -770,6 +771,38 @@ def _compute_newcomer_trend_summary(
     return result
 
 
+# --- Tone mix (issue #153) ----------------------------------------------------
+
+
+def _aggregate_tone_mix_cutoffs(
+    clusters: list[ThreadCluster],
+    authors: set[str],
+    *,
+    seed: int,
+    cell_key_prefix: str,
+    bootstrap_iterations: int,
+    threads_population: int = 0,
+    threads_sampled: int = 0,
+) -> dict[str, Any]:
+    """One (venue, period) cell's `tone_mix.aggregate_tone_mix_cell` at
+    every `tone_mix.TONE_MIX_CUTOFFS` cutoff (0.5 headline, 0.7
+    sensitivity -- issue #153), keyed by `aggregate.cutoff_key` the same
+    way `thread_metrics_by_year`/`thread_trend_summary` key their own
+    per-cutoff entries."""
+    return {
+        aggregate.cutoff_key(cutoff): tone_mix.aggregate_tone_mix_cell(
+            tone_mix.from_message_clusters(clusters, cutoff),
+            authors,
+            seed=seed,
+            cell_key=f"{cell_key_prefix}:{aggregate.cutoff_key(cutoff)}",
+            bootstrap_iterations=bootstrap_iterations,
+            threads_population=threads_population,
+            threads_sampled=threads_sampled,
+        )
+        for cutoff in tone_mix.TONE_MIX_CUTOFFS
+    }
+
+
 # --- Cost ledger (issue #110 fixup round 1) -----------------------------------
 
 
@@ -1189,6 +1222,10 @@ def run_private_run(
 
     cells_by_quarter: dict[str, dict[str, Any]] = {venue: {} for venue in VENUES}
     cells_by_year: dict[str, dict[str, Any]] = {venue: {} for venue in VENUES}
+    # Issue #153: §2.2 intensity-tier mix, by quarter and by year, mirroring
+    # `cells_by_quarter`/`cells_by_year`'s own per-venue/per-period shape.
+    tone_mix_by_quarter: dict[str, dict[str, Any]] = {venue: {} for venue in VENUES}
+    tone_mix_by_year: dict[str, dict[str, Any]] = {venue: {} for venue in VENUES}
     year_clusters: dict[str, dict[str, list[ThreadCluster]]] = {venue: {} for venue in VENUES}
     year_authors: dict[str, dict[str, set[str]]] = {venue: {} for venue in VENUES}
 
@@ -1218,6 +1255,15 @@ def run_private_run(
                 threads_population=stratum.population,
                 threads_sampled=len(stratum.sampled_ids),
             )
+            tone_mix_by_quarter[venue][quarter] = _aggregate_tone_mix_cutoffs(
+                clusters,
+                authors,
+                seed=seed,
+                cell_key_prefix=f"tone:{venue}:{quarter}",
+                bootstrap_iterations=bootstrap_iterations,
+                threads_population=stratum.population,
+                threads_sampled=len(stratum.sampled_ids),
+            )
             year = quarter[:4]
             year_clusters[venue].setdefault(year, []).extend(clusters)
             year_authors[venue].setdefault(year, set()).update(authors)
@@ -1237,6 +1283,15 @@ def run_private_run(
                 seed=seed,
                 cell_key=f"{venue}:year:{year}",
                 sensitivity_thresholds=sensitivity_thresholds,
+                bootstrap_iterations=bootstrap_iterations,
+                threads_population=sum(strata[q].population for q in year_quarters),
+                threads_sampled=sum(len(strata[q].sampled_ids) for q in year_quarters),
+            )
+            tone_mix_by_year[venue][year] = _aggregate_tone_mix_cutoffs(
+                clusters,
+                authors,
+                seed=seed,
+                cell_key_prefix=f"tone:{venue}:year:{year}",
                 bootstrap_iterations=bootstrap_iterations,
                 threads_population=sum(strata[q].population for q in year_quarters),
                 threads_sampled=sum(len(strata[q].sampled_ids) for q in year_quarters),
@@ -1411,6 +1466,14 @@ def run_private_run(
         "newcomer_by_year": newcomer_by_year,
         "thread_trend_summary": thread_trend_summary,
         "newcomer_trend_summary": newcomer_trend_summary,
+        # Issue #153: §2.2 intensity-tier mix ("tone over time"), by quarter
+        # and by year, at the headline (0.5) and sensitivity (0.7) cutoffs
+        # (`tone_mix.TONE_MIX_CUTOFFS`) -- a stacking partition of every
+        # classified message's tier, never raw sentiment (§1.2).
+        "tone_mix_cutoffs": [aggregate.cutoff_key(c) for c in tone_mix.TONE_MIX_CUTOFFS],
+        "tone_mix_headline_cutoff": aggregate.cutoff_key(tone_mix.TONE_MIX_HEADLINE_CUTOFF),
+        "tone_mix_by_quarter": tone_mix_by_quarter,
+        "tone_mix_by_year": tone_mix_by_year,
     }
 
     aggregates_path = out_dir / aggregates_filename

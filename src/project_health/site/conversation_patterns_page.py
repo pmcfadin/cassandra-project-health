@@ -84,6 +84,35 @@ _EARLY_WINDOW = "2017_2019"
 _RECENT_WINDOW = "2023_2025"
 _WINDOW_LABELS = {_EARLY_WINDOW: "2017-2019", _RECENT_WINDOW: "2023-2025"}
 
+# Issue #153 ("Conversations: tone over time"): COMMUNITY-HEALTH.md §2.2's
+# seven intensity tiers, bottom-to-top stacking order (closing/positive at
+# the bottom, attack at the top), each with a plain-language name (§2.2's
+# own "Meaning" column) and a diverging cool (negative tiers: closing,
+# constructive) -> neutral -> warm (positive tiers: friction, hostile,
+# attack) color. The color direction deliberately does not map "cool =
+# good" / "warm = bad" onto a verdict -- it is a visual ordering cue for a
+# stacked chart, not a judgment (D25: no verdict vocabulary anywhere on
+# this page).
+_TONE_TIER_ORDER: tuple[int, ...] = (-2, -1, 0, 1, 2, 3, 4)
+_TONE_TIER_NAMES: dict[int, str] = {
+    -2: "Closing/positive",
+    -1: "Constructive/positive",
+    0: "Neutral",
+    1: "Substantive disagreement",
+    2: "Non-substantive friction",
+    3: "Hostile",
+    4: "Attack",
+}
+_TONE_TIER_COLORS: dict[int, str] = {
+    -2: "#2b6cb0",
+    -1: "#63b3ed",
+    0: "#a0aec0",
+    1: "#f6ad55",
+    2: "#ed8936",
+    3: "#e53e3e",
+    4: "#9b2c2c",
+}
+
 REPO_URL = "https://github.com/pmcfadin/cassandra-project-health"
 BENCHMARK_PUBLIC_URL = f"{REPO_URL}/blob/main/docs/benchmark/public-v1.md"
 COMMUNITY_HEALTH_URL = f"{REPO_URL}/blob/main/docs/spec/COMMUNITY-HEALTH.md"
@@ -656,6 +685,207 @@ def _yoy_context(
     }
 
 
+def _tone_mix_rows(
+    snapshot: dict[str, Any], venue: str
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Issue #153: long-format rows (one per quarter/cutoff/tier cell that
+    clears the §5.1 floor) for one venue's tone-over-time chart, plus the
+    list of quarters omitted entirely for `insufficient_data` (a whole
+    cell, never a single tier within it -- `publish.py`'s own floor
+    invariant) -- the same "insufficient quarters shown as a gap, noted
+    below" convention `_yoy_rows` already uses for the message-patterns
+    chart."""
+    quarter_cells = snapshot.get("tone_mix_by_quarter", {}).get(venue, {})
+    cutoffs = list(snapshot.get("tone_mix_cutoffs", []))
+    rows: list[dict[str, Any]] = []
+    insufficient_quarters: list[str] = []
+    for quarter in sorted(quarter_cells):
+        by_cutoff = quarter_cells[quarter]
+        any_data = False
+        for cutoff in cutoffs:
+            cell = by_cutoff.get(cutoff)
+            if cell is None or cell.get("insufficient_data"):
+                continue
+            for tier in _TONE_TIER_ORDER:
+                entry = cell["tiers"].get(str(tier))
+                if entry is None:
+                    continue
+                any_data = True
+                ci_lo, ci_hi = entry["ci95"]
+                rows.append(
+                    {
+                        "venue": venue,
+                        "quarter": quarter,
+                        "cutoff": cutoff,
+                        "tier": str(tier),
+                        "tier_order": tier,
+                        "tier_name": _TONE_TIER_NAMES[tier],
+                        "share": entry["share"],
+                        "per_1000": entry["share"] * 1000.0,
+                        "ci_lo": ci_lo,
+                        "ci_hi": ci_hi,
+                        "ci_lo_per1000": ci_lo * 1000.0,
+                        "ci_hi_per1000": ci_hi * 1000.0,
+                        "messages": cell["messages_classified"],
+                        "authors": cell["distinct_authors"],
+                    }
+                )
+        if not any_data:
+            insufficient_quarters.append(quarter)
+    return rows, insufficient_quarters
+
+
+def _tone_mix_chart_spec(rows: list[dict[str, Any]]) -> str | None:
+    """Issue #153: a stacked 100% area chart, one per venue, quarter on
+    the x-axis, tiers stacked bottom (-2, closing/positive) to top (4,
+    attack) via the `tier_order` `order` channel, a diverging cool->warm
+    palette, and a legend using each tier's plain-language name (not a
+    bare signed integer). `data.values` carries every cutoff this
+    snapshot has (0.5 headline, 0.7 sensitivity) plus both the `share`
+    and `per_1000` forms of each value -- `app.js`'s `applyToneFilter`
+    narrows to the controls' current cutoff and switches which field is
+    encoded on `y` (share vs. per 1,000 messages), the same "ship the
+    whole small dataset, filter/remap in JS" pattern `applyYoyFilter`
+    already uses for the message-patterns chart, so the controls' default
+    selection and this spec's data never have to be kept in sync by hand.
+
+    `None` (never an error/empty chart) when no cell cleared the floor at
+    all for this venue."""
+    if not rows:
+        return None
+    names_in_order = [_TONE_TIER_NAMES[t] for t in _TONE_TIER_ORDER]
+    colors_in_order = [_TONE_TIER_COLORS[t] for t in _TONE_TIER_ORDER]
+    spec = {
+        "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+        "width": "container",
+        "height": 220,
+        "mark": {"type": "area", "line": True, "opacity": 0.9},
+        "encoding": {
+            "x": {"field": "quarter", "type": "ordinal", "title": "Quarter"},
+            "y": {
+                "field": "share",
+                "type": "quantitative",
+                "stack": "zero",
+                "title": "Share of classified messages",
+                "axis": {"format": "%"},
+            },
+            "order": {"field": "tier_order", "type": "quantitative"},
+            "color": {
+                "field": "tier_name",
+                "type": "nominal",
+                "sort": names_in_order,
+                "scale": {"domain": names_in_order, "range": colors_in_order},
+                "legend": {"title": "Tier"},
+            },
+            "tooltip": [
+                {"field": "quarter", "type": "ordinal", "title": "Quarter"},
+                {"field": "tier_name", "type": "nominal", "title": "Tier"},
+                {"field": "share", "type": "quantitative", "title": "Share", "format": ".1%"},
+                {"field": "ci_lo", "type": "quantitative", "title": "CI low", "format": ".1%"},
+                {"field": "ci_hi", "type": "quantitative", "title": "CI high", "format": ".1%"},
+                {"field": "messages", "type": "quantitative", "title": "Messages"},
+                {"field": "authors", "type": "quantitative", "title": "Authors"},
+            ],
+        },
+        "data": {"values": rows},
+        "usermeta": {
+            "toneMix": {
+                "shareField": "share",
+                "per1000Field": "per_1000",
+                "ciLoShare": "ci_lo",
+                "ciHiShare": "ci_hi",
+                "ciLoPer1000": "ci_lo_per1000",
+                "ciHiPer1000": "ci_hi_per1000",
+            }
+        },
+    }
+    return json.dumps(spec)
+
+
+def _tone_mix_sparkline_spec(rows: list[dict[str, Any]], headline_cutoff: str) -> str | None:
+    """Issue #153: a tiny, axis-free, legend-free stacked-area sparkline
+    for the Community page's "Conversation patterns" card -- the headline
+    cutoff only, every quarter the venue has (no controls, nothing
+    interactive), matching `generate._sparkline_spec`'s own minimalism
+    (glance-only trend, not a second full chart)."""
+    headline_rows = [row for row in rows if row["cutoff"] == headline_cutoff]
+    if not headline_rows:
+        return None
+    colors_in_order = [_TONE_TIER_COLORS[t] for t in _TONE_TIER_ORDER]
+    names_in_order = [_TONE_TIER_NAMES[t] for t in _TONE_TIER_ORDER]
+    return json.dumps(
+        {
+            "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+            "width": "container",
+            "height": 28,
+            "autosize": {"type": "fit-x", "contains": "padding"},
+            "background": None,
+            "data": {"values": headline_rows},
+            "mark": {"type": "area", "line": False},
+            "encoding": {
+                "x": {"field": "quarter", "type": "ordinal", "axis": None},
+                "y": {
+                    "field": "share",
+                    "type": "quantitative",
+                    "stack": "zero",
+                    "axis": None,
+                },
+                "order": {"field": "tier_order", "type": "quantitative"},
+                "color": {
+                    "field": "tier_name",
+                    "type": "nominal",
+                    "sort": names_in_order,
+                    "scale": {"domain": names_in_order, "range": colors_in_order},
+                    "legend": None,
+                },
+            },
+            "config": {"view": {"stroke": None}},
+        }
+    )
+
+
+def _tone_mix_context(
+    snapshot: dict[str, Any], venues: list[str], venue_meta: list[dict[str, str]]
+) -> dict[str, Any] | None:
+    """Issue #153: the "tone over time" stacked-area chart context -- one
+    chart per venue, a shared cutoff selector (0.5/0.7) and share/per-1,000
+    toggle, and each venue's insufficient-quarters note. `None` (never an
+    error) when no venue has any cell clearing the floor at all."""
+    cutoffs = list(snapshot.get("tone_mix_cutoffs", []))
+    headline_cutoff = snapshot.get("tone_mix_headline_cutoff", cutoffs[0] if cutoffs else "0.5")
+
+    charts = []
+    sparklines = []
+    insufficient_notes = []
+    for venue in venues:
+        rows, insufficient_quarters = _tone_mix_rows(snapshot, venue)
+        spec_json = _tone_mix_chart_spec(rows)
+        if spec_json is not None:
+            charts.append(
+                {"venue": venue, "label": _venue_label(venue), "spec_json": spec_json}
+            )
+        sparkline_json = _tone_mix_sparkline_spec(rows, headline_cutoff)
+        if sparkline_json is not None:
+            sparklines.append(
+                {"venue": venue, "label": _venue_label(venue), "spec_json": sparkline_json}
+            )
+        if insufficient_quarters:
+            insufficient_notes.append(
+                {"venue_label": _venue_label(venue), "quarters": insufficient_quarters}
+            )
+    if not charts:
+        return None
+
+    return {
+        "charts": charts,
+        "sparklines": sparklines,
+        "venues": venue_meta,
+        "cutoffs": cutoffs,
+        "default_cutoff": headline_cutoff,
+        "insufficient_notes": insufficient_notes,
+    }
+
+
 def _method_context(snapshot: dict[str, Any]) -> dict[str, Any]:
     headline_cutoff = snapshot["headline_cutoff"]
     covered = {_venue_label(v) for v in snapshot["venues"]}
@@ -743,6 +973,7 @@ def build_conversation_patterns_context(
         "model_id_pinned": snapshot.get("model_id_pinned"),
         "venues": venue_meta,
         "summary_by_venue": _summary_by_venue(snapshot, venues),
+        "tone_mix": _tone_mix_context(snapshot, venues, venue_meta),
         "yoy": _yoy_context(snapshot, venues, venue_meta, build_time),
         "newcomer_by_venue": _newcomer_by_venue(snapshot, venues),
         "disagreement_by_venue": _disagreement_by_venue(snapshot, venues),

@@ -24,7 +24,7 @@
   "peers/pulsar/github:pr_pass_created_desc": "{\"cursor\": \"Y3Vyc29yOnYyOpK0MjAyNi0wOS0zMFQyMToxOTozOFrPAAAAARfpitk=\", \"high_watermark\": null, \"newest_seen\": \"2026-10-10T02:08:44+00:00\"}",
   "peers/spark/git": "215a1460d9d4acdac6f72b42c28ab60b9ff5b7fe",
   "peers/spark/github:pr_pass_closed_search": "{\"cursor\": \"Y3Vyc29yOjYzMA==\", \"high_watermark\": null, \"newest_seen\": null}",
-  "peers/spark/github:pr_pass_created_desc": "{\"cursor\": \"Y3Vyc29yOnYyOpK0MjAyNi0wNS0xM1QxNTo0MDozNlrO2y8iAA==\", \"high_watermark\": null, \"newest_seen\": \"2026-10-10T02:41:04+00:00\"}",
+  "peers/spark/github:pr_pass_created_desc": "{\"cursor\": \"Y3Vyc29yOnYyOpK0MjAyNi0wNS0wOVQxNjowMzozNFrO2d7Flw==\", \"high_watermark\": null, \"newest_seen\": \"2026-10-10T02:41:04+00:00\"}",
   "peers/spark/github:pr_pass_open_prs": "{\"cursor\": null, \"high_watermark\": null, \"newest_seen\": null}",
   "ponymail": "{\"dev\": \"2026-09\", \"user\": \"2026-09\"}"
 }

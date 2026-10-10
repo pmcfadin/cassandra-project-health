@@ -42,6 +42,7 @@ from urllib.parse import urlencode
 
 from project_health.classify.questions import MESSAGE_LEVEL_LABELS
 from project_health.private_run.sample import DEFAULT_K
+from project_health.site import chart_spec
 from project_health.site.conversation_patterns_page import CONSTRUCTIVE_LABELS, NEGATIVE_LABELS
 
 REPO_URL = "https://github.com/pmcfadin/cassandra-project-health"
@@ -499,11 +500,64 @@ def _threads_chart_context(rows: list[dict[str, Any]]) -> dict[str, Any]:
     outcome_spec = _year_outcome_chart_spec(rows)
     constructive_spec = _label_year_group_spec(rows, CONSTRUCTIVE_LABELS)
     negative_spec = _label_year_group_spec(rows, NEGATIVE_LABELS)
+    # issue #156: these three charts re-derive their own data entirely
+    # client-side (`thread_explorer.js`'s `yearOutcomeRows`/
+    # `labelYearShareRows`, run against whichever rows the table's own
+    # venue/outcome/label/year filters currently match) -- the dialog's
+    # generic date-range control still applies on top of that (its own
+    # `timeField`/"year" narrows further), and `params` lets it mirror
+    # those same table filters rather than re-deriving this chart's rows a
+    # second way.
+    threads_filter_params = [
+        {"name": "venue", "selector": '[data-threads-filters] [data-threads-filter="venue"]'},
+        {
+            "name": "year_from",
+            "selector": '[data-threads-filters] [data-threads-filter="year_from"]',
+        },
+        {"name": "year_to", "selector": '[data-threads-filters] [data-threads-filter="year_to"]'},
+    ]
     return {
         "available": bool(outcome_spec or constructive_spec or negative_spec),
         "outcome_spec_json": outcome_spec,
+        "outcome_chart_id": "threads-outcome",
+        "outcome_chart_meta_json": (
+            chart_spec.chart_meta_json(
+                chart_id="threads-outcome",
+                title="Threads per year, by outcome",
+                time_field="year",
+                time_type="year",
+                series_field="outcome",
+                params=threads_filter_params,
+            )
+            if outcome_spec is not None
+            else None
+        ),
         "constructive_spec_json": constructive_spec,
+        "constructive_chart_id": "threads-label-constructive",
+        "constructive_chart_meta_json": (
+            chart_spec.chart_meta_json(
+                chart_id="threads-label-constructive",
+                title="Constructive labels, share of flagged threads, year over year",
+                time_field="year",
+                time_type="year",
+                params=threads_filter_params,
+            )
+            if constructive_spec is not None
+            else None
+        ),
         "negative_spec_json": negative_spec,
+        "negative_chart_id": "threads-label-negative",
+        "negative_chart_meta_json": (
+            chart_spec.chart_meta_json(
+                chart_id="threads-label-negative",
+                title="Negative labels, share of flagged threads, year over year",
+                time_field="year",
+                time_type="year",
+                params=threads_filter_params,
+            )
+            if negative_spec is not None
+            else None
+        ),
         "sample_k": DEFAULT_K,
     }
 

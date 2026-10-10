@@ -24,6 +24,7 @@ presentation only (issue #28).
 
 from __future__ import annotations
 
+import json
 import math
 from datetime import date, timedelta
 
@@ -228,6 +229,72 @@ def recent_value_domain(
 # forbids) -- so a count metric's points are never marked `low_n` here,
 # regardless of `n`.
 _LOW_N_ELIGIBLE_VALUE_KINDS = frozenset({"ratio", "percent", "days"})
+
+
+# --- Chart-expand metadata (issue #156) -------------------------------------
+#
+# "Expand chart" (every full chart on every page gets an Expand button that
+# opens a large, interactive dialog with generic date-range/series/CI-band/
+# download controls, `static/chart_expand.js`) is deliberately *one* JS
+# implementation driven entirely by a small, declarative metadata blob each
+# chart carries in its own `data-chart-meta` attribute, rather than a dozen
+# per-chart special cases in JS. This is the single place that metadata blob
+# is built, so every chart-producing module in `project_health.site`
+# (`generate.py`, `governance_page.py`, `conversation_patterns_page.py`,
+# `thread_explorer_page.py`, `pr_backlog_page.py`,
+# `review_responsiveness_page.py`, `peers_page.py`) describes its own chart
+# the same, small way instead of `chart_expand.js` needing to know any of
+# their field names.
+#
+# `timeField`/`timeType` describe the chart's own time dimension (the field
+# `chart_expand.js`'s generic date-range selects/overview-strip brush filter
+# `data.values` on) -- `timeType` is "month" (an ISO `YYYY-MM-DD` string, the
+# `window_end`/`month` convention every monthly chart in this project uses),
+# "quarter" (an ordinal `"<year>Q<n>"`-shaped string, `conversation_patterns_
+# page.py`'s tone-over-time charts) or "year" (a plain `"YYYY"` string,
+# `conversation_patterns_page.py`'s year-over-year charts and `thread_
+# explorer_page.py`'s charts) -- all three sort correctly as plain strings,
+# so the dialog never needs a real date parser. `seriesField` is the color-
+# encoded field name (e.g. "tier", "bucket", "project") when the chart has
+# one, so the dialog can offer show/hide checkboxes for its distinct values
+# -- `None` when the chart has no series. `hasBand` is set for a chart whose
+# `layer` carries a shaded confidence-interval area (`y`/`y2`) a reader may
+# want to toggle off. `params` declares any chart-specific control already
+# rendered on the page itself (year-over-year's venue/from-year/to-year/
+# cutoff selects, tone-over-time's mode/cutoff selects, the thread
+# explorer's own venue/outcome/label/year filters) as `{"name", "selector"}`
+# pairs -- `chart_expand.js` mirrors the live control at `selector` inside
+# the dialog and reuses the *existing* page-level filter function
+# (`applyYoyFilter`/`applyToneFilter`/the thread-explorer table's own
+# filter) to apply it, rather than re-implementing that chart's own
+# filtering math a second time for the dialog.
+def chart_meta_json(
+    *,
+    chart_id: str,
+    title: str,
+    time_field: str | None = None,
+    time_type: str = "month",
+    series_field: str | None = None,
+    has_band: bool = False,
+    params: list[dict[str, str]] | None = None,
+) -> str:
+    """The `data-chart-meta` JSON blob for one chart (issue #156). `chart_id`
+    must be unique among every chart on the same page (`chart_expand.js`'s
+    deep-link parser and the Expand button both key off it) -- callers that
+    render more than one chart from the same loop body are themselves
+    responsible for interpolating something page-unique into it (a
+    `metric_id`, a venue id, a facet-group id)."""
+    return json.dumps(
+        {
+            "id": chart_id,
+            "title": title,
+            "timeField": time_field,
+            "timeType": time_type,
+            "seriesField": series_field,
+            "hasBand": has_band,
+            "params": params or [],
+        }
+    )
 
 
 def is_low_n(n: int, flag: str, *, value_kind: str, floor: int = LOW_N_DISPLAY_FLOOR) -> bool:

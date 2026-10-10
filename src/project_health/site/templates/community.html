@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% import "_sections.html" as sections %}
+{% import "_charts.html" as charts %}
 {% block title %}Community — Cassandra Project Health{% endblock %}
 {% block content %}
 <p class="page-intro">Code and contributor health metrics: sustainability, review capacity, and responsiveness — computed from Git, ASF JIRA and GitHub PR history.</p>
@@ -44,9 +45,11 @@
           {% endif %}
         </p>
 
-        <div class="chart" data-vega-spec='{{ m.vega_spec_json }}' role="img" aria-label="History chart for {{ m.name }}">
+        {% call charts.chart_shell("History chart for " + m.name) %}
+        <div class="chart" data-vega-spec='{{ m.vega_spec_json }}' data-chart-id="{{ m.chart_id }}" data-chart-meta='{{ m.chart_meta_json }}' role="img" aria-label="History chart for {{ m.name }}">
           <noscript>Enable JavaScript to see the {{ m.name }} history chart, or use the data links below.</noscript>
         </div>
+        {% endcall %}
 
         <p class="card-prior-art">
           Based on:
@@ -137,9 +140,11 @@
 
     {% if review_responsiveness.trailing12m_chart_spec %}
     <h4>Trailing 12-month response-within-30-days share, by tier</h4>
-    <div class="chart" data-vega-spec='{{ review_responsiveness.trailing12m_chart_spec }}' role="img" aria-label="Trailing 12-month response-within-30-days share by submitter tier">
+    {% call charts.chart_shell("Trailing 12-month response-within-30-days share by submitter tier") %}
+    <div class="chart" data-vega-spec='{{ review_responsiveness.trailing12m_chart_spec }}' data-chart-id="{{ review_responsiveness.trailing12m_chart_id }}" data-chart-meta='{{ review_responsiveness.trailing12m_chart_meta_json }}' role="img" aria-label="Trailing 12-month response-within-30-days share by submitter tier">
       <noscript>Enable JavaScript to see this chart.</noscript>
     </div>
+    {% endcall %}
     {% endif %}
 
     {% if review_responsiveness.source_breakdown %}
@@ -182,16 +187,20 @@
     {% if pr_backlog.available %}
     {% if pr_backlog.age_chart_spec %}
     <h4>By age — apache/cassandra (last 36 months)</h4>
-    <div class="chart" data-vega-spec='{{ pr_backlog.age_chart_spec }}' role="img" aria-label="Open PR backlog by age bucket, apache/cassandra, last 36 months">
+    {% call charts.chart_shell("Open PR backlog by age bucket, apache/cassandra, last 36 months") %}
+    <div class="chart" data-vega-spec='{{ pr_backlog.age_chart_spec }}' data-chart-id="{{ pr_backlog.age_chart_id }}" data-chart-meta='{{ pr_backlog.age_chart_meta_json }}' role="img" aria-label="Open PR backlog by age bucket, apache/cassandra, last 36 months">
       <noscript>Enable JavaScript to see this chart, or use the data links below.</noscript>
     </div>
+    {% endcall %}
     {% endif %}
 
     {% if pr_backlog.ticket_chart_spec %}
     <h4>By linked-ticket state — apache/cassandra (last 36 months)</h4>
-    <div class="chart" data-vega-spec='{{ pr_backlog.ticket_chart_spec }}' role="img" aria-label="Open PR backlog by linked-ticket state, apache/cassandra, last 36 months">
+    {% call charts.chart_shell("Open PR backlog by linked-ticket state, apache/cassandra, last 36 months") %}
+    <div class="chart" data-vega-spec='{{ pr_backlog.ticket_chart_spec }}' data-chart-id="{{ pr_backlog.ticket_chart_id }}" data-chart-meta='{{ pr_backlog.ticket_chart_meta_json }}' role="img" aria-label="Open PR backlog by linked-ticket state, apache/cassandra, last 36 months">
       <noscript>Enable JavaScript to see this chart, or use the data links below.</noscript>
     </div>
+    {% endcall %}
     {% endif %}
 
     <h4>Current month — apache/cassandra</h4>

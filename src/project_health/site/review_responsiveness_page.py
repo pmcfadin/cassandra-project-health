@@ -45,6 +45,7 @@ from project_health.metrics.review_responsiveness import (
     metric_id,
 )
 from project_health.schema import get_schema, validate
+from project_health.site import chart_spec
 
 TIER_LABELS: dict[str, str] = {
     TIER_FIRST: "First-time submitters",
@@ -290,6 +291,14 @@ def build_review_responsiveness_context(data_dir: str | Path, run_id: str) -> di
         "coverage_note": _coverage_note(data_dir),
         "tiers": tiers,
         "trailing12m_chart_spec": _trailing12m_chart_spec(rows_by_metric),
+        "trailing12m_chart_id": "review-responsiveness-trailing12m",
+        "trailing12m_chart_meta_json": chart_spec.chart_meta_json(
+            chart_id="review-responsiveness-trailing12m",
+            title="Trailing 12-month response-within-30-days share, by tier",
+            time_field="window_end",
+            time_type="month",
+            series_field="tier",
+        ),
         "source_breakdown": _source_breakdown_for_latest_year(rows_by_metric),
         "metrics_spec_url": METRICS_SPEC_URL,
     }

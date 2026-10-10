@@ -58,6 +58,32 @@
   <p>Run <code>{{ run_id }}</code> &middot; code <code title="{{ pipeline_code_sha }}">{{ short_sha }}</code></p>
 </footer>
 
+{# "Expand chart" dialog (issue #156): one native <dialog>, shared by every
+   chart on the page -- `static/chart_expand.js` fills it from whichever
+   chart's Expand button was clicked, using that chart's own declared
+   `data-chart-meta`. A native <dialog> traps focus and closes on Esc on
+   its own; no JS fallback for a browser old enough to lack it, same
+   "progressive, not polyfilled" stance `<details>`/`<summary>` already
+   takes for the collapsible sections above. The Expand button itself is
+   JS-only (opening it does nothing without `chart_expand.js`), so it's
+   hidden with JavaScript disabled rather than sitting there inert. #}
+<noscript><style>.chart-expand-btn { display: none; }</style></noscript>
+<dialog id="chart-expand-dialog" class="chart-expand-dialog" aria-labelledby="chart-expand-title">
+  <div class="chart-expand-head">
+    <h2 id="chart-expand-title" class="chart-expand-title"></h2>
+    <button type="button" class="chart-expand-close" data-chart-expand-close aria-label="Close">&times;</button>
+  </div>
+  <form class="chart-expand-controls" data-chart-expand-controls aria-label="Chart controls"></form>
+  <div class="chart-expand-main" data-chart-expand-main role="img"></div>
+  <div class="chart-expand-overview" data-chart-expand-overview aria-hidden="true"></div>
+  <p class="chart-expand-actions">
+    <button type="button" data-chart-expand-download="png">Download PNG</button>
+    <button type="button" data-chart-expand-download="svg">Download SVG</button>
+    <button type="button" data-chart-expand-download="csv">Download CSV</button>
+  </p>
+</dialog>
+
 <script src="{{ base_prefix }}static/app.js"></script>
+<script src="{{ base_prefix }}static/chart_expand.js"></script>
 </body>
 </html>

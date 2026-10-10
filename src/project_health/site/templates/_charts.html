@@ -1,0 +1,32 @@
+{# Shared "Expand chart" shell (issue #156) -- every full chart on every
+   page gets an Expand button that opens the single generic dialog
+   `static/chart_expand.js` defines in `base.html`. `chart_shell()` wraps
+   exactly one chart `<div>` (passed as `{% call %}`'s body, unchanged --
+   its own classes/`data-*` flags/aria-label stay whatever that page
+   already renders) together with its own Expand button in one small
+   `.chart-shell` container.
+
+   This wrapper -- not just dropping the button next to the chart `<div>`
+   inside whatever ancestor it already has -- is what lets `chart_expand.js`
+   find "the one chart this button expands" unambiguously
+   (`shell.querySelector("[data-chart-id]")`) even when several charts
+   share a common ancestor (e.g. two venues' message-patterns charts inside
+   one `<section>`, two tone-mix venues inside one `.conv-tone-mix`): a
+   plain "nearest sibling" lookup would find the *first* chart in that
+   shared ancestor instead of the one next to the button that was actually
+   clicked.
+
+   `static/style.css`'s `.chart-shell` is `position: relative` so
+   `.chart-expand-btn` can sit absolutely in its top-right corner without
+   any page-specific CSS.
+
+   Sparklines (`.chart--sparkline`, section summary rows and the tone-mix/
+   peers summary sparklines) deliberately never call this macro (issue
+   #156 design: "Sparklines in section summary rows are excluded -- they
+   link to their section's full chart instead"). #}
+{% macro chart_shell(title) %}
+<div class="chart-shell">
+  <button type="button" class="chart-expand-btn" data-chart-expand aria-label="Expand chart: {{ title }}" title="Expand chart">&#10530;</button>
+  {{ caller() }}
+</div>
+{% endmacro %}

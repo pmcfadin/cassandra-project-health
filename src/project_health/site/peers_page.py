@@ -83,6 +83,7 @@ from project_health.metrics.pr_backlog import (
 from project_health.metrics.peer_metrics import TIME_TO_FIRST_RESPONSE_PR
 from project_health.peers.collect import PASS_NAMES
 from project_health.peers.pipeline import CASSANDRA_PROJECT_ID, latest_peers_run_id
+from project_health.site import chart_spec
 
 CHAOSS_DISCLAIMER = (
     "CHAOSS does not set targets or rank projects. These numbers are shown for context only "
@@ -439,6 +440,14 @@ def build_peers_context(data_dir: str | Path, run_id: str | None = None) -> dict
                     value_label=value_label,
                     excluded_projects=gated_projects,
                 ),
+                "chart_id": metric_id,
+                "chart_meta_json": chart_spec.chart_meta_json(
+                    chart_id=metric_id,
+                    title=f"{title} by project, over time",
+                    time_field="month",
+                    time_type="month",
+                    series_field="project",
+                ),
             }
         )
 
@@ -483,6 +492,14 @@ def build_peers_context(data_dir: str | Path, run_id: str | None = None) -> dict
                 backlog_series,
                 value_label="Open PRs",
                 excluded_projects=backlog_gated_projects,
+            ),
+            "chart_id": "open_pr_backlog_total",
+            "chart_meta_json": chart_spec.chart_meta_json(
+                chart_id="open_pr_backlog_total",
+                title="Open PR backlog (total) by project, over time",
+                time_field="month",
+                time_type="month",
+                series_field="project",
             ),
         }
     )

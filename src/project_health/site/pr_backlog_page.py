@@ -62,6 +62,7 @@ from project_health.metrics.pr_backlog import (
     other_repo_metric_id,
 )
 from project_health.schema import get_schema, validate
+from project_health.site import chart_spec
 from project_health.site.metrics_meta import PR_BACKLOG_PRIOR_ART
 
 METRICS_SPEC_URL = (
@@ -276,7 +277,23 @@ def build_pr_backlog_context(data_dir: str | Path, run_id: str) -> dict[str, Any
         "no_response_share": no_response_share,
         "no_response_n": no_response_n,
         "age_chart_spec": _stacked_chart_spec(rows_by_metric, AGE_BUCKET_ORDER, height=240),
+        "age_chart_id": "pr-backlog-age",
+        "age_chart_meta_json": chart_spec.chart_meta_json(
+            chart_id="pr-backlog-age",
+            title="Open PR backlog by age",
+            time_field="month",
+            time_type="month",
+            series_field="bucket",
+        ),
         "ticket_chart_spec": _stacked_chart_spec(rows_by_metric, TICKET_STATE_ORDER, height=160),
+        "ticket_chart_id": "pr-backlog-ticket",
+        "ticket_chart_meta_json": chart_spec.chart_meta_json(
+            chart_id="pr-backlog-ticket",
+            title="Open PR backlog by linked-ticket state",
+            time_field="month",
+            time_type="month",
+            series_field="bucket",
+        ),
         "other_repos": _other_repos_table(rows, rows_by_metric),
         "age_bucket_labels": AGE_BUCKET_LABELS,
         "prior_art": PR_BACKLOG_PRIOR_ART,

@@ -20,6 +20,7 @@
   "peers/kafka/github:pr_pass_created_desc": "{\"cursor\": \"Y3Vyc29yOnYyOpK0MjAyNS0xMC0xNlQxNTozNjo1M1rOrh2MBA==\", \"high_watermark\": null, \"newest_seen\": \"2026-10-10T02:14:45+00:00\"}",
   "peers/kafka/github:pr_pass_open_prs": "{\"cursor\": null, \"high_watermark\": null, \"newest_seen\": null}",
   "peers/pulsar/git": "fdec9b0b02505d4d3fc388eb218e39d0a98908f6",
+  "peers/pulsar/github:pr_pass_created_desc": "{\"cursor\": \"Y3Vyc29yOnYyOpK0MjAyNi0wOS0zMFQyMToxOTozOFrPAAAAARfpitk=\", \"high_watermark\": null, \"newest_seen\": \"2026-10-10T02:08:44+00:00\"}",
   "peers/spark/git": "215a1460d9d4acdac6f72b42c28ab60b9ff5b7fe",
   "peers/spark/github:pr_pass_closed_search": "{\"cursor\": null, \"high_watermark\": null, \"newest_seen\": null}",
   "peers/spark/github:pr_pass_created_desc": "{\"cursor\": \"Y3Vyc29yOnYyOpK0MjAyNi0wNi0xNVQyMTo1NDo1MFrO5r_HZg==\", \"high_watermark\": null, \"newest_seen\": \"2026-10-10T02:41:04+00:00\"}",

@@ -38,6 +38,7 @@ from project_health.peers.collect import (
     collect_and_write_github,
 )
 from project_health.peers.config import PeersConfig
+from project_health.peers import rotation as peer_rotation
 from project_health import storage
 
 CASSANDRA_REPO = "apache/cassandra"
@@ -79,6 +80,14 @@ class PeersRunReport:
             "per_peer_pr_counts": self.github.per_peer_pr_counts,
             "github_overall_status": self.github.overall_status,
             "disk_budget_skipped_peers": self.disk_budget_skipped_peers,
+            # Issue #148: this run's rotation offset/order, recorded here
+            # so the run manifest is a deterministic, inspectable record of
+            # which peer went first and which peers were already "done"
+            # (settled watermarks) going into this run -- never only
+            # inferable after the fact from `pass_outcomes`.
+            "github_rotation_start_index": self.github.rotation_start_index,
+            "github_peer_order": self.github.peer_order,
+            "github_settled_peers": self.github.settled_peers,
             "github_pass_outcomes": [
                 {
                     "peer_id": o.peer_id,
@@ -246,6 +255,12 @@ def run_peers_collection(
     # already establishes for its own constructor.
     token = token if token is not None else resolve_github_token()
 
+    # Issue #148: rotate which peer this run starts GitHub PR collection at
+    # -- `peer_rotation.read_next_start_index` defaults to `0` (today's
+    # un-rotated order) whenever `state/peers/rotation.json` is missing,
+    # so this is a no-op on the real data branch's first run after this
+    # change ships, and advances by exactly one peer every run after that.
+    rotation_start_index = peer_rotation.read_next_start_index(data_dir)
     github_report = collect_and_write_github(
         peers_config,
         data_dir,
@@ -253,6 +268,11 @@ def run_peers_collection(
         partition_date,
         token=token,
         as_of=as_of,
+        rotation_start_index=rotation_start_index,
+    )
+    peer_rotation.write_next_start_index(
+        data_dir,
+        peer_rotation.next_index(rotation_start_index, len(peers_config.peers)),
     )
 
     git_reports: list[PeerGitCollectionReport] = []

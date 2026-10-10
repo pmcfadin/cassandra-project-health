@@ -18,7 +18,12 @@ from pathlib import Path
 
 
 from project_health.peers import collect as peer_collect
-from project_health.peers.config import JiraReleaseVerification, PeerProject, PeersConfig
+from project_health.peers.config import (
+    CollectionConfig,
+    JiraReleaseVerification,
+    PeerProject,
+    PeersConfig,
+)
 from project_health.peers.github import PassResult, PassState
 from project_health.peers.release import GaTag, VerificationResult
 from project_health import storage
@@ -220,6 +225,234 @@ def test_page_cap_does_not_block_other_peers(tmp_path, monkeypatch):
     kafka_source = peer_collect.peer_source("kafka", "github")
     stored = storage.read_watermark(tmp_path, kafka_source, table="pr_pass_created_desc")
     assert PassState.from_json(stored).cursor == "resume-here"
+
+
+# --- issue #148: rotation + fair-share budget ------------------------------
+
+
+def test_rotation_start_index_changes_peer_processing_order(tmp_path, monkeypatch):
+    peers_config = PeersConfig(
+        peers=[
+            _peer("kafka", "apache/kafka"),
+            _peer("spark", "apache/spark"),
+            _peer("flink", "apache/flink"),
+        ]
+    )
+    calls: list[str] = []
+
+    def fake_pass(collector, repo_label, *a, **k):
+        calls.append(repo_label)
+        return _empty_pass_result()
+
+    monkeypatch.setattr(peer_collect, "run_created_desc_pass", fake_pass)
+    monkeypatch.setattr(peer_collect, "run_open_prs_pass", fake_pass)
+    monkeypatch.setattr(peer_collect, "run_closed_search_pass", fake_pass)
+
+    report = peer_collect.collect_and_write_github(
+        peers_config, tmp_path, "run1", date(2026, 1, 1), token="x", rotation_start_index=1
+    )
+
+    assert report.rotation_start_index == 1
+    assert report.peer_order == ["spark", "flink", "kafka"]
+    # The actual pass-runner call order follows the rotated order, not
+    # `peers_config.peers`' own fixed config order.
+    assert calls[0] == "apache/spark"
+
+
+def test_fair_share_caps_pages_below_configured_max(tmp_path, monkeypatch):
+    """A tight per-run page budget (10) split across 2 not-done peers
+    caps each at 5 pages per pass -- well below the 20-page
+    per-(peer, pass) ceiling `max_pages_per_pass` alone would allow."""
+    peers_config = PeersConfig(
+        peers=[_peer("kafka", "apache/kafka"), _peer("spark", "apache/spark")],
+        collection=CollectionConfig(max_pages_per_pass=20, github_page_budget_per_run=10),
+    )
+    captured_max_pages: dict[str, int] = {}
+
+    def fake_created_desc(
+        collector, repo_label, state, window_start, bot_patterns, snapshot_id, **kwargs
+    ):
+        captured_max_pages[repo_label] = kwargs.get("max_pages")
+        return PassResult(
+            pr_rows=[],
+            review_rows=[],
+            comment_rows=[],
+            bot_prs_excluded=0,
+            bot_reviews_excluded=0,
+            bot_comments_excluded=0,
+            status="page_capped",
+            next_state=PassState(cursor="x"),
+            pages_fetched=kwargs.get("max_pages"),
+        )
+
+    monkeypatch.setattr(peer_collect, "run_created_desc_pass", fake_created_desc)
+    monkeypatch.setattr(peer_collect, "run_open_prs_pass", lambda *a, **k: _empty_pass_result())
+    monkeypatch.setattr(
+        peer_collect, "run_closed_search_pass", lambda *a, **k: _empty_pass_result()
+    )
+
+    peer_collect.collect_and_write_github(
+        peers_config, tmp_path, "run1", date(2026, 1, 1), token="x"
+    )
+
+    assert captured_max_pages["apache/kafka"] == 5
+    assert captured_max_pages["apache/spark"] == 5
+
+
+def test_peer_finishing_early_returns_budget_to_remaining_peers(tmp_path, monkeypatch):
+    """issue #148 acceptance: "a peer finishing early returns budget to the
+    rest" -- kafka's up-front fair share is 10 // 2 = 5 pages, but it only
+    actually uses 1; spark's own fair share is then recomputed from
+    whatever's genuinely left (9 pages, 1 peer not done), not the naive
+    5-page split a fixed up-front allocation would have given it."""
+    peers_config = PeersConfig(
+        peers=[_peer("kafka", "apache/kafka"), _peer("spark", "apache/spark")],
+        collection=CollectionConfig(max_pages_per_pass=20, github_page_budget_per_run=10),
+    )
+    captured_max_pages: dict[str, int] = {}
+
+    def fake_created_desc(
+        collector, repo_label, state, window_start, bot_patterns, snapshot_id, **kwargs
+    ):
+        captured_max_pages[repo_label] = kwargs.get("max_pages")
+        if repo_label == "apache/kafka":
+            return PassResult(
+                pr_rows=[],
+                review_rows=[],
+                comment_rows=[],
+                bot_prs_excluded=0,
+                bot_reviews_excluded=0,
+                bot_comments_excluded=0,
+                status="completed",
+                next_state=PassState(high_watermark="2024-01-01T00:00:00+00:00"),
+                pages_fetched=1,
+            )
+        return _empty_pass_result()
+
+    monkeypatch.setattr(peer_collect, "run_created_desc_pass", fake_created_desc)
+    monkeypatch.setattr(peer_collect, "run_open_prs_pass", lambda *a, **k: _empty_pass_result())
+    monkeypatch.setattr(
+        peer_collect, "run_closed_search_pass", lambda *a, **k: _empty_pass_result()
+    )
+
+    peer_collect.collect_and_write_github(
+        peers_config, tmp_path, "run1", date(2026, 1, 1), token="x"
+    )
+
+    assert captured_max_pages["apache/kafka"] == 5
+    assert captured_max_pages["apache/spark"] == 9
+
+
+def test_rotation_prevents_cross_run_starvation(tmp_path, monkeypatch):
+    """Real-run regression (issue #148): with peers always processed in
+    `projects/peers.yaml`'s fixed config order, apache/kafka's own
+    `created_desc` pass hitting the real rate-limit floor set
+    `budget_exhausted`, skipping every remaining (peer, pass) -- kafka
+    going first *every single run* meant flink never got a single pass
+    across several real runs. Rotating which peer starts each run means a
+    huge peer's own floor-hit no longer blocks the same peers every time.
+    """
+    peers_config = PeersConfig(
+        peers=[
+            _peer("kafka", "apache/kafka"),
+            _peer("spark", "apache/spark"),
+            _peer("flink", "apache/flink"),
+        ]
+    )
+
+    def fake_created_desc(
+        collector, repo_label, state, window_start, bot_patterns, snapshot_id, **kwargs
+    ):
+        if repo_label == "apache/kafka":
+            return PassResult(
+                pr_rows=[],
+                review_rows=[],
+                comment_rows=[],
+                bot_prs_excluded=0,
+                bot_reviews_excluded=0,
+                bot_comments_excluded=0,
+                status="rate_limited",
+                next_state=state,
+                pages_fetched=kwargs.get("max_pages") or 1,
+                error="rate limit budget floor reached",
+            )
+        return _empty_pass_result()
+
+    monkeypatch.setattr(peer_collect, "run_created_desc_pass", fake_created_desc)
+    monkeypatch.setattr(peer_collect, "run_open_prs_pass", lambda *a, **k: _empty_pass_result())
+    monkeypatch.setattr(
+        peer_collect, "run_closed_search_pass", lambda *a, **k: _empty_pass_result()
+    )
+
+    # Run 1: un-rotated (today's real bug) -- kafka goes first and starves
+    # spark/flink entirely.
+    report1 = peer_collect.collect_and_write_github(
+        peers_config, tmp_path, "run1", date(2026, 1, 1), token="x", rotation_start_index=0
+    )
+    statuses1 = {(o.peer_id, o.pass_name): o.status for o in report1.pass_outcomes}
+    assert statuses1[("spark", "created_desc")] == "skipped"
+    assert statuses1[("flink", "created_desc")] == "skipped"
+
+    # Run 2: rotation has advanced (spark starts first this time) -- spark
+    # and flink each get their own turn before kafka's floor-hit triggers.
+    report2 = peer_collect.collect_and_write_github(
+        peers_config, tmp_path, "run2", date(2026, 1, 1), token="x", rotation_start_index=1
+    )
+    statuses2 = {(o.peer_id, o.pass_name): o.status for o in report2.pass_outcomes}
+    assert statuses2[("spark", "created_desc")] == "completed"
+    assert statuses2[("flink", "created_desc")] == "completed"
+    assert statuses2[("kafka", "created_desc")] == "rate_limited"
+
+
+def test_settled_peer_gets_minimal_page_cap_and_is_excluded_from_fair_share(
+    tmp_path, monkeypatch
+):
+    """issue #148 acceptance: "peers whose passes are all complete
+    (watermarks current) are skipped cheaply" -- kafka's persisted
+    watermarks show no resumable work outstanding on any of its three
+    passes, so it gets only a 1-page freshness check, and the whole
+    10-page run budget goes to spark, the one peer still genuinely not
+    done, instead of being split evenly with an already-settled kafka."""
+    peers_config = PeersConfig(
+        peers=[_peer("kafka", "apache/kafka"), _peer("spark", "apache/spark")],
+        collection=CollectionConfig(max_pages_per_pass=20, github_page_budget_per_run=10),
+    )
+
+    kafka_source = peer_collect.peer_source("kafka", "github")
+    storage.write_watermark(
+        tmp_path,
+        kafka_source,
+        PassState(high_watermark="2024-01-01T00:00:00+00:00").to_json(),
+        table="pr_pass_created_desc",
+    )
+    storage.write_watermark(
+        tmp_path, kafka_source, PassState().to_json(), table="pr_pass_open_prs"
+    )
+    storage.write_watermark(
+        tmp_path, kafka_source, PassState().to_json(), table="pr_pass_closed_search"
+    )
+
+    captured_max_pages: dict[str, int] = {}
+
+    def fake_created_desc(
+        collector, repo_label, state, window_start, bot_patterns, snapshot_id, **kwargs
+    ):
+        captured_max_pages[repo_label] = kwargs.get("max_pages")
+        return _empty_pass_result()
+
+    monkeypatch.setattr(peer_collect, "run_created_desc_pass", fake_created_desc)
+    monkeypatch.setattr(peer_collect, "run_open_prs_pass", lambda *a, **k: _empty_pass_result())
+    monkeypatch.setattr(
+        peer_collect, "run_closed_search_pass", lambda *a, **k: _empty_pass_result()
+    )
+
+    report = peer_collect.collect_and_write_github(
+        peers_config, tmp_path, "run1", date(2026, 1, 1), token="x"
+    )
+
+    assert report.settled_peers == ["kafka"]
+    assert captured_max_pages["apache/kafka"] == 1
+    assert captured_max_pages["apache/spark"] == 10
 
 
 def _git_env() -> dict[str, str]:

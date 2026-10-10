@@ -33,6 +33,20 @@ DEFAULT_GITHUB_RATE_LIMIT_FLOOR = 500
 # this issue's own "Build" section anticipated).
 DEFAULT_MAX_PAGES_PER_PASS = 20
 
+# Issue #148: after 3-4 real weekly runs, kafka/spark's own `created_desc`
+# backfill alone consumed the whole shared GraphQL budget every single run
+# (same finding as `DEFAULT_MAX_PAGES_PER_PASS` above -- 96 pages before
+# apache/kafka's own `created_desc` pass hit the real rate-limit floor),
+# starving flink/pulsar/datafusion of *any* progress across every run so
+# far, since `peers:` config order never changes. `96` here is that same
+# real-run page count, used as this run's total shared page budget across
+# every peer+pass combination -- `peers.collect.collect_and_write_github`
+# divides whatever of this budget remains among the peers not yet "done"
+# this run (`peers.rotation`'s fair-share split), on top of (never
+# replacing) the per-(peer, pass) `DEFAULT_MAX_PAGES_PER_PASS` ceiling and
+# the real `github_rate_limit_floor` stop below.
+DEFAULT_GITHUB_PAGE_BUDGET_PER_RUN = 96
+
 
 class BotPatternConfig(BaseModel):
     """One entry in `collection.bot_patterns` -- same shape as
@@ -124,6 +138,10 @@ class CollectionConfig(BaseModel):
     commit_lookback_months: int = DEFAULT_COMMIT_LOOKBACK_MONTHS
     github_rate_limit_floor: int = DEFAULT_GITHUB_RATE_LIMIT_FLOOR
     max_pages_per_pass: int = DEFAULT_MAX_PAGES_PER_PASS
+    # Issue #148: this run's total shared page budget, split fairly across
+    # whichever peers aren't already "done" this run (see
+    # `DEFAULT_GITHUB_PAGE_BUDGET_PER_RUN`'s own comment above).
+    github_page_budget_per_run: int = DEFAULT_GITHUB_PAGE_BUDGET_PER_RUN
     bot_patterns: list[BotPatternConfig] = Field(default_factory=list)
 
 

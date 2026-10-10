@@ -51,7 +51,57 @@
     {% endfor %}
   </nav>
 
-  {% call sections.section("conv-summary", "Summary", None, None) %}
+  {% set tone_mix_summary_html = None %}
+  {% if conversation_patterns.tone_mix %}
+  {% set tone_mix_summary_html %}
+  <div class="conv-tone-mix" id="conv-tone-mix" aria-label="Tone over time">
+    <div class="conv-tone-mix-head">
+      <span class="conv-tone-mix-title">Tone over time</span>
+      <form class="conv-tone-mix-controls" data-tone-controls aria-label="Tone over time chart controls"
+            data-tone-default-cutoff="{{ conversation_patterns.tone_mix.default_cutoff }}">
+        <label>Show
+          <select data-tone-control="mode">
+            <option value="share" selected>Share of messages</option>
+            <option value="per_1000">Per 1,000 messages</option>
+          </select>
+        </label>
+        {% if conversation_patterns.tone_mix.cutoffs | length > 1 %}
+        <label>Cutoff
+          <select data-tone-control="cutoff">
+            {% for c in conversation_patterns.tone_mix.cutoffs %}
+            <option value="{{ c }}" {% if c == conversation_patterns.tone_mix.default_cutoff %}selected{% endif %}>{{ c }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        {% endif %}
+      </form>
+    </div>
+    <p class="governance-note">
+      Weighted share of classified messages in each COMMUNITY-HEALTH.md §2.2 intensity
+      tier, by quarter — a fixed, versioned mapping (never raw sentiment, §1.2), stacked
+      to 100% per quarter. Tiers stack bottom (closing/positive) to top (attack); a
+      quarter missing from a venue's chart is below the §5.1 minimum-sample floor
+      ("insufficient data"), shown as a gap rather than a fabricated zero.
+    </p>
+    {% for chart in conversation_patterns.tone_mix.charts %}
+    <h5>{{ chart.label }}</h5>
+    <div class="chart conv-tone-mix-chart" data-tone-chart data-vega-spec='{{ chart.spec_json }}' role="img" aria-label="Tone over time, {{ chart.label }}">
+      <noscript>Enable JavaScript to see this chart.</noscript>
+    </div>
+    {% endfor %}
+    {% if conversation_patterns.tone_mix.insufficient_notes %}
+    <p class="governance-note">
+      Omitted for <code>insufficient_data</code>:
+      {% for note in conversation_patterns.tone_mix.insufficient_notes %}
+      {{ note.venue_label }} ({{ note.quarters | join(", ") }}){% if not loop.last %}; {% endif %}
+      {% endfor %}
+    </p>
+    {% endif %}
+  </div>
+  {% endset %}
+  {% endif %}
+
+  {% call sections.section("conv-summary", "Summary", None, None, summary_extra_html=tone_mix_summary_html) %}
   <section class="conv-summary" aria-labelledby="conv-summary-heading">
     <h4 id="conv-summary-heading">Summary: 2017–2019 vs. 2023–2025</h4>
     <p class="governance-note">

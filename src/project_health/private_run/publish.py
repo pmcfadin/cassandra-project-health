@@ -81,6 +81,11 @@ _REQUIRED_TOP_KEYS = (
     "newcomer_by_year",
     "thread_trend_summary",
     "newcomer_trend_summary",
+    # Issue #153: §2.2 intensity-tier mix ("tone over time").
+    "tone_mix_cutoffs",
+    "tone_mix_headline_cutoff",
+    "tone_mix_by_quarter",
+    "tone_mix_by_year",
 )
 
 # --- Hard-fail leak patterns (defense in depth; COMMUNITY-HEALTH.md §7.3) -
@@ -321,6 +326,35 @@ def _copy_partial_run(partial_run: dict[str, Any] | None) -> dict[str, Any] | No
     }
 
 
+def _copy_tier_entry(entry: dict[str, Any] | None) -> dict[str, Any] | None:
+    if entry is None:
+        return None
+    return {"name": entry["name"], "share": entry["share"], "ci95": list(entry["ci95"])}
+
+
+def _copy_tone_mix_cell(cell: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "messages_classified": cell["messages_classified"],
+        "distinct_authors": cell["distinct_authors"],
+        "threads_sampled": cell["threads_sampled"],
+        "threads_population": cell["threads_population"],
+        "insufficient_data": cell["insufficient_data"],
+        "tiers": {tier: _copy_tier_entry(entry) for tier, entry in cell["tiers"].items()},
+    }
+
+
+def _copy_tone_mix_by_period(tone_mix_by_period: dict[str, Any]) -> dict[str, Any]:
+    return {
+        venue: {
+            period: {
+                cutoff_key: _copy_tone_mix_cell(cell) for cutoff_key, cell in by_cutoff.items()
+            }
+            for period, by_cutoff in periods.items()
+        }
+        for venue, periods in tone_mix_by_period.items()
+    }
+
+
 def _copy_venue_totals(venue_totals: dict[str, Any]) -> dict[str, Any]:
     return {
         venue: {
@@ -432,6 +466,17 @@ def _assert_thread_metrics_entry_floors(entry: dict[str, Any], path: str) -> Non
     _assert_pile_on_floor(entry["pile_on_rate"], f"{path}.pile_on_rate")
 
 
+def _assert_tone_mix_cell_floor(cell: dict[str, Any], path: str) -> None:
+    if not cell["insufficient_data"]:
+        return
+    for tier, entry in cell["tiers"].items():
+        if entry is not None:
+            raise SanitizeError(
+                f"{path}: tier {tier} has a value despite insufficient_data (§5.1 floor "
+                "violation)"
+            )
+
+
 def _assert_floor_invariants(sanitized: dict[str, Any]) -> None:
     for venue, periods in sanitized["cells_by_year"].items():
         for period, cell in periods.items():
@@ -442,6 +487,19 @@ def _assert_floor_invariants(sanitized: dict[str, Any]) -> None:
     for venue, window_info in sanitized["trend_summary"].items():
         for window_name, cell in window_info["windows"].items():
             _assert_cell_floor(cell, f"trend_summary.{venue}.{window_name}")
+
+    for venue, periods in sanitized["tone_mix_by_year"].items():
+        for period, by_cutoff in periods.items():
+            for cutoff_key, cell in by_cutoff.items():
+                _assert_tone_mix_cell_floor(
+                    cell, f"tone_mix_by_year.{venue}.{period}.{cutoff_key}"
+                )
+    for venue, periods in sanitized["tone_mix_by_quarter"].items():
+        for period, by_cutoff in periods.items():
+            for cutoff_key, cell in by_cutoff.items():
+                _assert_tone_mix_cell_floor(
+                    cell, f"tone_mix_by_quarter.{venue}.{period}.{cutoff_key}"
+                )
 
     for venue, periods in sanitized["thread_metrics_by_year"].items():
         for period, by_cutoff in periods.items():
@@ -519,6 +577,10 @@ def sanitize_aggregates(aggregates: dict[str, Any]) -> dict[str, Any]:
         "newcomer_trend_summary": _copy_newcomer_trend_summary(
             aggregates["newcomer_trend_summary"]
         ),
+        "tone_mix_cutoffs": list(aggregates["tone_mix_cutoffs"]),
+        "tone_mix_headline_cutoff": aggregates["tone_mix_headline_cutoff"],
+        "tone_mix_by_quarter": _copy_tone_mix_by_period(aggregates["tone_mix_by_quarter"]),
+        "tone_mix_by_year": _copy_tone_mix_by_period(aggregates["tone_mix_by_year"]),
     }
 
     _assert_floor_invariants(sanitized)

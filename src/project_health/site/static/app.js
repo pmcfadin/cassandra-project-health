@@ -229,6 +229,131 @@
     el.addEventListener("change", renderAllCharts);
   });
 
+  // --- Tone-over-time chart controls (issue #153) ------------------------
+  //
+  // `conversation_patterns_page._tone_mix_chart_spec` ships every cutoff
+  // (0.5 headline, 0.7 sensitivity) and both the `share` and `per_1000`
+  // forms of every value in `data.values` -- filtering to the selected
+  // cutoff and switching which field is encoded on `y` happens here, the
+  // same "ship the whole small dataset, filter/remap in JS" pattern
+  // `applyYoyFilter` already uses. The controls live inside a
+  // `<details class="page-section">`'s always-visible `<summary>` (never
+  // its collapsible body), so this chart renders on first paint regardless
+  // of whether the "Summary" section is expanded.
+  function currentToneControls() {
+    var form = document.querySelector("[data-tone-controls]");
+    if (!form) {
+      return null;
+    }
+    var modeEl = form.querySelector('[data-tone-control="mode"]');
+    var cutoffEl = form.querySelector('[data-tone-control="cutoff"]');
+    return {
+      mode: modeEl ? modeEl.value : "share",
+      cutoff: cutoffEl ? cutoffEl.value : form.getAttribute("data-tone-default-cutoff"),
+    };
+  }
+
+  function applyToneFilter(el, spec) {
+    if (!el.hasAttribute("data-tone-chart") || !spec.data || !spec.data.values) {
+      return spec;
+    }
+    var controls = currentToneControls();
+    if (!controls) {
+      return spec;
+    }
+    var fields = (spec.usermeta && spec.usermeta.toneMix) || {};
+    var valueField = controls.mode === "per_1000" ? fields.per1000Field : fields.shareField;
+    var ciLoField = controls.mode === "per_1000" ? fields.ciLoPer1000 : fields.ciLoShare;
+    var ciHiField = controls.mode === "per_1000" ? fields.ciHiPer1000 : fields.ciHiShare;
+    var next = JSON.parse(JSON.stringify(spec));
+    next.data = Object.assign({}, spec.data, {
+      values: spec.data.values.filter(function (row) {
+        return row.cutoff === controls.cutoff;
+      }),
+    });
+    if (valueField && next.encoding && next.encoding.y) {
+      next.encoding.y.field = valueField;
+      next.encoding.y.title =
+        controls.mode === "per_1000" ? "Messages per 1,000" : "Share of classified messages";
+      next.encoding.y.axis = controls.mode === "per_1000" ? {} : { format: "%" };
+    }
+    if (next.encoding && Array.isArray(next.encoding.tooltip)) {
+      next.encoding.tooltip = next.encoding.tooltip.map(function (entry) {
+        if (entry.field === "share" && ciLoField) {
+          return Object.assign({}, entry, {
+            field: valueField,
+            title: controls.mode === "per_1000" ? "Per 1,000" : "Share",
+            format: controls.mode === "per_1000" ? ".1f" : ".1%",
+          });
+        }
+        if (entry.field === "ci_lo" && ciLoField) {
+          return Object.assign({}, entry, {
+            field: ciLoField,
+            format: controls.mode === "per_1000" ? ".1f" : ".1%",
+          });
+        }
+        if (entry.field === "ci_hi" && ciHiField) {
+          return Object.assign({}, entry, {
+            field: ciHiField,
+            format: controls.mode === "per_1000" ? ".1f" : ".1%",
+          });
+        }
+        return entry;
+      });
+    }
+    return next;
+  }
+
+  document.querySelectorAll("[data-tone-control]").forEach(function (el) {
+    el.addEventListener("change", renderAllCharts);
+  });
+
+  // The tier legend's longest label ("Substantive disagreement",
+  // "Non-substantive friction") needs real room -- a fixed `columns: 4`
+  // (fine at a 1366px desktop width) overflowed its own column grid at a
+  // 390px phone width badly enough that the last couple of entries were
+  // clipped by this card's `overflow-x: hidden` instead of wrapping
+  // (verified by rendering the fixed-4-column spec at 390px: "Neutral",
+  // "Attack" were cut off). `TONE_LEGEND_ENTRY_MIN_WIDTH` is a
+  // deliberately generous per-column budget (swatch + the longest label,
+  // measured against this exact label set) so the column count this picks
+  // always has room for every entry's full text, same "measure the real
+  // spec, don't guess" discipline `FACET_PANEL_TOTAL_MIN` above documents
+  // for the small-multiples facet columns.
+  var TONE_LEGEND_ENTRY_MIN_WIDTH = 210;
+  var TONE_LEGEND_MAX_COLUMNS = 4;
+
+  function applyToneLegendColumns(el, spec, width) {
+    if (
+      !el.hasAttribute("data-tone-chart") ||
+      !spec.encoding ||
+      !spec.encoding.color ||
+      !spec.encoding.color.legend
+    ) {
+      return spec;
+    }
+    var columns = Math.max(
+      1,
+      Math.min(TONE_LEGEND_MAX_COLUMNS, Math.floor(width / TONE_LEGEND_ENTRY_MIN_WIDTH))
+    );
+    var next = JSON.parse(JSON.stringify(spec));
+    next.encoding.color.legend = Object.assign({}, next.encoding.color.legend, {
+      columns: columns,
+    });
+    return next;
+  }
+
+  // A click anywhere inside the tone-mix controls/chart (both of which
+  // live in the section's always-visible `<summary>`) must not also
+  // toggle the section open/closed -- same reasoning as the CHAOSS
+  // practitioner-guide link guard further down, generalized to a whole
+  // block rather than one `<a>`.
+  document.querySelectorAll(".page-section-summary-extra").forEach(function (el) {
+    el.addEventListener("click", function (evt) {
+      evt.stopPropagation();
+    });
+  });
+
   // --- Chart embedding --------------------------------------------------
 
   function embedChart(el) {
@@ -247,6 +372,7 @@
     }
     spec = applyChartWindow(spec);
     spec = applyYoyFilter(el, spec);
+    spec = applyToneFilter(el, spec);
 
     var previous = embeddedResults.get(el);
     if (previous) {
@@ -262,6 +388,7 @@
     // so instead of trusting "container" mode, resolve a concrete pixel
     // width from the container's own layout right now and pass that.
     var width = el.clientWidth || el.getBoundingClientRect().width || 300;
+    spec = applyToneLegendColumns(el, spec, width);
     var resolvedSpec = spec.facet
       ? applyFacetColumns(spec, width)
       : Object.assign({}, spec, { width: width });

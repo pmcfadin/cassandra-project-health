@@ -15,6 +15,11 @@ from project_health.private_run.aggregate import (
 from project_health.private_run.report import render_report_markdown
 from project_health.private_run.sensitivity import SensitivityThreshold
 from project_health.private_run.stats import ThreadCluster
+from project_health.private_run.tone_mix import (
+    TONE_MIX_CUTOFFS,
+    aggregate_tone_mix_cell,
+    from_message_clusters,
+)
 
 # A distinctive, synthetic thread id / message id / author string that must
 # never appear in the rendered report -- exactly the kind of value this
@@ -363,3 +368,81 @@ class TestRenderReportMarkdown:
         )
         markdown = render_report_markdown(aggregates)
         assert "| mailing_list | 2024Q1 | 0 | 0 | n/a |" in markdown
+
+
+class TestToneMixSection:
+    """Issue #153: the §2.2 intensity-tier mix table."""
+
+    def _tone_mix_cells(self):
+        real_clusters = {
+            cutoff: from_message_clusters(
+                [
+                    ThreadCluster(
+                        thread_id=f"t{i}",
+                        weight=1.0,
+                        messages=tuple({"hostility": 0.9} for _ in range(10)),
+                    )
+                    for i in range(5)
+                ],
+                cutoff,
+            )
+            for cutoff in TONE_MIX_CUTOFFS
+        }
+        authors = {f"a{i}" for i in range(15)}
+        real = {
+            cutoff_key(c): aggregate_tone_mix_cell(
+                real_clusters[c], authors, seed=1, cell_key=f"tone:{c}", bootstrap_iterations=10
+            )
+            for c in TONE_MIX_CUTOFFS
+        }
+        empty_clusters = {
+            cutoff: from_message_clusters(
+                [ThreadCluster(thread_id="t1", weight=1.0, messages=({"hostility": 0.1},))],
+                cutoff,
+            )
+            for cutoff in TONE_MIX_CUTOFFS
+        }
+        empty = {
+            cutoff_key(c): aggregate_tone_mix_cell(
+                empty_clusters[c], {"a1"}, seed=1, cell_key=f"tone-empty:{c}"
+            )
+            for c in TONE_MIX_CUTOFFS
+        }
+        return real, empty
+
+    def test_tone_mix_tables_present_by_year_and_quarter(self):
+        real, empty = self._tone_mix_cells()
+        aggregates = _aggregates(
+            tone_mix_cutoffs=[cutoff_key(c) for c in TONE_MIX_CUTOFFS],
+            tone_mix_headline_cutoff=cutoff_key(TONE_MIX_CUTOFFS[0]),
+            tone_mix_by_year={
+                "mailing_list": {"2024": real, "2025": empty},
+                "jira_comment": {"2024": real, "2025": real},
+            },
+            tone_mix_by_quarter={
+                "mailing_list": {"2024Q1": real, "2025Q1": empty},
+                "jira_comment": {"2024Q1": real, "2025Q1": real},
+            },
+        )
+        markdown = render_report_markdown(aggregates)
+        assert "tone mix" in markdown
+        # Every message is hostility=0.9 -> tier 3 ("hostile") at the
+        # headline cutoff -- 100% share, insufficient_data cell renders as
+        # "insufficient data" instead.
+        assert "100.0%" in markdown
+        assert "insufficient data" in markdown
+
+    def test_tone_mix_section_never_leaks_forbidden_substrings(self):
+        real, empty = self._tone_mix_cells()
+        aggregates = _aggregates(
+            tone_mix_cutoffs=[cutoff_key(c) for c in TONE_MIX_CUTOFFS],
+            tone_mix_headline_cutoff=cutoff_key(TONE_MIX_CUTOFFS[0]),
+            tone_mix_by_year={"mailing_list": {"2024": real}, "jira_comment": {"2024": real}},
+            tone_mix_by_quarter={
+                "mailing_list": {"2024Q1": real},
+                "jira_comment": {"2024Q1": real},
+            },
+        )
+        markdown = render_report_markdown(aggregates)
+        for forbidden in _FORBIDDEN_SUBSTRINGS:
+            assert forbidden not in markdown

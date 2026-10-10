@@ -297,6 +297,44 @@ def _newcomer_trend_summary_lines(aggregates: dict[str, Any]) -> list[str]:
     return lines
 
 
+_TONE_TIER_ORDER: tuple[str, ...] = ("-2", "-1", "0", "1", "2", "3", "4")
+
+
+def _fmt_tier_share(entry: dict[str, Any] | None) -> str:
+    if entry is None:
+        return "insufficient data"
+    lo, hi = entry["ci95"]
+    return f"{entry['share'] * 100:.1f}% [{lo * 100:.1f}%, {hi * 100:.1f}%]"
+
+
+def _tone_mix_table(
+    tone_mix_by_period: dict[str, dict[str, Any]], period_label: str, cutoff_key: str
+) -> list[str]:
+    """Issue #153: §2.2 intensity-tier mix table -- one row per period,
+    one column per tier, bottom-to-top (-2 closing/positive .. 4 attack)."""
+    lines = [
+        "| "
+        + period_label
+        + " | Messages | Authors | "
+        + " | ".join(_TONE_TIER_ORDER)
+        + " |",
+        "|" + "---|" * (3 + len(_TONE_TIER_ORDER)),
+    ]
+    for period in sorted(tone_mix_by_period):
+        cell = tone_mix_by_period[period].get(cutoff_key, {})
+        row = [
+            period,
+            str(cell.get("messages_classified", 0)),
+            str(cell.get("distinct_authors", 0)),
+        ]
+        tiers = cell.get("tiers", {})
+        for tier in _TONE_TIER_ORDER:
+            row.append(_fmt_tier_share(tiers.get(tier)))
+        lines.append("| " + " | ".join(row) + " |")
+    lines.append("")
+    return lines
+
+
 def _fmt_coverage(value: float | None) -> str:
     if value is None:
         return "n/a"
@@ -569,8 +607,29 @@ def render_report_markdown(aggregates: dict[str, Any]) -> str:
         lines.append("")
         lines += _newcomer_table(newcomer_years, "Year")
 
+        # Issue #153: §2.2 intensity-tier mix ("tone over time"), by year
+        # and by quarter, at the headline (0.5) and sensitivity (0.7)
+        # cutoffs.
+        tone_mix_years = aggregates.get("tone_mix_by_year", {}).get(venue, {})
+        tone_mix_quarters = aggregates.get("tone_mix_by_quarter", {}).get(venue, {})
+        tone_mix_headline = aggregates.get("tone_mix_headline_cutoff", "0.5")
+        tone_mix_cutoffs = aggregates.get("tone_mix_cutoffs", [])
+        tone_mix_sensitivity = [c for c in tone_mix_cutoffs if c != tone_mix_headline]
+
+        lines.append(f"### {venue} -- tone mix (§2.2, >= {tone_mix_headline}), by year")
+        lines.append("")
+        lines += _tone_mix_table(tone_mix_years, "Year", tone_mix_headline)
+        for cutoff_key in tone_mix_sensitivity:
+            lines.append(f"### {venue} -- tone mix sensitivity cutoff (>= {cutoff_key}), by year")
+            lines.append("")
+            lines += _tone_mix_table(tone_mix_years, "Year", cutoff_key)
+
         lines.append(f"## {venue} -- headline (>= {headline_cutoff}), by quarter")
         lines.append("")
         lines += _cutoff_table(quarter_cells, "Quarter", headline_cutoff)
+
+        lines.append(f"### {venue} -- tone mix (§2.2, >= {tone_mix_headline}), by quarter")
+        lines.append("")
+        lines += _tone_mix_table(tone_mix_quarters, "Quarter", tone_mix_headline)
 
     return "\n".join(lines) + "\n"

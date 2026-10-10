@@ -1203,6 +1203,50 @@ class TestPrivateRunThreadDerivationWiring:
         for forbidden in ("opening message", "<m1@example.org>", "alice@example.org"):
             assert forbidden not in report_text
 
+    def test_aggregates_carry_tone_mix_by_quarter_and_year(self, tmp_path):
+        """Issue #153: `tone_mix_by_quarter`/`tone_mix_by_year` -- the §2.2
+        intensity-tier mix, at both the headline (0.5) and sensitivity
+        (0.7) cutoffs, per venue."""
+        config = _project_config(tmp_path)
+        data_dir, ponymail_months, jira_comments = _small_fixture(tmp_path)
+        out_dir = tmp_path / "out"
+
+        result = run_private_run(
+            project_config=config,
+            data_dir=data_dir,
+            out_dir=out_dir,
+            quarters=["2024Q1"],
+            api_key="test-key",
+            monthly_cap_usd=1000.0,
+            bootstrap_iterations=5,
+            ponymail_transport=_ponymail_transport(ponymail_months),
+            jira_transport=_jira_paginating_transport(jira_comments),
+            jev_async_transport=_jev_transport(probability=0.6),
+        )
+        aggregates = result.aggregates
+        assert aggregates["tone_mix_cutoffs"] == ["0.5", "0.7"]
+        assert aggregates["tone_mix_headline_cutoff"] == "0.5"
+
+        # Tiny fixture is far below the §5.1 floor -> every tier renders
+        # as insufficient data, never a fabricated share.
+        for venue in ("mailing_list", "jira_comment"):
+            quarter_cell = aggregates["tone_mix_by_quarter"][venue]["2024Q1"]["0.5"]
+            assert quarter_cell["insufficient_data"] is True
+            assert all(v is None for v in quarter_cell["tiers"].values())
+            year_cell = aggregates["tone_mix_by_year"][venue]["2024"]["0.5"]
+            assert year_cell["insufficient_data"] is True
+            assert all(v is None for v in year_cell["tiers"].values())
+
+        raw = result.aggregates_path.read_text(encoding="utf-8")
+        for forbidden in (
+            "opening message",
+            "a reply",
+            "<m1@example.org>",
+            "alice@example.org",
+            "t1",
+        ):
+            assert forbidden not in raw
+
     def test_newcomer_threshold_flag_is_plumbed_through(self, tmp_path):
         config = _project_config(tmp_path)
         data_dir, ponymail_months, jira_comments = _small_fixture(tmp_path)

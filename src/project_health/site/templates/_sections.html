@@ -9,7 +9,7 @@
    so its signature/markup stays generic (no community-/governance-specific
    assumptions) rather than growing per-page special cases. #}
 
-{% macro section(section_id, title, chaoss_url=None, summary_items=None, open=False, extra_class="", chaoss_label="CHAOSS practitioner guide") %}
+{% macro section(section_id, title, chaoss_url=None, summary_items=None, open=False, extra_class="", chaoss_label="CHAOSS practitioner guide", summary_extra_html=None) %}
 <details class="page-section {{ extra_class }}" id="{{ section_id }}"{% if open %} open{% endif %}>
   <summary class="page-section-summary">
     <span class="page-section-summary-head">
@@ -18,6 +18,14 @@
       <a class="page-section-chaoss-link" href="{{ chaoss_url }}">{{ chaoss_label }}</a>
       {% endif %}
     </span>
+    {% if summary_extra_html %}
+    {# Issue #153: content that must be visible without expanding the
+       section (e.g. a chart with its own controls) -- the `<summary>`
+       element is always rendered regardless of the `<details>`'s
+       open/closed state, unlike `page-section-body` below, which
+       `app.js`'s `isChartVisible` skips re-embedding while collapsed. #}
+    <div class="page-section-summary-extra">{{ summary_extra_html | safe }}</div>
+    {% endif %}
     {% if summary_items %}
     <ul class="section-headline-metrics">
       {% for item in summary_items %}

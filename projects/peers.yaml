@@ -111,11 +111,13 @@ collection:
   # so the git clone walks back 36 + 12 = 48 months, never full history
   # (disk is tight on the collection machine; see `peers/git_clone.py`).
   commit_lookback_months: 48
-  # GitHub GraphQL PR/review/comment collector reuses `collectors/
-  # github.py::GitHubCollector` unmodified, pointed at every peer repo in
-  # one `collect()` call so the *same* shared rate-limit-floor budgeting
-  # that call already implements for Cassandra's own multi-repo config
-  # applies across peers too (module docstring "Rate-limit budgeting").
+  # GitHub GraphQL PR/review/comment collection (peers/github.py) runs three
+  # bounded-recency-window passes per repo (created-desc, open-any-age,
+  # closed-search) -- not `collectors/github.py::GitHubCollector.collect()`'s
+  # own ASC-from-scratch walk, which would reach only a fresh peer's oldest
+  # history (issue #145 fixup, orchestrator review of PR #147). Every pass,
+  # every peer repo, shares this one rate-limit-floor budget, reusing
+  # `GitHubCollector`'s own client/token/retry machinery unmodified.
   github_rate_limit_floor: 500
   # Generic GitHub/git bot identities (not Cassandra-specific) -- dependabot
   # and GitHub Actions service accounts appear on every peer the same way.

@@ -389,3 +389,17 @@ page, `/peers/`, linked from the site nav and the Community page.
   page directly (e.g. "CHAOSS: Time to First Response") rather than a practitioner guide --
   there is no single practitioner-guide topic for "peer comparison" -- the same `chaoss_label=`
   override `COMMUNITY_SECTIONS`'s own "Releases" section already uses for the same reason.
+
+**Fixup round 1 (orchestrator review of PR #147).** This issue's first draft collected GitHub
+PR history by reusing `collectors/github.py::GitHubCollector.collect()`'s own
+oldest-updated-first walk -- correct for Cassandra's own collection (already caught up to "now"
+after months of incremental nightly runs) but wrong for a peer's *first-ever* run: with no
+watermark, that walk starts at the oldest PR in the whole repo history, which a real run against
+apache/kafka confirmed (PRs landed from 2013-2017, nowhere near the comparison window). Replaced
+with three bounded-recency-window passes per repo (`peers/github.py`: `created_desc`, newest
+first, stopped at the window start; `open_prs`, every currently-open PR regardless of age, since
+an old PR can still be open today; `closed_search`, GitHub's search API for PRs created before
+the window but closed inside it) -- each independently resumable across runs, sharing one
+GraphQL point budget. `GitHubCollector` itself is still reused unmodified for its client/token/
+retry machinery and three new additive fetch methods; its own `collect()` and Cassandra's own
+production collection are untouched.

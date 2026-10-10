@@ -460,12 +460,6 @@ def _build_parser() -> argparse.ArgumentParser:
         "--run-id", required=True, help="Identifier for this run (used in partition filenames)"
     )
     peers_collect_parser.add_argument(
-        "--max-prs-per-repo",
-        type=int,
-        default=None,
-        help="Cap the number of PR nodes fetched per peer repo this run (testing / smoke runs)",
-    )
-    peers_collect_parser.add_argument(
         "--min-free-disk-gb",
         type=float,
         default=None,
@@ -683,7 +677,6 @@ def _cmd_peers_collect(args: argparse.Namespace) -> int:
         data_dir=args.data_dir,
         workdir=args.workdir,
         run_id=args.run_id,
-        max_prs_per_repo=args.max_prs_per_repo,
         min_free_disk_bytes=min_free_disk_bytes,
     )
     print(json.dumps(report.to_json_dict(), indent=2, sort_keys=True))

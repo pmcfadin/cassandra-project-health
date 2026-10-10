@@ -13,10 +13,10 @@ from pathlib import Path
 
 import pyarrow as pa
 
-from project_health.collectors.github import GitHubCollectionResult, GitHubRepoOutcome
 from project_health.peers import collect as peer_collect
 from project_health.peers import pipeline as peer_pipeline
 from project_health.peers.config import JiraReleaseVerification, PeerProject, PeersConfig
+from project_health.peers.github import PassResult, PassState
 from project_health.peers.release import VerificationResult
 from project_health.schema import get_schema
 from project_health import storage
@@ -33,26 +33,33 @@ def _peer(peer_id: str, repo: str) -> PeerProject:
     )
 
 
-def _empty_github_result(repos: list[str]) -> GitHubCollectionResult:
-    return GitHubCollectionResult(
-        prs=get_schema("pr").empty_table(),
-        reviews=get_schema("pr_review").empty_table(),
-        comments=get_schema("pr_comment").empty_table(),
-        repos={
-            repo: GitHubRepoOutcome(
-                repo=repo,
-                status="ok",
-                next_watermark="cursor",
-                pr_count=0,
-                review_count=0,
-                comment_count=0,
-                bot_prs_excluded=0,
-                bot_reviews_excluded=0,
-                bot_comments_excluded=0,
-            )
-            for repo in repos
-        },
-        status="ok",
+def _empty_pass_result() -> PassResult:
+    return PassResult(
+        pr_rows=[],
+        review_rows=[],
+        comment_rows=[],
+        bot_prs_excluded=0,
+        bot_reviews_excluded=0,
+        bot_comments_excluded=0,
+        status="completed",
+        next_state=PassState(),
+    )
+
+
+def _patch_empty_github_passes(monkeypatch) -> None:
+    """Every (peer, pass) in this test module's scenarios completes with
+    zero rows -- the three pass-runner functions `collect_and_write_github`
+    calls (`project_health.peers.github`) are monkeypatched directly,
+    replacing the old single `collect_peer_prs`/`GitHubCollector.collect()`
+    mock this module used before the issue #145 fixup (orchestrator review
+    of PR #147) replaced that single ASC-from-scratch walk with three
+    bounded-recency-window passes."""
+    monkeypatch.setattr(
+        peer_collect, "run_created_desc_pass", lambda *a, **k: _empty_pass_result()
+    )
+    monkeypatch.setattr(peer_collect, "run_open_prs_pass", lambda *a, **k: _empty_pass_result())
+    monkeypatch.setattr(
+        peer_collect, "run_closed_search_pass", lambda *a, **k: _empty_pass_result()
     )
 
 
@@ -61,11 +68,7 @@ def test_run_peers_collection_writes_snapshots_for_cassandra_and_every_peer(tmp_
         peers=[_peer("kafka", "apache/kafka"), _peer("spark", "apache/spark")]
     )
 
-    monkeypatch.setattr(
-        peer_collect,
-        "collect_peer_prs",
-        lambda *a, **k: _empty_github_result(["apache/kafka", "apache/spark"]),
-    )
+    _patch_empty_github_passes(monkeypatch)
     monkeypatch.setattr(peer_collect.git_clone, "clone_shallow_bare", lambda *a, **k: None)
     monkeypatch.setattr(peer_collect, "fetch_ga_tags", lambda *a, **k: [])
     monkeypatch.setattr(
@@ -147,11 +150,7 @@ def test_disk_budget_skips_remaining_peers(tmp_path, monkeypatch):
         peers=[_peer("kafka", "apache/kafka"), _peer("spark", "apache/spark")]
     )
 
-    monkeypatch.setattr(
-        peer_collect,
-        "collect_peer_prs",
-        lambda *a, **k: _empty_github_result(["apache/kafka", "apache/spark"]),
-    )
+    _patch_empty_github_passes(monkeypatch)
     monkeypatch.setattr(peer_collect, "fetch_ga_tags", lambda *a, **k: [])
     monkeypatch.setattr(
         peer_collect,
@@ -187,6 +186,29 @@ def test_disk_budget_skips_remaining_peers(tmp_path, monkeypatch):
     assert report.git_reports == []
 
 
+class _FakeCollector:
+    """Stand-in for `collectors.github.GitHubCollector` that only records
+    the token it was constructed with -- `collect_and_write_github` builds
+    exactly one of these per run, so capturing its `token` constructor arg
+    is the one place `run_peers_collection`'s own token-resolution
+    (fixup, orchestrator review of PR #147: a run that left `token=None`
+    ran release-verification's REST calls unauthenticated) is observable
+    from outside `peer_collect`."""
+
+    def __init__(self, config, token=None, rate_limit_floor=500, transport=None):
+        self.seen_tokens.append(token)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        pass
+
+
+def _fake_collector_class(seen_tokens: list[str | None]):
+    return type("_FakeCollector", (_FakeCollector,), {"seen_tokens": seen_tokens})
+
+
 def test_resolves_token_when_none_given(tmp_path, monkeypatch):
     """Real-run regression (2026-10-09): `collect_and_write_releases`'
     plain REST calls have no fallback token resolution of their own (unlike
@@ -198,10 +220,6 @@ def test_resolves_token_when_none_given(tmp_path, monkeypatch):
 
     seen_tokens: list[str | None] = []
 
-    def fake_collect_peer_prs(*a, token=None, **k):
-        seen_tokens.append(token)
-        return _empty_github_result(["apache/kafka"])
-
     def fake_collect_and_write_releases(*a, token=None, **k):
         seen_tokens.append(token)
         return peer_collect.PeerReleaseCollectionReport(
@@ -212,7 +230,8 @@ def test_resolves_token_when_none_given(tmp_path, monkeypatch):
             ),
         )
 
-    monkeypatch.setattr(peer_collect, "collect_peer_prs", fake_collect_peer_prs)
+    monkeypatch.setattr(peer_collect, "GitHubCollector", _fake_collector_class(seen_tokens))
+    _patch_empty_github_passes(monkeypatch)
     monkeypatch.setattr(
         peer_pipeline, "collect_and_write_releases", fake_collect_and_write_releases
     )
@@ -234,11 +253,8 @@ def test_does_not_override_an_explicitly_passed_token(tmp_path, monkeypatch):
     peers_config = PeersConfig(peers=[_peer("kafka", "apache/kafka")])
     seen_tokens: list[str | None] = []
 
-    def fake_collect_peer_prs(*a, token=None, **k):
-        seen_tokens.append(token)
-        return _empty_github_result(["apache/kafka"])
-
-    monkeypatch.setattr(peer_collect, "collect_peer_prs", fake_collect_peer_prs)
+    monkeypatch.setattr(peer_collect, "GitHubCollector", _fake_collector_class(seen_tokens))
+    _patch_empty_github_passes(monkeypatch)
     monkeypatch.setattr(peer_collect.git_clone, "clone_shallow_bare", lambda *a, **k: None)
     monkeypatch.setattr(peer_collect, "fetch_ga_tags", lambda *a, **k: [])
     monkeypatch.setattr(

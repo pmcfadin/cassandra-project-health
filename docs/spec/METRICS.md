@@ -1495,12 +1495,25 @@ issue-tracker metric is shown for any of the six projects here.
 
 ### Collection (disk- and budget-constrained, issue #145)
 
-- **GitHub PR/review/comment**: `collectors/github.py::GitHubCollector`, reused completely
-  unmodified, pointed at every peer repo in **one** `collect()` call
-  (`peers/github.py::collect_peer_prs`) -- that collector's own shared rate-limit-floor
-  budgeting (module docstring, "Rate-limit budgeting") already covers a multi-repo config, so
-  the five peer repos share one GraphQL point budget exactly the way Cassandra's own seven
-  configured repos already do.
+- **GitHub PR/review/comment**: three bounded-recency-window passes per repo
+  (`peers/github.py`), not `GitHubCollector`'s own ASC-from-scratch `collect()` -- a fresh
+  peer's first-ever run has no watermark, and that walk starts at the *oldest* PR in the
+  repo's history (real-run finding, 2026-10-09: apache/kafka's first-ever collection landed
+  PRs from 2013-2017, nowhere near "now"). Each pass reuses `GitHubCollector`'s client/
+  token/retry/rate-limit-floor machinery and three additive fetch methods
+  (`fetch_prs_created_desc_page`/`fetch_open_prs_page`/`fetch_pr_search_page`), sharing one
+  GraphQL point budget across every peer repo and all three passes:
+  1. `created_desc` -- newest-created-first, stopped once a page's PRs fall before the
+     window start (36 months + 1 month buffer before the latest completed month).
+  2. `open_prs` -- every currently-open PR, any age (an open PR can predate the window and
+     still be open today -- verified live, apache/kafka has one created 2024-06-18).
+  3. `closed_search` -- GitHub's search API, `is:pr closed:>=<window start>`, for PRs
+     created before the window but closed inside it (`change_request_closure_ratio_pr`'s
+     own "closed" side; pass 1 alone only ever sees PRs *created* in the window).
+  Each pass is independently resumable across runs (`peers/github.py::PassState`) -- a
+  backfill that doesn't finish within one run's shared budget picks up where it left off the
+  next run, exactly the "initial backfill may span several runs" case this issue's own
+  "Build" section anticipated.
 - **Git commits**: a **disk-safe** acquisition, never a full clone -- `git clone --bare
   --filter=blob:none --single-branch --shallow-since=<48 months before the run>`
   (`peers/git_clone.py`), deleted immediately after `collectors/git.py::GitCollector` (reused

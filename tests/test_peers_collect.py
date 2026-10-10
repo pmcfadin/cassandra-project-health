@@ -16,13 +16,11 @@ import subprocess
 from datetime import date, datetime, timezone
 from pathlib import Path
 
-import pyarrow as pa
 
-from project_health.collectors.github import GitHubCollectionResult, GitHubRepoOutcome
 from project_health.peers import collect as peer_collect
 from project_health.peers.config import JiraReleaseVerification, PeerProject, PeersConfig
+from project_health.peers.github import PassResult, PassState
 from project_health.peers.release import GaTag, VerificationResult
-from project_health.schema import get_schema
 from project_health import storage
 
 
@@ -37,78 +35,39 @@ def _peer(peer_id: str, repo: str, branch: str = "main") -> PeerProject:
     )
 
 
-def _pr_result(repo_a: str, repo_b: str) -> GitHubCollectionResult:
-    pr_rows = [
-        {
-            "repo": repo_a,
-            "number": 1,
-            "state": "OPEN",
-            "is_draft": False,
-            "merged": False,
-            "author_identity_id": None,
-            "author_raw_type": "github_login",
-            "author_raw_value": "alice",
-            "title_hash": "x" * 10,
-            "linked_issue_keys": [],
-            "created_at": datetime(2024, 1, 1, tzinfo=timezone.utc),
-            "updated_at": datetime(2024, 1, 1, tzinfo=timezone.utc),
-            "closed_at": None,
-            "merged_at": None,
-            "additions": 1,
-            "deletions": 1,
-            "changed_files": 1,
-            "source_snapshot_id": "s1",
-        },
-        {
-            "repo": repo_b,
-            "number": 1,
-            "state": "OPEN",
-            "is_draft": False,
-            "merged": False,
-            "author_identity_id": None,
-            "author_raw_type": "github_login",
-            "author_raw_value": "bob",
-            "title_hash": "y" * 10,
-            "linked_issue_keys": [],
-            "created_at": datetime(2024, 2, 1, tzinfo=timezone.utc),
-            "updated_at": datetime(2024, 2, 1, tzinfo=timezone.utc),
-            "closed_at": None,
-            "merged_at": None,
-            "additions": 1,
-            "deletions": 1,
-            "changed_files": 1,
-            "source_snapshot_id": "s1",
-        },
-    ]
-    prs = pa.Table.from_pylist(pr_rows, schema=get_schema("pr"))
-    reviews = get_schema("pr_review").empty_table()
-    comments = get_schema("pr_comment").empty_table()
-    repos = {
-        repo_a: GitHubRepoOutcome(
-            repo=repo_a,
-            status="ok",
-            next_watermark="cursor-a",
-            pr_count=1,
-            review_count=0,
-            comment_count=0,
-            bot_prs_excluded=0,
-            bot_reviews_excluded=0,
-            bot_comments_excluded=0,
-        ),
-        repo_b: GitHubRepoOutcome(
-            repo=repo_b,
-            status="ok",
-            next_watermark="cursor-b",
-            pr_count=1,
-            review_count=0,
-            comment_count=0,
-            bot_prs_excluded=0,
-            bot_reviews_excluded=0,
-            bot_comments_excluded=0,
-        ),
+def _pr_row(repo: str, number: int, author: str) -> dict:
+    return {
+        "repo": repo,
+        "number": number,
+        "state": "OPEN",
+        "is_draft": False,
+        "merged": False,
+        "author_identity_id": None,
+        "author_raw_type": "github_login",
+        "author_raw_value": author,
+        "title_hash": "x" * 10,
+        "linked_issue_keys": [],
+        "created_at": datetime(2024, 1, 1, tzinfo=timezone.utc),
+        "updated_at": datetime(2024, 1, 1, tzinfo=timezone.utc),
+        "closed_at": None,
+        "merged_at": None,
+        "additions": 1,
+        "deletions": 1,
+        "changed_files": 1,
+        "source_snapshot_id": "s1",
     }
-    return GitHubCollectionResult(
-        prs=prs, reviews=reviews, comments=comments, repos=repos, status="ok"
+
+
+def _empty_pass_result() -> PassResult:
+    return PassResult(
+        pr_rows=[],
+        review_rows=[],
+        comment_rows=[],
+        bot_prs_excluded=0,
+        bot_reviews_excluded=0,
+        bot_comments_excluded=0,
+        status="completed",
+        next_state=PassState(),
     )
 
 
@@ -116,12 +75,28 @@ def test_collect_and_write_github_splits_by_repo(tmp_path, monkeypatch):
     peers_config = PeersConfig(
         peers=[_peer("kafka", "apache/kafka"), _peer("spark", "apache/spark")]
     )
-    result = _pr_result("apache/kafka", "apache/spark")
 
-    monkeypatch.setattr(peer_collect, "collect_peer_prs", lambda *a, **k: result)
+    def fake_created_desc(collector, repo_label, state, window_start, bot_patterns, snapshot_id):
+        author = "alice" if repo_label == "apache/kafka" else "bob"
+        return PassResult(
+            pr_rows=[_pr_row(repo_label, 1, author)],
+            review_rows=[],
+            comment_rows=[],
+            bot_prs_excluded=0,
+            bot_reviews_excluded=0,
+            bot_comments_excluded=0,
+            status="completed",
+            next_state=PassState(high_watermark="2024-01-01T00:00:00+00:00"),
+        )
+
+    monkeypatch.setattr(peer_collect, "run_created_desc_pass", fake_created_desc)
+    monkeypatch.setattr(peer_collect, "run_open_prs_pass", lambda *a, **k: _empty_pass_result())
+    monkeypatch.setattr(
+        peer_collect, "run_closed_search_pass", lambda *a, **k: _empty_pass_result()
+    )
 
     report = peer_collect.collect_and_write_github(
-        peers_config, tmp_path, "run1", date(2026, 1, 1)
+        peers_config, tmp_path, "run1", date(2026, 1, 1), token="x"
     )
 
     assert report.per_peer_pr_counts == {"kafka": 1, "spark": 1}
@@ -134,8 +109,58 @@ def test_collect_and_write_github_splits_by_repo(tmp_path, monkeypatch):
     assert spark_pr.num_rows == 1
     assert spark_pr.column("repo").to_pylist() == ["apache/spark"]
 
-    assert storage.read_watermark(tmp_path, kafka_github_source) == "cursor-a"
-    assert storage.read_watermark(tmp_path, spark_github_source) == "cursor-b"
+    # Each pass's resumable state is persisted per peer.
+    stored = storage.read_watermark(tmp_path, kafka_github_source, table="pr_pass_created_desc")
+    assert stored is not None
+    assert PassState.from_json(stored).high_watermark == "2024-01-01T00:00:00+00:00"
+
+
+def test_collect_and_write_github_stops_cleanly_on_budget_floor(tmp_path, monkeypatch):
+    """Once any (peer, pass) hits the rate-limit floor, every remaining
+    (peer, pass) pair is recorded 'skipped' with its watermark untouched --
+    same shared-budget discipline the GraphQL collector itself documents."""
+    peers_config = PeersConfig(
+        peers=[_peer("kafka", "apache/kafka"), _peer("spark", "apache/spark")]
+    )
+
+    def fake_created_desc(collector, repo_label, state, window_start, bot_patterns, snapshot_id):
+        return PassResult(
+            pr_rows=[_pr_row(repo_label, 1, "alice")],
+            review_rows=[],
+            comment_rows=[],
+            bot_prs_excluded=0,
+            bot_reviews_excluded=0,
+            bot_comments_excluded=0,
+            status="partial",
+            next_state=PassState(cursor="resume-here"),
+        )
+
+    calls: list[str] = []
+
+    def tracking_open_prs(*a, **k):
+        calls.append("open_prs")
+        return _empty_pass_result()
+
+    monkeypatch.setattr(peer_collect, "run_created_desc_pass", fake_created_desc)
+    monkeypatch.setattr(peer_collect, "run_open_prs_pass", tracking_open_prs)
+    monkeypatch.setattr(peer_collect, "run_closed_search_pass", tracking_open_prs)
+
+    report = peer_collect.collect_and_write_github(
+        peers_config, tmp_path, "run1", date(2026, 1, 1), token="x"
+    )
+
+    # kafka's created_desc pass hit the floor; every later (peer, pass) --
+    # including kafka's own remaining passes and all of spark's -- skipped.
+    assert calls == []
+    statuses = {(o.peer_id, o.pass_name): o.status for o in report.pass_outcomes}
+    assert statuses[("kafka", "created_desc")] == "partial"
+    assert statuses[("kafka", "open_prs")] == "skipped"
+    assert statuses[("spark", "created_desc")] == "skipped"
+
+    # The partial pass's resume cursor was persisted; skipped passes never touch storage.
+    kafka_github_source = peer_collect.peer_source("kafka", "github")
+    stored = storage.read_watermark(tmp_path, kafka_github_source, table="pr_pass_created_desc")
+    assert PassState.from_json(stored).cursor == "resume-here"
 
 
 def _git_env() -> dict[str, str]:

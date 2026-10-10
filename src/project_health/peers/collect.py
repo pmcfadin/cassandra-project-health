@@ -31,15 +31,21 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 
 import pyarrow as pa
-import pyarrow.compute as pc
 
 from project_health.collectors.git import GitCollectionResult, GitCollector
-from project_health.collectors.github import GitHubCollectionResult
+from project_health.collectors.github import GitHubCollector
 from project_health.collectors.reviewer_trailer import ReviewerExtractor
 from project_health.config import BotPattern
+from project_health.metrics.windows import add_months, month_start
 from project_health.peers import git_clone
 from project_health.peers.config import BotPatternConfig, PeerProject, PeersConfig
-from project_health.peers.github import collect_peer_prs
+from project_health.peers.github import (
+    PassState,
+    build_peer_github_config,
+    run_closed_search_pass,
+    run_created_desc_pass,
+    run_open_prs_pass,
+)
 from project_health.peers.release import (
     GaTag,
     VerificationResult,
@@ -72,19 +78,69 @@ def peer_source(peer_id: str, table_group: str) -> str:
 
 
 # --- GitHub PR/review/comment ------------------------------------------
+#
+# Three bounded-recency-window passes per repo (issue #145 fixup,
+# orchestrator review of PR #147: the original single ASC-from-scratch
+# `GitHubCollector.collect()` call reached only a peer's *oldest* PRs on a
+# first-ever run, never anything recent) -- see `peers/github.py`'s module
+# docstring for why each of `created_desc`/`open_prs`/`closed_search`
+# exists. One shared `GitHubCollector` instance (one client, one token,
+# one rate-limit-floor check) runs every peer's three passes in turn;
+# once any pass hits the floor, every remaining (peer, pass) pair is
+# recorded `'skipped'` with its watermark untouched, same "a shared budget
+# means some work finishing cleanly beats everything finishing half
+# finished" discipline `collectors/github.py`'s own module docstring
+# documents for its multi-repo `collect()`.
+
+PASS_NAMES: tuple[str, ...] = ("created_desc", "open_prs", "closed_search")
+
+# 36-month display window + 1 month buffer (issue #145 fixup, orchestrator
+# instruction) -- never the 12-month `contributor_absence_factor` buffer
+# `git_clone.shallow_since_date`'s own lookback already adds; that buffer
+# is about git-commit history for a *different* metric, not PR collection.
+PR_WINDOW_MONTHS = 36
+PR_WINDOW_BUFFER_MONTHS = 1
+
+
+def pr_window_start(as_of: date) -> date:
+    """First day of the month `PR_WINDOW_MONTHS + PR_WINDOW_BUFFER_MONTHS`
+    before `as_of`'s last *completed* month (D5: never the in-progress
+    current month) -- the `created_desc`/`closed_search` passes' stop
+    bound."""
+    last_completed_month = add_months(month_start(as_of), -1)
+    return add_months(last_completed_month, -(PR_WINDOW_MONTHS + PR_WINDOW_BUFFER_MONTHS))
+
+
+@dataclass(frozen=True)
+class PeerGithubPassOutcome:
+    peer_id: str
+    pass_name: str
+    status: str
+    pr_count: int
+    review_count: int
+    comment_count: int
+    pages_fetched: int
+    issue_count: int | None = None
+    error: str | None = None
 
 
 @dataclass(frozen=True)
 class PeerGithubCollectionReport:
-    result: GitHubCollectionResult
     per_peer_pr_counts: dict[str, int]
+    pass_outcomes: list[PeerGithubPassOutcome]
+
+    @property
+    def overall_status(self) -> str:
+        statuses = {o.status for o in self.pass_outcomes}
+        if statuses <= {"completed"}:
+            return "ok"
+        if "failed" in statuses or "rate_limited" in statuses:
+            return "partial"
+        return "ok"
 
 
-def _filter_by_repo(table: pa.Table, repo: str) -> pa.Table:
-    if table.num_rows == 0:
-        return table
-    mask = pc.equal(table.column("repo"), repo)
-    return table.filter(mask)
+def _pass_watermark_table(pass_name: str) -> str:
+    return f"pr_pass_{pass_name}"
 
 
 def collect_and_write_github(
@@ -94,49 +150,125 @@ def collect_and_write_github(
     partition_date: date,
     *,
     token: str | None = None,
-    max_prs_per_repo: int | None = None,
+    as_of: date | None = None,
+    transport=None,
 ) -> PeerGithubCollectionReport:
-    """Collect every peer's PRs/reviews/comments in one shared-budget call,
-    then write each peer's own `raw/peers/<id>/github/{pr,pr_review,
-    pr_comment}` partition and advance that peer's own GraphQL cursor
-    watermark (`storage.write_watermark`, `source=peer_source(id,
-    "github")`)."""
-    watermarks = {
-        peer.repo: storage.read_watermark(data_dir, peer_source(peer.id, "github"))
-        for peer in peers_config.peers
-    }
-    result = collect_peer_prs(
-        peers_config.peers,
-        peers_config.collection.bot_patterns,
-        token=token,
-        watermarks=watermarks,
-        rate_limit_floor=peers_config.collection.github_rate_limit_floor,
-        max_prs_per_repo=max_prs_per_repo,
-    )
+    """Run every peer repo's three PR-collection passes (module comment
+    above), sharing one `GitHubCollector`/one rate-limit-floor budget, then
+    write each peer's own `raw/peers/<id>/github/{pr,pr_review,pr_comment}`
+    partition (one combined write per table, the three passes' rows
+    concatenated -- any cross-pass overlap, e.g. a PR both created in the
+    window and still open, is resolved at *read* time by `peers.pipeline`'s
+    existing `_dedupe_pr_rows`/etc., the same way a re-fetched PR's
+    cross-*run* overlap already is) and persist each pass's own resumable
+    `PassState` (`storage.write_watermark`, `table=_pass_watermark_table
+    (pass_name)`).
+    """
+    as_of = as_of or datetime.now(timezone.utc).date()
+    window_start = pr_window_start(as_of)
 
+    config = build_peer_github_config(peers_config.peers, peers_config.collection.bot_patterns)
+    pass_outcomes: list[PeerGithubPassOutcome] = []
     per_peer_pr_counts: dict[str, int] = {}
-    for peer in peers_config.peers:
-        outcome = result.repos.get(peer.repo)
-        pr_table = _filter_by_repo(result.prs, peer.repo)
-        review_table = _filter_by_repo(result.reviews, peer.repo)
-        comment_table = _filter_by_repo(result.comments, peer.repo)
-        per_peer_pr_counts[peer.id] = pr_table.num_rows
+    budget_exhausted = False
 
-        source = peer_source(peer.id, "github")
-        if pr_table.num_rows:
-            storage.write_partition(data_dir, source, "pr", partition_date, run_id, pr_table)
-        if review_table.num_rows:
-            storage.write_partition(
-                data_dir, source, "pr_review", partition_date, run_id, review_table
-            )
-        if comment_table.num_rows:
-            storage.write_partition(
-                data_dir, source, "pr_comment", partition_date, run_id, comment_table
-            )
-        if outcome is not None and outcome.next_watermark:
-            storage.write_watermark(data_dir, source, outcome.next_watermark)
+    with GitHubCollector(
+        config,
+        token=token,
+        rate_limit_floor=peers_config.collection.github_rate_limit_floor,
+        transport=transport,
+    ) as collector:
+        for peer in peers_config.peers:
+            source = peer_source(peer.id, "github")
+            snapshot_id = str(uuid.uuid4())
+            bot_pattern_objs = [
+                BotPattern(field=p.field, regex=p.regex)
+                for p in peers_config.collection.bot_patterns
+            ]
 
-    return PeerGithubCollectionReport(result=result, per_peer_pr_counts=per_peer_pr_counts)
+            pr_rows: list[dict] = []
+            review_rows: list[dict] = []
+            comment_rows: list[dict] = []
+            pr_count_this_peer = 0
+
+            for pass_name in PASS_NAMES:
+                if budget_exhausted:
+                    pass_outcomes.append(
+                        PeerGithubPassOutcome(
+                            peer_id=peer.id,
+                            pass_name=pass_name,
+                            status="skipped",
+                            pr_count=0,
+                            review_count=0,
+                            comment_count=0,
+                            pages_fetched=0,
+                            error="rate limit budget exhausted earlier this run",
+                        )
+                    )
+                    continue
+
+                state = PassState.from_json(
+                    storage.read_watermark(data_dir, source, table=_pass_watermark_table(pass_name))
+                )
+                if pass_name == "created_desc":
+                    result = run_created_desc_pass(
+                        collector, peer.repo, state, window_start, bot_pattern_objs, snapshot_id
+                    )
+                elif pass_name == "open_prs":
+                    result = run_open_prs_pass(
+                        collector, peer.repo, state, bot_pattern_objs, snapshot_id
+                    )
+                else:
+                    result = run_closed_search_pass(
+                        collector, peer.repo, state, window_start, bot_pattern_objs, snapshot_id
+                    )
+
+                storage.write_watermark(
+                    data_dir,
+                    source,
+                    result.next_state.to_json(),
+                    table=_pass_watermark_table(pass_name),
+                )
+                pr_rows.extend(result.pr_rows)
+                review_rows.extend(result.review_rows)
+                comment_rows.extend(result.comment_rows)
+                pr_count_this_peer += len(result.pr_rows)
+
+                pass_outcomes.append(
+                    PeerGithubPassOutcome(
+                        peer_id=peer.id,
+                        pass_name=pass_name,
+                        status=result.status,
+                        pr_count=len(result.pr_rows),
+                        review_count=len(result.review_rows),
+                        comment_count=len(result.comment_rows),
+                        pages_fetched=result.pages_fetched,
+                        issue_count=result.issue_count,
+                        error=result.error,
+                    )
+                )
+                if result.status in ("partial", "rate_limited"):
+                    budget_exhausted = True
+
+            per_peer_pr_counts[peer.id] = pr_count_this_peer
+
+            if pr_rows:
+                pr_table = pa.Table.from_pylist(pr_rows, schema=get_schema("pr"))
+                storage.write_partition(data_dir, source, "pr", partition_date, run_id, pr_table)
+            if review_rows:
+                review_table = pa.Table.from_pylist(review_rows, schema=get_schema("pr_review"))
+                storage.write_partition(
+                    data_dir, source, "pr_review", partition_date, run_id, review_table
+                )
+            if comment_rows:
+                comment_table = pa.Table.from_pylist(comment_rows, schema=get_schema("pr_comment"))
+                storage.write_partition(
+                    data_dir, source, "pr_comment", partition_date, run_id, comment_table
+                )
+
+    return PeerGithubCollectionReport(
+        per_peer_pr_counts=per_peer_pr_counts, pass_outcomes=pass_outcomes
+    )
 
 
 # --- git commits ---------------------------------------------------------

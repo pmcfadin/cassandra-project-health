@@ -77,17 +77,22 @@ class PeersRunReport:
             "completed_at": self.completed_at.isoformat(),
             "wall_time_seconds": (self.completed_at - self.started_at).total_seconds(),
             "per_peer_pr_counts": self.github.per_peer_pr_counts,
-            "github_overall_status": self.github.result.status,
+            "github_overall_status": self.github.overall_status,
             "disk_budget_skipped_peers": self.disk_budget_skipped_peers,
-            "github_repo_outcomes": {
-                repo: {
-                    "status": outcome.status,
-                    "pr_count": outcome.pr_count,
-                    "review_count": outcome.review_count,
-                    "comment_count": outcome.comment_count,
+            "github_pass_outcomes": [
+                {
+                    "peer_id": o.peer_id,
+                    "pass_name": o.pass_name,
+                    "status": o.status,
+                    "pr_count": o.pr_count,
+                    "review_count": o.review_count,
+                    "comment_count": o.comment_count,
+                    "pages_fetched": o.pages_fetched,
+                    "issue_count": o.issue_count,
+                    "error": o.error,
                 }
-                for repo, outcome in self.github.result.repos.items()
-            },
+                for o in self.github.pass_outcomes
+            ],
             "git_reports": [asdict(r) for r in self.git_reports],
             "release_reports": [
                 {
@@ -207,7 +212,6 @@ def run_peers_collection(
     *,
     token: str | None = None,
     as_of: date | None = None,
-    max_prs_per_repo: int | None = None,
     min_free_disk_bytes: int | None = DEFAULT_MIN_FREE_DISK_BYTES,
 ) -> PeersRunReport:
     """Collect every peer's raw tables, then compute + snapshot metrics for
@@ -248,7 +252,7 @@ def run_peers_collection(
         run_id,
         partition_date,
         token=token,
-        max_prs_per_repo=max_prs_per_repo,
+        as_of=as_of,
     )
 
     git_reports: list[PeerGitCollectionReport] = []

@@ -275,6 +275,7 @@ def chart_meta_json(
     time_field: str | None = None,
     time_type: str = "month",
     series_field: str | None = None,
+    series_order: list[str] | None = None,
     has_band: bool = False,
     params: list[dict[str, str]] | None = None,
 ) -> str:
@@ -283,7 +284,17 @@ def chart_meta_json(
     deep-link parser and the Expand button both key off it) -- callers that
     render more than one chart from the same loop body are themselves
     responsible for interpolating something page-unique into it (a
-    `metric_id`, a venue id, a facet-group id)."""
+    `metric_id`, a venue id, a facet-group id).
+
+    `series_order` (orchestrator review of PR #157): the chart's own
+    natural series order -- age/ticket-state buckets youngest-to-oldest,
+    tone tiers -2..4, submitter tiers first-time/2nd-5th/6th+, peers with
+    Cassandra first, thread outcomes in `CHART_OUTCOME_CATEGORIES` order --
+    for `chart_expand.js`'s series checkboxes, which would otherwise fall
+    back to alphabetical. Every caller that passes this also puts the same
+    list on the spec's own `encoding.color.sort` (or `scale.domain`), so
+    the dialog's checkboxes and its legend never disagree -- see each
+    chart-building module's own spec function."""
     return json.dumps(
         {
             "id": chart_id,
@@ -291,6 +302,7 @@ def chart_meta_json(
             "timeField": time_field,
             "timeType": time_type,
             "seriesField": series_field,
+            "seriesOrder": series_order or [],
             "hasBand": has_band,
             "params": params or [],
         }

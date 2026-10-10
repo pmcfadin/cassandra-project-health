@@ -954,6 +954,7 @@ def _tone_mix_context(
                         time_field="quarter",
                         time_type="quarter",
                         series_field="tier_name",
+                        series_order=[_TONE_TIER_NAMES[t] for t in _TONE_TIER_ORDER],
                         params=[
                             {
                                 "name": "mode",

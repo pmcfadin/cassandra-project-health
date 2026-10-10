@@ -340,7 +340,23 @@ def _line_chart_spec(
                 "encoding": {
                     "x": {"field": "month", "type": "temporal", "title": None},
                     "y": {"field": "value", "type": "quantitative", "title": value_label},
-                    "color": {"field": "project", "type": "nominal", "title": None},
+                    "color": {
+                        "field": "project",
+                        "type": "nominal",
+                        "title": None,
+                        # Orchestrator review of PR #157: Cassandra first,
+                        # then the rest in `_PEER_ORDER` -- never
+                        # alphabetical. `build_peers_context`'s own
+                        # `chart_meta_json` call mirrors this exact list
+                        # (minus any gated project) as `series_order`, so
+                        # the expand dialog's checkboxes and this legend
+                        # never disagree.
+                        "sort": [
+                            name
+                            for project_id, name in _PEER_ORDER
+                            if project_id not in excluded_projects
+                        ],
+                    },
                     "strokeWidth": {
                         "field": "is_cassandra",
                         "type": "nominal",
@@ -447,6 +463,9 @@ def build_peers_context(data_dir: str | Path, run_id: str | None = None) -> dict
                     time_field="month",
                     time_type="month",
                     series_field="project",
+                    series_order=[
+                        name for project_id, name in _PEER_ORDER if project_id not in gated_projects
+                    ],
                 ),
             }
         )
@@ -500,6 +519,11 @@ def build_peers_context(data_dir: str | Path, run_id: str | None = None) -> dict
                 time_field="month",
                 time_type="month",
                 series_field="project",
+                series_order=[
+                    name
+                    for project_id, name in _PEER_ORDER
+                    if project_id not in backlog_gated_projects
+                ],
             ),
         }
     )

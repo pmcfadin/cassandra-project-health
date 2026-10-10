@@ -36,6 +36,12 @@
 
 <section class="peer-table" aria-labelledby="peer-table-heading">
   <h3 id="peer-table-heading">Current month, all six projects</h3>
+  {# Orchestrator review of PR #157: this table (project + "As of" + 6
+     metric columns) is wide enough to force the *page itself* to scroll
+     sideways at a phone width -- the same wide-table overflow
+     `.gov-table-wrap` (governance's commit history) already scopes to
+     the table alone instead. #}
+  <div class="gov-table-wrap">
   <table class="security-table peer-table-grid">
     <thead>
       <tr>
@@ -58,6 +64,7 @@
       {% endfor %}
     </tbody>
   </table>
+  </div>
 </section>
 
 {% else %}

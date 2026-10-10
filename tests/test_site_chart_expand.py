@@ -85,10 +85,45 @@ def _rows_of(spec: dict) -> list[dict]:
     return spec.get("data", {}).get("values", [])
 
 
+def _encoding_owner(spec: dict) -> dict | None:
+    """Mirrors `chart_expand.js::encodingOwner`: the object that actually
+    carries this chart's `encoding` -- top level, `spec["spec"]` for a
+    faceted small-multiples spec, or the first layer that has one
+    (`peers_page.py::_line_chart_spec`, which has no top-level `encoding`
+    at all)."""
+    inner = spec.get("spec")
+    if isinstance(inner, dict) and "encoding" in inner:
+        return inner
+    if "encoding" in spec:
+        return spec
+    for layer in spec.get("layer", []):
+        if "encoding" in layer:
+            return layer
+    return None
+
+
+def _spec_color_domain(spec: dict) -> list[str] | None:
+    """The chart's own declared series order, straight from its spec's
+    `encoding.color.sort` (preferred) or `encoding.color.scale.domain` --
+    whichever `chart_spec.chart_meta_json`'s `series_order` is supposed to
+    mirror (orchestrator review of PR #157)."""
+    owner = _encoding_owner(spec)
+    if not owner:
+        return None
+    color = owner.get("encoding", {}).get("color")
+    if not color:
+        return None
+    if color.get("sort"):
+        return color["sort"]
+    return color.get("scale", {}).get("domain")
+
+
 def _assert_charts_wired(html_text: str, *, expected_min: int = 1) -> list[tuple[str, dict]]:
     """Every chart container has a unique id + valid metadata, matched 1:1
-    by an Expand button, and (where declared) its own `timeField`/
-    `seriesField` actually appear in its embedded data."""
+    by an Expand button, its own `timeField`/`seriesField` actually appear
+    in its embedded data, and (where the server declares one) its
+    `seriesOrder` matches the spec's own color domain exactly -- the
+    dialog's series checkboxes and its legend must never disagree."""
     entries = _chart_entries(html_text)
     assert len(entries) >= expected_min, html_text[:200]
 
@@ -113,6 +148,12 @@ def _assert_charts_wired(html_text: str, *, expected_min: int = 1) -> list[tuple
             assert any(meta["seriesField"] in row for row in rows), (
                 f"{chart_id}: seriesField {meta['seriesField']!r} not in any row"
             )
+        if meta.get("seriesOrder"):
+            domain = _spec_color_domain(spec)
+            assert domain == meta["seriesOrder"], (
+                f"{chart_id}: seriesOrder {meta['seriesOrder']!r} != "
+                f"spec color domain {domain!r}"
+            )
     return entries
 
 
@@ -126,6 +167,7 @@ def test_chart_meta_json_shape():
         time_field="window_end",
         time_type="month",
         series_field="tier",
+        series_order=["First-time submitters", "2nd-5th submission", "6th+ submission"],
         has_band=True,
         params=[{"name": "cutoff", "selector": "[data-x]"}],
     )
@@ -135,6 +177,7 @@ def test_chart_meta_json_shape():
         "timeField": "window_end",
         "timeType": "month",
         "seriesField": "tier",
+        "seriesOrder": ["First-time submitters", "2nd-5th submission", "6th+ submission"],
         "hasBand": True,
         "params": [{"name": "cutoff", "selector": "[data-x]"}],
     }
@@ -146,6 +189,7 @@ def test_chart_meta_json_defaults():
     assert meta["timeField"] is None
     assert meta["timeType"] == "month"
     assert meta["seriesField"] is None
+    assert meta["seriesOrder"] == []
     assert meta["hasBand"] is False
     assert meta["params"] == []
 
@@ -185,6 +229,11 @@ def test_community_page_review_responsiveness_chart_wired(tmp_path):
     meta = by_id["review-responsiveness-trailing12m"]
     assert meta["timeField"] == "window_end"
     assert meta["seriesField"] == "tier"
+    assert meta["seriesOrder"] == [
+        "First-time submitters",
+        "2nd-5th submission",
+        "6th+ submission",
+    ]
 
 
 def test_community_page_pr_backlog_charts_wired(tmp_path):
@@ -195,6 +244,13 @@ def test_community_page_pr_backlog_charts_wired(tmp_path):
     for chart_id in ("pr-backlog-age", "pr-backlog-ticket"):
         assert by_id[chart_id]["timeField"] == "month"
         assert by_id[chart_id]["seriesField"] == "bucket"
+    assert by_id["pr-backlog-age"]["seriesOrder"] == ["<30d", "30-90d", "90d-1y", "1-3y", ">3y"]
+    assert by_id["pr-backlog-ticket"]["seriesOrder"] == [
+        "Still open",
+        "Fixed",
+        "Closed (other)",
+        "No ticket key",
+    ]
 
 
 # --- Conversations page: metric cards, tone-mix, yoy, message patterns -----
@@ -211,6 +267,10 @@ def test_conversations_page_charts_wired(tmp_path):
     assert tone_meta["timeType"] == "quarter"
     assert tone_meta["seriesField"] == "tier_name"
     assert {p["name"] for p in tone_meta["params"]} == {"mode", "cutoff"}
+    # -2 (closing/positive) .. 4 (attack), never alphabetical.
+    assert tone_meta["seriesOrder"][0] == "Closing/positive"
+    assert tone_meta["seriesOrder"][-1] == "Attack"
+    assert len(tone_meta["seriesOrder"]) == 7
 
     yoy_meta = by_id["yoy-constructive"]
     assert yoy_meta["timeField"] == "year"
@@ -236,6 +296,7 @@ def test_thread_explorer_charts_wired(tmp_path):
         "year_from",
         "year_to",
     }
+    assert by_id["threads-outcome"]["seriesOrder"][0] == "none"
     assert by_id["threads-label-constructive"]["timeField"] == "year"
 
 
@@ -268,6 +329,11 @@ def test_peers_page_charts_wired(tmp_path):
     for _, meta in entries:
         assert meta["timeField"] == "month"
         assert meta["seriesField"] == "project"
+        # Cassandra first (D30), never alphabetical ("Apache Cassandra"
+        # would otherwise sort first anyway -- "Apache DataFusion" is the
+        # tell: it must stay *last*, not alphabetically second).
+        assert meta["seriesOrder"][0] == "Apache Cassandra"
+        assert meta["seriesOrder"][-1] == "Apache DataFusion"
 
 
 # --- No-JS: the Expand button is hidden without JavaScript ------------------

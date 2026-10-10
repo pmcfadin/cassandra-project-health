@@ -416,6 +416,7 @@ def _year_outcome_chart_spec(rows: list[dict[str, Any]]) -> str | None:
                 "field": "outcome",
                 "type": "nominal",
                 "title": "Outcome",
+                "sort": list(CHART_OUTCOME_CATEGORIES),
                 "scale": {
                     "domain": list(CHART_OUTCOME_CATEGORIES),
                     "scheme": _OUTCOME_COLOR_SCHEME,
@@ -527,6 +528,7 @@ def _threads_chart_context(rows: list[dict[str, Any]]) -> dict[str, Any]:
                 time_field="year",
                 time_type="year",
                 series_field="outcome",
+                series_order=list(CHART_OUTCOME_CATEGORIES),
                 params=threads_filter_params,
             )
             if outcome_spec is not None

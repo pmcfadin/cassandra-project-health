@@ -74,8 +74,17 @@
     <button type="button" class="chart-expand-close" data-chart-expand-close aria-label="Close">&times;</button>
   </div>
   <form class="chart-expand-controls" data-chart-expand-controls aria-label="Chart controls"></form>
-  <div class="chart-expand-main" data-chart-expand-main role="img"></div>
-  <div class="chart-expand-overview" data-chart-expand-overview aria-hidden="true"></div>
+  {# Main chart + its overview/brush strip sit directly under each other
+     with no gap (orchestrator review of PR #157) -- grouped in their own
+     flex container rather than relying on the dialog's own `gap`, which
+     applies uniformly between every direct child. `chart_expand.js` hides
+     the overview strip entirely (rather than leaving an empty gap) for a
+     chart whose spec can't support a sensible single-panel overview
+     (small multiples). #}
+  <div class="chart-expand-chart-group">
+    <div class="chart-expand-main" data-chart-expand-main role="img"></div>
+    <div class="chart-expand-overview" data-chart-expand-overview aria-hidden="true"></div>
+  </div>
   <p class="chart-expand-actions">
     <button type="button" data-chart-expand-download="png">Download PNG</button>
     <button type="button" data-chart-expand-download="svg">Download SVG</button>

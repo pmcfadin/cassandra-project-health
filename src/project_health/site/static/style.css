@@ -1250,6 +1250,13 @@ main {
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
+  /* A chart with many controls (tone-over-time's 7 series checkboxes
+     plus mode/cutoff) or a tall legend can exceed this fixed height on a
+     short viewport -- scroll the dialog itself rather than silently
+     clipping the actions row/legend past its own bottom edge (verified:
+     without this, the tone-mix legend was cut off at a 390x844 phone
+     size). */
+  overflow-y: auto;
 }
 .chart-expand-dialog::backdrop {
   background: rgba(0, 0, 0, 0.5);
@@ -1340,15 +1347,28 @@ main {
   border-radius: 6px;
   font-size: 0.85rem;
 }
+/* Main chart + overview strip: one flex column, no internal gap -- the
+   strip sits directly under the chart it's a miniature/brushable summary
+   of (orchestrator review of PR #157). */
+.chart-expand-chart-group {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
 .chart-expand-main {
   flex: 1 1 auto;
-  min-height: 240px;
+  min-height: 200px;
   width: 100%;
 }
 .chart-expand-overview {
   flex: none;
-  min-height: 40px;
+  height: 80px;
   width: 100%;
+}
+.chart-expand-overview[hidden] {
+  display: none;
 }
 .chart-expand-actions {
   margin: 0;

@@ -85,6 +85,31 @@
     return spec;
   }
 
+  // The object that actually owns this chart's x/y/color `encoding` --
+  // the top level for most specs, `spec.spec` for a faceted small-
+  // multiples spec, or (`peers_page.py::_line_chart_spec`, the one chart
+  // in this project with no top-level `encoding` at all) the first layer
+  // that has one. Every x-axis/series/legend fixup below goes through
+  // this instead of assuming `spec.encoding` directly, so it keeps
+  // working regardless of which of these three shapes a given chart's
+  // own spec-building function happens to use.
+  function encodingOwner(spec) {
+    if (spec.spec && spec.spec.encoding) {
+      return spec.spec;
+    }
+    if (spec.encoding) {
+      return spec;
+    }
+    if (Array.isArray(spec.layer)) {
+      for (var i = 0; i < spec.layer.length; i++) {
+        if (spec.layer[i].encoding) {
+          return spec.layer[i];
+        }
+      }
+    }
+    return null;
+  }
+
   // A confidence-interval band layer (issue #156's "CI band toggle when
   // the spec has a band/errorband layer"): an area mark with its own `y2`
   // encoding -- every CI band in this project's charts is built this way
@@ -116,6 +141,63 @@
     });
     out.sort();
     return out;
+  }
+
+  // `distinct` values (already deduped, any order), reordered to match
+  // `order` (`meta.seriesOrder` -- the chart's own declared natural order,
+  // orchestrator review of PR #157) wherever a value appears in both;
+  // anything in `distinct` but not in `order` (a declared order that's
+  // stale, or simply absent) sorts alphabetically after every declared
+  // value, so a chart with no `seriesOrder` behaves exactly as before.
+  function orderedValues(distinct, order) {
+    if (!order || !order.length) {
+      return distinct;
+    }
+    var distinctSet = {};
+    distinct.forEach(function (v) {
+      distinctSet[v] = true;
+    });
+    var out = order.filter(function (v) {
+      return distinctSet[v];
+    });
+    var placed = {};
+    out.forEach(function (v) {
+      placed[v] = true;
+    });
+    var rest = distinct.filter(function (v) {
+      return !placed[v];
+    });
+    return out.concat(rest);
+  }
+
+  // Temporal axis format by this project's own `timeType`s (issue #156
+  // fixup, orchestrator review of PR #157: "temporal axis labels must
+  // include the year"). Only applies to a `type: "temporal"` x encoding
+  // (the month-granularity charts) -- the "quarter"/"year" `timeType`s are
+  // plain ordinal strings ("2013Q1", "2020") that already carry the year
+  // as literal text, so there's nothing to format.
+  var TEMPORAL_AXIS_FORMAT = { month: "%b %Y" };
+
+  // The x-encoding fixup `filteredSpec` applies to whichever chart's x
+  // field is declared in `meta` (issue #156 fixup, orchestrator review of
+  // PR #157): drop the server's own default scale domain/tick step (see
+  // `filteredSpec`'s own comment for why), force a year-inclusive format
+  // on a genuinely temporal field, and keep ordinal-axis labels
+  // (month/quarter/year strings alike) from colliding once this chart's
+  // full history is in view.
+  function applyTimeAxis(xEncoding, meta) {
+    var next = Object.assign({}, xEncoding);
+    delete next.scale;
+    var axis = Object.assign({}, next.axis);
+    delete axis.tickCount;
+    if (next.type === "temporal") {
+      axis.format = TEMPORAL_AXIS_FORMAT[meta.timeType] || axis.format;
+    }
+    if (axis.labelOverlap === undefined) {
+      axis.labelOverlap = "parity";
+    }
+    next.axis = axis;
+    return next;
   }
 
   function rowsOf(spec) {
@@ -198,9 +280,14 @@
     state.timeValues = meta.timeField ? distinctSorted(rowsOf(base || {}).map(function (r) {
       return r[meta.timeField];
     })) : [];
-    state.seriesValues = meta.seriesField ? distinctSorted(rowsOf(base || {}).map(function (r) {
-      return r[meta.seriesField];
-    })) : [];
+    state.seriesValues = meta.seriesField
+      ? orderedValues(
+          distinctSorted(rowsOf(base || {}).map(function (r) {
+            return r[meta.seriesField];
+          })),
+          meta.seriesOrder
+        )
+      : [];
 
     titleEl.textContent = meta.title || "Chart";
     buildControls(meta);
@@ -368,6 +455,10 @@
       input.checked = !state.seriesHidden[value];
       input.addEventListener("change", function () {
         state.seriesHidden[value] = !input.checked;
+        // The overview strip shows "the same series" as the main chart
+        // (orchestrator review of PR #157) -- rebuild it too, not just
+        // the main view.
+        renderOverview();
         renderMain();
         writeHash();
       });
@@ -387,6 +478,7 @@
     input.checked = state.bandOn;
     input.addEventListener("change", function () {
       state.bandOn = input.checked;
+      renderOverview();
       renderMain();
       writeHash();
     });
@@ -424,6 +516,11 @@
     function onMirrorChange() {
       real.value = mirror.value;
       real.dispatchEvent(new Event("change"));
+      // The real control's own listener just re-embedded the page's
+      // chart (and re-registered its spec, `app.js`'s `embedChart`) with
+      // whatever this param changed (venue, cutoff, mode, ...) -- rebuild
+      // the overview from that fresh spec too, not just the main view.
+      renderOverview();
       renderMain();
       writeHash();
     }
@@ -487,15 +584,13 @@
     // Vega-Lite's own auto-fit over whatever `data.values` now holds,
     // same "never duplicate the server's own windowing math" reasoning
     // `params` mirroring above gives for chart-specific controls.
-    if (meta.timeField && spec.encoding && spec.encoding.x) {
-      var xEncoding = Object.assign({}, spec.encoding.x);
-      delete xEncoding.scale;
-      if (xEncoding.axis) {
-        var axis = Object.assign({}, xEncoding.axis);
-        delete axis.tickCount;
-        xEncoding.axis = axis;
+    if (meta.timeField) {
+      var xOwner = encodingOwner(spec);
+      if (xOwner && xOwner.encoding.x) {
+        xOwner.encoding = Object.assign({}, xOwner.encoding, {
+          x: applyTimeAxis(xOwner.encoding.x, meta),
+        });
       }
-      spec.encoding = Object.assign({}, spec.encoding, { x: xEncoding });
     }
 
     if (meta.hasBand && !state.bandOn) {
@@ -518,7 +613,7 @@
   var FACET_MAX_COLUMNS = 3;
   var FACET_MIN_BODY_WIDTH = 90;
 
-  function sizeSpec(spec, width) {
+  function sizeSpec(spec, width, height) {
     if (spec.facet && spec.spec) {
       var facetField = spec.facet.field;
       var labelCount = 1;
@@ -558,7 +653,13 @@
     // the ones whose own spec happened to set it already.
     spec.autosize = { type: "fit-x", contains: "padding" };
     if (typeof spec.height === "number") {
-      spec.height = Math.max(spec.height, 320);
+      // Use whatever vertical room `.chart-expand-chart-group`'s flex
+      // layout actually gave the main chart (orchestrator review of PR
+      // #157: "main chart should use the freed height") -- most of that
+      // when an overview strip sits under it, nearly all of it when the
+      // strip was omitted (a faceted chart) -- rather than a fixed floor
+      // that left a few hundred px of dead space on taller dialogs.
+      spec.height = Math.max(height || 0, spec.height, 200);
     }
     return spec;
   }
@@ -569,7 +670,8 @@
     }
     var spec = filteredSpec();
     var width = mainEl.clientWidth || mainEl.getBoundingClientRect().width || 600;
-    spec = sizeSpec(spec, width);
+    var height = mainEl.clientHeight || mainEl.getBoundingClientRect().height || 320;
+    spec = sizeSpec(spec, width, height);
     finalizeView("mainView");
     window
       .vegaEmbed(mainEl, spec, { actions: false, renderer: "svg" })
@@ -584,81 +686,144 @@
 
   // A small overview strip (issue #156: "a Vega-Lite interval brush on a
   // small overview strip below the main chart, kept in sync with the
-  // selects") -- a row-count-by-time-bucket bar chart over an index axis
-  // (valid for every `timeType` this project uses, including the ordinal
-  // "quarter"/"year" strings, unlike a true temporal scale) with a
-  // Vega-Lite interval selection bound to that axis; dragging it updates
-  // the From/To selects (and so `state.from`/`state.to`) the same way
-  // picking them directly does.
+  // selects") -- orchestrator review of PR #157: a *real* miniature of the
+  // main chart (same mark/series, a genuine time axis with year-inclusive
+  // labels), not a synthetic row-count-by-bucket bar chart, sitting
+  // directly under the main chart with no gap (`.chart-expand-chart-group`,
+  // `base.html`). Always built from the chart's *full*, unfiltered-by-
+  // date-range history (only series-hide/band-toggle apply, same "same
+  // series" as the main chart) so every part of the timeline stays
+  // brushable regardless of the current From/To selection. Omitted
+  // entirely for a small-multiples (faceted) spec -- there's no single
+  // sensible mini panel to brush there -- so `renderMain`'s own flex
+  // layout gives the main chart that freed height instead.
   function renderOverview() {
     finalizeView("overviewView");
     overviewEl.innerHTML = "";
     var meta = state.meta;
-    if (!window.vegaEmbed || !meta.timeField || state.timeValues.length < 2) {
+    var base = baseSpecFor(state.sourceEl, meta.id) || rawSpecOf(state.sourceEl);
+    // Small-multiples (faceted) specs have no single sensible mini panel
+    // to show here -- `encodingOwner` returns `null` for them unless they
+    // also happen to carry a (meaningless, per-panel) top-level encoding,
+    // so this also explicitly excludes `base.facet`.
+    var baseOwner = base && !base.facet ? encodingOwner(base) : null;
+    var baseX = baseOwner && baseOwner.encoding.x;
+    if (!window.vegaEmbed || !meta.timeField || state.timeValues.length < 2 || !baseX) {
+      overviewEl.hidden = true;
       return;
     }
-    var base = baseSpecFor(state.sourceEl, meta.id) || {};
-    var counts = {};
-    rowsOf(base).forEach(function (row) {
-      var v = row[meta.timeField];
-      if (v != null) {
-        counts[v] = (counts[v] || 0) + 1;
-      }
+    overviewEl.hidden = false;
+
+    var spec = cloneSpec(base);
+    if (meta.seriesField) {
+      spec.data.values = rowsOf(spec).filter(function (row) {
+        return !state.seriesHidden[row[meta.seriesField]];
+      });
+    }
+    if (meta.hasBand && !state.bandOn) {
+      var container = layerContainer(spec);
+      container.layer = (container.layer || []).filter(function (l) {
+        return !isBandLayer(l);
+      });
+    }
+
+    var owner = encodingOwner(spec);
+    var xEncoding = applyTimeAxis(owner.encoding.x, meta);
+    xEncoding.axis = Object.assign({}, xEncoding.axis, {
+      title: null,
+      grid: false,
+      labelFontSize: 9,
     });
-    var rows = state.timeValues.map(function (v, idx) {
-      return { idx: idx, label: v, count: counts[v] || 0 };
-    });
+    var ownerEncoding = Object.assign({}, owner.encoding, { x: xEncoding });
+    if (ownerEncoding.y) {
+      ownerEncoding.y = Object.assign({}, ownerEncoding.y, { axis: null, title: null });
+    }
+    // No legend down here -- the dialog's own Series checkboxes already
+    // show it; a second one would just eat into this strip's 60px.
+    if (ownerEncoding.color) {
+      ownerEncoding.color = Object.assign({}, ownerEncoding.color, { legend: null });
+    }
+    owner.encoding = ownerEncoding;
+
     var width = overviewEl.clientWidth || overviewEl.getBoundingClientRect().width || 600;
-    var spec = {
-      $schema: "https://vega.github.io/schema/vega-lite/v5.json",
-      width: width,
-      height: 36,
-      data: { values: rows },
-      mark: "bar",
-      params: [{ name: "chartExpandBrush", select: { type: "interval", encodings: ["x"] } }],
-      encoding: {
-        x: {
-          field: "idx",
-          type: "quantitative",
-          axis: null,
-          scale: { domain: [-0.5, rows.length - 0.5] },
-        },
-        y: { field: "count", type: "quantitative", axis: null },
-        tooltip: [
-          { field: "label", type: "nominal", title: "Period" },
-          { field: "count", type: "quantitative", title: "Rows" },
-        ],
-      },
-      config: { view: { stroke: null } },
-    };
+    spec.width = width;
+    spec.height = 60;
+    spec.autosize = { type: "fit-x", contains: "padding" };
+    spec.params = (spec.params || []).concat([
+      { name: "chartExpandBrush", select: { type: "interval", encodings: ["x"] } },
+    ]);
+
     window
       .vegaEmbed(overviewEl, spec, { actions: false, renderer: "svg" })
       .then(function (result) {
         state.overviewView = result;
         result.view.addSignalListener("chartExpandBrush", function (_name, value) {
-          if (!value || !value.idx || value.idx.length !== 2) {
-            return;
-          }
-          var lo = Math.round(Math.max(0, Math.min.apply(null, value.idx)));
-          var hi = Math.round(Math.min(rows.length - 1, Math.max.apply(null, value.idx)));
-          var fromSelect = controlsEl.querySelector('[data-chart-expand-range="from"]');
-          var toSelect = controlsEl.querySelector('[data-chart-expand-range="to"]');
-          state.from = state.timeValues[lo];
-          state.to = state.timeValues[hi];
-          if (fromSelect) {
-            fromSelect.value = state.from;
-          }
-          if (toSelect) {
-            toSelect.value = state.to;
-          }
-          renderMain();
-          writeHash();
+          applyBrushSelection(value);
         });
       })
       .catch(function () {
         // The brush is a convenience on top of the From/To selects, which
         // stay fully functional even if this small chart fails to embed.
+        overviewEl.hidden = true;
       });
+  }
+
+  // Reads whichever single key the interval selection's signal payload
+  // carries (Vega-Lite names it after the resolved field -- which, for a
+  // field with a `timeUnit` transform like the M0 charts' `window_end`,
+  // isn't the plain field name but e.g. `yearmonth_window_end` -- so this
+  // never assumes the key, just takes whatever's there) and maps it back
+  // onto `state.timeValues`' own indices: a `[min, max]` pair of `Date`s/
+  // epoch millis for a temporal x, or an array of the selected discrete
+  // domain strings for an ordinal one (Vega-Lite's own interval-selection
+  // semantics on a band/point scale) -- either way, every `state.
+  // timeValues` entry that falls inside it becomes the new From/To.
+  function applyBrushSelection(value) {
+    var key = Object.keys(value || {})[0];
+    var raw = key ? value[key] : null;
+    if (!raw || !raw.length) {
+      return;
+    }
+    var matched = [];
+    if (raw[0] instanceof Date || typeof raw[0] === "number") {
+      var lo = +raw[0];
+      var hi = +raw[raw.length - 1];
+      if (lo > hi) {
+        var tmp = lo;
+        lo = hi;
+        hi = tmp;
+      }
+      state.timeValues.forEach(function (v, i) {
+        var t = +new Date(v);
+        if (t >= lo && t <= hi) {
+          matched.push(i);
+        }
+      });
+    } else {
+      raw.forEach(function (v) {
+        var idx = state.timeValues.indexOf(String(v));
+        if (idx !== -1) {
+          matched.push(idx);
+        }
+      });
+    }
+    if (!matched.length) {
+      return;
+    }
+    var loIdx = Math.min.apply(null, matched);
+    var hiIdx = Math.max.apply(null, matched);
+    state.from = state.timeValues[loIdx];
+    state.to = state.timeValues[hiIdx];
+    var fromSelect = controlsEl.querySelector('[data-chart-expand-range="from"]');
+    var toSelect = controlsEl.querySelector('[data-chart-expand-range="to"]');
+    if (fromSelect) {
+      fromSelect.value = state.from;
+    }
+    if (toSelect) {
+      toSelect.value = state.to;
+    }
+    renderMain();
+    writeHash();
   }
 
   // --- Downloads: PNG/SVG of the view, CSV of exactly the filtered rows ----

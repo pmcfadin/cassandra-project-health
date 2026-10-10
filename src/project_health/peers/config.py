@@ -20,7 +20,25 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field
 
 DEFAULT_COMMIT_LOOKBACK_MONTHS = 48
-DEFAULT_GITHUB_RATE_LIMIT_FLOOR = 500
+# Issue #150 (live, 2026-10-10): the nightly pipeline (`nightly.yml`) shares
+# this same GitHub token's one hourly GraphQL point budget with this
+# workflow -- real-run finding: a Sunday peers run that drove `remaining`
+# down to the old default (500) left too little headroom, and the
+# *following* nightly run came back `github: partial` / `github_commit_
+# authors: partial` purely because this workflow had already spent nearly
+# the whole budget. `github_rate_limit_floor` (passed straight through to
+# `collectors.github.GitHubCollector`'s own `remaining <= floor` stop,
+# `peers/collect.py::collect_and_write_github`) is this run's *reserve*:
+# once GraphQL `remaining` drops to or below it, every further (peer, pass)
+# this run stops cleanly (same budget-floor discipline that module's own
+# docstring already documents), leaving at least this many points for
+# whatever runs next on the same token. 2,500 -- half of GitHub's 5,000-
+# point hourly GraphQL allowance -- is comfortably more than a nightly run
+# has ever needed (`DATA-SOURCES.md`/real-run history), never the 500 this
+# workflow used before switching its own schedule off the nightly's
+# observed run window too (`.github/workflows/peers.yml`'s own module
+# comment).
+DEFAULT_GITHUB_RATE_LIMIT_FLOOR = 2500
 # Real-run finding (2026-10-09, fixup round 1): apache/kafka's own
 # `created_desc` pass alone consumed the whole shared GraphQL budget (96
 # pages, ~4,800 PRs) before reaching its window-start stop condition,

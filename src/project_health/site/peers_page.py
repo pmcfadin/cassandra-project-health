@@ -26,6 +26,40 @@ for the same reason (no release practitioner guide exists).
 No snapshot yet -> `available=False`, same "no snapshot -> no page" gate
 `site/generate.py`'s other optional pages (thread explorer, conversation
 patterns) already use.
+
+## Completeness gating (issue #150, live, 2026-10-10)
+
+`/peers/` is generated and published every night (`nightly.yml`), but a
+peer's own GitHub-PR backfill (`peers/collect.py`'s three bounded-recency-
+window passes) can legitimately still be in progress -- it is resumable
+*across* this module's own weekly `peers.yml` runs (that module's own
+docstring), not something guaranteed complete by the time any given
+nightly run reads its latest snapshot. Rendering a GitHub-derived metric's
+number while its backfill is still partway through silently understates
+it (real-run finding: Flink's own open PR backlog rendered 25 against a
+locally-verified 360, purely because its `open_prs` pass had never
+completed a single run yet) -- indistinguishable, to a reader, from a
+genuinely small number.
+
+Each GitHub-derived metric (`GITHUB_METRIC_GATING_PASS` below) is gated on
+its own one pass's settlement (`peers.collect.peer_pass_settlement`,
+written per peer into that peer's own snapshot directory as
+`settlement.json` by `peers.pipeline.run_peers_collection` -- read here via
+`_read_settlement`, never recomputed from raw watermarks, so this module
+makes no `project_health.storage`/GitHub-API calls of its own). An
+unsettled peer renders "Collecting -- N of 3 passes complete" in place of
+a value everywhere that metric would otherwise show one -- summary-row
+card, multi-line chart (that peer's line is omitted entirely, never a
+zero/null point), and the current-month table cell -- never a number, D30-
+style ("these are shown for context only," never a guess dressed up as a
+fact). **Contributor Absence Factor and Release Frequency are git-/
+release-derived, not GitHub-PR-derived, and are never gated** -- the
+problem this fixes (and `METRICS.md` §13's own "Collection" section) is
+specific to the three-pass GitHub PR backfill. Cassandra's own GitHub
+collection is `nightly.yml`'s ordinary incremental collector, already
+caught up for months -- it never has a `settlement.json` of its own, and
+a missing file reads as "fully settled" (`_read_settlement`'s own
+default), so Cassandra is never gated either.
 """
 
 from __future__ import annotations
@@ -47,6 +81,7 @@ from project_health.metrics.pr_backlog import (
     other_repo_metric_id,
 )
 from project_health.metrics.peer_metrics import TIME_TO_FIRST_RESPONSE_PR
+from project_health.peers.collect import PASS_NAMES
 from project_health.peers.pipeline import CASSANDRA_PROJECT_ID, latest_peers_run_id
 
 CHAOSS_DISCLAIMER = (
@@ -121,6 +156,47 @@ METRIC_ORDER: tuple[tuple[str, str, str, str, str], ...] = (
 BACKLOG_CHAOSS_URL = "https://chaoss.community/kb/metric-change-requests/"
 BACKLOG_CHAOSS_LABEL = "CHAOSS: Change Requests (adapted)"
 
+# Issue #150: which one of a peer's three GitHub-PR passes
+# (`peers.collect.PASS_NAMES`) each GitHub-derived metric needs settled
+# before it's safe to render a number for that peer -- the module
+# docstring's own "Completeness gating" section. `contributor_absence_
+# factor`/`release_frequency` are deliberately absent: git-/release-
+# derived, never gated by this workflow's own GitHub-PR backfill state.
+GITHUB_METRIC_GATING_PASS: dict[str, str] = {
+    TIME_TO_FIRST_RESPONSE_PR: "created_desc",
+    "change_request_closure_ratio_pr": "closed_search",
+    "open_pr_backlog_total": "open_prs",
+}
+
+
+def _read_settlement(data_dir: Path, run_id: str, project_id: str) -> dict[str, bool]:
+    """`project_id`'s own `settlement.json` (`peers.pipeline._write_
+    settlement`), or "every pass settled" if that file doesn't exist --
+    Cassandra never has one (module docstring: its GitHub collection isn't
+    this module's three-pass peer backfill at all), and neither does any
+    peer snapshot written before this issue shipped -- both read as fully
+    settled, exactly today's un-gated behavior, rather than a hard failure
+    or a false "still collecting" state."""
+    settled_default = {pass_name: True for pass_name in PASS_NAMES}
+    path = data_dir / "snapshots" / "peers" / run_id / project_id / "settlement.json"
+    if not path.is_file():
+        return settled_default
+    try:
+        raw = json.loads(path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return settled_default
+    if not isinstance(raw, dict):
+        return settled_default
+    return {pass_name: bool(raw.get(pass_name, True)) for pass_name in PASS_NAMES}
+
+
+def _passes_complete(settlement: dict[str, bool]) -> int:
+    return sum(1 for settled in settlement.values() if settled)
+
+
+def _collecting_label(passes_complete: int) -> str:
+    return f"Collecting — {passes_complete} of {len(PASS_NAMES)} passes complete"
+
 
 def _read_optional_table(path: Path, schema_table_name: str) -> pa.Table:
     from project_health.schema import get_schema, validate
@@ -181,11 +257,28 @@ def _peer_sparkline_spec(rows: list[dict], months: int = SPARKLINE_MONTHS) -> di
     }
 
 
-def _peer_headline_item(display_name: str, rows: list[dict]) -> dict[str, Any]:
+def _peer_headline_item(
+    display_name: str, rows: list[dict], *, collecting_label: str | None = None
+) -> dict[str, Any]:
     """One summary-row entry (name, latest value/month/n, sparkline) for a
     single project within one metric's section -- mirrors `generate.py::
     _section_headline_item`'s shape so `templates/_sections.html`'s macro
-    renders it identically regardless of which page built it."""
+    renders it identically regardless of which page built it.
+
+    `collecting_label` (issue #150): when set, this project is gated for
+    this metric (module docstring's "Completeness gating") -- no value, no
+    month, no sparkline, regardless of what `rows` holds, and
+    `templates/_sections.html` renders `empty_label` in place of its own
+    hard-coded "insufficient data" text."""
+    if collecting_label is not None:
+        return {
+            "name": display_name,
+            "value_display": None,
+            "month_label": None,
+            "n": None,
+            "sparkline_spec_json": None,
+            "empty_label": collecting_label,
+        }
     series = sorted(rows, key=lambda r: r["window_start"])
     latest = series[-1] if series else None
     value = latest["value"] if latest else None
@@ -195,19 +288,31 @@ def _peer_headline_item(display_name: str, rows: list[dict]) -> dict[str, Any]:
         "month_label": latest["window_end"].strftime("%b %Y") if latest else None,
         "n": latest["n"] if latest else None,
         "sparkline_spec_json": json.dumps(spec) if (spec := _peer_sparkline_spec(rows)) else None,
+        "empty_label": None,
     }
 
 
 def _line_chart_spec(
-    metric_id: str, series_by_project: dict[str, list[dict]], *, value_label: str
+    metric_id: str,
+    series_by_project: dict[str, list[dict]],
+    *,
+    value_label: str,
+    excluded_projects: set[str] | None = None,
 ) -> str | None:
     """One multi-line Vega-Lite spec per metric -- every project its own
     line, Cassandra's own styled distinctly (bold stroke) rather than
     colour alone, so it reads in both light and dark/greyscale contexts.
     Every project named in the legend and the tooltip (issue #145's own
-    spec: "each peer named in legend/tooltip")."""
+    spec: "each peer named in legend/tooltip").
+
+    `excluded_projects` (issue #150): project ids gated for this metric
+    (module docstring's "Completeness gating") -- omitted from this chart
+    entirely, never a zero/null point standing in for "still collecting" data."""
+    excluded_projects = excluded_projects or set()
     values: list[dict[str, Any]] = []
     for project_id, display_name in _PEER_ORDER:
+        if project_id in excluded_projects:
+            continue
         for row in series_by_project.get(project_id, []):
             if row["metric_id"] != metric_id or row["value"] is None:
                 continue
@@ -279,8 +384,32 @@ def build_peers_context(data_dir: str | Path, run_id: str | None = None) -> dict
     if not any(metric_rows_by_project.values()):
         return {"available": False, "chaoss_disclaimer": CHAOSS_DISCLAIMER}
 
+    # Issue #150: each project's own per-pass settlement (`settlement.json`,
+    # `peers.pipeline._write_settlement`) -- "fully settled" (every pass
+    # `True`) for Cassandra and for any peer with no such file yet
+    # (`_read_settlement`'s own default). Read once, used by every gated
+    # metric's section below and by the current-month table.
+    settlement_by_project: dict[str, dict[str, bool]] = {
+        project_id: _read_settlement(data_dir, run_id, project_id)
+        for project_id, _ in _PEER_ORDER
+    }
+    passes_complete_by_project: dict[str, int] = {
+        project_id: _passes_complete(settlement)
+        for project_id, settlement in settlement_by_project.items()
+    }
+
+    def _gated_projects(gating_pass: str | None) -> set[str]:
+        if gating_pass is None:
+            return set()
+        return {
+            project_id
+            for project_id, _ in _PEER_ORDER
+            if not settlement_by_project[project_id].get(gating_pass, True)
+        }
+
     sections = []
     for metric_id, title, value_label, chaoss_url, chaoss_label in METRIC_ORDER:
+        gated_projects = _gated_projects(GITHUB_METRIC_GATING_PASS.get(metric_id))
         summary_items = [
             _peer_headline_item(
                 display_name,
@@ -289,6 +418,11 @@ def build_peers_context(data_dir: str | Path, run_id: str | None = None) -> dict
                     for r in metric_rows_by_project.get(project_id, [])
                     if r["metric_id"] == metric_id
                 ],
+                collecting_label=(
+                    _collecting_label(passes_complete_by_project[project_id])
+                    if project_id in gated_projects
+                    else None
+                ),
             )
             for project_id, display_name in _PEER_ORDER
         ]
@@ -300,7 +434,10 @@ def build_peers_context(data_dir: str | Path, run_id: str | None = None) -> dict
                 "chaoss_label": chaoss_label,
                 "summary_items": summary_items,
                 "chart_spec": _line_chart_spec(
-                    metric_id, metric_rows_by_project, value_label=value_label
+                    metric_id,
+                    metric_rows_by_project,
+                    value_label=value_label,
+                    excluded_projects=gated_projects,
                 ),
             }
         )
@@ -321,8 +458,17 @@ def build_peers_context(data_dir: str | Path, run_id: str | None = None) -> dict
             for r in rows
             if r["metric_id"] == total_id
         ]
+    backlog_gated_projects = _gated_projects(GITHUB_METRIC_GATING_PASS["open_pr_backlog_total"])
     backlog_summary_items = [
-        _peer_headline_item(display_name, backlog_series.get(project_id, []))
+        _peer_headline_item(
+            display_name,
+            backlog_series.get(project_id, []),
+            collecting_label=(
+                _collecting_label(passes_complete_by_project[project_id])
+                if project_id in backlog_gated_projects
+                else None
+            ),
+        )
         for project_id, display_name in _PEER_ORDER
     ]
     sections.append(
@@ -333,7 +479,10 @@ def build_peers_context(data_dir: str | Path, run_id: str | None = None) -> dict
             "chaoss_label": BACKLOG_CHAOSS_LABEL,
             "summary_items": backlog_summary_items,
             "chart_spec": _line_chart_spec(
-                "open_pr_backlog_total", backlog_series, value_label="Open PRs"
+                "open_pr_backlog_total",
+                backlog_series,
+                value_label="Open PRs",
+                excluded_projects=backlog_gated_projects,
             ),
         }
     )
@@ -347,7 +496,14 @@ def build_peers_context(data_dir: str | Path, run_id: str | None = None) -> dict
 
         cells = []
         as_of_month = None
+        collecting_label = _collecting_label(passes_complete_by_project[project_id])
         for metric_id, _title, _value_label, _chaoss_url, _chaoss_label in METRIC_ORDER:
+            gating_pass = GITHUB_METRIC_GATING_PASS.get(metric_id)
+            if gating_pass is not None and not settlement_by_project[project_id].get(
+                gating_pass, True
+            ):
+                cells.append(collecting_label)
+                continue
             series = sorted(rows_by_metric.get(metric_id, []), key=lambda r: r["window_start"])
             latest = series[-1] if series else None
             if latest and latest["value"] is not None:
@@ -364,12 +520,17 @@ def build_peers_context(data_dir: str | Path, run_id: str | None = None) -> dict
             key=lambda r: r["window_start"],
         )
         backlog_latest = backlog_series_sorted[-1] if backlog_series_sorted else None
-        backlog_value = None
-        if backlog_latest and backlog_latest["value"] is not None:
-            backlog_value = int(backlog_latest["value"])
-        cells.append(backlog_value)
-        if backlog_latest:
-            as_of_month = as_of_month or backlog_latest["window_end"]
+        if not settlement_by_project[project_id].get(
+            GITHUB_METRIC_GATING_PASS["open_pr_backlog_total"], True
+        ):
+            cells.append(collecting_label)
+        else:
+            backlog_value = None
+            if backlog_latest and backlog_latest["value"] is not None:
+                backlog_value = int(backlog_latest["value"])
+            cells.append(backlog_value)
+            if backlog_latest:
+                as_of_month = as_of_month or backlog_latest["window_end"]
 
         table_rows.append(
             {

@@ -56,7 +56,10 @@ def test_get_unknown_peer_raises(peers_config):
 
 def test_collection_defaults(peers_config):
     assert peers_config.collection.commit_lookback_months == 48
-    assert peers_config.collection.github_rate_limit_floor == 500
+    # Issue #150: raised from 500 so this run always leaves `nightly.yml`'s
+    # own GitHub collection, sharing the same hourly GraphQL token budget,
+    # at least this much headroom (METRICS.md §13's "Budget reserve").
+    assert peers_config.collection.github_rate_limit_floor == 2500
     assert len(peers_config.collection.bot_patterns) >= 1
 
 

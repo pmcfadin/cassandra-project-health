@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import subprocess
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from pathlib import Path
 
@@ -52,6 +52,7 @@ from project_health.peers.release import (
     fetch_ga_tags,
     verify_release_counts,
 )
+from project_health.peers import rotation as peer_rotation
 from project_health.schema import get_schema, validate
 from project_health import storage
 
@@ -128,6 +129,18 @@ class PeerGithubPassOutcome:
 class PeerGithubCollectionReport:
     per_peer_pr_counts: dict[str, int]
     pass_outcomes: list[PeerGithubPassOutcome]
+    # Issue #148: this run's rotation offset and the resulting peer
+    # processing order -- "deterministic and recorded in the run
+    # manifest/log" (issue acceptance). `peer_order[0]` is whichever peer
+    # this run started with, not necessarily `peers_config.peers[0]`.
+    rotation_start_index: int = 0
+    peer_order: list[str] = field(default_factory=list)
+    # Peers whose three passes' persisted watermarks showed no resumable
+    # work outstanding *before* this run started -- these get a minimal
+    # single-page freshness check each pass instead of a fair-share slice
+    # of this run's page budget (issue #148: "peers whose passes are all
+    # complete ... are skipped cheaply").
+    settled_peers: list[str] = field(default_factory=list)
 
     @property
     def overall_status(self) -> str:
@@ -147,6 +160,36 @@ def _pass_watermark_table(pass_name: str) -> str:
     return f"pr_pass_{pass_name}"
 
 
+def _peer_is_settled(data_dir: str | Path, peer: PeerProject) -> bool:
+    """`True` if every one of `peer`'s three passes' persisted watermarks
+    show no resumable work outstanding (issue #148: "peers whose passes
+    are all complete ... are skipped cheaply").
+
+    `created_desc` additionally needs `high_watermark` set -- a pass that
+    has never run at all also has `cursor is None`, which must never be
+    read as "settled" (a peer that has literally never been collected is
+    the opposite of done)."""
+    source = peer_source(peer.id, "github")
+    for pass_name in PASS_NAMES:
+        state = PassState.from_json(
+            storage.read_watermark(data_dir, source, table=_pass_watermark_table(pass_name))
+        )
+        if state.cursor is not None:
+            return False
+        if pass_name == "created_desc" and state.high_watermark is None:
+            return False
+    return True
+
+
+# A fully "settled" peer (module comment above) only needs a minimal
+# freshness check each pass this run, never a fair-share slice of the page
+# budget -- `run_created_desc_pass` restarts from the top every run
+# regardless, so one page is enough to tell whether anything's new since
+# `high_watermark`, and `open_prs`/`closed_search` are already cheap to
+# redo in full once completed (their own docstrings).
+_SETTLED_PEER_MAX_PAGES = 1
+
+
 def collect_and_write_github(
     peers_config: PeersConfig,
     data_dir: str | Path,
@@ -156,6 +199,7 @@ def collect_and_write_github(
     token: str | None = None,
     as_of: date | None = None,
     transport=None,
+    rotation_start_index: int = 0,
 ) -> PeerGithubCollectionReport:
     """Run every peer repo's three PR-collection passes (module comment
     above), sharing one `GitHubCollector`/one rate-limit-floor budget, then
@@ -167,6 +211,23 @@ def collect_and_write_github(
     cross-*run* overlap already is) and persist each pass's own resumable
     `PassState` (`storage.write_watermark`, `table=_pass_watermark_table
     (pass_name)`).
+
+    Issue #148 -- two additional fairness layers, both on top of (never
+    replacing) the existing per-(peer, pass) `max_pages_per_pass` ceiling
+    and the real `rate_limit_floor` stop:
+
+    - `rotation_start_index` (`peers.rotation`, caller-persisted across
+      runs): peers are processed starting at this offset into
+      `peers_config.peers`, wrapping around, instead of always starting at
+      index 0 -- the fix for the real starvation this issue reports
+      (kafka/spark always going first meant flink/pulsar/datafusion never
+      got a turn across several real runs).
+    - A per-run shared page budget (`collection.github_page_budget_per_run`)
+      is split across whichever peers aren't already "done" this run
+      (`_peer_is_settled`) -- `remaining_budget // peers_not_done`,
+      recomputed before each not-done peer's turn, so a peer that finishes
+      early (uses fewer pages than its share) leaves more of the shared
+      budget for whichever peers haven't had their turn yet.
     """
     as_of = as_of or datetime.now(timezone.utc).date()
     window_start = pr_window_start(as_of)
@@ -176,13 +237,20 @@ def collect_and_write_github(
     per_peer_pr_counts: dict[str, int] = {}
     budget_exhausted = False
 
+    ordered_peers = peer_rotation.rotate(peers_config.peers, rotation_start_index)
+    configured_max_pages = peers_config.collection.max_pages_per_pass
+    settled_by_peer = {peer.id: _peer_is_settled(data_dir, peer) for peer in ordered_peers}
+    settled_peers = [peer.id for peer in ordered_peers if settled_by_peer[peer.id]]
+    peers_not_done_remaining = sum(1 for peer in ordered_peers if not settled_by_peer[peer.id])
+    page_budget_remaining = peers_config.collection.github_page_budget_per_run
+
     with GitHubCollector(
         config,
         token=token,
         rate_limit_floor=peers_config.collection.github_rate_limit_floor,
         transport=transport,
     ) as collector:
-        for peer in peers_config.peers:
+        for peer in ordered_peers:
             source = peer_source(peer.id, "github")
             snapshot_id = str(uuid.uuid4())
             bot_pattern_objs = [
@@ -194,6 +262,13 @@ def collect_and_write_github(
             review_rows: list[dict] = []
             comment_rows: list[dict] = []
             pr_count_this_peer = 0
+            pages_used_this_peer = 0
+
+            if settled_by_peer[peer.id]:
+                peer_max_pages = min(configured_max_pages, _SETTLED_PEER_MAX_PAGES)
+            else:
+                fair_share = max(1, page_budget_remaining // peers_not_done_remaining)
+                peer_max_pages = min(configured_max_pages, fair_share)
 
             for pass_name in PASS_NAMES:
                 if budget_exhausted:
@@ -214,7 +289,7 @@ def collect_and_write_github(
                 state = PassState.from_json(
                     storage.read_watermark(data_dir, source, table=_pass_watermark_table(pass_name))
                 )
-                max_pages = peers_config.collection.max_pages_per_pass
+                max_pages = peer_max_pages
                 if pass_name == "created_desc":
                     result = run_created_desc_pass(
                         collector,
@@ -255,6 +330,7 @@ def collect_and_write_github(
                 review_rows.extend(result.review_rows)
                 comment_rows.extend(result.comment_rows)
                 pr_count_this_peer += len(result.pr_rows)
+                pages_used_this_peer += result.pages_fetched
 
                 pass_outcomes.append(
                     PeerGithubPassOutcome(
@@ -273,6 +349,16 @@ def collect_and_write_github(
                     budget_exhausted = True
 
             per_peer_pr_counts[peer.id] = pr_count_this_peer
+            # Issue #148 fair-share recompute: deduct what this peer
+            # actually used (never more than `page_budget_remaining`, so a
+            # last, over-budget peer can't drive the pool negative) and,
+            # for a peer that wasn't already settled, shrink the not-done
+            # count -- a peer that finished early (used fewer pages than
+            # its fair share) leaves more of `page_budget_remaining` for
+            # whichever not-done peers haven't had their turn yet.
+            page_budget_remaining = max(page_budget_remaining - pages_used_this_peer, 0)
+            if not settled_by_peer[peer.id]:
+                peers_not_done_remaining = max(peers_not_done_remaining - 1, 0)
 
             if pr_rows:
                 pr_table = pa.Table.from_pylist(pr_rows, schema=get_schema("pr"))
@@ -289,7 +375,11 @@ def collect_and_write_github(
                 )
 
     return PeerGithubCollectionReport(
-        per_peer_pr_counts=per_peer_pr_counts, pass_outcomes=pass_outcomes
+        per_peer_pr_counts=per_peer_pr_counts,
+        pass_outcomes=pass_outcomes,
+        rotation_start_index=rotation_start_index,
+        peer_order=[peer.id for peer in ordered_peers],
+        settled_peers=settled_peers,
     )
 
 

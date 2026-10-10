@@ -15,6 +15,7 @@ import pyarrow as pa
 
 from project_health.peers import collect as peer_collect
 from project_health.peers import pipeline as peer_pipeline
+from project_health.peers import rotation as peer_rotation
 from project_health.peers.config import JiraReleaseVerification, PeerProject, PeersConfig
 from project_health.peers.github import PassResult, PassState
 from project_health.peers.release import VerificationResult
@@ -283,6 +284,72 @@ def test_does_not_override_an_explicitly_passed_token(tmp_path, monkeypatch):
 
 def test_latest_peers_run_id_none_when_no_snapshots(tmp_path):
     assert peer_pipeline.latest_peers_run_id(tmp_path) is None
+
+
+def test_rotation_state_persists_and_advances_across_runs(tmp_path, monkeypatch):
+    """issue #148: `run_peers_collection` reads `state/peers/rotation.json`'s
+    `next_start_index` before each run and advances it by exactly one peer
+    afterward -- a missing file (today's real data branch, 3-4 real runs
+    in, never written) starts at 0, and the offset wraps back to 0 once it
+    cycles through every peer."""
+    peers_config = PeersConfig(
+        peers=[
+            _peer("kafka", "apache/kafka"),
+            _peer("spark", "apache/spark"),
+            _peer("flink", "apache/flink"),
+        ]
+    )
+
+    seen_rotation_indices: list[int] = []
+
+    def fake_collect_and_write_github(*a, **k):
+        seen_rotation_indices.append(k.get("rotation_start_index"))
+        return peer_collect.PeerGithubCollectionReport(per_peer_pr_counts={}, pass_outcomes=[])
+
+    def fake_collect_and_write_git(peer, *a, **k):
+        return peer_collect.PeerGitCollectionReport(
+            peer_id=peer.id, commits_collected=0, clone_bytes=0
+        )
+
+    def fake_collect_and_write_releases(peer, *a, **k):
+        return peer_collect.PeerReleaseCollectionReport(
+            peer_id=peer.id,
+            release_count=0,
+            verification=VerificationResult(
+                source_type="jira", tag_derived_by_year={}, independent_by_year={}
+            ),
+        )
+
+    monkeypatch.setattr(peer_pipeline, "collect_and_write_github", fake_collect_and_write_github)
+    monkeypatch.setattr(peer_pipeline, "collect_and_write_git", fake_collect_and_write_git)
+    monkeypatch.setattr(
+        peer_pipeline, "collect_and_write_releases", fake_collect_and_write_releases
+    )
+
+    # No prior rotation state -- the real data branch's current situation.
+    assert peer_rotation.read_next_start_index(tmp_path) == 0
+
+    peer_pipeline.run_peers_collection(
+        peers_config, tmp_path, tmp_path / "work", "run1", token="x", as_of=date(2026, 1, 1)
+    )
+    assert seen_rotation_indices == [0]
+    assert peer_rotation.read_next_start_index(tmp_path) == 1
+
+    peer_pipeline.run_peers_collection(
+        peers_config, tmp_path, tmp_path / "work", "run2", token="x", as_of=date(2026, 1, 1)
+    )
+    assert seen_rotation_indices == [0, 1]
+    assert peer_rotation.read_next_start_index(tmp_path) == 2
+
+    peer_pipeline.run_peers_collection(
+        peers_config, tmp_path, tmp_path / "work", "run3", token="x", as_of=date(2026, 1, 1)
+    )
+    # Wraps back to 0 once the offset has cycled through every one of the
+    # 3 configured peers.
+    peer_pipeline.run_peers_collection(
+        peers_config, tmp_path, tmp_path / "work", "run4", token="x", as_of=date(2026, 1, 1)
+    )
+    assert seen_rotation_indices == [0, 1, 2, 0]
 
 
 def test_cassandra_tables_for_comparison_filters_to_primary_repo(tmp_path):

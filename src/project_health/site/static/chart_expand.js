@@ -640,27 +640,32 @@
       return spec;
     }
     spec.width = width;
-    // Vega-Lite's default autosize (`contains: "content"`) budgets `width`
-    // for the plot body only -- axis labels and (especially) a bottom/
-    // right color legend render *outside* it, which at the dialog's own
-    // larger width is wide enough to overflow it (verified: a peers/
-    // tone-mix/pr-backlog chart's legend pushed the dialog ~150px past
-    // its own edge). `generate.py::_vega_lite_spec` already documents and
-    // works around this same issue for the on-page M0 charts
-    // (`"autosize": {"type": "fit-x", "contains": "padding"}`, which
-    // budgets the *whole* rendered chart for `width` instead) -- applied
-    // here unconditionally so every chart's dialog view gets it, not just
-    // the ones whose own spec happened to set it already.
-    spec.autosize = { type: "fit-x", contains: "padding" };
-    if (typeof spec.height === "number") {
-      // Use whatever vertical room `.chart-expand-chart-group`'s flex
-      // layout actually gave the main chart (orchestrator review of PR
-      // #157: "main chart should use the freed height") -- most of that
-      // when an overview strip sits under it, nearly all of it when the
-      // strip was omitted (a faceted chart) -- rather than a fixed floor
-      // that left a few hundred px of dead space on taller dialogs.
-      spec.height = Math.max(height || 0, spec.height, 200);
-    }
+    // Use whatever vertical room `.chart-expand-chart-group`'s flex
+    // layout actually gave the main chart (orchestrator review of PR
+    // #157: "main chart should use the freed height") -- most of that
+    // when an overview strip sits under it, nearly all of it when the
+    // strip was omitted (a faceted chart) -- rather than a fixed floor
+    // that left a few hundred px of dead space on taller dialogs.
+    var targetHeight = Math.max(height || 0, typeof spec.height === "number" ? spec.height : 0, 200);
+    spec.height = targetHeight;
+    // Vega-Lite's default autosize (`contains: "content"`) budgets
+    // `width`/`height` for the plot body only -- axis labels/titles and
+    // (especially) a bottom/right color legend render *outside* that,
+    // which at the dialog's own larger size is room enough to overflow it
+    // sideways (verified: a peers/tone-mix/pr-backlog chart's legend
+    // pushed the dialog ~150px past its own right edge) **and**, just as
+    // importantly, to push the x-axis's own tick labels/title below the
+    // bottom of `.chart-expand-main`'s box entirely -- rendered, but
+    // invisible, hidden behind the overview strip's own box right under
+    // it (orchestrator review of PR #157's own screenshot: "the main
+    // chart's x-axis ... is not visible"). `type: "fit"` (not just
+    // "fit-x") budgets *both* dimensions for the whole rendered chart --
+    // axis and legend chrome included -- shrinking the plot body as
+    // needed so the x-axis always ends up inside the height this function
+    // was actually given, the same "give it the real budget, don't just
+    // hand it a number and hope" fix `generate.py::_vega_lite_spec`
+    // already documents for width alone on the on-page charts.
+    spec.autosize = { type: "fit", contains: "padding" };
     return spec;
   }
 
@@ -748,7 +753,11 @@
     var width = overviewEl.clientWidth || overviewEl.getBoundingClientRect().width || 600;
     spec.width = width;
     spec.height = 60;
-    spec.autosize = { type: "fit-x", contains: "padding" };
+    // `type: "fit"` (both dimensions, not just width) for the same reason
+    // `sizeSpec` uses it for the main chart -- this strip's own x-axis
+    // labels need to end up *inside* the 60px height given, not pushed
+    // below it (orchestrator review of PR #157).
+    spec.autosize = { type: "fit", contains: "padding" };
     spec.params = (spec.params || []).concat([
       { name: "chartExpandBrush", select: { type: "interval", encodings: ["x"] } },
     ]);

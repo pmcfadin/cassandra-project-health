@@ -208,6 +208,125 @@ query($owner: String!, $name: String!, $cursor: String, $pageSize: Int!) {
     "pr_comments_page_size": PR_COMMENTS_PAGE_SIZE,
 }
 
+# Shared PR-node field selection (identical shape `_QUERY` already requests)
+# -- factored out so the three "bounded recency window" queries below
+# (issue #145 fixup, orchestrator review of PR #147: a fresh peer's first
+# backfill must reach *recent* months, not oldest-first history) request
+# exactly the same fields `_normalize_pr`/`_normalize_review`/
+# `_normalize_comment` already know how to read, with no shape drift.
+_PR_NODE_FIELDS = """
+        id
+        number
+        state
+        title
+        isDraft
+        merged
+        additions
+        deletions
+        changedFiles
+        author { login }
+        createdAt
+        updatedAt
+        closedAt
+        mergedAt
+        reviews(first: %(reviews_page_size)d) {
+          nodes {
+            id
+            state
+            submittedAt
+            author { login }
+            comments(first: %(review_comments_page_size)d) {
+              nodes { id createdAt author { login } }
+            }
+          }
+        }
+        comments(first: %(pr_comments_page_size)d) {
+          nodes { id createdAt author { login } }
+        }
+""" % {
+    "reviews_page_size": REVIEWS_PAGE_SIZE,
+    "review_comments_page_size": REVIEW_COMMENTS_PAGE_SIZE,
+    "pr_comments_page_size": PR_COMMENTS_PAGE_SIZE,
+}
+
+# Pass A (issue #145 fixup): newest-created-first, so a project with no
+# prior collection history reaches *recent* months immediately rather than
+# walking oldest-first from the beginning of the repo's whole history
+# (verified live, 2026-10-09: `orderBy: {field: CREATED_AT, direction:
+# DESC}` returns the newest PR first). The caller stops paginating once a
+# page's oldest node falls before the comparison window's start -- this
+# query itself applies no date filter; it's a plain, unbounded cursor walk
+# the caller bounds by inspecting `createdAt`.
+_PRS_CREATED_DESC_QUERY = (
+    """
+query($owner: String!, $name: String!, $cursor: String, $pageSize: Int!) {
+  rateLimit { remaining resetAt cost }
+  repository(owner: $owner, name: $name) {
+    pullRequests(first: $pageSize, after: $cursor, orderBy: {field: CREATED_AT, direction: DESC}) {
+      pageInfo { hasNextPage endCursor }
+      nodes {"""
+    + _PR_NODE_FIELDS
+    + """      }
+    }
+  }
+}
+"""
+)
+
+# Pass B (issue #145 fixup): every currently-open PR, regardless of age --
+# an open-PR backlog reconstruction needs to know about a long-lived open
+# PR created long before the comparison window even starts (verified live,
+# 2026-10-09: apache/kafka has an open PR created 2024-06-18, well outside
+# any 36-month window as of this writing). No date bound at all; the
+# caller pages to exhaustion (`hasNextPage: false`) or the rate-limit floor.
+_OPEN_PRS_QUERY = (
+    """
+query($owner: String!, $name: String!, $cursor: String, $pageSize: Int!) {
+  rateLimit { remaining resetAt cost }
+  repository(owner: $owner, name: $name) {
+    pullRequests(
+      first: $pageSize, after: $cursor, states: [OPEN]
+      orderBy: {field: CREATED_AT, direction: ASC}
+    ) {
+      pageInfo { hasNextPage endCursor }
+      nodes {"""
+    + _PR_NODE_FIELDS
+    + """      }
+    }
+  }
+}
+"""
+)
+
+# Pass C (issue #145 fixup): PRs *created before* the comparison window but
+# *closed inside it* matter for `change_request_closure_ratio_pr` (a closed
+# count bucketed by closed-month) -- pass A's created-date bound alone would
+# miss them entirely. Uses GitHub's search API (`is:pr closed:>=<date>`,
+# which matches a merge the same as a plain close -- merging closes a PR)
+# rather than a second `orderBy: UPDATED_AT DESC` walk: search's own
+# `closed:` qualifier is an exact, server-side filter on the field this
+# pass actually cares about, where `updatedAt` would also catch irrelevant
+# non-closing updates (a label change, a new comment) with no bound on how
+# many such updates to page through before reaching ones that matter.
+# Verified live, 2026-10-09: cost is a flat 1 point regardless of result
+# count, far cheaper than a nested-connection `pullRequests` page.
+_PR_SEARCH_QUERY = (
+    """
+query($searchQuery: String!, $cursor: String, $pageSize: Int!) {
+  rateLimit { remaining resetAt cost }
+  search(query: $searchQuery, type: ISSUE, first: $pageSize, after: $cursor) {
+    issueCount
+    pageInfo { hasNextPage endCursor }
+    nodes {
+      ... on PullRequest {"""
+    + _PR_NODE_FIELDS
+    + """      }
+    }
+  }
+}
+"""
+)
+
 
 class CollectionError(Exception):
     """Raised when a GitHub GraphQL request fails after exhausting retries."""
@@ -760,6 +879,50 @@ class GitHubCollector:
                 "cursor": cursor,
                 "pageSize": page_size,
             },
+        }
+        return self._post_with_retry(payload)
+
+    # --- Bounded-recency-window passes (issue #145 fixup) --------------------
+    #
+    # Three additional, independent page-at-a-time fetchers -- same "collector
+    # returns raw payload, caller owns the page-budget loop/cursor" split as
+    # `fetch_pr_issue_link_backfill_page` above -- that together let a caller
+    # with no prior collection history (`peers/github.py`) reach a *recent*
+    # window of PR activity without walking a whole repo's history
+    # oldest-first first. See each query constant's own docstring for what
+    # each pass is for and why it exists.
+
+    def fetch_prs_created_desc_page(
+        self, repo_label: str, cursor: str | None, page_size: int = DEFAULT_PAGE_SIZE
+    ) -> dict:
+        """One page of `_PRS_CREATED_DESC_QUERY` (newest-created-first)."""
+        owner, name = repo_label.split("/", 1)
+        payload = {
+            "query": _PRS_CREATED_DESC_QUERY,
+            "variables": {"owner": owner, "name": name, "cursor": cursor, "pageSize": page_size},
+        }
+        return self._post_with_retry(payload)
+
+    def fetch_open_prs_page(
+        self, repo_label: str, cursor: str | None, page_size: int = DEFAULT_PAGE_SIZE
+    ) -> dict:
+        """One page of `_OPEN_PRS_QUERY` (every currently-open PR)."""
+        owner, name = repo_label.split("/", 1)
+        payload = {
+            "query": _OPEN_PRS_QUERY,
+            "variables": {"owner": owner, "name": name, "cursor": cursor, "pageSize": page_size},
+        }
+        return self._post_with_retry(payload)
+
+    def fetch_pr_search_page(
+        self, search_query: str, cursor: str | None, page_size: int = DEFAULT_PAGE_SIZE
+    ) -> dict:
+        """One page of `_PR_SEARCH_QUERY` (`search_query` is a full GitHub
+        search-syntax string, e.g. `"repo:apache/kafka is:pr
+        closed:>=2023-09-01"`)."""
+        payload = {
+            "query": _PR_SEARCH_QUERY,
+            "variables": {"searchQuery": search_query, "cursor": cursor, "pageSize": page_size},
         }
         return self._post_with_retry(payload)
 

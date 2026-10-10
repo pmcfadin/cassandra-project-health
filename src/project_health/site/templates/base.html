@@ -23,6 +23,9 @@
   <a href="{{ base_prefix }}community/"{% if current_page == 'community' %} aria-current="page"{% endif %}>Community</a>
   <a href="{{ base_prefix }}conversations/"{% if current_page == 'conversations' %} aria-current="page"{% endif %}>Conversations</a>
   <a href="{{ base_prefix }}governance/"{% if current_page == 'governance' %} aria-current="page"{% endif %}>Governance</a>
+  {% if peers_nav_available %}
+  <a href="{{ base_prefix }}peers/"{% if current_page == 'peers' %} aria-current="page"{% endif %}>Peers</a>
+  {% endif %}
 </nav>
 
 {% if is_stale %}

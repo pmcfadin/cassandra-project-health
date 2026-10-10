@@ -116,6 +116,13 @@ DEFINITION_VERSIONS: dict[str, str] = {
     "release_regularity": "1.0",
     "time_since_last_release": "1.0",
     "days_between_releases": "1.0",
+    # issue #145, DECISIONS.md D30 (metrics/peer_metrics.py): the one
+    # genuinely new metric the peer-context page introduces -- first
+    # non-author, non-bot GitHub-PR review *or* comment. Computed for
+    # Cassandra and every peer by the same code (`_make_row` looks up this
+    # dict for every metric_id it stamps, regardless of which module calls
+    # it, same as every `dev_metrics.py`/`release_cadence.py` entry above).
+    "time_to_first_response_pr": "1.0",
 }
 
 # Headcount metrics are plain counts, not rate/ratio/concentration/latency

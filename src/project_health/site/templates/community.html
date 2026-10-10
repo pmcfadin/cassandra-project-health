@@ -370,4 +370,28 @@
   </p>
   {% endif %}
 </section>
+
+<section class="peer-context-summary" aria-labelledby="peer-context-summary-heading">
+  <h2 id="peer-context-summary-heading">Peer context</h2>
+  {% if peers.available %}
+  <div class="card-grid">
+    <article class="card card--summary">
+      <header class="card-header">
+        <h3><a href="{{ base_prefix }}peers/">Peer context</a></h3>
+      </header>
+      <p class="card-summary-blurb">
+        {{ peers.chaoss_disclaimer }}
+      </p>
+      <p class="card-more">
+        <a href="{{ base_prefix }}peers/">See the full page &rarr;</a>
+      </p>
+    </article>
+  </div>
+  {% else %}
+  <p class="card-empty-state">
+    Peer context isn't published yet — it appears once the weekly peer-collection workflow
+    has completed its first run (DECISIONS.md D30).
+  </p>
+  {% endif %}
+</section>
 {% endblock %}

@@ -130,6 +130,21 @@ bot_patterns:
     regex: '(?i)noreply@github\.com$|\[bot\]'
   - field: github_login
     regex: '(?i)-bot$|^dependabot'
+  # Issue #145 fixup round 2 (orchestrator review of PR #147): added as a
+  # precaution, NOT verified against Cassandra's own collected PR data --
+  # this task deliberately never pulled the production `data` branch
+  # locally (disk-constrained collection machine), so there is no local
+  # apache/cassandra pr_comment/pr_review table to empirically check the
+  # way the peer-context analysis checked the five peer projects'. What
+  # *is* verified: `copilot-pull-request-reviewer` is GitHub's own
+  # automated Copilot PR-review account, observed with a clear
+  # fast-response automation signature across four of the five peers
+  # (apache/kafka, apache/spark, apache/pulsar, apache/flink) -- a
+  # generic, cross-repo GitHub feature, not specific to those projects,
+  # so it is plausible (not confirmed) that it could also appear on
+  # apache/cassandra if that repo has the same GitHub feature enabled.
+  - field: github_login
+    regex: '(?i)^copilot-pull-request-reviewer(\[bot\])?$'
   - field: jira_username
     regex: '(?i)^svn-role$|^git-role$'   # ASF infra service accounts
 

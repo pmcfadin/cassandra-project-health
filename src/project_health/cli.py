@@ -65,6 +65,8 @@ from project_health.pilot.report import (
     render_private_report_markdown,
     render_public_report_markdown,
 )
+from project_health.peers.config import load_peers
+from project_health.peers.pipeline import run_peers_collection
 from project_health.pipeline import ALL_SOURCES, run_pipeline
 from project_health.private_run.quarters import parse_quarters_arg
 from project_health.private_run.runner import DEFAULT_MONTHLY_CAP_USD as PRIVATE_RUN_DEFAULT_CAP
@@ -436,6 +438,38 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Path to governance-policy.yaml (default: the repo-root policy file)",
     )
 
+    peers_collect_parser = subparsers.add_parser(
+        "peers-collect",
+        help=(
+            "Collect + compute the issue #145 peer-context metrics (DECISIONS.md D30): "
+            "GitHub PR/review/comment + git-commit + GA-release data for every configured "
+            "peer repo, plus the same five metrics recomputed for Cassandra itself, "
+            "written to the data dir's raw/peers/<id>/... and snapshots/peers/<run_id>/..."
+        ),
+    )
+    peers_collect_parser.add_argument(
+        "--peers", default="projects/peers.yaml", help="Path to a projects/peers.yaml file"
+    )
+    peers_collect_parser.add_argument(
+        "--data-dir", required=True, help="Root of the raw/snapshots/manifests data layout"
+    )
+    peers_collect_parser.add_argument(
+        "--workdir", required=True, help="Scratch directory for each peer's disk-safe git clone"
+    )
+    peers_collect_parser.add_argument(
+        "--run-id", required=True, help="Identifier for this run (used in partition filenames)"
+    )
+    peers_collect_parser.add_argument(
+        "--min-free-disk-gb",
+        type=float,
+        default=None,
+        help=(
+            "Stop collecting any further peer's git/release data once free space on / drops "
+            "at or below this many GB (issue #145's disk-budget rule for a constrained "
+            "collection machine); unset disables the check"
+        ),
+    )
+
     private_run_parser = subparsers.add_parser(
         "private-run",
         help=(
@@ -631,6 +665,22 @@ def _cmd_run(args: argparse.Namespace) -> int:
         governance_since=args.governance_since,
     )
     return result.exit_code
+
+
+def _cmd_peers_collect(args: argparse.Namespace) -> int:
+    peers_config = load_peers(args.peers)
+    min_free_disk_bytes = (
+        int(args.min_free_disk_gb * 1024**3) if args.min_free_disk_gb is not None else None
+    )
+    report = run_peers_collection(
+        peers_config,
+        data_dir=args.data_dir,
+        workdir=args.workdir,
+        run_id=args.run_id,
+        min_free_disk_bytes=min_free_disk_bytes,
+    )
+    print(json.dumps(report.to_json_dict(), indent=2, sort_keys=True))
+    return 0
 
 
 def _cmd_pilot_sample(args: argparse.Namespace) -> int:
@@ -949,6 +999,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.command == "run":
         return _cmd_run(args)
+    if args.command == "peers-collect":
+        return _cmd_peers_collect(args)
     if args.command == "label":
         return _cmd_label(args)
     if args.command == "pilot-sample":

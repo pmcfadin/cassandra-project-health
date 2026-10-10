@@ -1434,3 +1434,127 @@ Adapted from [Change Requests](https://chaoss.community/kb/metric-change-request
 than issues) -- CHAOSS's Knowledge Base has no "Change Request Backlog" metric
 (`kb/metric-change-request-backlog` verified 404, 2026-10-09); these two are the closest
 published starting points, never claimed as an exact match. See §11's index.
+
+## 13. Peer context: CHAOSS Starter metrics across comparable ASF projects (issue #145, DECISIONS.md D30)
+
+Gives readers context for Cassandra's own numbers without inventing targets (D30: CHAOSS sets
+no targets and ranks nothing): the same five metrics below, computed by the **same code**, for
+Cassandra and five comparable Apache Software Foundation projects the owner chose --
+apache/kafka, apache/spark, apache/flink, apache/pulsar, apache/datafusion (DataFusion in place
+of HBase, owner decision). Rendered on its own page, `/peers/`, linked from the site nav and the
+Community page -- never merged into the Summary Table in §1, never scored, never given a
+dimension role (SCORING.md). Collected by a separate weekly workflow
+(`.github/workflows/peers.yml`), not the nightly pipeline.
+
+### The five metrics
+
+1. **Time to First Response (GitHub PRs)** -- `metrics/peer_metrics.py`'s own
+   `time_to_first_response_pr` (definition_version 1.0): median/P90 days from a PR's
+   `created_at` to the earliest non-author, non-bot `pr_review.submitted_at` *or*
+   `pr_comment.created_at`, whichever comes first, bucketed by the PR's creation month. This is
+   a **new** metric, not a reuse of §4's `pr_time_to_first_review` (reviews only -- the metric
+   already wired to Cassandra's own landing-page "Time to First Response" card, D29): the peer
+   page's own definition follows CHAOSS's un-narrowed "first response of any kind" more closely,
+   and is computed fresh, with identical code, for Cassandra's own PR data too, so the six
+   projects' numbers are genuinely comparable to each other. It is **not** meant to replace or
+   match the landing page's own `pr_time_to_first_review` card -- two different, each internally
+   consistent, numbers for two different purposes. [CHAOSS Time to First
+   Response](https://chaoss.community/kb/metric-time-to-first-response/).
+2. **Change Request Closure Ratio** -- `metrics/dev_metrics.py`'s existing
+   `change_request_closure_ratio_pr` (§4, D29/issue #136), called unmodified against each
+   project's own `pr` table: closed ÷ opened GitHub PRs per completed month. [CHAOSS Change
+   Request Closure Ratio](https://chaoss.community/kb/metric-change-request-closure-ratio/).
+3. **Contributor Absence Factor** -- `metrics/engine.py`'s existing `contributor_absence_factor`
+   (§2, issue #53), called unmodified: the smallest number of contributors, ranked by
+   trailing-12-month commit count, whose cumulative commits reach 50% of the window's total.
+   Needs an `identity_link` table the same naive (email-exact-match) resolver §2 itself
+   documents (`normalize/identity.py`) builds for Cassandra -- `metrics/peer_metrics.py`
+   recomputes this fresh from each project's own `contribution_event` rows (no manual overrides;
+   peers have none), never persisted. [CHAOSS Contributor Absence
+   Factor](https://chaoss.community/kb/metric-contributor-absence-factor/).
+4. **Release Frequency** -- `metrics/release_cadence.py`'s existing `release_frequency` (§6,
+   issue #135), called unmodified: count of GA releases in the trailing 24 calendar months. Each
+   peer's GA tags are discovered via the GitHub REST Tags API (`peers/release.py::
+   fetch_ga_tags`), reusing `collectors/release.py`'s own `_ga_version`/tag-pattern-matching
+   logic (per-project `tag_prefix`, `projects/peers.yaml`) -- not a local clone, since a
+   disk-safe single-branch shallow clone (see "Collection" below) can miss tags that live only
+   on a maintenance/release branch (verified live for Apache Flink's own `release-X.Y.Z` tags).
+   [CHAOSS Release Frequency](https://chaoss.community/kb/metric-release-frequency/).
+5. **Open PR backlog, by age bucket** -- `metrics/pr_backlog.py`'s existing `compute_pr_backlog`
+   (§12), called unmodified: since no peer repo is ever `pr_backlog.PRIMARY_REPO`
+   (`"apache/cassandra"`), every peer's rows fall out of that module's pre-existing
+   `_other_repo_rows` path (`open_pr_backlog_total__<repo>` etc.) with zero code changes --
+   exactly the same reconstruction issue #142/§12 already defines, minus the ticket-state/
+   no-GitHub-response columns (meaningless without a shared issue tracker, same reasoning §12
+   gives for every non-`apache/cassandra` repo it already handles this way).
+
+**No issue-tracker metrics in v1**: Cassandra/Kafka/Spark/Flink use ASF JIRA; Pulsar and
+DataFusion use GitHub Issues -- the two trackers' own issue-age/resolution-latency semantics
+aren't comparable without a lot more normalization work than this issue's scope covers, so no
+issue-tracker metric is shown for any of the six projects here.
+
+### Collection (disk- and budget-constrained, issue #145)
+
+- **GitHub PR/review/comment**: three bounded-recency-window passes per repo
+  (`peers/github.py`), not `GitHubCollector`'s own ASC-from-scratch `collect()` -- a fresh
+  peer's first-ever run has no watermark, and that walk starts at the *oldest* PR in the
+  repo's history (real-run finding, 2026-10-09: apache/kafka's first-ever collection landed
+  PRs from 2013-2017, nowhere near "now"). Each pass reuses `GitHubCollector`'s client/
+  token/retry/rate-limit-floor machinery and three additive fetch methods
+  (`fetch_prs_created_desc_page`/`fetch_open_prs_page`/`fetch_pr_search_page`), sharing one
+  GraphQL point budget across every peer repo and all three passes:
+  1. `created_desc` -- newest-created-first, stopped once a page's PRs fall before the
+     window start (36 months + 1 month buffer before the latest completed month).
+  2. `open_prs` -- every currently-open PR, any age (an open PR can predate the window and
+     still be open today -- verified live, apache/kafka has one created 2024-06-18).
+  3. `closed_search` -- GitHub's search API, `is:pr closed:>=<window start>`, for PRs
+     created before the window but closed inside it (`change_request_closure_ratio_pr`'s
+     own "closed" side; pass 1 alone only ever sees PRs *created* in the window).
+  Each pass is independently resumable across runs (`peers/github.py::PassState`) -- a
+  backfill that doesn't finish within one run's shared budget picks up where it left off the
+  next run, exactly the "initial backfill may span several runs" case this issue's own
+  "Build" section anticipated.
+- **Git commits**: a **disk-safe** acquisition, never a full clone -- `git clone --bare
+  --filter=blob:none --single-branch --shallow-since=<48 months before the run>`
+  (`peers/git_clone.py`), deleted immediately after `collectors/git.py::GitCollector` (reused
+  unmodified) walks it. 48 months = 36 months of display window + 12 months of
+  `contributor_absence_factor`'s own trailing window before the first displayed month
+  (`projects/peers.yaml`'s `collection.commit_lookback_months`). Never more than one peer's
+  clone exists on disk at a time.
+- **Releases**: the GitHub REST Tags API, no clone (see metric 4 above).
+- **Independent-source verification**: each peer's git-tag-derived per-year GA count is
+  cross-checked against a second system (`projects/peers.yaml`'s `release_verification`) --
+  ASF JIRA's own released-versions list for Kafka/Spark/Flink; GitHub Releases for Pulsar;
+  **PyPI's own release history** for DataFusion, not GitHub Releases as originally planned --
+  verified live 2026-10-09 that apache/datafusion publishes zero GitHub Releases (same situation
+  §6's own module docstring documents for apache/cassandra itself), so the closest genuinely
+  independent source actually available is used instead, disclosed in `projects/peers.yaml`'s
+  own comment. Existence/timing cross-check only, exactly like §6's own archive.apache.org
+  check -- the git-tag date is always the metric's own authoritative `release_date`.
+- **Identity resolution**: `normalize/identity.py`, reused unmodified, computed fresh per
+  project per run (no manual overrides), never persisted -- see metric 3 above.
+
+### Rendering (D30: facts only, no targets, no ranking)
+
+One collapsible section per metric (`templates/_sections.html`'s `section()`/`section_nav()`
+macros, issue #144, reused unchanged -- that module's own docstring already names this issue as
+a planned reuse). Each section's collapsed summary row names all six projects with their current
+value and a small sparkline; its expanded body holds a multi-line chart, every project named in
+the legend and tooltip, Cassandra's own line drawn with a heavier stroke (never color alone, so
+it still reads in print/greyscale) -- never a "winner" styling, never a sort order implying
+rank. Each section's `chaoss_label` links its own CHAOSS Knowledge Base metric page directly
+(e.g. "CHAOSS: Time to First Response"), not a practitioner guide -- no practitioner-guide topic
+covers "peer comparison," the same `chaoss_label=` override `metrics_meta.COMMUNITY_SECTIONS`'s
+own "Releases" section already uses for an analogous reason. A current-month table lists all six
+projects' latest values side by side. A standing banner states CHAOSS's own position plainly:
+"CHAOSS does not set targets or rank projects." No color-coding implying good/bad, no composite
+score across the five metrics, no verdict vocabulary (D25).
+
+### Peers are an owner choice, not a benchmark panel
+
+DECISIONS.md D30: these five projects were chosen by the project owner for being comparable
+ASF top-level projects at a broadly similar scale with real GitHub-PR activity, a real git
+history, and real GA releases -- not a statistically representative sample, not a ranking
+panel, and not an implied "these are the right projects to compare against." A reader who wants
+a different comparison set can read `projects/peers.yaml` and run the same code against a
+different repo.

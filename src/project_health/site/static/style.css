@@ -1131,3 +1131,20 @@ main {
     padding: 0 0.85rem 0.85rem;
   }
 }
+
+/* --- Peer context (issue #145, D30) -------------------------------------
+   A plain, neutral banner -- never `.banner--stale`/`.banner--preliminary`'s
+   warning-amber border, since the CHAOSS disclaimer it carries isn't a
+   caveat about this project's own data, just a standing fact about what
+   the page is (no targets, no ranking). */
+.banner--neutral {
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  color: var(--fg);
+  max-width: none;
+  margin: 1rem 0 1.5rem;
+}
+
+.peer-table-row--cassandra {
+  font-weight: 600;
+}

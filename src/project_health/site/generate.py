@@ -81,6 +81,7 @@ from project_health.site.metrics_meta import (
     format_days,
 )
 from project_health.site.pr_backlog_page import build_pr_backlog_context
+from project_health.site.peers_page import build_peers_context
 
 # Pinned CDN versions (cdn.jsdelivr.net) — issue #8: pinned, not `@latest`,
 # so a chart never silently changes rendering behavior underneath a
@@ -1148,6 +1149,14 @@ def _render_pages(
     thread_explorer_context = build_thread_explorer_context(
         data_dir, out_dir, base_prefix=NESTED_SUBPAGE_BASE_PREFIX
     )
+    # Peer context (`/peers/`, issue #145, D30) -- computed here (not down
+    # by its own page-write further below) so the Community page's summary
+    # card can read `peers_context.available` too, same pattern as the two
+    # contexts immediately above. `common_ctx["peers_nav_available"]` gates
+    # `base.html`'s own "Peers" nav link -- same "no snapshot -> no dangling
+    # link" discipline D27 documents for the thread explorer.
+    peers_context = build_peers_context(data_dir)
+    common_ctx["peers_nav_available"] = bool(peers_context.get("available"))
 
     # Home (`/`).
     summary_cards = [
@@ -1222,6 +1231,7 @@ def _render_pages(
         pr_backlog=pr_backlog_context,
         conversation_patterns=conversation_patterns_context,
         thread_explorer=thread_explorer_context,
+        peers=peers_context,
         **common_ctx,
     )
     _write_subpage(out_dir, "community", community_html)
@@ -1329,6 +1339,21 @@ def _render_pages(
         **common_ctx,
     )
     _write_subpage(out_dir, "governance", governance_html)
+
+    # Peer context (`/peers/`, issue #145, D30) -- own weekly-updated
+    # snapshot family (`snapshots/peers/<run_id>/...`, entirely separate
+    # from this run's own `run_id`/`metrics.parquet`), same "no snapshot ->
+    # no page" discipline as the thread explorer above. `peers_context`
+    # itself was computed earlier in this function so the Community page's
+    # own summary card (below) could also read its `available` flag.
+    if peers_context.get("available"):
+        peers_html = env.get_template("peers.html").render(
+            current_page="peers",
+            base_prefix=SUBPAGE_BASE_PREFIX,
+            **peers_context,
+            **common_ctx,
+        )
+        _write_subpage(out_dir, "peers", peers_html)
 
 
 def _write_subpage(out_dir: Path, dirname: str, html: str) -> None:

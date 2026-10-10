@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+{% import "_sections.html" as sections %}
+{% block title %}Peer context — Cassandra Project Health{% endblock %}
+{% block content %}
+<h2>Peer context</h2>
+
+<div class="banner banner--neutral" role="status">
+  {{ chaoss_disclaimer }}
+</div>
+
+{% if available %}
+<p class="page-intro">
+  The same five metrics, computed with the same code, for Apache Cassandra and five
+  comparable Apache Software Foundation projects: Apache Kafka, Apache Spark, Apache Flink,
+  Apache Pulsar, and Apache DataFusion. Cassandra's own line is drawn thicker in every chart
+  below. See the <a href="{{ metrics_spec_url }}">METRICS.md definitions</a> for exactly how
+  each metric is computed.
+</p>
+
+{{ sections.section_nav(peer_sections) }}
+
+{% for section in peer_sections %}
+{% call sections.section(section.id, section.title, section.chaoss_url, section.summary_items, chaoss_label=section.chaoss_label) %}
+  {% if section.chart_spec %}
+  <div class="chart" data-vega-spec='{{ section.chart_spec }}' role="img" aria-label="{{ section.title }} by project, over time">
+    <noscript>Enable JavaScript to see this chart, or use the table below.</noscript>
+  </div>
+  {% else %}
+  <p class="card-empty-state">insufficient data</p>
+  {% endif %}
+{% endcall %}
+{% endfor %}
+
+<section class="peer-table" aria-labelledby="peer-table-heading">
+  <h3 id="peer-table-heading">Current month, all six projects</h3>
+  <table class="security-table peer-table-grid">
+    <thead>
+      <tr>
+        <th scope="col">Project</th>
+        <th scope="col">As of</th>
+        {% for column in table_columns %}
+        <th scope="col">{{ column }}</th>
+        {% endfor %}
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in table_rows %}
+      <tr{% if row.is_cassandra %} class="peer-table-row--cassandra"{% endif %}>
+        <th scope="row">{{ row.display_name }}</th>
+        <td>{{ row.as_of_month if row.as_of_month else "—" }}</td>
+        {% for cell in row.cells %}
+        <td>{{ cell if cell is not none else "—" }}</td>
+        {% endfor %}
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+{% else %}
+<p class="card-empty-state">
+  Peer context isn't published yet — it appears once the weekly peer-collection workflow
+  has completed its first run (DECISIONS.md D30).
+</p>
+{% endif %}
+
+{% endblock %}

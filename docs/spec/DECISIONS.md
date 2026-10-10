@@ -338,3 +338,97 @@ https://chaoss.community/kb/metrics-model-starter-project-health/ (verified live
 **Coordination:** #134 (prior-art citations, resolution cohort) and #135 (release_frequency)
 were in flight and touch `metrics_meta`/registry/landing; this work rebases onto `main` after
 they merge. The Release Frequency card shows a plain pending state until #135 ships.
+
+## D30. Peer context is facts; no targets; peers chosen by owner (issue #145)
+
+Owner decision (2026-10-09): give readers context for Cassandra's own numbers without inventing
+targets. Peers: **apache/kafka, apache/spark, apache/flink, apache/pulsar, apache/datafusion**
+(the owner chose DataFusion over HBase). The same five metrics D29's CHAOSS Starter Project
+Health block already established the pattern for (Time to First Response, Change Request
+Closure Ratio, Contributor Absence Factor, Release Frequency) plus Open PR backlog by age
+bucket (issue #142), computed by the **same code** for Cassandra and every peer, on its own
+page, `/peers/`, linked from the site nav and the Community page.
+
+- **No targets, no ranking.** CHAOSS's own published metrics models deliberately set no
+  targets and rank nothing (the same fact D29 already cites for dropping this project's own
+  composite score) -- this page states that plainly, in a standing banner: "CHAOSS does not set
+  targets or rank projects." No color-coding implying good/bad, no composite across the five
+  metrics, no sort order implying rank, no verdict vocabulary (D25). Cassandra's own line is
+  drawn with a heavier stroke in every chart (never color alone) so it reads distinctly without
+  reading as "the one that matters."
+- **Peers are an owner choice, not a benchmark panel.** Comparable ASF top-level projects at a
+  broadly similar scale, picked by the owner for having real GitHub-PR activity, a real git
+  history, and real GA releases -- not a statistically representative sample, and not an
+  implied "these are the right projects." `projects/peers.yaml` is a plain, documented config
+  file; a reader who wants a different comparison set can point the same code at a different
+  repo.
+- **No issue-tracker metrics in v1.** Cassandra/Kafka/Spark/Flink use ASF JIRA; Pulsar and
+  DataFusion use GitHub Issues -- the two trackers aren't comparable without substantially more
+  normalization work than this issue's scope covers, so no issue-tracker-based metric appears
+  for any of the six projects on this page.
+- **Disk-safe collection, a separate weekly workflow.** The collection machine's own disk
+  constraint (issue #145) rules out a full clone of any peer repo -- git history comes from a
+  bare, blobless, shallow-since clone of the default branch only, deleted immediately after
+  each peer's commit walk; GA releases come from the GitHub REST Tags API, no clone at all.
+  `.github/workflows/peers.yml` runs weekly (Sunday), separately from `nightly.yml`'s own
+  ~3-minute daily budget, sharing the same `data`-branch concurrency group and the GitHub PR
+  collector's existing shared rate-limit-floor budgeting (no new budgeting code).
+- **Independent-source release verification, disclosed where the plan didn't match reality.**
+  Each peer's git-tag-derived GA count is cross-checked against ASF JIRA's own released
+  versions (Kafka/Spark/Flink) or GitHub Releases (Pulsar). DataFusion was planned to use
+  GitHub Releases too, but verified live (2026-10-09) to publish **zero** GitHub Releases --
+  same situation DATA-SOURCES.md already documents for apache/cassandra itself. Rather than
+  silently dropping the cross-check, DataFusion uses its own PyPI package's release history
+  instead, a genuinely independent system, disclosed in `projects/peers.yaml`'s own comment and
+  in METRICS.md §13 -- "collect imperfectly but honestly, not silently," the same discipline
+  `collectors/jira.py`/`collectors/release.py` document for their own limitations.
+- **Uses the collapsible-section layout (#144).** Issue #144 (collapsible sections, grouped by
+  CHAOSS practitioner-guide topic) merged while this was in flight; `/peers/` rebased onto it
+  and reuses `templates/_sections.html`'s `section()`/`section_nav()` macros unchanged, one
+  section per metric. Each section's `chaoss_label` links its own CHAOSS Knowledge Base metric
+  page directly (e.g. "CHAOSS: Time to First Response") rather than a practitioner guide --
+  there is no single practitioner-guide topic for "peer comparison" -- the same `chaoss_label=`
+  override `COMMUNITY_SECTIONS`'s own "Releases" section already uses for the same reason.
+
+**Fixup round 1 (orchestrator review of PR #147).** This issue's first draft collected GitHub
+PR history by reusing `collectors/github.py::GitHubCollector.collect()`'s own
+oldest-updated-first walk -- correct for Cassandra's own collection (already caught up to "now"
+after months of incremental nightly runs) but wrong for a peer's *first-ever* run: with no
+watermark, that walk starts at the oldest PR in the whole repo history, which a real run against
+apache/kafka confirmed (PRs landed from 2013-2017, nowhere near the comparison window). Replaced
+with three bounded-recency-window passes per repo (`peers/github.py`: `created_desc`, newest
+first, stopped at the window start; `open_prs`, every currently-open PR regardless of age, since
+an old PR can still be open today; `closed_search`, GitHub's search API for PRs created before
+the window but closed inside it) -- each independently resumable across runs, sharing one
+GraphQL point budget. `GitHubCollector` itself is still reused unmodified for its client/token/
+retry machinery and three new additive fetch methods; its own `collect()` and Cassandra's own
+production collection are untouched. The real run also surfaced a budget-fairness gap (one
+high-volume repo could consume an entire run's shared budget, leaving the rest `'skipped'` --
+fixed with a per-(peer, pass) page cap, `collection.max_pages_per_pass`), a transient clone
+network failure (fixed with a retry), and a search-pass page size that exceeded GitHub's
+500,000-node query-complexity ceiling (lowered from 100 to 90).
+
+**Fixup round 2 (orchestrator review of PR #147).** A real-data spot-check caught apache/
+flink's `time_to_first_response_pr` reading ~0.008 days (~11 minutes) -- implausibly fast for a
+human-review metric. Root cause: `flinkbot` (Flink's own CI greeting bot) posts a comment on
+essentially every PR, and the pre-existing generic bot pattern (`-bot$`) requires a hyphen
+before "bot" that `flinkbot` doesn't have. Rather than patching that one account, every peer's
+real collected PR-comment/review data was swept empirically: for each commenting/reviewing
+account, the share of PRs it touches and the share of its own first-touch latencies landing
+within 60 minutes of PR creation. Four more automation accounts turned up this way across the
+five peers -- `copilot-pull-request-reviewer` (GitHub's own automated Copilot PR reviewer,
+present on four of five peers), `codecov-commenter` (apache/datafusion's coverage bot, GitHub
+profile name literally "Codecov Comments Bot"), and `adriangbot` (apache/datafusion, a
+behaviorally-automated account distinct from the real human `adriangb` active on the same repo,
+disclosed as resting on behavioral signal rather than an authoritative bot flag). The same sweep
+also surfaced several prolific *human* maintainers with a high PR-touch share but no
+fast-response signature (e.g. apache/kafka's `chia7712`, 38% of all PRs but only 3% within five
+minutes) -- confirming "touches a lot of PRs" alone is not a bot signal; "touches almost every
+PR, fast" is. All five new patterns, with their evidence, are in `projects/peers.yaml`'s own
+comment (one more, `copilot-pull-request-reviewer`, added to `projects/cassandra.yaml` as a
+precaution -- disclosed as unverified against Cassandra's own data, since this task never
+pulled the production `data` branch locally). Recomputing `time_to_first_response_pr` from the
+same already-collected real data with these accounts excluded: Flink 0.008 -> 0.334 days,
+DataFusion 0.020 -> 0.840 days (datafusion's own prior number was `codecov-commenter`'s own
+leak); Kafka, Spark, and Pulsar moved by single-digit percent (0.450->0.580, 0.308->0.338,
+0.155->0.156) since those three bots touch a much smaller share of their PRs.

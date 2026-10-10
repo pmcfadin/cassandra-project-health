@@ -38,6 +38,7 @@ from project_health.peers.collect import (
     collect_and_write_github,
 )
 from project_health.peers.config import PeersConfig
+from project_health.peers import collect as peer_collect
 from project_health.peers import rotation as peer_rotation
 from project_health import storage
 
@@ -68,6 +69,13 @@ class PeersRunReport:
     # had already dropped below `min_free_disk_bytes` before their turn --
     # empty unless that budget was ever actually hit this run.
     disk_budget_skipped_peers: list[str] = field(default_factory=list)
+    # Issue #150: each peer's own per-pass settlement as of the *end* of
+    # this run (`peers.collect.peer_pass_settlement`, read fresh from the
+    # watermarks this run's own `collect_and_write_github` just persisted)
+    # -- also written into that peer's own snapshot directory
+    # (`_write_settlement`) so `site/peers_page.py` can gate its
+    # GitHub-derived metrics with no API calls of its own.
+    peer_settlement: dict[str, dict[str, bool]] = field(default_factory=dict)
 
     def to_json_dict(self) -> dict:
         """A plain-dict summary safe to `json.dumps` -- used by the real
@@ -102,6 +110,7 @@ class PeersRunReport:
                 }
                 for o in self.github.pass_outcomes
             ],
+            "peer_settlement": self.peer_settlement,
             "git_reports": [asdict(r) for r in self.git_reports],
             "release_reports": [
                 {
@@ -213,6 +222,25 @@ def _write_snapshot(
     pq.write_table(computed["pr_backlog"], out_dir / "pr_backlog.parquet")
 
 
+def _write_settlement(
+    data_dir: str | Path, run_id: str, project_id: str, settlement: dict[str, bool]
+) -> None:
+    """Issue #150: `peer.collect.peer_pass_settlement`'s own per-pass dict,
+    written alongside that peer's `metric_value`/`pr_backlog` snapshot
+    files as `settlement.json` -- a plain dict, not a parquet table (three
+    booleans, no schema worth the ceremony), so `site/peers_page.py` can
+    read it with no `project_health.storage`/watermark access of its own
+    (same "the site needs no API calls" acceptance this issue's own text
+    states). Never written for Cassandra -- its own GitHub collection is
+    `nightly.yml`'s ordinary incremental collector, not this module's
+    three-pass peer backfill, so no watermark-based gating applies to it at
+    all (`site/peers_page.py`'s own missing-file default treats this
+    exactly like "fully settled")."""
+    out_dir = Path(data_dir) / "snapshots" / "peers" / run_id / project_id
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / "settlement.json").write_text(json.dumps(settlement, indent=2, sort_keys=True))
+
+
 def run_peers_collection(
     peers_config: PeersConfig,
     data_dir: str | Path,
@@ -316,6 +344,7 @@ def run_peers_collection(
         "pr_backlog_rows": cassandra_computed["pr_backlog"].num_rows,
     }
 
+    peer_settlement: dict[str, dict[str, bool]] = {}
     for peer in peers_config.peers:
         tables = _peer_tables(data_dir, peer.id)
         computed = compute_peer_metrics(tables, as_of=as_of, run_id=run_id, computed_at=started_at)
@@ -324,6 +353,13 @@ def run_peers_collection(
             "metric_value_rows": computed["metric_value"].num_rows,
             "pr_backlog_rows": computed["pr_backlog"].num_rows,
         }
+        # Issue #150: read fresh from whatever this run's own
+        # `collect_and_write_github` call just persisted -- the true,
+        # up-to-the-end-of-this-run settlement state, not the pre-run
+        # snapshot that call used for its own budget-allocation decisions.
+        settlement = peer_collect.peer_pass_settlement(data_dir, peer)
+        peer_settlement[peer.id] = settlement
+        _write_settlement(data_dir, run_id, peer.id, settlement)
 
     completed_at = datetime.now(timezone.utc)
     report = PeersRunReport(
@@ -336,6 +372,7 @@ def run_peers_collection(
         peak_clone_bytes=peak_clone_bytes,
         metrics_by_project=metrics_by_project,
         disk_budget_skipped_peers=disk_budget_skipped_peers,
+        peer_settlement=peer_settlement,
     )
 
     manifest_path = Path(data_dir) / "manifests" / f"peers-{run_id}.json"

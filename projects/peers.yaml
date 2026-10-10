@@ -119,6 +119,16 @@ collection:
   # every peer repo, shares this one rate-limit-floor budget, reusing
   # `GitHubCollector`'s own client/token/retry machinery unmodified.
   github_rate_limit_floor: 500
+  # Issue #150 (live, 2026-10-10): this run's GraphQL *reserve* -- once
+  # `remaining` drops to or below this many points, every further (peer,
+  # pass) this run stops cleanly, leaving at least this much of the shared
+  # hourly budget for `nightly.yml`'s own run on the same token. Raised from
+  # 500 to 2,500 after a real Sunday run drained the budget low enough that
+  # the *following* nightly run came back `github: partial`/
+  # `github_commit_authors: partial` purely from budget starvation, not any
+  # fault of its own collection (`METRICS.md` §13's own "Budget reserve"
+  # subsection).
+  github_rate_limit_floor: 2500
   # Generic GitHub/git bot identities (not Cassandra-specific) -- dependabot
   # and GitHub Actions service accounts appear on every peer the same way.
   bot_patterns:

@@ -29,7 +29,7 @@
           {{ item.month_label }}{% if item.n is not none %} &middot; n={{ item.n }}{% endif %}
         </span>
         {% else %}
-        <span class="section-headline-metric-value section-headline-metric-value--insufficient">insufficient data</span>
+        <span class="section-headline-metric-value section-headline-metric-value--insufficient">{{ item.empty_label if item.empty_label else "insufficient data" }}</span>
         {% endif %}
         {% if item.sparkline_spec_json %}
         <span class="chart chart--sparkline" data-vega-spec='{{ item.sparkline_spec_json }}' role="img" aria-label="Trend for {{ item.name }}"></span>

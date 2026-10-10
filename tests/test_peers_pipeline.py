@@ -143,6 +143,125 @@ def test_run_peers_collection_writes_snapshots_for_cassandra_and_every_peer(tmp_
     assert peer_pipeline.latest_peers_run_id(tmp_path) == "run1"
 
 
+def test_run_peers_collection_writes_settlement_per_peer(tmp_path, monkeypatch):
+    """Issue #150: each peer gets its own `settlement.json`, reflecting the
+    watermarks this same run's `collect_and_write_github` just persisted --
+    never written for Cassandra (module docstring: it has no three-pass
+    peer backfill of its own)."""
+    peers_config = PeersConfig(
+        peers=[_peer("kafka", "apache/kafka"), _peer("spark", "apache/spark")]
+    )
+
+    def fake_created_desc(
+        collector, repo_label, state, window_start, bot_patterns, snapshot_id, **kwargs
+    ):
+        # kafka completes its created_desc backfill this run; spark's is
+        # still mid-walk.
+        if repo_label == "apache/kafka":
+            return PassResult(
+                pr_rows=[],
+                review_rows=[],
+                comment_rows=[],
+                bot_prs_excluded=0,
+                bot_reviews_excluded=0,
+                bot_comments_excluded=0,
+                status="completed",
+                next_state=PassState(high_watermark="2024-01-01T00:00:00+00:00"),
+            )
+        return PassResult(
+            pr_rows=[],
+            review_rows=[],
+            comment_rows=[],
+            bot_prs_excluded=0,
+            bot_reviews_excluded=0,
+            bot_comments_excluded=0,
+            status="partial",
+            next_state=PassState(cursor="resume-here"),
+        )
+
+    monkeypatch.setattr(peer_collect, "run_created_desc_pass", fake_created_desc)
+    monkeypatch.setattr(peer_collect, "run_open_prs_pass", lambda *a, **k: _empty_pass_result())
+    monkeypatch.setattr(
+        peer_collect, "run_closed_search_pass", lambda *a, **k: _empty_pass_result()
+    )
+    monkeypatch.setattr(peer_collect.git_clone, "clone_shallow_bare", lambda *a, **k: None)
+    monkeypatch.setattr(peer_collect, "fetch_ga_tags", lambda *a, **k: [])
+    monkeypatch.setattr(
+        peer_collect,
+        "verify_release_counts",
+        lambda *a, **k: VerificationResult(
+            source_type="jira", tag_derived_by_year={}, independent_by_year={}
+        ),
+    )
+
+    import subprocess
+    import os
+
+    def fake_clone(remote_url, local_path, *, branch, shallow_since):
+        env = os.environ.copy()
+        env.update(
+            {
+                "GIT_AUTHOR_NAME": "Test",
+                "GIT_AUTHOR_EMAIL": "test@example.com",
+                "GIT_COMMITTER_NAME": "Test",
+                "GIT_COMMITTER_EMAIL": "test@example.com",
+            }
+        )
+        Path(local_path).mkdir(parents=True, exist_ok=True)
+        subprocess.run(
+            ["git", "init", "-b", branch], cwd=local_path, env=env, check=True, capture_output=True
+        )
+        subprocess.run(
+            ["git", "config", "commit.gpgsign", "false"],
+            cwd=local_path,
+            check=True,
+            capture_output=True,
+        )
+        (Path(local_path) / "f.txt").write_text("x")
+        subprocess.run(
+            ["git", "-C", str(local_path), "add", "f.txt"], check=True, capture_output=True
+        )
+        subprocess.run(
+            ["git", "-C", str(local_path), "commit", "-m", "init"],
+            env=env,
+            check=True,
+            capture_output=True,
+        )
+
+    monkeypatch.setattr(peer_collect.git_clone, "clone_shallow_bare", fake_clone)
+
+    report = peer_pipeline.run_peers_collection(
+        peers_config, tmp_path, tmp_path / "work", "run1", token="x", as_of=date(2026, 1, 1)
+    )
+
+    # kafka: created_desc settled (high_watermark set), open_prs/closed_search
+    # settled (completed with cursor cleared) -- fully settled, 3/3.
+    assert report.peer_settlement["kafka"] == {
+        "created_desc": True,
+        "open_prs": True,
+        "closed_search": True,
+    }
+    # spark: created_desc still mid-walk -- unsettled on that one pass.
+    assert report.peer_settlement["spark"]["created_desc"] is False
+
+    kafka_settlement_path = (
+        tmp_path / "snapshots" / "peers" / "run1" / "kafka" / "settlement.json"
+    )
+    assert kafka_settlement_path.exists()
+    assert json.loads(kafka_settlement_path.read_text())["created_desc"] is True
+
+    # Cassandra never gets a settlement.json -- not a peer, no three-pass
+    # backfill state of its own.
+    cassandra_settlement_path = (
+        tmp_path / "snapshots" / "peers" / "run1" / "cassandra" / "settlement.json"
+    )
+    assert not cassandra_settlement_path.exists()
+
+    manifest = json.loads((tmp_path / "manifests" / "peers-run1.json").read_text())
+    assert manifest["peer_settlement"]["kafka"]["created_desc"] is True
+    assert manifest["peer_settlement"]["spark"]["created_desc"] is False
+
+
 def test_disk_budget_skips_remaining_peers(tmp_path, monkeypatch):
     """issue #145's own disk-budget rule: once free space drops at or below
     `min_free_disk_bytes`, every remaining peer's git/release collection is

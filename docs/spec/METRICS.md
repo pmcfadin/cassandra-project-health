@@ -1558,3 +1558,56 @@ history, and real GA releases -- not a statistically representative sample, not 
 panel, and not an implied "these are the right projects to compare against." A reader who wants
 a different comparison set can read `projects/peers.yaml` and run the same code against a
 different repo.
+
+### Completeness gating (issue #150, live, 2026-10-10)
+
+`/peers/` is generated and published every night, but a peer's own GitHub-PR backfill (the
+three bounded-recency-window passes above) is independently resumable *across* this
+workflow's own weekly runs -- an initial backfill can legitimately still be in progress when a
+given nightly run reads the latest peer snapshot. Rendering a number computed from a still-
+incomplete backfill understates it silently, indistinguishably from a genuinely small number --
+the real failure mode this fixes: Flink's own open PR backlog rendered 25 against a locally
+verified 360, purely because its `open_prs` pass had never yet completed a single run; Pulsar's
+and DataFusion's PR-derived metrics rendered "insufficient data" for the same underlying reason.
+
+Each of the three GitHub-derived metrics is gated on exactly one of a peer's three passes
+(`peers/collect.py::peer_pass_settlement`, persisted per peer as `settlement.json` alongside
+that peer's `metric_value.parquet`/`pr_backlog.parquet` snapshot files, `peers/pipeline.py`'s
+`run_peers_collection`):
+
+- **Time to First Response** -- gated on `created_desc` reaching the comparison window's start
+  (`PassState.high_watermark` set).
+- **Change Request Closure Ratio** -- gated on `closed_search` completing at least one full run.
+- **Open PR backlog** -- gated on `open_prs` completing at least one full run.
+
+A pass whose watermark was never written at all (an earlier pass this peer's turn hit the
+shared budget floor before it ever ran) is never read as settled, for any of the three passes --
+"never run" and "ran to completion" are distinct states, never conflated.
+
+An unsettled peer renders "Collecting -- N of 3 passes complete" in place of a value everywhere
+that metric would otherwise show one for it -- the summary-row card, the multi-line chart (that
+peer's own line is simply omitted, never a zero or null point), and the current-month table
+cell. **Contributor Absence Factor and Release Frequency are never gated** -- both are git-/
+release-derived, not GitHub-PR-derived, and unaffected by this backfill's own progress.
+Cassandra is never gated either: its GitHub collection is `nightly.yml`'s ordinary incremental
+collector, already caught up for months, with no three-pass backfill of its own to be
+incomplete.
+
+### Budget reserve (issue #150, live, 2026-10-10)
+
+This workflow and `nightly.yml` share one GitHub token's one hourly GraphQL point budget. A
+real Sunday peers run that drove `remaining` down near exhaustion left too little headroom for
+the *following* nightly run, which came back `github: partial`/`github_commit_authors: partial`
+purely from budget starvation, not any fault of its own collection.
+
+`projects/peers.yaml`'s `collection.github_rate_limit_floor` (default 2,500 -- half of GitHub's
+5,000-point hourly GraphQL allowance, raised from 500) is this run's own *reserve*: passed
+straight through as `collectors.github.GitHubCollector`'s `rate_limit_floor`, every (peer, pass)
+this run stops cleanly, resumable next run, the moment GraphQL `remaining` drops to or at that
+value -- leaving at least this many points for whatever runs next on the same token.
+
+`.github/workflows/peers.yml`'s own schedule was also moved off `nightly.yml`'s actually
+observed run window, not only its cron minute: `nightly.yml` is cron'd for 06:17 UTC, but GitHub
+Actions' own scheduling delay under load has real nightly runs landing closer to ~11:40-14:40
+UTC. `peers.yml` now runs Sunday 20:00 UTC, clear of that window either way -- on top of (never
+replacing) the GraphQL reserve above.

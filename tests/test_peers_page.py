@@ -169,3 +169,130 @@ def test_latest_run_id_used_when_not_given(populated_data_dir):
     context = build_peers_context(populated_data_dir)
     assert context["available"] is True
     assert context["peers_run_id"] == "run1"
+
+
+# --- issue #150: completeness gating ---------------------------------------
+
+
+def _write_settlement(tmp_path, run_id: str, project_id: str, settlement: dict) -> None:
+    import json as _json
+
+    out_dir = tmp_path / "snapshots" / "peers" / run_id / project_id
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / "settlement.json").write_text(_json.dumps(settlement))
+
+
+def test_unsettled_peer_renders_collecting_label_not_a_value(populated_data_dir):
+    """Synthetic snapshot, one unsettled peer (flink: created_desc and
+    closed_search incomplete, open_prs complete) -- Time to First Response
+    and Change Request Closure Ratio must render "Collecting" for flink
+    instead of a number; Open PR backlog (gated on open_prs, which IS
+    settled here) must still render a real number for flink."""
+    _write_settlement(
+        populated_data_dir,
+        "run1",
+        "flink",
+        {"created_desc": False, "open_prs": True, "closed_search": False},
+    )
+
+    context = build_peers_context(populated_data_dir, run_id="run1")
+
+    ttfr_section = next(
+        c for c in context["peer_sections"] if c["id"] == TIME_TO_FIRST_RESPONSE_PR
+    )
+    flink_item = next(i for i in ttfr_section["summary_items"] if i["name"] == "Apache Flink")
+    assert flink_item["value_display"] is None
+    assert flink_item["empty_label"] == "Collecting — 1 of 3 passes complete"
+    assert flink_item["sparkline_spec_json"] is None
+
+    # flink's own line must be entirely absent from the chart -- never a
+    # null/zero point standing in for "still collecting."
+    import json
+
+    ttfr_spec = json.loads(ttfr_section["chart_spec"])
+    assert "Apache Flink" not in {v["project"] for v in ttfr_spec["data"]["values"]}
+
+    closure_section = next(
+        c for c in context["peer_sections"] if c["id"] == "change_request_closure_ratio_pr"
+    )
+    flink_closure_item = next(
+        i for i in closure_section["summary_items"] if i["name"] == "Apache Flink"
+    )
+    assert flink_closure_item["value_display"] is None
+    assert flink_closure_item["empty_label"] == "Collecting — 1 of 3 passes complete"
+
+    # Open PR backlog is gated on `open_prs`, which IS settled for flink in
+    # this scenario -- a real value, not "Collecting."
+    backlog_section = next(
+        c for c in context["peer_sections"] if c["id"] == "open_pr_backlog_total"
+    )
+    flink_backlog_item = next(
+        i for i in backlog_section["summary_items"] if i["name"] == "Apache Flink"
+    )
+    assert flink_backlog_item["empty_label"] is None
+
+    # Current-month table: flink's TTFR/closure-ratio cells read the exact
+    # "Collecting" string; its backlog cell is a real value, not a string.
+    flink_row = next(r for r in context["table_rows"] if r["project_id"] == "flink")
+    table_columns = context["table_columns"]
+    ttfr_col = table_columns.index("Time to First Response (GitHub PRs)")
+    closure_col = table_columns.index("Change Request Closure Ratio")
+    backlog_col = table_columns.index("Open PR backlog (total)")
+    assert flink_row["cells"][ttfr_col] == "Collecting — 1 of 3 passes complete"
+    assert flink_row["cells"][closure_col] == "Collecting — 1 of 3 passes complete"
+    assert not isinstance(flink_row["cells"][backlog_col], str)
+
+    # Settled peers (kafka has no settlement.json -> defaults fully settled)
+    # are entirely unaffected by gating -- never a "Collecting" label, and
+    # still present in the chart (same as `test_every_peer_appears_in_at_
+    # least_one_chart`'s own assertion -- the synthetic fixture's own dense-
+    # month padding means the *latest* month has no point for any peer,
+    # unrelated to gating).
+    kafka_item = next(i for i in ttfr_section["summary_items"] if i["name"] == "Apache Kafka")
+    assert kafka_item["empty_label"] is None
+    assert "Apache Kafka" in {v["project"] for v in ttfr_spec["data"]["values"]}
+
+
+def test_git_release_derived_metrics_are_never_gated(populated_data_dir):
+    """Contributor Absence Factor and Release Frequency are git-/release-
+    derived, not GitHub-PR-derived -- a peer unsettled on every one of its
+    three GitHub passes must still render real numbers for both."""
+    _write_settlement(
+        populated_data_dir,
+        "run1",
+        "flink",
+        {"created_desc": False, "open_prs": False, "closed_search": False},
+    )
+
+    context = build_peers_context(populated_data_dir, run_id="run1")
+
+    for metric_id in ("contributor_absence_factor", "release_frequency"):
+        section = next(c for c in context["peer_sections"] if c["id"] == metric_id)
+        flink_item = next(i for i in section["summary_items"] if i["name"] == "Apache Flink")
+        assert flink_item["empty_label"] is None, metric_id
+
+    flink_row = next(r for r in context["table_rows"] if r["project_id"] == "flink")
+    table_columns = context["table_columns"]
+    for title in ("Contributor Absence Factor", "Release Frequency (trailing 24 months)"):
+        col = table_columns.index(title)
+        assert not isinstance(flink_row["cells"][col], str)
+
+
+def test_cassandra_and_peers_without_settlement_file_default_fully_settled(populated_data_dir):
+    """A peer (or Cassandra) with no `settlement.json` at all -- every peer
+    snapshot written before issue #150 shipped, and Cassandra always --
+    reads as fully settled, exactly today's un-gated behavior."""
+    context = build_peers_context(populated_data_dir, run_id="run1")
+    ttfr_section = next(
+        c for c in context["peer_sections"] if c["id"] == TIME_TO_FIRST_RESPONSE_PR
+    )
+    names = (
+        "Apache Cassandra",
+        "Apache Kafka",
+        "Apache Spark",
+        "Apache Pulsar",
+        "Apache DataFusion",
+    )
+    for name in names:
+        item = next(i for i in ttfr_section["summary_items"] if i["name"] == name)
+        assert item["empty_label"] is None, name

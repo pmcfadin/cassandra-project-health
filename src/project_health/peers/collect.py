@@ -160,25 +160,51 @@ def _pass_watermark_table(pass_name: str) -> str:
     return f"pr_pass_{pass_name}"
 
 
+def peer_pass_settlement(data_dir: str | Path, peer: PeerProject) -> dict[str, bool]:
+    """Per-(peer, pass) settledness, keyed by `PASS_NAMES` (issue #150: the
+    `/peers/` page needs to know, pass by pass, which of a peer's
+    GitHub-derived metrics are safe to render -- `created_desc` reached the
+    comparison window start gates Time to First Response, `closed_search`
+    completing gates Change Request Closure Ratio, `open_prs` completing
+    gates the Open PR backlog).
+
+    A pass whose watermark was never written at all (`storage.
+    read_watermark` returns `None` -- this peer's turn never got far enough
+    for this pass to run even once, e.g. an earlier pass this same run hit
+    the shared budget floor first) is **never** "settled," for every pass,
+    not only `created_desc` -- unlike `open_prs`/`closed_search`'s own
+    *resumability* semantics (`PassState.cursor is None` also means "ran to
+    completion," since both are cheap to redo in full), a pass that has
+    literally never executed has produced zero rows, which is the opposite
+    of "safe to show a number for." `created_desc` additionally needs
+    `high_watermark` set -- its own `cursor is None` alone is ambiguous
+    between "never run" and "completed its first full backfill," and only
+    `high_watermark` distinguishes the two (module comment on `PassState`).
+    """
+    source = peer_source(peer.id, "github")
+    settlement: dict[str, bool] = {}
+    for pass_name in PASS_NAMES:
+        raw = storage.read_watermark(data_dir, source, table=_pass_watermark_table(pass_name))
+        if raw is None:
+            settlement[pass_name] = False
+            continue
+        state = PassState.from_json(raw)
+        if state.cursor is not None:
+            settlement[pass_name] = False
+        elif pass_name == "created_desc" and state.high_watermark is None:
+            settlement[pass_name] = False
+        else:
+            settlement[pass_name] = True
+    return settlement
+
+
 def _peer_is_settled(data_dir: str | Path, peer: PeerProject) -> bool:
     """`True` if every one of `peer`'s three passes' persisted watermarks
     show no resumable work outstanding (issue #148: "peers whose passes
-    are all complete ... are skipped cheaply").
-
-    `created_desc` additionally needs `high_watermark` set -- a pass that
-    has never run at all also has `cursor is None`, which must never be
-    read as "settled" (a peer that has literally never been collected is
-    the opposite of done)."""
-    source = peer_source(peer.id, "github")
-    for pass_name in PASS_NAMES:
-        state = PassState.from_json(
-            storage.read_watermark(data_dir, source, table=_pass_watermark_table(pass_name))
-        )
-        if state.cursor is not None:
-            return False
-        if pass_name == "created_desc" and state.high_watermark is None:
-            return False
-    return True
+    are all complete ... are skipped cheaply") -- `all(peer_pass_settlement
+    (...).values())`, see that function's own docstring for the exact
+    per-pass rule."""
+    return all(peer_pass_settlement(data_dir, peer).values())
 
 
 # A fully "settled" peer (module comment above) only needs a minimal

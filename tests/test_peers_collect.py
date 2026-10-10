@@ -455,6 +455,127 @@ def test_settled_peer_gets_minimal_page_cap_and_is_excluded_from_fair_share(
     assert captured_max_pages["apache/spark"] == 10
 
 
+# --- issue #150: per-pass settlement + GraphQL reserve ---------------------
+
+
+def test_peer_pass_settlement_never_run_is_unsettled(tmp_path):
+    """A pass with no watermark at all (never even attempted this peer's
+    turn, e.g. an earlier pass hit the shared budget floor first) must
+    never be read as settled -- for every pass, not only `created_desc`."""
+    peer = _peer("flink", "apache/flink")
+    settlement = peer_collect.peer_pass_settlement(tmp_path, peer)
+    assert settlement == {
+        "created_desc": False,
+        "open_prs": False,
+        "closed_search": False,
+    }
+
+
+def test_peer_pass_settlement_created_desc_needs_high_watermark(tmp_path):
+    """`created_desc`'s own `cursor is None` alone is ambiguous between
+    "never run" and "completed its first full backfill" -- only
+    `high_watermark` set distinguishes the two."""
+    peer = _peer("kafka", "apache/kafka")
+    source = peer_collect.peer_source("kafka", "github")
+    storage.write_watermark(
+        tmp_path, source, PassState(cursor="resume-here").to_json(), table="pr_pass_created_desc"
+    )
+    settlement = peer_collect.peer_pass_settlement(tmp_path, peer)
+    assert settlement["created_desc"] is False
+
+    storage.write_watermark(
+        tmp_path,
+        source,
+        PassState(high_watermark="2024-01-01T00:00:00+00:00").to_json(),
+        table="pr_pass_created_desc",
+    )
+    settlement = peer_collect.peer_pass_settlement(tmp_path, peer)
+    assert settlement["created_desc"] is True
+
+
+def test_peer_pass_settlement_open_prs_and_closed_search_need_a_completed_run(tmp_path):
+    """Unlike `created_desc`, `open_prs`/`closed_search` are settled once a
+    run has completed and cleared `cursor` -- but only if a run actually
+    happened (a written watermark), never merely because the default
+    `PassState()` also has `cursor is None`."""
+    peer = _peer("kafka", "apache/kafka")
+    source = peer_collect.peer_source("kafka", "github")
+
+    # Mid-walk, cut off by the budget floor: resumable, not settled.
+    storage.write_watermark(
+        tmp_path, source, PassState(cursor="resume-here").to_json(), table="pr_pass_open_prs"
+    )
+    assert peer_collect.peer_pass_settlement(tmp_path, peer)["open_prs"] is False
+
+    # Completed a full run: cursor cleared, watermark actually written.
+    storage.write_watermark(tmp_path, source, PassState().to_json(), table="pr_pass_open_prs")
+    assert peer_collect.peer_pass_settlement(tmp_path, peer)["open_prs"] is True
+
+
+def test_peer_is_settled_matches_peer_pass_settlement(tmp_path):
+    peer = _peer("kafka", "apache/kafka")
+    source = peer_collect.peer_source("kafka", "github")
+    storage.write_watermark(
+        tmp_path,
+        source,
+        PassState(high_watermark="2024-01-01T00:00:00+00:00").to_json(),
+        table="pr_pass_created_desc",
+    )
+    storage.write_watermark(tmp_path, source, PassState().to_json(), table="pr_pass_open_prs")
+    storage.write_watermark(tmp_path, source, PassState().to_json(), table="pr_pass_closed_search")
+
+    assert peer_collect._peer_is_settled(tmp_path, peer) is True
+    assert all(peer_collect.peer_pass_settlement(tmp_path, peer).values())
+
+
+class _FloorCapturingCollector:
+    """Stand-in for `collectors.github.GitHubCollector` that only records
+    the `rate_limit_floor` it was constructed with -- the one place
+    `collect_and_write_github`'s own GraphQL-reserve wiring
+    (`peers_config.collection.github_rate_limit_floor`) is observable from
+    outside `peer_collect`."""
+
+    seen_floors: list[int] = []
+
+    def __init__(self, config, token=None, rate_limit_floor=500, transport=None):
+        type(self).seen_floors.append(rate_limit_floor)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        pass
+
+
+def test_collect_and_write_github_passes_configured_reserve_as_rate_limit_floor(
+    tmp_path, monkeypatch
+):
+    """Issue #150's own "Budget reserve" -- whatever `github_rate_limit_
+    floor` this run's config carries is exactly the `rate_limit_floor`
+    `GitHubCollector` stops paginating at, with no mechanism to change it
+    (nothing new to introduce) besides the default this issue raises."""
+    peers_config = PeersConfig(
+        peers=[_peer("kafka", "apache/kafka")],
+        collection=CollectionConfig(github_rate_limit_floor=2500),
+    )
+    seen_floors: list[int] = []
+    fake_collector = type(
+        "_FakeCollector", (_FloorCapturingCollector,), {"seen_floors": seen_floors}
+    )
+    monkeypatch.setattr(peer_collect, "GitHubCollector", fake_collector)
+    monkeypatch.setattr(peer_collect, "run_created_desc_pass", lambda *a, **k: _empty_pass_result())
+    monkeypatch.setattr(peer_collect, "run_open_prs_pass", lambda *a, **k: _empty_pass_result())
+    monkeypatch.setattr(
+        peer_collect, "run_closed_search_pass", lambda *a, **k: _empty_pass_result()
+    )
+
+    peer_collect.collect_and_write_github(
+        peers_config, tmp_path, "run1", date(2026, 1, 1), token="x"
+    )
+
+    assert seen_floors == [2500]
+
+
 def _git_env() -> dict[str, str]:
     env = os.environ.copy()
     env.update(

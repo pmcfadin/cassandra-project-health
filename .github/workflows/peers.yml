@@ -12,9 +12,22 @@ name: Peers
 # (`project_health.storage`), same "a flaky/slow source stops cleanly,
 # never a hard failure" discipline `nightly.yml` documents for its own
 # sources.
+#
+# Issue #150 (live, 2026-10-10): scheduled away from `nightly.yml`'s own
+# *actually observed* run window, not just its cron minute -- `nightly.yml`
+# is cron'd for 06:17 UTC, but GitHub Actions' own scheduling delay under
+# load (its own docs' warning, already why that cron is off-the-hour) has
+# real runs actually landing ~11:40-14:40 UTC. 20:00 UTC Sunday sits well
+# clear of that whole window either way, on top of (never replacing) the
+# `github_rate_limit_floor` GraphQL reserve `projects/peers.yaml`'s
+# `collection` block raised to 2,500 for the same reason (`METRICS.md` §13's
+# "Budget reserve" subsection) -- belt-and-suspenders against the same
+# real failure (`nightly.yml` coming back `github: partial` purely from
+# this workflow having spent most of the shared hourly GraphQL budget
+# shortly before it ran).
 on:
   schedule:
-    - cron: '41 7 * * 0'
+    - cron: '0 20 * * 0'
   workflow_dispatch:
 
 # Shares `nightly.yml`'s own concurrency group: both write to the same

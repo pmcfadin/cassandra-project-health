@@ -63,7 +63,14 @@ from project_health.collectors.github import (
 )
 from project_health.peers.config import BotPatternConfig, PeerProject
 
-SEARCH_PAGE_SIZE = 100
+# Real-run finding (2026-10-09): 100 (GitHub's own search-API max) blew
+# past GitHub's query node-complexity limit once combined with each PR's
+# nested reviews(100)/review-comments(50)/comments(100) -- a page's worst
+# case is 1 + 100 + 100*50 + 100 = 5,201 nodes, and 100 * 5,201 = 520,100
+# exceeds the 500,000 ceiling (`MAX_NODE_LIMIT_EXCEEDED`, verified live:
+# apache/kafka's own `closed_search` pass failed with exactly this error,
+# citing exactly 520,100). 90 * 5,201 = 468,090, comfortably under.
+SEARCH_PAGE_SIZE = 90
 
 
 @dataclass

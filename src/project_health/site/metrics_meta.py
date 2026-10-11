@@ -345,6 +345,11 @@ M0_METRICS: dict[str, MetricMeta] = {
         name="First → Second Contribution Conversion",
         dimension="contributor sustainability",
         tier="proxy",
+        window="cohort-month",
+        definition=(
+            "Share of a cohort month's first-time committers who land a second commit "
+            "within 180 days."
+        ),
         direction_of_good="higher",
         value_kind="percent",
         page="community",
@@ -361,6 +366,11 @@ M0_METRICS: dict[str, MetricMeta] = {
         name="Contributor Funnel Conversion",
         dimension="contributor sustainability",
         tier="proxy",
+        window="cohort-month (730d horizon)",
+        definition=(
+            "Share of a cohort month's first-time committers reaching each later "
+            "funnel stage (2nd/5th/sustained/committer/PMC) within 24 months."
+        ),
         direction_of_good="higher",
         value_kind="percent",
         page="community",
@@ -385,6 +395,11 @@ M0_METRICS: dict[str, MetricMeta] = {
         name="Contributor Tenure (Kaplan–Meier)",
         dimension="contributor sustainability",
         tier="experimental",
+        window="trailing-24m cohort, snapshot",
+        definition=(
+            "Kaplan-Meier survival probability over contributor tenure, using a "
+            "12-month-inactivity churn definition."
+        ),
         direction_of_good="higher",
         value_kind="percent",
         page="community",
@@ -414,6 +429,11 @@ M0_METRICS: dict[str, MetricMeta] = {
         name="Contributor Churn Rate",
         dimension="contributor sustainability",
         tier="proxy",
+        window="monthly",
+        definition=(
+            "Share of contributors active 12-24 months before the month with no "
+            "commit since."
+        ),
         direction_of_good="lower",
         value_kind="percent",
         page="community",
@@ -428,6 +448,8 @@ M0_METRICS: dict[str, MetricMeta] = {
         name="Sustained Contributors",
         dimension="contributor sustainability",
         tier="established",
+        window="trailing-12m",
+        definition="Count of contributors with at least 5 commits in the trailing 12 months.",
         direction_of_good="higher",
         value_kind="count",
         page="community",

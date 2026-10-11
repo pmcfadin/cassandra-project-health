@@ -101,6 +101,17 @@ DEFINITION_VERSIONS: dict[str, str] = {
     # issue #35
     "time_to_first_reply_devlist": "1.0",
     "unanswered_thread_rate_devlist": "1.0",
+    # issue #158: user@ is the same reply-responsiveness pair, parameterised
+    # by list (metrics/engine.py's "dev@/user@ responsiveness" section
+    # below), plus a volume dimension for both lists.
+    "time_to_first_reply_userlist": "1.0",
+    "unanswered_thread_rate_userlist": "1.0",
+    "mailing_list_messages_monthly_dev": "1.0",
+    "mailing_list_messages_monthly_user": "1.0",
+    "mailing_list_new_threads_monthly_dev": "1.0",
+    "mailing_list_new_threads_monthly_user": "1.0",
+    "mailing_list_distinct_senders_monthly_dev": "1.0",
+    "mailing_list_distinct_senders_monthly_user": "1.0",
     # issue #54 (metrics/dev_metrics.py) -- see that module's own docstring
     "pr_merge_lead_time": "1.0",
     "pr_time_to_first_review": "1.0",
@@ -150,6 +161,15 @@ HEADCOUNT_METRICS = frozenset(
         # already the complete, meaningful statistic at any n, same
         # reasoning as the three metrics above (issue #27).
         "sustained_contributor_count",
+        # issue #158: raw mailing-list volume -- a count of messages/threads/
+        # senders is already the complete, meaningful statistic at any n,
+        # including 0, same reasoning as the four headcounts above.
+        "mailing_list_messages_monthly_dev",
+        "mailing_list_messages_monthly_user",
+        "mailing_list_new_threads_monthly_dev",
+        "mailing_list_new_threads_monthly_user",
+        "mailing_list_distinct_senders_monthly_dev",
+        "mailing_list_distinct_senders_monthly_user",
     }
 )
 
@@ -892,25 +912,27 @@ def _stale_jira_rate(
     ]
 
 
-# --- dev@ responsiveness (issue #35) -----------------------------------------
+# --- dev@/user@ responsiveness + mailing-list volume (issue #35, #158) ------
 #
-# Both metrics below share one thread-reconstruction pass over the raw
-# `message` table (schema/tables.py `MESSAGE`, collectors/ponymail.py) --
-# metadata only (D1/D16): sender address, timestamp and the `thread_id` the
-# collector already derived from `References`/`In-Reply-To`/`Message-ID`. No
-# message body or subject text is ever read here.
+# Both reply-responsiveness metrics below share one thread-reconstruction
+# pass over the raw `message` table (schema/tables.py `MESSAGE`,
+# collectors/ponymail.py) -- metadata only (D1/D16): sender address,
+# timestamp and the `thread_id` the collector already derived from
+# `References`/`In-Reply-To`/`Message-ID`. No message body or subject text is
+# ever read here.
 #
-# Population & exclusions (METRICS.md §0.5, `time_to_first_reply_devlist`,
-# `unanswered_thread_rate_devlist`):
-# - list = 'dev' only (the `_devlist` metric-id suffix; `user@` is in scope
-#   for a future metric per METRICS.md's "optionally user@, reported
-#   separately", not this one).
-# - A thread's root is its earliest-`occurred_at` message in the accumulated
-#   `message` table (a pure function of the full raw cache, D3 -- not the
-#   collector's own per-collection-call `message_thread` roll-up, which is
-#   scoped to a single `collect()` call and would under-count a thread whose
-#   messages span more than one nightly run, collectors/ponymail.py "Thread
-#   reconstruction").
+# Population & exclusions (METRICS.md §0.5, `time_to_first_reply_devlist`/
+# `_userlist`, `unanswered_thread_rate_devlist`/`_userlist`):
+# - list = 'dev' or 'user' (issue #158: user@ reuses the exact same
+#   definitions/populations/exclusions as the dev@ versions, parameterised
+#   by list rather than forked -- the two series are reported separately,
+#   never combined).
+# - A thread's root is its earliest-`occurred_at` message, within that
+#   list, in the accumulated `message` table (a pure function of the full
+#   raw cache, D3 -- not the collector's own per-collection-call
+#   `message_thread` roll-up, which is scoped to a single `collect()` call
+#   and would under-count a thread whose messages span more than one
+#   nightly run, collectors/ponymail.py "Thread reconstruction").
 # - Self-replies (same sender as the root) never qualify as an answer.
 # - A message from a configured automated sender (`projects/<id>.yaml`
 #   `mailing_lists.automated_senders`, issue #35) never qualifies as an
@@ -920,24 +942,28 @@ def _stale_jira_rate(
 #   auto-generated").
 #
 # Backfill-in-progress handling (issue #33's oldest-first, capped Pony Mail
-# backfill): unlike every other M0 metric, these two do NOT always emit a
-# dense row for every calendar month from first-data through the run's last
-# completed month. `collectors/ponymail.py`'s per-list watermark can sit far
-# behind "now" while older history is still being backfilled a bounded
-# number of months per night, while the *current* month is always
+# backfill): unlike every other M0 metric, these metrics do NOT always emit
+# a dense row for every calendar month from first-data through the run's
+# last completed month. `collectors/ponymail.py`'s per-list watermark can
+# sit far behind "now" while older history is still being backfilled a
+# bounded number of months per night, while the *current* month is always
 # re-fetched in full on every run -- so the raw cache can hold an old,
 # completely-collected prefix plus an always-fresh latest month, with a real
 # gap of genuinely not-yet-collected months in between. Emitting dense zero
 # rows across that gap would misreport "not collected yet" as "zero
-# messages" (a materially different fact). `_devlist_eligible_months` below
-# instead caps the emitted range at the list's watermark, plus the run's
-# last completed month (always safe, since it's always freshly fetched), and
-# flags every row `backfill_in_progress: true` in `details_json` while a gap
-# remains -- so a reader can tell "no data yet" from "this specific month
-# had zero qualifying threads."
+# messages" (a materially different fact). `_mailing_list_eligible_months`
+# below instead caps the emitted range at the list's own watermark, plus the
+# run's last completed month (always safe, since it's always freshly
+# fetched), and flags every row `backfill_in_progress: true` in
+# `details_json` while a gap remains -- so a reader can tell "no data yet"
+# from "this specific month had zero qualifying threads." The same watermark
+# capping is applied to the plain volume metrics below (`mailing_list_
+# messages_monthly`/`_new_threads_monthly`/`_distinct_senders_monthly`) for
+# the same reason -- a not-yet-collected month must never render as a false
+# zero count either.
 
 
-def _devlist_automated_patterns(config: ProjectConfig) -> list[re.Pattern]:
+def _mailing_list_automated_patterns(config: ProjectConfig) -> list[re.Pattern]:
     mailing_lists = config.mailing_lists
     raw_patterns = getattr(mailing_lists, "automated_senders", None) if mailing_lists else None
     return [re.compile(pattern) for pattern in (raw_patterns or [])]
@@ -949,11 +975,11 @@ def _is_automated_sender(address: str | None, patterns: list[re.Pattern]) -> boo
     return any(pattern.search(address) for pattern in patterns)
 
 
-def _devlist_thread_roots(
-    con: duckdb.DuckDBPyConnection, automated_patterns: list[re.Pattern]
+def _mailing_list_thread_roots(
+    con: duckdb.DuckDBPyConnection, list_name: str, automated_patterns: list[re.Pattern]
 ) -> list[dict]:
-    """One entry per qualifying dev@ thread: `root_at`/`first_reply_at` as
-    Unix-epoch `float`s (the thread's earliest message timestamp, and the
+    """One entry per qualifying `list_name` thread: `root_at`/`first_reply_at`
+    as Unix-epoch `float`s (the thread's earliest message timestamp, and the
     earliest *qualifying* reply's timestamp, or `None` if none exists yet in
     this run's accumulated data).
 
@@ -966,15 +992,16 @@ def _devlist_thread_roots(
     Threads whose root message came from an automated sender are dropped
     entirely (never returned) -- METRICS.md `unanswered_thread_rate_devlist`
     "excludes threads that are themselves auto-generated", applied to both
-    sibling metrics for consistency.
+    sibling metrics, and to both lists (issue #158), for consistency.
     """
     rows = con.execute(
         """
         SELECT thread_id, sender_raw_value, epoch(occurred_at) AS occurred_at_epoch, message_id
         FROM message
-        WHERE list = 'dev'
+        WHERE list = ?
         ORDER BY thread_id, occurred_at_epoch, message_id
-        """
+        """,
+        [list_name],
     ).fetchall()
 
     threads: dict[str, dict] = {}
@@ -1021,11 +1048,11 @@ def _parse_watermark_month(raw: str | None) -> date | None:
     return date(int(year_str), int(month_str), 1)
 
 
-def _devlist_eligible_months(
+def _mailing_list_eligible_months(
     first_month: date | None, as_of: date, watermark_month: date | None
 ) -> tuple[list[date], bool]:
-    """Months eligible for dense devlist-metric emission, and whether the
-    dev@ list is still mid-backfill (see this section's module-level note).
+    """Months eligible for dense mailing-list-metric emission, and whether
+    this list is still mid-backfill (see this section's module-level note).
 
     `watermark_month=None` means no watermark was supplied at all (e.g. a
     golden test that doesn't model backfill state, or `compute_all` called
@@ -1049,25 +1076,27 @@ def _devlist_eligible_months(
     return months, backfill_in_progress
 
 
-def _time_to_first_reply_devlist(
+def _time_to_first_reply_mailing_list(
     con: duckdb.DuckDBPyConnection,
     as_of: date,
     run_id: str,
     computed_at: datetime,
+    list_name: str,
+    metric_id: str,
     automated_patterns: list[re.Pattern],
     watermark_month: date | None,
 ) -> list[dict]:
-    threads = _devlist_thread_roots(con, automated_patterns)
+    threads = _mailing_list_thread_roots(con, list_name, automated_patterns)
     if not threads:
-        # No qualifying dev@ history collected yet -- still emit exactly one
-        # row (mirrors `_stale_jira_rate`'s always-emit-a-snapshot
-        # convention) so this registered metric is never silently "missing"
-        # from a run (pipeline.py's `metrics_missing` check) while Pony Mail
-        # collection is still in its earliest stages.
+        # No qualifying history collected yet for this list -- still emit
+        # exactly one row (mirrors `_stale_jira_rate`'s always-emit-a-
+        # snapshot convention) so this registered metric is never silently
+        # "missing" from a run (pipeline.py's `metrics_missing` check) while
+        # Pony Mail collection is still in its earliest stages.
         snapshot_month = _last_completed_month(as_of)
         return [
             _make_row(
-                metric_id="time_to_first_reply_devlist",
+                metric_id=metric_id,
                 window_start=snapshot_month,
                 window_end=month_end(snapshot_month),
                 raw_value=None,
@@ -1084,7 +1113,9 @@ def _time_to_first_reply_devlist(
         month = month_start(_epoch_to_date(info["root_at"]))
         by_month.setdefault(month, []).append(info)
 
-    months, backfill_in_progress = _devlist_eligible_months(min(by_month), as_of, watermark_month)
+    months, backfill_in_progress = _mailing_list_eligible_months(
+        min(by_month), as_of, watermark_month
+    )
 
     out = []
     for month in months:
@@ -1105,7 +1136,7 @@ def _time_to_first_reply_devlist(
             details["backfill_in_progress"] = True
         out.append(
             _make_row(
-                metric_id="time_to_first_reply_devlist",
+                metric_id=metric_id,
                 window_start=month,
                 window_end=month_end(month),
                 raw_value=median_days,
@@ -1123,7 +1154,7 @@ def _time_to_first_reply_devlist(
         snapshot_month = _last_completed_month(as_of)
         out.append(
             _make_row(
-                metric_id="time_to_first_reply_devlist",
+                metric_id=metric_id,
                 window_start=snapshot_month,
                 window_end=month_end(snapshot_month),
                 raw_value=None,
@@ -1137,21 +1168,23 @@ def _time_to_first_reply_devlist(
     return out
 
 
-def _unanswered_thread_rate_devlist(
+def _unanswered_thread_rate_mailing_list(
     con: duckdb.DuckDBPyConnection,
     as_of: date,
     run_id: str,
     computed_at: datetime,
+    list_name: str,
+    metric_id: str,
     automated_patterns: list[re.Pattern],
     watermark_month: date | None,
 ) -> list[dict]:
-    threads = _devlist_thread_roots(con, automated_patterns)
+    threads = _mailing_list_thread_roots(con, list_name, automated_patterns)
     if not threads:
-        # See `_time_to_first_reply_devlist`'s matching fallback.
+        # See `_time_to_first_reply_mailing_list`'s matching fallback.
         snapshot_month = _last_completed_month(as_of)
         return [
             _make_row(
-                metric_id="unanswered_thread_rate_devlist",
+                metric_id=metric_id,
                 window_start=snapshot_month,
                 window_end=month_end(snapshot_month),
                 raw_value=None,
@@ -1172,7 +1205,9 @@ def _unanswered_thread_rate_devlist(
         month = month_start(_epoch_to_date(info["root_at"]))
         by_month.setdefault(month, []).append(info)
 
-    months, backfill_in_progress = _devlist_eligible_months(min(by_month), as_of, watermark_month)
+    months, backfill_in_progress = _mailing_list_eligible_months(
+        min(by_month), as_of, watermark_month
+    )
     # D5-style completed-period rule specific to this metric (METRICS.md
     # "evaluated only once the 30-day follow-up has elapsed"): a thread
     # started in month `m` isn't a final answered/unanswered fact until
@@ -1201,7 +1236,7 @@ def _unanswered_thread_rate_devlist(
             details["backfill_in_progress"] = True
         out.append(
             _make_row(
-                metric_id="unanswered_thread_rate_devlist",
+                metric_id=metric_id,
                 window_start=month,
                 window_end=month_end(month),
                 raw_value=raw_value,
@@ -1219,7 +1254,7 @@ def _unanswered_thread_rate_devlist(
         snapshot_month = _last_completed_month(as_of)
         out.append(
             _make_row(
-                metric_id="unanswered_thread_rate_devlist",
+                metric_id=metric_id,
                 window_start=snapshot_month,
                 window_end=month_end(snapshot_month),
                 raw_value=None,
@@ -1235,6 +1270,192 @@ def _unanswered_thread_rate_devlist(
             )
         )
     return out
+
+
+# --- mailing-list volume (issue #158) ---------------------------------------
+#
+# Plain monthly counts, both lists, no exclusions (every message/thread/
+# sender counts, including ones an automated sender authored) -- these are
+# raw activity-volume facts, not the reply-responsiveness population above,
+# so they deliberately do NOT share that population's automated-sender/
+# self-reply exclusions. Headcount-style metrics (`HEADCOUNT_METRICS` above):
+# a raw count is already the complete, meaningful statistic at any n,
+# including 0, same reasoning as `active_contributors_monthly` (issue #27).
+# Dense months are still capped at each list's own backfill watermark (see
+# this file's "dev@/user@ responsiveness + mailing-list volume" module note
+# above) so a not-yet-collected month never renders as a false zero.
+
+
+def _mailing_list_volume_by_month(
+    con: duckdb.DuckDBPyConnection, list_name: str
+) -> tuple[dict[date, int], dict[date, int], dict[date, int]]:
+    """One DuckDB pass over `message` for `list_name`, returning three
+    month -> count maps: total messages, new threads started (by each
+    thread's own earliest message in this list), and distinct senders."""
+    message_rows = con.execute(
+        """
+        SELECT date_trunc('month', occurred_at)::DATE AS month_start, COUNT(*) AS n
+        FROM message
+        WHERE list = ?
+        GROUP BY 1
+        ORDER BY 1
+        """,
+        [list_name],
+    ).fetchall()
+    messages_by_month: dict[date, int] = dict(message_rows)
+
+    thread_rows = con.execute(
+        """
+        SELECT date_trunc('month', root_at)::DATE AS month_start, COUNT(*) AS n
+        FROM (
+            SELECT thread_id, MIN(occurred_at) AS root_at
+            FROM message
+            WHERE list = ?
+            GROUP BY 1
+        )
+        GROUP BY 1
+        ORDER BY 1
+        """,
+        [list_name],
+    ).fetchall()
+    new_threads_by_month: dict[date, int] = dict(thread_rows)
+
+    sender_rows = con.execute(
+        """
+        SELECT date_trunc('month', occurred_at)::DATE AS month_start,
+               COUNT(DISTINCT sender_raw_value) AS n
+        FROM message
+        WHERE list = ?
+        GROUP BY 1
+        ORDER BY 1
+        """,
+        [list_name],
+    ).fetchall()
+    distinct_senders_by_month: dict[date, int] = dict(sender_rows)
+
+    return messages_by_month, new_threads_by_month, distinct_senders_by_month
+
+
+def _mailing_list_count_rows(
+    counts_by_month: dict[date, int],
+    *,
+    metric_id: str,
+    as_of: date,
+    run_id: str,
+    computed_at: datetime,
+    watermark_month: date | None,
+) -> list[dict]:
+    """Shared row-builder for the three plain monthly-count volume metrics
+    below -- dense/watermark-capped months (`_mailing_list_eligible_months`),
+    a `backfill_in_progress` detail while a backfill gap remains, and the
+    same "never zero rows for a registered metric" fallback snapshot the
+    reply-responsiveness metrics use for a list with no collected history
+    yet at all."""
+    if not counts_by_month:
+        snapshot_month = _last_completed_month(as_of)
+        return [
+            _make_row(
+                metric_id=metric_id,
+                window_start=snapshot_month,
+                window_end=month_end(snapshot_month),
+                raw_value=0.0,
+                n=0,
+                floor=FLOOR_RATE_RATIO,
+                run_id=run_id,
+                computed_at=computed_at,
+                details={},
+            )
+        ]
+
+    months, backfill_in_progress = _mailing_list_eligible_months(
+        min(counts_by_month), as_of, watermark_month
+    )
+    out = []
+    for month in months:
+        n = counts_by_month.get(month, 0)
+        details: dict = {}
+        if backfill_in_progress:
+            details["backfill_in_progress"] = True
+        out.append(
+            _make_row(
+                metric_id=metric_id,
+                window_start=month,
+                window_end=month_end(month),
+                raw_value=float(n),
+                n=n,
+                floor=FLOOR_RATE_RATIO,
+                run_id=run_id,
+                computed_at=computed_at,
+                details=details,
+            )
+        )
+    if not out:
+        # Degenerate edge case (e.g. the only collected month so far falls
+        # after a watermark that predates it): still never return zero rows
+        # for a registered metric.
+        snapshot_month = _last_completed_month(as_of)
+        out.append(
+            _make_row(
+                metric_id=metric_id,
+                window_start=snapshot_month,
+                window_end=month_end(snapshot_month),
+                raw_value=0.0,
+                n=0,
+                floor=FLOOR_RATE_RATIO,
+                run_id=run_id,
+                computed_at=computed_at,
+                details={},
+            )
+        )
+    return out
+
+
+def _mailing_list_volume_metrics(
+    con: duckdb.DuckDBPyConnection,
+    as_of: date,
+    run_id: str,
+    computed_at: datetime,
+    list_name: str,
+    watermark_month: date | None,
+) -> list[dict]:
+    """`mailing_list_messages_monthly_<list>`, `mailing_list_new_threads_
+    monthly_<list>` and `mailing_list_distinct_senders_monthly_<list>` --
+    one list's three volume series (issue #158)."""
+    messages_by_month, new_threads_by_month, distinct_senders_by_month = (
+        _mailing_list_volume_by_month(con, list_name)
+    )
+    rows: list[dict] = []
+    rows.extend(
+        _mailing_list_count_rows(
+            messages_by_month,
+            metric_id=f"mailing_list_messages_monthly_{list_name}",
+            as_of=as_of,
+            run_id=run_id,
+            computed_at=computed_at,
+            watermark_month=watermark_month,
+        )
+    )
+    rows.extend(
+        _mailing_list_count_rows(
+            new_threads_by_month,
+            metric_id=f"mailing_list_new_threads_monthly_{list_name}",
+            as_of=as_of,
+            run_id=run_id,
+            computed_at=computed_at,
+            watermark_month=watermark_month,
+        )
+    )
+    rows.extend(
+        _mailing_list_count_rows(
+            distinct_senders_by_month,
+            metric_id=f"mailing_list_distinct_senders_monthly_{list_name}",
+            as_of=as_of,
+            run_id=run_id,
+            computed_at=computed_at,
+            watermark_month=watermark_month,
+        )
+    )
+    return rows
 
 
 def _pmc_joins_quarterly(
@@ -2161,9 +2382,12 @@ def compute_all(
 
     `ponymail_watermarks` (issue #35) is `collectors/ponymail.py`'s per-list
     `{"dev": "YYYY-MM"|None, "user": ...}` watermark mapping (the same shape
-    persisted at `state/watermarks.json`'s `ponymail` key) -- used only by
-    `time_to_first_reply_devlist`/`unanswered_thread_rate_devlist` to keep
-    their windows honest during a partial Pony Mail backfill (see those
+    persisted at `state/watermarks.json`'s `ponymail` key) -- used by the
+    dev@/user@ reply-responsiveness metrics (`time_to_first_reply_devlist`/
+    `_userlist`, `unanswered_thread_rate_devlist`/`_userlist`) and the
+    mailing-list volume metrics (`mailing_list_messages_monthly_*`/
+    `_new_threads_monthly_*`/`_distinct_senders_monthly_*`, issue #158) to
+    keep their windows honest during a partial Pony Mail backfill (see those
     metrics' section comment above). `None` (the default) falls back to
     this project's normal dense-months-through-`as_of` behavior, which is
     what every golden test that doesn't model backfill state gets.
@@ -2188,8 +2412,9 @@ def compute_all(
         reliable_from = _reliable_from(config)
         threshold_days = _stale_threshold_days(config)
         github_company_lookback_months = _github_company_lookback_months(config)
-        automated_patterns = _devlist_automated_patterns(config)
+        automated_patterns = _mailing_list_automated_patterns(config)
         dev_watermark_month = _parse_watermark_month((ponymail_watermarks or {}).get("dev"))
+        user_watermark_month = _parse_watermark_month((ponymail_watermarks or {}).get("user"))
 
         rows: list[dict] = []
         rows.extend(_pmc_joins_quarterly(con, as_of, run_id, computed_at))
@@ -2214,13 +2439,67 @@ def compute_all(
         )
         rows.extend(_unknown_affiliation_rate(con, as_of, run_id, computed_at))
         rows.extend(
-            _time_to_first_reply_devlist(
-                con, as_of, run_id, computed_at, automated_patterns, dev_watermark_month
+            _time_to_first_reply_mailing_list(
+                con,
+                as_of,
+                run_id,
+                computed_at,
+                "dev",
+                "time_to_first_reply_devlist",
+                automated_patterns,
+                dev_watermark_month,
             )
         )
         rows.extend(
-            _unanswered_thread_rate_devlist(
-                con, as_of, run_id, computed_at, automated_patterns, dev_watermark_month
+            _unanswered_thread_rate_mailing_list(
+                con,
+                as_of,
+                run_id,
+                computed_at,
+                "dev",
+                "unanswered_thread_rate_devlist",
+                automated_patterns,
+                dev_watermark_month,
+            )
+        )
+        # issue #158: user@ is the exact same reply-responsiveness pair,
+        # parameterised by list -- reported separately (never combined with
+        # dev@), per the devlist versions' own population/exclusion rules.
+        rows.extend(
+            _time_to_first_reply_mailing_list(
+                con,
+                as_of,
+                run_id,
+                computed_at,
+                "user",
+                "time_to_first_reply_userlist",
+                automated_patterns,
+                user_watermark_month,
+            )
+        )
+        rows.extend(
+            _unanswered_thread_rate_mailing_list(
+                con,
+                as_of,
+                run_id,
+                computed_at,
+                "user",
+                "unanswered_thread_rate_userlist",
+                automated_patterns,
+                user_watermark_month,
+            )
+        )
+        # issue #158: plain monthly volume (messages/new threads/distinct
+        # senders), both lists -- no automated-sender/self-reply exclusions,
+        # see this module's "mailing-list volume" section note above.
+        rows.extend(
+            _mailing_list_volume_metrics(
+                con, as_of, run_id, computed_at, "dev", dev_watermark_month
+            )
+        )
+        rows.extend(
+            _mailing_list_volume_metrics(
+                con, as_of, run_id, computed_at, "user", user_watermark_month
             )
         )
         # issue #54 (metrics/dev_metrics.py): GitHub-PR development metrics +

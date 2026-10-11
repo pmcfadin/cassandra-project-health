@@ -493,7 +493,119 @@
 
 <p class="page-intro">Mailing-list metrics, computed from metadata only — sender, timestamp and thread structure — never message content.</p>
 
-{% if dimensions %}
+{% macro mailing_list_card(m) %}
+<article class="card" id="metric-{{ m.metric_id }}">
+  <header class="card-header">
+    <h3>{{ m.name }}</h3>
+    <span class="badge badge--tier badge--tier-{{ m.tier }}">{{ m.tier }}</span>
+  </header>
+
+  {% if m.staleness_badges %}
+  <p class="card-staleness">
+    {% for b in m.staleness_badges %}
+    <span class="badge badge--{{ b.status }}" role="status">{{ b.text }}</span>
+    {% endfor %}
+  </p>
+  {% endif %}
+
+  <p class="card-value">
+    {% if m.latest_value_display is not none %}
+      <span class="value">{{ m.latest_value_display }}</span>
+      <span class="value-period">{{ m.latest_month_label }}</span>
+      {% if m.latest_is_backfill_pending %}
+      <span class="badge badge--backfill-pending">backfill pending</span>
+      {% endif %}
+    {% else %}
+      <span class="value value--insufficient">insufficient data</span>
+      {% if m.latest_is_backfill_pending %}
+      <span class="badge badge--backfill-pending">backfill pending</span>
+      {% endif %}
+    {% endif %}
+  </p>
+
+  {% call charts.chart_shell("History chart for " + m.name) %}
+  <div class="chart" data-vega-spec='{{ m.vega_spec_json }}' data-chart-id="{{ m.chart_id }}" data-chart-meta='{{ m.chart_meta_json }}' role="img" aria-label="History chart for {{ m.name }}">
+    <noscript>Enable JavaScript to see the {{ m.name }} history chart, or use the data links below.</noscript>
+  </div>
+  {% endcall %}
+
+  <p class="card-prior-art">
+    Based on:
+    {% if m.prior_art %}
+    {% for pa in m.prior_art %}<a href="{{ pa.url }}">{{ pa.label }}</a>{% if not loop.last %}, {% endif %}{% endfor %}
+    {% else %}
+    project-specific (no established CHAOSS/literature equivalent)
+    {% endif %}
+  </p>
+
+  <p class="card-links">
+    <a href="{{ m.json_href }}">JSON</a> &middot; <a href="{{ m.csv_href }}">CSV</a>
+  </p>
+</article>
+{% endmacro %}
+
+{% if mailing_lists %}
+{% set ml_sections = [
+  {"id": "conv-dev-list", "title": "dev@"},
+  {"id": "conv-user-list", "title": "user@"},
+  {"id": "conv-list-activity", "title": "List activity"},
+] %}
+{{ sections.section_nav(ml_sections) }}
+
+{% call sections.section("conv-dev-list", "dev@", None, None, open=True) %}
+<section class="conv-mailing-list" aria-labelledby="conv-dev-list-heading">
+  <h4 id="conv-dev-list-heading">dev@ reply responsiveness</h4>
+  <div class="card-grid">
+    {% for m in mailing_lists.dev.cards %}
+    {{ mailing_list_card(m) }}
+    {% endfor %}
+  </div>
+</section>
+{% endcall %}
+
+{% call sections.section("conv-user-list", "user@", None, None) %}
+<section class="conv-mailing-list" aria-labelledby="conv-user-list-heading">
+  <h4 id="conv-user-list-heading">user@ reply responsiveness</h4>
+  <p class="governance-note">
+    Same definitions, population and exclusions as dev@'s pair above (self-replies and
+    automated senders excluded, completed-period rule) — reported separately, never
+    combined with dev@.
+  </p>
+  <div class="card-grid">
+    {% for m in mailing_lists.user.cards %}
+    {{ mailing_list_card(m) }}
+    {% endfor %}
+  </div>
+</section>
+{% endcall %}
+
+{% call sections.section("conv-list-activity", "List activity", None, None) %}
+<section class="conv-list-activity" aria-labelledby="conv-list-activity-heading">
+  <h4 id="conv-list-activity-heading">List activity</h4>
+  <p class="governance-note">
+    Monthly volume for both lists — total messages, new threads started, and distinct
+    sender addresses — computed from message metadata only. Unlike the reply-
+    responsiveness metrics above, these are raw activity counts with no automated-sender
+    exclusion.
+  </p>
+  {% for chart in mailing_lists.list_activity.charts %}
+  <h5>{{ chart.title }}</h5>
+  {% call charts.chart_shell(chart.title) %}
+  <div class="chart" data-vega-spec='{{ chart.spec_json }}' data-chart-id="{{ chart.chart_id }}" data-chart-meta='{{ chart.chart_meta_json }}' role="img" aria-label="{{ chart.title }}">
+    <noscript>Enable JavaScript to see this chart, or use the data links below.</noscript>
+  </div>
+  {% endcall %}
+  <p class="card-links">
+    dev@: <a href="{{ chart.dev_json_href }}">JSON</a> &middot; <a href="{{ chart.dev_csv_href }}">CSV</a>
+    &mdash;
+    user@: <a href="{{ chart.user_json_href }}">JSON</a> &middot; <a href="{{ chart.user_csv_href }}">CSV</a>
+  </p>
+  {% endfor %}
+</section>
+{% endcall %}
+{% endif %}
+
+{% if dimensions or mailing_lists %}
 {% include "_chart_window_toggle.html" %}
 {% endif %}
 
@@ -502,54 +614,7 @@
     <h2 id="conv-dim-{{ loop.index }}">{{ group.dimension | title }}</h2>
     <div class="card-grid">
       {% for m in group.metrics %}
-      <article class="card" id="metric-{{ m.metric_id }}">
-        <header class="card-header">
-          <h3>{{ m.name }}</h3>
-          <span class="badge badge--tier badge--tier-{{ m.tier }}">{{ m.tier }}</span>
-        </header>
-
-        {% if m.staleness_badges %}
-        <p class="card-staleness">
-          {% for b in m.staleness_badges %}
-          <span class="badge badge--{{ b.status }}" role="status">{{ b.text }}</span>
-          {% endfor %}
-        </p>
-        {% endif %}
-
-        <p class="card-value">
-          {% if m.latest_value_display is not none %}
-            <span class="value">{{ m.latest_value_display }}</span>
-            <span class="value-period">{{ m.latest_month_label }}</span>
-            {% if m.latest_is_backfill_pending %}
-            <span class="badge badge--backfill-pending">backfill pending</span>
-            {% endif %}
-          {% else %}
-            <span class="value value--insufficient">insufficient data</span>
-            {% if m.latest_is_backfill_pending %}
-            <span class="badge badge--backfill-pending">backfill pending</span>
-            {% endif %}
-          {% endif %}
-        </p>
-
-        {% call charts.chart_shell("History chart for " + m.name) %}
-        <div class="chart" data-vega-spec='{{ m.vega_spec_json }}' data-chart-id="{{ m.chart_id }}" data-chart-meta='{{ m.chart_meta_json }}' role="img" aria-label="History chart for {{ m.name }}">
-          <noscript>Enable JavaScript to see the {{ m.name }} history chart, or use the data links below.</noscript>
-        </div>
-        {% endcall %}
-
-        <p class="card-prior-art">
-          Based on:
-          {% if m.prior_art %}
-          {% for pa in m.prior_art %}<a href="{{ pa.url }}">{{ pa.label }}</a>{% if not loop.last %}, {% endif %}{% endfor %}
-          {% else %}
-          project-specific (no established CHAOSS/literature equivalent)
-          {% endif %}
-        </p>
-
-        <p class="card-links">
-          <a href="{{ m.json_href }}">JSON</a> &middot; <a href="{{ m.csv_href }}">CSV</a>
-        </p>
-      </article>
+      {{ mailing_list_card(m) }}
       {% endfor %}
     </div>
   </section>

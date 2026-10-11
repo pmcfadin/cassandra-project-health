@@ -28,6 +28,15 @@ EXPECTED_METRIC_IDS = {
     # issue #35
     "time_to_first_reply_devlist",
     "unanswered_thread_rate_devlist",
+    # issue #158
+    "time_to_first_reply_userlist",
+    "unanswered_thread_rate_userlist",
+    "mailing_list_messages_monthly_dev",
+    "mailing_list_messages_monthly_user",
+    "mailing_list_new_threads_monthly_dev",
+    "mailing_list_new_threads_monthly_user",
+    "mailing_list_distinct_senders_monthly_dev",
+    "mailing_list_distinct_senders_monthly_user",
     # issue #54
     "pr_merge_lead_time",
     "pr_time_to_first_review",

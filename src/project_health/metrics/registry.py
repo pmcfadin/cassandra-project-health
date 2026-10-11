@@ -46,6 +46,15 @@ _VERSIONS: dict[str, str] = {
     # issue #35
     "time_to_first_reply_devlist": "1.0",
     "unanswered_thread_rate_devlist": "1.0",
+    # issue #158: user@ parameterised companions + mailing-list volume
+    "time_to_first_reply_userlist": "1.0",
+    "unanswered_thread_rate_userlist": "1.0",
+    "mailing_list_messages_monthly_dev": "1.0",
+    "mailing_list_messages_monthly_user": "1.0",
+    "mailing_list_new_threads_monthly_dev": "1.0",
+    "mailing_list_new_threads_monthly_user": "1.0",
+    "mailing_list_distinct_senders_monthly_dev": "1.0",
+    "mailing_list_distinct_senders_monthly_user": "1.0",
     # issue #54
     "pr_merge_lead_time": "1.0",
     "pr_time_to_first_review": "1.0",
@@ -84,6 +93,13 @@ _HEADCOUNT_FLOOR_CHANGELOG_NOTE = (
 _INITIAL_ISSUE_53_CHANGELOG_NOTE = "Initial implementation (issue #53)."
 _INITIAL_ISSUE_52_CHANGELOG_NOTE = "Initial implementation (issue #52, D6)."
 _INITIAL_ISSUE_35_CHANGELOG_NOTE = "Initial implementation (issue #35)."
+_INITIAL_ISSUE_158_CHANGELOG_NOTE = (
+    "Initial implementation (issue #158): user@ reply-responsiveness metrics reuse "
+    "issue #35's devlist implementation parameterised by list (metrics/engine.py), with "
+    "the exact same definitions/populations/exclusions, reported separately from dev@; "
+    "plus three new monthly volume metrics (messages, new threads, distinct senders) for "
+    "both lists."
+)
 _INITIAL_ISSUE_54_CHANGELOG_NOTE = "Initial implementation (issue #54)."
 _INITIAL_ISSUE_136_CHANGELOG_NOTE = (
     "Initial implementation (issue #136, DECISIONS.md D29 -- CHAOSS Change Request Closure "
@@ -142,6 +158,14 @@ _CHANGELOG_NOTES: dict[str, str] = {
     "unknown_affiliation_rate": _INITIAL_ISSUE_52_CHANGELOG_NOTE,
     "time_to_first_reply_devlist": _INITIAL_ISSUE_35_CHANGELOG_NOTE,
     "unanswered_thread_rate_devlist": _INITIAL_ISSUE_35_CHANGELOG_NOTE,
+    "time_to_first_reply_userlist": _INITIAL_ISSUE_158_CHANGELOG_NOTE,
+    "unanswered_thread_rate_userlist": _INITIAL_ISSUE_158_CHANGELOG_NOTE,
+    "mailing_list_messages_monthly_dev": _INITIAL_ISSUE_158_CHANGELOG_NOTE,
+    "mailing_list_messages_monthly_user": _INITIAL_ISSUE_158_CHANGELOG_NOTE,
+    "mailing_list_new_threads_monthly_dev": _INITIAL_ISSUE_158_CHANGELOG_NOTE,
+    "mailing_list_new_threads_monthly_user": _INITIAL_ISSUE_158_CHANGELOG_NOTE,
+    "mailing_list_distinct_senders_monthly_dev": _INITIAL_ISSUE_158_CHANGELOG_NOTE,
+    "mailing_list_distinct_senders_monthly_user": _INITIAL_ISSUE_158_CHANGELOG_NOTE,
     "pr_merge_lead_time": _INITIAL_ISSUE_54_CHANGELOG_NOTE,
     "pr_time_to_first_review": _INITIAL_ISSUE_54_CHANGELOG_NOTE,
     "pr_time_to_close": _INITIAL_ISSUE_54_CHANGELOG_NOTE,
@@ -431,6 +455,103 @@ _DESCRIPTIONS: dict[str, str] = {
         "flag as time_to_first_reply_devlist (collectors/ponymail.py's capped backfill). Tier: "
         "established. Dimension: responsiveness. Role: supporting. Direction of good: lower. "
         "Window: monthly. METRICS.md §4."
+    ),
+    # issue #158: user@ reply-responsiveness -- the exact same metric,
+    # reused for the user@ list (metrics/engine.py's `_time_to_first_reply_
+    # mailing_list`/`_unanswered_thread_rate_mailing_list`, parameterised by
+    # list rather than forked), reported as its own series rather than
+    # combined with dev@.
+    "time_to_first_reply_userlist": (
+        "Median days from a user@ thread's first message to the first *qualifying* reply -- "
+        "from a different sender than the root, excluding automated senders "
+        "(projects/<id>.yaml mailing_lists.automated_senders) -- for threads started in each "
+        "completed calendar month; details_json carries p90_days, n and threads_started. "
+        "Exact same definition, population and exclusions as time_to_first_reply_devlist "
+        "(issue #158: reuses that metric's implementation parameterised by list), reported "
+        "separately for user@ rather than combined with dev@. Threads whose root message "
+        "itself came from an automated sender are excluded entirely. Metadata only (D1/D16): "
+        "sender address, timestamp and thread structure derived from Message-ID/In-Reply-To/"
+        "References -- no message body or subject text. Shares time_to_first_reply_devlist's "
+        "not-dense-during-backfill caveat (details_json.backfill_in_progress=true), using "
+        "user@'s own Pony Mail watermark. Tier: established. Dimension: responsiveness. Role: "
+        "supporting (dev@ holds this dimension's key slot per METRICS.md §1's 'Key metrics per "
+        "dimension' cap; user@ is reported for context). Direction of good: lower. Window: "
+        "monthly. METRICS.md §4."
+    ),
+    "unanswered_thread_rate_userlist": (
+        "Share of user@ threads started in a completed calendar month that receive zero "
+        "qualifying replies (different sender than the root, non-automated) within 30 days of "
+        "the thread's first message; details_json carries n_total, n_unanswered and "
+        "followup_days. Exact same definition, population and exclusions as "
+        "unanswered_thread_rate_devlist (issue #158, parameterised by list), reported "
+        "separately for user@. A month is only reported once every one of its threads has had "
+        "its full 30-day follow-up window elapse (D5-style completed-period rule). Threads "
+        "whose root message came from an automated sender are excluded entirely. Metadata only "
+        "(D1/D16). Shares the same not-dense-during-backfill caveat and details_json."
+        "backfill_in_progress flag as unanswered_thread_rate_devlist, using user@'s own "
+        "watermark. Tier: established. Dimension: responsiveness. Role: supporting. Direction "
+        "of good: lower. Window: monthly. METRICS.md §4."
+    ),
+    # issue #158: plain mailing-list volume, both lists -- no automated-
+    # sender/self-reply exclusions (these are raw activity-volume facts, not
+    # the reply-responsiveness population above). Headcount-style: a raw
+    # count is already the complete, meaningful statistic at any n,
+    # including 0 (same reasoning as active_contributors_monthly, issue #27).
+    "mailing_list_messages_monthly_dev": (
+        "Count of dev@ messages (every row in the message table for list='dev', metadata "
+        "only -- no body/subject text) per completed calendar month, dense from the first "
+        "month any dev@ message exists through the last completed month before the run's "
+        "as_of date, capped at dev@'s own Pony Mail backfill watermark (details_json."
+        "backfill_in_progress=true while a not-yet-collected gap remains -- same disclosure "
+        "pattern as time_to_first_reply_devlist). No automated-sender exclusion: this is a raw "
+        "activity-volume count, not the reply-responsiveness population those metrics use. No "
+        "sample-size floor (issue #27 reasoning): reports its value for any n, including 0, "
+        "always with flag='ok'. Tier: established. Dimension: responsiveness. Role: "
+        "supporting. Direction of good: none -- a volume count alone is not a health verdict, "
+        "shown as context alongside the reply-latency/unanswered-rate metrics. Window: "
+        "monthly. METRICS.md §4."
+    ),
+    "mailing_list_messages_monthly_user": (
+        "Count of user@ messages (every row in the message table for list='user', metadata "
+        "only) per completed calendar month, dense and watermark-capped the same way as "
+        "mailing_list_messages_monthly_dev, using user@'s own Pony Mail watermark. No "
+        "automated-sender exclusion, no sample-size floor (issue #27 reasoning). Tier: "
+        "established. Dimension: responsiveness. Role: supporting. Direction of good: none. "
+        "Window: monthly. METRICS.md §4."
+    ),
+    "mailing_list_new_threads_monthly_dev": (
+        "Count of distinct dev@ threads whose own earliest message (across the full "
+        "accumulated message table, not a single collection run) falls in each completed "
+        "calendar month -- dense and watermark-capped the same way as "
+        "mailing_list_messages_monthly_dev. No automated-sender exclusion (unlike "
+        "time_to_first_reply_devlist's thread population, this count includes threads whose "
+        "root came from an automated sender), no sample-size floor (issue #27 reasoning). "
+        "Tier: established. Dimension: responsiveness. Role: supporting. Direction of good: "
+        "none. Window: monthly. METRICS.md §4."
+    ),
+    "mailing_list_new_threads_monthly_user": (
+        "Count of distinct user@ threads whose own earliest message falls in each completed "
+        "calendar month, dense and watermark-capped the same way as "
+        "mailing_list_new_threads_monthly_dev, using user@'s own watermark. No automated-"
+        "sender exclusion, no sample-size floor. Tier: established. Dimension: responsiveness. "
+        "Role: supporting. Direction of good: none. Window: monthly. METRICS.md §4."
+    ),
+    "mailing_list_distinct_senders_monthly_dev": (
+        "Count of distinct dev@ sender addresses (sender_raw_value, pre-identity-resolution) "
+        "with at least one message in each completed calendar month, dense and watermark-"
+        "capped the same way as mailing_list_messages_monthly_dev. Raw addresses, not "
+        "identity-resolved individuals (unlike active_contributors_monthly) -- one person "
+        "posting from two addresses in the same month counts twice; no automated-sender "
+        "exclusion, no sample-size floor. Tier: established. Dimension: responsiveness. Role: "
+        "supporting. Direction of good: none. Window: monthly. METRICS.md §4."
+    ),
+    "mailing_list_distinct_senders_monthly_user": (
+        "Count of distinct user@ sender addresses with at least one message in each completed "
+        "calendar month, dense and watermark-capped the same way as "
+        "mailing_list_distinct_senders_monthly_dev, using user@'s own watermark. Raw "
+        "addresses, not identity-resolved individuals; no automated-sender exclusion, no "
+        "sample-size floor. Tier: established. Dimension: responsiveness. Role: supporting. "
+        "Direction of good: none. Window: monthly. METRICS.md §4."
     ),
     "pr_merge_lead_time": (
         "Median and P90 days from pr.created_at to pr.merged_at, for PRs merged in each "

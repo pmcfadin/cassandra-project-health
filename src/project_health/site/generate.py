@@ -78,6 +78,7 @@ from project_health.site.metrics_meta import (
     GOVERNANCE_SECTIONS,
     HOME_CARD_METRIC_LIMIT,
     M0_METRICS,
+    MAILING_LIST_METRIC_IDS,
     PAGES,
     PR_BACKLOG_METRICS,
     SECURITY_SOURCES,
@@ -1378,6 +1379,196 @@ def _community_sections_context(
     return sections
 
 
+# --- Mailing-list metadata: dev@/user@ + List activity (issue #35, #158) ---
+#
+# The Conversations page's dev@/user@ reply-responsiveness cards and the
+# two-lists-one-chart volume series render through their own three
+# collapsible sections (`sections.section()`, the exact same macro
+# `community.html`'s CHAOSS-topic sections use -- issue #158's own "same
+# macro" requirement) rather than the generic dimension-grouped card grid
+# every other conversations/community/governance metric uses -- see
+# `metrics_meta.MAILING_LIST_METRIC_IDS`'s own docstring for why these 10
+# metric_ids are excluded from that grid.
+
+# Stable, explicit per-list chart colors (issue #158: "one line each,
+# stable colours") -- pinned via `scale.domain`/`range` below rather than
+# left for Vega-Lite to derive from whatever's left in `data.values`, same
+# fixup `peers_page.py::_line_chart_spec` already applies (orchestrator
+# review of PR #157: hiding one series in the chart-expand dialog must
+# never reassign the other's color).
+_MAILING_LIST_SERIES_ORDER = ["dev@", "user@"]
+_MAILING_LIST_SERIES_COLORS = ["#4c78a8", "#f58518"]
+
+# (dev metric_id, user metric_id, chart title, tooltip value label, chart_id)
+_MAILING_LIST_VOLUME_CHARTS: tuple[tuple[str, str, str, str, str], ...] = (
+    (
+        "mailing_list_messages_monthly_dev",
+        "mailing_list_messages_monthly_user",
+        "Messages per month",
+        "Messages",
+        "conv-list-activity-messages",
+    ),
+    (
+        "mailing_list_new_threads_monthly_dev",
+        "mailing_list_new_threads_monthly_user",
+        "New threads per month",
+        "New threads",
+        "conv-list-activity-threads",
+    ),
+    (
+        "mailing_list_distinct_senders_monthly_dev",
+        "mailing_list_distinct_senders_monthly_user",
+        "Distinct senders per month",
+        "Distinct senders",
+        "conv-list-activity-senders",
+    ),
+)
+
+
+def _mailing_list_reply_cards(
+    series_by_id: dict[str, MetricSeries],
+    list_name: str,
+    base_prefix: str,
+    last_completed_month: date,
+    manifest: RunManifest,
+) -> list[dict[str, Any]]:
+    """The dev@ or user@ collapsible section's own two reply-responsiveness
+    cards -- the exact same `_card_context` shape every other metric card
+    on this site uses, just grouped by list instead of by dimension."""
+    metric_ids = (
+        f"time_to_first_reply_{list_name}list",
+        f"unanswered_thread_rate_{list_name}list",
+    )
+    return [
+        _card_context(series_by_id[metric_id], base_prefix, last_completed_month, manifest)
+        for metric_id in metric_ids
+        if metric_id in series_by_id
+    ]
+
+
+def _mailing_list_volume_chart_spec(
+    value_label: str, dev_series: MetricSeries, user_series: MetricSeries
+) -> dict[str, Any]:
+    """A two-line (dev@/user@) Vega-Lite spec for one volume-metric pair
+    (issue #158: "a volume chart (both lists, one line each, stable
+    colours)"). Both series are monthly headcount-style counts
+    (`metrics.engine.HEADCOUNT_METRICS`) -- `value` is never below 0 and
+    never `insufficient_data` in practice, so this needs none of
+    `_vega_lite_spec`'s low_n de-emphasis layer, just the shared recent-
+    window x/y-domain treatment (`chart_spec.chart_window`/
+    `recent_value_domain`) every other chart on this site uses."""
+    values = [
+        {
+            "list": label,
+            "window_end": point.window_end.isoformat(),
+            "value": point.value,
+            "n": point.n,
+        }
+        for label, series in zip(_MAILING_LIST_SERIES_ORDER, (dev_series, user_series))
+        for point in series.points
+    ]
+    all_points = [
+        (p.window_end, p.value) for series in (dev_series, user_series) for p in series.points
+    ]
+    dates = [d for d, _ in all_points]
+    window = chart_spec.chart_window(dates)
+    x_axis: dict[str, Any] = {
+        "format": "%b %Y",
+        "tickCount": {"interval": "month", "step": window["tickStep"]["recent"] if window else 1},
+    }
+    x_encoding: dict[str, Any] = {
+        "field": "window_end",
+        "type": "temporal",
+        "timeUnit": "yearmonth",
+        "title": None,
+        "axis": x_axis,
+    }
+    if window is not None:
+        x_encoding["scale"] = {"domain": window["domain"]["recent"], "nice": False}
+
+    recent_y_domain = chart_spec.recent_value_domain(all_points)
+    y_encoding: dict[str, Any] = {
+        "field": "value",
+        "type": "quantitative",
+        "title": None,
+        "axis": {"format": ",.0f"},
+    }
+    if recent_y_domain is not None:
+        y_encoding["scale"] = {"domain": recent_y_domain}
+
+    spec: dict[str, Any] = {
+        "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+        "width": "container",
+        "height": 180,
+        "autosize": {"type": "fit-x", "contains": "padding"},
+        "background": None,
+        "data": {"values": values},
+        "mark": {"type": "line", "point": True, "clip": True},
+        "encoding": {
+            "x": x_encoding,
+            "y": y_encoding,
+            "color": {
+                "field": "list",
+                "type": "nominal",
+                "title": None,
+                "sort": _MAILING_LIST_SERIES_ORDER,
+                "scale": {
+                    "domain": _MAILING_LIST_SERIES_ORDER,
+                    "range": _MAILING_LIST_SERIES_COLORS,
+                },
+            },
+            "tooltip": [
+                {"field": "list", "type": "nominal", "title": "List"},
+                {"field": "window_end", "type": "temporal", "title": "Month", "format": "%b %Y"},
+                {"field": "value", "type": "quantitative", "title": value_label, "format": ",.0f"},
+                {"field": "n", "type": "quantitative", "title": "n"},
+            ],
+        },
+        "config": {"view": {"stroke": None}},
+    }
+    if window is not None:
+        spec["usermeta"] = {
+            "chartWindow": {**window, "yDomain": {"recent": recent_y_domain, "full": None}}
+        }
+    return spec
+
+
+def _mailing_list_activity_context(
+    series_by_id: dict[str, MetricSeries], base_prefix: str
+) -> dict[str, Any]:
+    """The "List activity" section's three dev@/user@ volume charts (issue
+    #158) -- messages, new threads, distinct senders, each its own chart
+    rather than one overloaded multi-metric chart, so none of the three
+    (very differently scaled) counts flattens another on the same y-axis."""
+    charts = []
+    for dev_id, user_id, title, value_label, chart_id in _MAILING_LIST_VOLUME_CHARTS:
+        dev_series = series_by_id.get(dev_id)
+        user_series = series_by_id.get(user_id)
+        if dev_series is None or user_series is None:
+            continue
+        spec = _mailing_list_volume_chart_spec(value_label, dev_series, user_series)
+        charts.append(
+            {
+                "title": title,
+                "chart_id": chart_id,
+                "spec_json": json.dumps(spec),
+                "chart_meta_json": chart_spec.chart_meta_json(
+                    chart_id=chart_id,
+                    title=title,
+                    time_field="window_end",
+                    time_type="month",
+                    series_field="list",
+                    series_order=list(_MAILING_LIST_SERIES_ORDER),
+                ),
+                "dev_json_href": f"{base_prefix}data/{dev_id}.json",
+                "dev_csv_href": f"{base_prefix}data/{dev_id}.csv",
+                "user_json_href": f"{base_prefix}data/{user_id}.json",
+                "user_csv_href": f"{base_prefix}data/{user_id}.csv",
+            }
+        )
+    return {"charts": charts}
+
+
 def _governance_sections_context(
     governance_card_series_by_metric_id: dict[str, MetricSeries],
     last_completed_month: date,
@@ -1662,10 +1853,21 @@ def _render_pages(
     )
     _write_subpage(out_dir, "community", community_html)
 
-    # Conversations (`/conversations/`) — dev@ mailing-list metadata metrics
-    # (issue #35, D16): cards render the same dimension-grouped shape as
-    # `/community/` when metrics exist, replacing the page's honest empty
-    # state; the "what's coming" section (Phase 2a/2b) always renders too.
+    # Conversations (`/conversations/`) — dev@/user@ mailing-list metadata
+    # metrics (issue #35, D16; issue #158 adds user@ + volume): the dev@/
+    # user@ reply-responsiveness pairs and the two-lists volume charts
+    # render through their own collapsible sections
+    # (`_mailing_list_reply_cards`/`_mailing_list_activity_context` above),
+    # excluded from the generic dimension-grouped grid below
+    # (`MAILING_LIST_METRIC_IDS`) -- that grid still renders the same
+    # dimension-grouped shape as `/community/` for any other conversations
+    # metric that might be added later; the "what's coming" section (Phase
+    # 2a/2b) always renders too.
+    conversations_card_series = [
+        series
+        for series in series_by_page["conversations"]
+        if series.meta.metric_id not in MAILING_LIST_METRIC_IDS
+    ]
     conversations_dimensions = [
         {
             "dimension": dimension,
@@ -1674,12 +1876,26 @@ def _render_pages(
                 for s in series_list
             ],
         }
-        for dimension, series_list in _group_by_dimension(series_by_page["conversations"])
+        for dimension, series_list in _group_by_dimension(conversations_card_series)
     ]
+    mailing_lists_context = {
+        "dev": {
+            "cards": _mailing_list_reply_cards(
+                series_by_id, "dev", SUBPAGE_BASE_PREFIX, last_completed_month, manifest
+            )
+        },
+        "user": {
+            "cards": _mailing_list_reply_cards(
+                series_by_id, "user", SUBPAGE_BASE_PREFIX, last_completed_month, manifest
+            )
+        },
+        "list_activity": _mailing_list_activity_context(series_by_id, SUBPAGE_BASE_PREFIX),
+    }
     conversations_html = env.get_template("conversations.html").render(
         current_page="conversations",
         base_prefix=SUBPAGE_BASE_PREFIX,
         dimensions=conversations_dimensions,
+        mailing_lists=mailing_lists_context,
         conversation_patterns=conversation_patterns_context,
         thread_explorer=thread_explorer_context,
         **common_ctx,

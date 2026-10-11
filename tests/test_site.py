@@ -26,6 +26,7 @@ from project_health.site.metrics_meta import (
     CHAOSS_STARTER_METRICS,
     GOVERNANCE_METRICS,
     M0_METRICS,
+    MAILING_LIST_METRIC_IDS,
     PAGES,
     PR_BACKLOG_METRICS,
     PriorArt,
@@ -636,6 +637,70 @@ def test_conversations_page_shows_devlist_metric_cards(tmp_path):
     assert "Time to First Reply — dev@" in html_text
     assert "Unanswered Thread Rate — dev@" in html_text
     assert "Aug 2026" in html_text
+
+
+def test_conversations_page_dev_and_user_sections_are_collapsible_and_separate(tmp_path):
+    """Issue #158: the dev@ and user@ reply-responsiveness cards render
+    inside their own collapsible sections (the same `sections.section()`
+    macro community.html's CHAOSS-topic sections use), each showing only
+    that list's own two metrics."""
+    out_dir = _build_site(tmp_path)
+    html_text = _page_html(out_dir, "conversations/")
+
+    assert 'id="conv-dev-list"' in html_text
+    assert 'id="conv-user-list"' in html_text
+    assert "Time to First Reply — user@" in html_text
+    assert "Unanswered Thread Rate — user@" in html_text
+
+    # dev@'s section body falls between the two section ids; user@'s own
+    # metrics must not appear inside it, and vice versa.
+    dev_start = html_text.index('id="conv-dev-list"')
+    user_start = html_text.index('id="conv-user-list"')
+    dev_section = html_text[dev_start:user_start]
+    assert "Time to First Reply — dev@" in dev_section
+    assert "Time to First Reply — user@" not in dev_section
+
+
+def test_conversations_page_has_list_activity_section_with_two_series_charts(tmp_path):
+    """Issue #158: a 'List activity' collapsible section with one
+    two-series (dev@/user@) chart per volume metric, each with a stable,
+    explicit color scale (not derived from whatever's left in data.values,
+    orchestrator review of PR #157's fixup)."""
+    out_dir = _build_site(tmp_path)
+    html_text = _page_html(out_dir, "conversations/")
+
+    assert 'id="conv-list-activity"' in html_text
+    assert "List activity" in html_text
+    assert "Messages per month" in html_text
+    assert "New threads per month" in html_text
+    assert "Distinct senders per month" in html_text
+
+    for aria_label in ("Messages per month", "New threads per month", "Distinct senders per month"):
+        spec = _extract_vega_spec(html_text, aria_label)
+        assert spec["encoding"]["color"]["field"] == "list"
+        assert {v["list"] for v in spec["data"]["values"]} == {"dev@", "user@"}
+
+    # The chart's download links cover both lists separately.
+    assert "mailing_list_messages_monthly_dev.json" in html_text
+    assert "mailing_list_messages_monthly_user.json" in html_text
+
+
+def test_conversations_page_list_activity_chart_pins_stable_colors(tmp_path):
+    """The volume charts' color scale is pinned via an explicit
+    `scale.domain`/`range` -- issue #158, same fixup
+    `peers_page.py::_line_chart_spec` already applies (orchestrator review
+    of PR #157: hiding a series must never reassign the other's color)."""
+    out_dir = _build_site(tmp_path)
+    html_text = _page_html(out_dir, "conversations/")
+
+    assert 'data-chart-id="conv-list-activity-messages"' in html_text
+    spec = _extract_vega_spec(html_text, "Messages per month")
+    color_scale = spec["encoding"]["color"]["scale"]
+    assert color_scale["domain"] == ["dev@", "user@"]
+    assert len(color_scale["range"]) == 2
+    assert color_scale["range"][0] != color_scale["range"][1]
+    values_lists = {v["list"] for v in spec["data"]["values"]}
+    assert values_lists == {"dev@", "user@"}
 
 
 def test_conversations_page_states_what_is_not_yet_covered(tmp_path):
@@ -1703,10 +1768,10 @@ def test_all_m0_metrics_declare_a_known_page():
     """D13/issue #34: which page a metric renders on is declared once, in
     `MetricMeta.page`. The original six M0 metrics (plus issue #53's three)
     are community (code/contributor) metrics; issue #35 added the first two
-    conversations (dev@ mailing-list) metrics."""
+    conversations (dev@ mailing-list) metrics; issue #158 added the
+    user@ companions plus six mailing-list volume metrics."""
     expected_pages = {
-        "time_to_first_reply_devlist": "conversations",
-        "unanswered_thread_rate_devlist": "conversations",
+        metric_id: "conversations" for metric_id in MAILING_LIST_METRIC_IDS
     }
     for metric_id, meta in M0_METRICS.items():
         assert meta.page == expected_pages.get(metric_id, "community")

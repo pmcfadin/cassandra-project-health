@@ -405,7 +405,7 @@ def _time_to_first_response_jira(
     *every* issue whose comments have ever been fetched, checked or
     unchecked -- see that table's schema docstring) gets `details_json.
     backfill_in_progress: true`, the same disclosure pattern
-    `_devlist_eligible_months`'s dev@ backfill uses. This never changes
+    `_mailing_list_eligible_months`'s dev@/user@ backfill uses. This never changes
     `value`/`flag` -- a month with zero *qualifying* comment data already
     reads as `insufficient_data`/`None` under the ordinary sample floor
     (never a real zero); the flag only discloses *why* a gap might be an

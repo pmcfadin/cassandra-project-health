@@ -25,7 +25,7 @@ dependencies = [
     "httpx>=0.25.0",
     "pyyaml>=6.0",
     "pydantic>=2.0.0",
-    "typesafe-sdk>=0.1.0",
+    "typesafe-sdk>=0.7.2",
     "openpyxl>=3.1.0",
 ]
 

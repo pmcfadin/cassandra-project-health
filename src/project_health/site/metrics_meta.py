@@ -20,6 +20,25 @@ M0 shipped six metrics (ROADMAP.md §0); issue #53 adds three more
 the community page. A metric_id present in a `metric_value` snapshot but
 absent from this map is out of scope for the site and is silently not
 rendered.
+
+**Every `MetricMeta` entry also needs `window` and `definition` (issue
+#160)** — the `/methodology/` metric catalogue (`metric_catalogue()` below)
+is generated entirely from `M0_METRICS`/`GOVERNANCE_METRICS`/
+`PR_BACKLOG_METRICS`, so a metric a future issue registers here (e.g.
+#158's user@ metrics, #159's contributor-pipeline metrics) needs both set
+to show up there correctly:
+- `window`: the metric's reporting window/cadence in the same terms
+  `METRICS.md`'s own summary table and per-metric sections use, e.g.
+  `"monthly"`, `"trailing-12m"`, `"snapshot"`, `"quarterly"`.
+- `definition`: a one-line, neutral restatement of the metric's own
+  `METRICS.md` "Definition:" (or, for a metric with no `METRICS.md`
+  section, its module docstring) — no verdict language, no "will help"
+  language (D25, D29 item 4).
+`_validate_catalogue_fields()` below fails loudly at import time (same
+"collect imperfectly but honestly, not silently" discipline
+`_validate_community_sections()` already enforces for `COMMUNITY_SECTIONS`)
+if either is left at its default empty string, so a missing value is a
+build-time error here, never a silently blank cell on the live site.
 """
 
 from __future__ import annotations
@@ -1349,6 +1368,34 @@ def metric_catalogue() -> tuple[CatalogueEntry, ...]:
     return tuple(entries)
 
 
+def _validate_catalogue_fields() -> None:
+    """Fail loudly at import time (not silently at render time) if any
+    registered metric is missing `window` or `definition` (issue #160) --
+    same "collect imperfectly but honestly, not silently" discipline
+    `_validate_community_sections()` enforces for `COMMUNITY_SECTIONS`
+    membership. A future metric (e.g. #158's user@ metrics, #159's
+    contributor-pipeline metrics) that registers a `MetricMeta` without
+    setting these two fields breaks the build here, rather than shipping a
+    blank cell on the live `/methodology/` metric catalogue."""
+    all_metrics: dict[str, MetricMeta] = {
+        **M0_METRICS,
+        **GOVERNANCE_METRICS,
+        **PR_BACKLOG_METRICS,
+    }
+    missing_window = sorted(mid for mid, meta in all_metrics.items() if not meta.window)
+    missing_definition = sorted(mid for mid, meta in all_metrics.items() if not meta.definition)
+    if missing_window:
+        raise ValueError(
+            f"metric(s) {missing_window} have no `window` set on their MetricMeta -- "
+            "required for the /methodology/ metric catalogue (issue #160)"
+        )
+    if missing_definition:
+        raise ValueError(
+            f"metric(s) {missing_definition} have no `definition` set on their MetricMeta -- "
+            "required for the /methodology/ metric catalogue (issue #160)"
+        )
+
+
 @dataclass(frozen=True)
 class SectionMeta:
     """Presentation metadata for one collapsible `<details>` section on a
@@ -1533,6 +1580,7 @@ def _validate_community_sections() -> None:
 
 
 _validate_community_sections()
+_validate_catalogue_fields()
 
 # Governance page sections (issue #144): "Facts summary (collapsed with
 # headline shares) · Commit history table (expanded by default — it's the

@@ -102,3 +102,8 @@ owner doesn't weigh in before it's needed, not a claim that the decision has bee
     `METRICS.md` §8.
     **Default:** measure this before promoting `unique_reviewers_monthly` and its dependents from `proxy` to
     `established`, per `METRICS.md`'s own stated gate.
+18. **TODO — corrections response-time SLA**: the owner hasn't set a committed response time for the
+    `/corrections/` process (issue #160). The site states "no committed response time yet" rather than
+    inventing one — see `DECISIONS.md`'s own open-question note.
+    **Default:** no default proposed; revisit once real correction volume is observed after the dev@
+    announcement.

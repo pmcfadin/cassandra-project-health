@@ -60,6 +60,8 @@ from project_health.site import chart_spec
 from project_health.site.conversation_patterns_page import build_conversation_patterns_context
 from project_health.site.thread_explorer_page import build_thread_explorer_context
 from project_health.site.manifest import RunManifest, load_manifest
+from project_health.site.corrections_page import build_corrections_context
+from project_health.site.methodology_page import build_methodology_context
 from project_health.site.governance_page import build_governance_page_context
 from project_health.site.leaderboard_page import build_leaderboard_page_context
 from project_health.site.review_responsiveness_page import build_review_responsiveness_context
@@ -98,7 +100,6 @@ _PACKAGE_DIR = Path(__file__).parent
 TEMPLATES_DIR = _PACKAGE_DIR / "templates"
 STATIC_DIR = _PACKAGE_DIR / "static"
 
-METHODOLOGY_URL = "https://github.com/pmcfadin/cassandra-project-health/tree/main/docs/spec"
 DECISIONS_URL = "https://github.com/pmcfadin/cassandra-project-health/blob/main/docs/spec/DECISIONS.md"
 COMMUNITY_HEALTH_SPEC_URL = (
     "https://github.com/pmcfadin/cassandra-project-health/blob/main/docs/spec/COMMUNITY-HEALTH.md"
@@ -1115,7 +1116,6 @@ def _common_page_context(manifest: RunManifest, build_time: datetime) -> dict[st
         "run_id": manifest.run_id,
         "pipeline_code_sha": manifest.pipeline_code_sha,
         "short_sha": manifest.pipeline_code_sha[:7],
-        "methodology_url": METHODOLOGY_URL,
         "decisions_url": DECISIONS_URL,
         "community_health_spec_url": COMMUNITY_HEALTH_SPEC_URL,
         "decisions_d14_anchor": DECISIONS_D14_ANCHOR,
@@ -1391,6 +1391,29 @@ def _render_pages(
             **common_ctx,
         )
         _write_subpage(out_dir, "peers", peers_html)
+
+    # Methodology (`/methodology/`, issue #160) — a real, generated page
+    # replacing the footer's old straight-to-GitHub-docs link. Static
+    # (config/code facts only, no `data_dir`/snapshot read), so it always
+    # renders the same way regardless of this run's own data.
+    methodology_html = env.get_template("methodology.html").render(
+        current_page="methodology",
+        base_prefix=SUBPAGE_BASE_PREFIX,
+        **build_methodology_context(),
+        **common_ctx,
+    )
+    _write_subpage(out_dir, "methodology", methodology_html)
+
+    # Corrections (`/corrections/`, issue #160) — the single front door for
+    # every existing correction/feedback path plus a new general catch-all.
+    # Also static.
+    corrections_html = env.get_template("corrections.html").render(
+        current_page="corrections",
+        base_prefix=SUBPAGE_BASE_PREFIX,
+        **build_corrections_context(),
+        **common_ctx,
+    )
+    _write_subpage(out_dir, "corrections", corrections_html)
 
 
 def _write_subpage(out_dir: Path, dirname: str, html: str) -> None:

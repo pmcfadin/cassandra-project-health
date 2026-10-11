@@ -184,6 +184,21 @@ class MetricMeta:
     # page: which site page (D13) renders this metric's card —
     # 'community' | 'conversations' | 'governance'.
     page: str
+    # window (issue #160): the metric's reporting window/cadence, in the
+    # same terms METRICS.md's own summary table and per-metric sections use
+    # (e.g. "monthly", "trailing-12m", "snapshot") -- shown in the
+    # `/methodology/` metric catalogue (issue #160) next to this metric's
+    # tier. Not used for any computation; display-only, like every other
+    # field in this module.
+    window: str = ""
+    # definition (issue #160): a one-line, neutral restatement of this
+    # metric's own METRICS.md "Definition:" (or, for governance/PR-backlog
+    # metrics with no METRICS.md section, its module docstring), for the
+    # `/methodology/` metric catalogue. The catalogue is generated entirely
+    # from this module (`metrics_meta.metric_catalogue`) rather than
+    # hand-maintained as a second document, so a metric this project adds
+    # later only needs an entry here to show up there automatically.
+    definition: str = ""
     # sources: which manifest `sources.<key>` entries this metric's value is
     # computed from (METRICS.md's own "Required data / source" prose per
     # metric, translated into the same keys `SOURCE_LABELS` above and the run
@@ -275,6 +290,8 @@ M0_METRICS: dict[str, MetricMeta] = {
         name="Active Contributors",
         dimension="contributor sustainability",
         tier="established",
+        window="monthly",
+        definition="Distinct non-bot contributors with at least one code commit in the month.",
         direction_of_good="higher",
         value_kind="count",
         page="community",
@@ -286,6 +303,8 @@ M0_METRICS: dict[str, MetricMeta] = {
         name="New Contributors",
         dimension="contributor sustainability",
         tier="established",
+        window="monthly",
+        definition="Contributors whose first-ever commit to apache/cassandra falls in the month.",
         direction_of_good="higher",
         value_kind="count",
         page="community",
@@ -308,6 +327,8 @@ M0_METRICS: dict[str, MetricMeta] = {
         name="PMC Joins per Quarter",
         dimension="contributor sustainability",
         tier="established",
+        window="quarterly",
+        definition="New PMC members per quarter, from the ASF roster's join dates.",
         direction_of_good="higher",
         value_kind="count",
         page="community",
@@ -330,6 +351,11 @@ M0_METRICS: dict[str, MetricMeta] = {
         name="Unique Reviewers",
         dimension="reviewer capacity",
         tier="proxy",
+        window="monthly",
+        definition=(
+            "Distinct non-bot individuals credited as a reviewer via "
+            "commit trailer or JIRA field."
+        ),
         direction_of_good="higher",
         value_kind="count",
         page="community",
@@ -358,6 +384,8 @@ M0_METRICS: dict[str, MetricMeta] = {
         name="Reviewer Concentration (HHI)",
         dimension="reviewer capacity",
         tier="proxy",
+        window="trailing-12m",
+        definition="Herfindahl-Hirschman concentration of review credit across reviewers.",
         direction_of_good="lower",
         value_kind="ratio",
         page="community",
@@ -370,6 +398,8 @@ M0_METRICS: dict[str, MetricMeta] = {
         name="Median JIRA Resolution Latency",
         dimension="responsiveness",
         tier="established",
+        window="monthly",
+        definition="Median days from a JIRA issue's creation to its resolution.",
         direction_of_good="lower",
         value_kind="days",
         page="community",
@@ -396,6 +426,11 @@ M0_METRICS: dict[str, MetricMeta] = {
         name="Median JIRA Resolution Latency (12m cohort)",
         dimension="responsiveness",
         tier="established",
+        window="monthly (12m cohort)",
+        definition=(
+            "Median JIRA resolution latency, restricted to issues created "
+            "within 12 months of resolution."
+        ),
         direction_of_good="lower",
         value_kind="days",
         page="community",
@@ -412,6 +447,8 @@ M0_METRICS: dict[str, MetricMeta] = {
         name="Stale JIRA Issue Rate",
         dimension="responsiveness",
         tier="established",
+        window="monthly",
+        definition="Share of open JIRA issues with no activity in the preceding 90 days.",
         direction_of_good="lower",
         value_kind="percent",
         page="community",
@@ -433,6 +470,11 @@ M0_METRICS: dict[str, MetricMeta] = {
         name="Truck Factor (DOA)",
         dimension="contributor sustainability",
         tier="experimental",
+        window="point-in-time, recomputed monthly",
+        definition=(
+            "Minimum contributors whose departure would leave over 50% of files with no "
+            "capable author (Avelino DOA algorithm)."
+        ),
         direction_of_good="higher",
         value_kind="count",
         page="community",
@@ -454,6 +496,11 @@ M0_METRICS: dict[str, MetricMeta] = {
         name="Contributor Dependency (N for 50%)",
         dimension="contributor sustainability",
         tier="established",
+        window="trailing-12m",
+        definition=(
+            "Smallest number of top contributors, by commit count, whose "
+            "commits reach 50% of the total."
+        ),
         direction_of_good="higher",
         value_kind="count",
         page="community",
@@ -470,6 +517,8 @@ M0_METRICS: dict[str, MetricMeta] = {
         name="Contributor Concentration (HHI)",
         dimension="contributor sustainability",
         tier="established",
+        window="trailing-12m",
+        definition="Herfindahl-Hirschman concentration of commit share across contributors.",
         direction_of_good="lower",
         value_kind="ratio",
         page="community",
@@ -505,6 +554,11 @@ M0_METRICS: dict[str, MetricMeta] = {
         name="Elephant Factor",
         dimension="organizational diversity",
         tier="experimental",
+        window="trailing-12m",
+        definition=(
+            "Smallest number of organizations, by commit share, whose "
+            "commits reach 50% of the total."
+        ),
         direction_of_good="higher",
         value_kind="count",
         page="community",
@@ -526,6 +580,8 @@ M0_METRICS: dict[str, MetricMeta] = {
         name="Organizational Concentration (HHI)",
         dimension="organizational diversity",
         tier="established",
+        window="trailing-12m",
+        definition="Herfindahl-Hirschman concentration of commit share across organizations.",
         direction_of_good="lower",
         value_kind="ratio",
         page="community",
@@ -542,6 +598,8 @@ M0_METRICS: dict[str, MetricMeta] = {
         name="Single-Organization Share",
         dimension="organizational diversity",
         tier="established",
+        window="trailing-12m",
+        definition="Share of commits from the single largest organization.",
         direction_of_good="lower",
         value_kind="percent",
         page="community",
@@ -558,6 +616,8 @@ M0_METRICS: dict[str, MetricMeta] = {
         name="Unknown-Affiliation Rate",
         dimension="organizational diversity",
         tier="established",
+        window="trailing-12m",
+        definition="Share of commits whose contributor has no resolved organizational affiliation.",
         direction_of_good="none",
         value_kind="percent",
         page="community",
@@ -572,6 +632,8 @@ M0_METRICS: dict[str, MetricMeta] = {
         name="Time to First Reply — dev@",
         dimension="responsiveness",
         tier="established",
+        window="monthly",
+        definition="Median time from a dev@ thread's first message to its first reply.",
         direction_of_good="lower",
         value_kind="days",
         page="conversations",
@@ -588,6 +650,8 @@ M0_METRICS: dict[str, MetricMeta] = {
         name="Unanswered Thread Rate — dev@",
         dimension="responsiveness",
         tier="established",
+        window="monthly",
+        definition="Share of dev@ threads with no reply at all.",
         direction_of_good="lower",
         value_kind="percent",
         page="conversations",
@@ -602,6 +666,8 @@ M0_METRICS: dict[str, MetricMeta] = {
         name="PR Merge Lead Time",
         dimension="responsiveness",
         tier="proxy",
+        window="monthly",
+        definition="Median days from a GitHub PR's creation to its merge.",
         direction_of_good="lower",
         value_kind="days",
         page="community",
@@ -618,6 +684,8 @@ M0_METRICS: dict[str, MetricMeta] = {
         name="PR Time to First Review",
         dimension="reviewer capacity",
         tier="proxy",
+        window="monthly",
+        definition="Median days from a GitHub PR's creation to its first non-self review.",
         direction_of_good="lower",
         value_kind="days",
         page="community",
@@ -634,6 +702,8 @@ M0_METRICS: dict[str, MetricMeta] = {
         name="PR Time to Close",
         dimension="responsiveness",
         tier="proxy",
+        window="monthly",
+        definition="Median days from a GitHub PR's creation to its close (merged or not).",
         direction_of_good="lower",
         value_kind="days",
         page="community",
@@ -650,6 +720,11 @@ M0_METRICS: dict[str, MetricMeta] = {
         name="PR Review Engagement (Reviewers/PR)",
         dimension="reviewer capacity",
         tier="proxy",
+        window="monthly",
+        definition=(
+            "Mean unique non-self reviewers, and mean/median non-self "
+            "reviews, per reviewed GitHub PR."
+        ),
         direction_of_good="none",
         value_kind="avg",
         page="community",
@@ -666,6 +741,11 @@ M0_METRICS: dict[str, MetricMeta] = {
         name="Time to First Response (JIRA)",
         dimension="responsiveness",
         tier="established",
+        window="monthly",
+        definition=(
+            "Median days from a JIRA issue's creation to its first comment or "
+            "status change by someone else."
+        ),
         direction_of_good="lower",
         value_kind="days",
         page="community",
@@ -686,6 +766,8 @@ M0_METRICS: dict[str, MetricMeta] = {
         name="Stale PR Rate",
         dimension="responsiveness",
         tier="established",
+        window="monthly",
+        definition="Share of open GitHub PRs with no activity in the preceding 90 days.",
         direction_of_good="lower",
         value_kind="percent",
         page="community",
@@ -710,6 +792,11 @@ M0_METRICS: dict[str, MetricMeta] = {
         name="Change Request Closure Ratio — GitHub PR",
         dimension="responsiveness",
         tier="proxy",
+        window="monthly",
+        definition=(
+            "GitHub PRs closed divided by GitHub PRs opened in the month (CHAOSS "
+            "Change Request Closure Ratio)."
+        ),
         direction_of_good="higher",
         value_kind="ratio",
         page="community",
@@ -726,6 +813,8 @@ M0_METRICS: dict[str, MetricMeta] = {
         name="Change Request Closure Ratio — JIRA Patch Submissions",
         dimension="responsiveness",
         tier="established",
+        window="monthly",
+        definition="JIRA issues resolved divided by issues entering Patch Available in the month.",
         direction_of_good="higher",
         value_kind="ratio",
         page="community",
@@ -747,6 +836,11 @@ M0_METRICS: dict[str, MetricMeta] = {
         name="Release Frequency",
         dimension="release cadence",
         tier="established",
+        window="trailing-24m",
+        definition=(
+            "Count of GA releases (git tags, excluding alpha/beta/rc) in "
+            "the trailing 24 months."
+        ),
         direction_of_good="target-range",
         value_kind="count",
         page="community",
@@ -768,6 +862,8 @@ M0_METRICS: dict[str, MetricMeta] = {
         name="Release Interval Regularity (CoV)",
         dimension="release cadence",
         tier="proxy",
+        window="trailing-24m",
+        definition="Coefficient of variation of the intervals between GA releases.",
         direction_of_good="none",
         value_kind="ratio",
         page="community",
@@ -778,6 +874,8 @@ M0_METRICS: dict[str, MetricMeta] = {
         name="Time Since Last Release",
         dimension="release cadence",
         tier="established",
+        window="snapshot",
+        definition="Days since the most recent GA release, as of the run date.",
         direction_of_good="none",
         value_kind="days",
         page="community",
@@ -792,6 +890,8 @@ M0_METRICS: dict[str, MetricMeta] = {
         name="Days Between Releases (median)",
         dimension="release cadence",
         tier="proxy",
+        window="trailing-12m",
+        definition="Median days between consecutive GA releases in the trailing 12 months.",
         direction_of_good="none",
         value_kind="days",
         page="community",
@@ -882,6 +982,11 @@ GOVERNANCE_METRICS: dict[str, MetricMeta] = {
         name="Commits with a named reviewer",
         dimension="governance",
         tier="established",
+        window="monthly",
+        definition=(
+            "Share of commits carrying a named reviewer, from the commit "
+            "trailer or a JIRA reviewer field."
+        ),
         direction_of_good=None,
         value_kind="percent",
         page="governance",
@@ -892,6 +997,8 @@ GOVERNANCE_METRICS: dict[str, MetricMeta] = {
         name="Commits referencing a ticket",
         dimension="governance",
         tier="established",
+        window="monthly",
+        definition="Share of commits whose message references a JIRA ticket.",
         direction_of_good=None,
         value_kind="percent",
         page="governance",
@@ -902,6 +1009,8 @@ GOVERNANCE_METRICS: dict[str, MetricMeta] = {
         name="Commits with CI evidence on JIRA before commit",
         dimension="governance",
         tier="proxy",
+        window="monthly",
+        definition="Share of commits with CI evidence posted to JIRA before the commit landed.",
         direction_of_good=None,
         value_kind="percent",
         page="governance",
@@ -912,6 +1021,8 @@ GOVERNANCE_METRICS: dict[str, MetricMeta] = {
         name="Commits with both CI artefacts attached",
         dimension="governance",
         tier="proxy",
+        window="monthly",
+        definition="Share of commits with both CI artefacts attached to their JIRA ticket.",
         direction_of_good=None,
         value_kind="percent",
         page="governance",
@@ -922,6 +1033,8 @@ GOVERNANCE_METRICS: dict[str, MetricMeta] = {
         name="Commits with a successful checkstyle run",
         dimension="governance",
         tier="established",
+        window="monthly",
+        definition="Share of commits with a successful checkstyle run recorded.",
         direction_of_good=None,
         value_kind="percent",
         page="governance",
@@ -959,6 +1072,8 @@ PR_BACKLOG_METRICS: dict[str, MetricMeta] = {
         name="Open PR backlog",
         dimension="responsiveness",
         tier="established",
+        window="snapshot",
+        definition="Count of currently open GitHub PRs.",
         direction_of_good=None,
         value_kind="count",
         page="community",
@@ -970,6 +1085,8 @@ PR_BACKLOG_METRICS: dict[str, MetricMeta] = {
         name="Open PR backlog — drafts",
         dimension="responsiveness",
         tier="established",
+        window="snapshot",
+        definition="Count of currently open GitHub PRs marked draft.",
         direction_of_good=None,
         value_kind="count",
         page="community",
@@ -981,6 +1098,8 @@ PR_BACKLOG_METRICS: dict[str, MetricMeta] = {
         name="Open PR backlog — age under 30d",
         dimension="responsiveness",
         tier="established",
+        window="snapshot",
+        definition="Count of open PRs younger than 30 days.",
         direction_of_good=None,
         value_kind="count",
         page="community",
@@ -992,6 +1111,8 @@ PR_BACKLOG_METRICS: dict[str, MetricMeta] = {
         name="Open PR backlog — age 30-90d",
         dimension="responsiveness",
         tier="established",
+        window="snapshot",
+        definition="Count of open PRs aged 30-90 days.",
         direction_of_good=None,
         value_kind="count",
         page="community",
@@ -1003,6 +1124,8 @@ PR_BACKLOG_METRICS: dict[str, MetricMeta] = {
         name="Open PR backlog — age 90d-1y",
         dimension="responsiveness",
         tier="established",
+        window="snapshot",
+        definition="Count of open PRs aged 90 days to 1 year.",
         direction_of_good=None,
         value_kind="count",
         page="community",
@@ -1014,6 +1137,8 @@ PR_BACKLOG_METRICS: dict[str, MetricMeta] = {
         name="Open PR backlog — age 1-3y",
         dimension="responsiveness",
         tier="established",
+        window="snapshot",
+        definition="Count of open PRs aged 1-3 years.",
         direction_of_good=None,
         value_kind="count",
         page="community",
@@ -1025,6 +1150,8 @@ PR_BACKLOG_METRICS: dict[str, MetricMeta] = {
         name="Open PR backlog — age over 3y",
         dimension="responsiveness",
         tier="established",
+        window="snapshot",
+        definition="Count of open PRs older than 3 years.",
         direction_of_good=None,
         value_kind="count",
         page="community",
@@ -1036,6 +1163,8 @@ PR_BACKLOG_METRICS: dict[str, MetricMeta] = {
         name="Open PR backlog — linked ticket still open",
         dimension="responsiveness",
         tier="established",
+        window="snapshot",
+        definition="Count of open PRs whose linked JIRA ticket is still open.",
         direction_of_good=None,
         value_kind="count",
         page="community",
@@ -1047,6 +1176,8 @@ PR_BACKLOG_METRICS: dict[str, MetricMeta] = {
         name="Open PR backlog — linked ticket Fixed",
         dimension="responsiveness",
         tier="established",
+        window="snapshot",
+        definition="Count of open PRs whose linked JIRA ticket is resolved Fixed.",
         direction_of_good=None,
         value_kind="count",
         page="community",
@@ -1058,6 +1189,11 @@ PR_BACKLOG_METRICS: dict[str, MetricMeta] = {
         name="Open PR backlog — linked ticket closed (other)",
         dimension="responsiveness",
         tier="established",
+        window="snapshot",
+        definition=(
+            "Count of open PRs whose linked JIRA ticket is closed with a "
+            "non-Fixed resolution."
+        ),
         direction_of_good=None,
         value_kind="count",
         page="community",
@@ -1069,6 +1205,8 @@ PR_BACKLOG_METRICS: dict[str, MetricMeta] = {
         name="Open PR backlog — no ticket key in title",
         dimension="responsiveness",
         tier="established",
+        window="snapshot",
+        definition="Count of open PRs with no JIRA ticket key found in the title.",
         direction_of_good=None,
         value_kind="count",
         page="community",
@@ -1080,6 +1218,8 @@ PR_BACKLOG_METRICS: dict[str, MetricMeta] = {
         name="Open PR backlog — no GitHub response",
         dimension="responsiveness",
         tier="established",
+        window="snapshot",
+        definition="Share of open PRs with no GitHub comment or review yet.",
         direction_of_good=None,
         value_kind="percent",
         page="community",
@@ -1137,6 +1277,76 @@ PAGES: dict[str, PageMeta] = {
 # before linking through for the rest (D13: "one summary card per page:
 # its headline metrics ... and a link").
 HOME_CARD_METRIC_LIMIT = 3
+
+
+# --- Metric catalogue (issue #160, `/methodology/`) -------------------------
+
+
+@dataclass(frozen=True)
+class CatalogueEntry:
+    """One row of the `/methodology/` metric catalogue: name, one-line
+    definition, tier, window, prior-art link, and a link to the metric's
+    own card (an anchor on whichever page it renders on)."""
+
+    metric_id: str
+    name: str
+    definition: str
+    tier: str
+    window: str
+    page_title: str
+    prior_art_label: str
+    prior_art_url: str | None
+    anchor_href: str
+
+
+# Metric ids rendered only through a shared section, not a per-metric card
+# (issue #142: `PR_BACKLOG_METRICS` render only through the Community
+# page's own "Open PR backlog" section -- `generate.py`'s own
+# `community_card_series` filter excludes them from the per-metric card
+# grid every other community-page metric gets). The catalogue still lists
+# each one by name (no published metric_id is silently dropped from it),
+# anchored to that shared section's heading instead of a per-metric card
+# id that doesn't exist for them.
+_CATALOGUE_SHARED_ANCHOR: dict[str, str] = dict.fromkeys(PR_BACKLOG_METRICS, "pr-backlog-heading")
+
+
+def metric_catalogue() -> tuple[CatalogueEntry, ...]:
+    """Every published metric_id, generated directly from this module's own
+    `M0_METRICS`/`GOVERNANCE_METRICS`/`PR_BACKLOG_METRICS` maps -- never a
+    second, hand-maintained list. A metric a future issue registers here
+    (e.g. #158's user@ metrics, #159's contributor-pipeline metrics)
+    appears in this catalogue automatically, with no change to this
+    function or to the `/methodology/` template that renders it.
+
+    Sorted by (page, dimension, name) so the catalogue reads in the same
+    grouping order a reader would meet the metrics on the site itself.
+    """
+    all_metrics: dict[str, MetricMeta] = {
+        **M0_METRICS,
+        **GOVERNANCE_METRICS,
+        **PR_BACKLOG_METRICS,
+    }
+    entries = []
+    for metric_id, meta in sorted(
+        all_metrics.items(), key=lambda kv: (kv[1].page, kv[1].dimension, kv[1].name)
+    ):
+        page_path = PAGES[meta.page].path
+        anchor_id = _CATALOGUE_SHARED_ANCHOR.get(metric_id, f"metric-{metric_id}")
+        prior_art = meta.prior_art[0] if meta.prior_art else None
+        entries.append(
+            CatalogueEntry(
+                metric_id=metric_id,
+                name=meta.name,
+                definition=meta.definition,
+                tier=meta.tier,
+                window=meta.window,
+                page_title=PAGES[meta.page].title,
+                prior_art_label=meta.prior_art_label,
+                prior_art_url=prior_art.url if prior_art else None,
+                anchor_href=f"{page_path}#{anchor_id}",
+            )
+        )
+    return tuple(entries)
 
 
 @dataclass(frozen=True)

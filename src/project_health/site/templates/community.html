@@ -16,7 +16,7 @@
     <h3 id="dim-{{ section.id }}-{{ loop.index }}">{{ group.dimension | title }}</h3>
     <div class="card-grid">
       {% for m in group.metrics %}
-      <article class="card">
+      <article class="card" id="metric-{{ m.metric_id }}">
         <header class="card-header">
           <h4>{{ m.name }}</h4>
           <span class="badge badge--tier badge--tier-{{ m.tier }}">{{ m.tier }}</span>
@@ -286,7 +286,9 @@
 
     <p class="governance-note">
       <strong>Identity-resolution limits.</strong> {{ leaderboard.identity_limitations_note }}
-      <a href="{{ leaderboard.corrections_url }}">Request an identity correction</a>.
+      <a href="{{ leaderboard.corrections_url }}">Request an identity correction</a> (every row's
+      own "Report an issue" link below uses this same form) — see
+      <a href="{{ base_prefix }}corrections/">/corrections/</a> for what happens next.
     </p>
 
     {% if leaderboard.has_data %}

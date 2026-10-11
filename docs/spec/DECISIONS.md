@@ -432,3 +432,10 @@ same already-collected real data with these accounts excluded: Flink 0.008 -> 0.
 DataFusion 0.020 -> 0.840 days (datafusion's own prior number was `codecov-commenter`'s own
 leak); Kafka, Spark, and Pulsar moved by single-digit percent (0.450->0.580, 0.308->0.338,
 0.155->0.156) since those three bots touch a much smaller share of their PRs.
+
+## Open question: corrections response-time SLA (issue #160)
+
+Not yet decided by the owner. The `/corrections/` page (issue #160) states plainly that there
+is **no committed response time yet** for reviewing a correction request, rather than inventing
+one. Tracked in `OPEN-QUESTIONS.md`'s Cross-cutting section (item 18); revisit once real
+correction volume is observed after the dev@ announcement.

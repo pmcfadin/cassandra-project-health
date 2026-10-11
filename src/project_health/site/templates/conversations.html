@@ -21,7 +21,8 @@
     PMC</strong> (<a href="{{ conversation_patterns.community_health_url }}">COMMUNITY-HEALTH.md
     §7.8</a>) — it is published preliminary, clearly labeled as such, per
     <a href="{{ conversation_patterns.decisions_url }}#{{ conversation_patterns.decisions_d26_anchor }}">DECISIONS.md
-    D26</a>. <a href="{{ conversation_patterns.feedback_url }}">Send feedback on this section</a>.
+    D26</a>. <a href="{{ conversation_patterns.feedback_url }}">Send feedback on this section</a>
+    (see <a href="{{ base_prefix }}corrections/">/corrections/</a> for what happens next).
   </div>
 
   <p class="page-intro">
@@ -501,7 +502,7 @@
     <h2 id="conv-dim-{{ loop.index }}">{{ group.dimension | title }}</h2>
     <div class="card-grid">
       {% for m in group.metrics %}
-      <article class="card">
+      <article class="card" id="metric-{{ m.metric_id }}">
         <header class="card-header">
           <h3>{{ m.name }}</h3>
           <span class="badge badge--tier badge--tier-{{ m.tier }}">{{ m.tier }}</span>

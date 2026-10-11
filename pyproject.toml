@@ -18,7 +18,7 @@ dependencies = [
     # column, but `metrics/review_responsiveness.py` fetches raw `changed_at`/
     # `created_at`/`submitted_at` values directly for its own Python-side
     # submission reconstruction, which triggers DuckDB's internal pytz import.
-    "pytz>=2024.1",
+    "pytz>=2026.5",
     "polars>=0.20.0",
     "pyarrow>=14.0.0",
     "jinja2>=3.1.0",

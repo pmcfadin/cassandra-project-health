@@ -83,7 +83,7 @@
 
   <div class="card-grid">
     {% for chart in governance_trend_cards %}
-    <article class="card">
+    <article class="card" id="metric-{{ chart.metric_id }}">
       <header class="card-header">
         <h4>{{ chart.name }}</h4>
       </header>

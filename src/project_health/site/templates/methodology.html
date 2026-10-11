@@ -1,0 +1,168 @@
+{% extends "base.html" %}
+{% import "_sections.html" as sections %}
+{% block title %}Methodology — Cassandra Project Health{% endblock %}
+{% block content %}
+<p class="page-intro">
+  How this site's numbers are produced: what's collected, what isn't, how metrics are defined, and
+  what's still preliminary. This page is generated from the same code and config the site itself
+  runs — see <a href="{{ base_prefix }}corrections/">/corrections/</a> to report a problem with any
+  of it.
+</p>
+
+{% set methodology_sections = [
+  {"id": "what-this-is", "title": "What this is"},
+  {"id": "data-sources", "title": "Data sources"},
+  {"id": "metric-catalogue", "title": "Metric catalogue"},
+  {"id": "conversation-patterns-method", "title": "Conversation patterns (classified)"},
+  {"id": "peers-method", "title": "Peers"},
+  {"id": "reproducibility", "title": "Reproducibility"},
+  {"id": "known-limitations", "title": "Known limitations"},
+] %}
+{{ sections.section_nav(methodology_sections) }}
+
+{% call sections.section("what-this-is", "What this is", None, open=True) %}
+<p class="page-intro">
+  This site publishes <strong>metrics only</strong> — no scores, no verdicts, and no judgment on
+  whether a number is good or bad (<a href="{{ d.d25 }}">DECISIONS.md D25</a>, <a href="{{ d.d29 }}">D29</a>). Every metric
+  shows its own definition, population, and window next to it; where a
+  <a href="https://chaoss.community/">CHAOSS</a> Knowledge Base definition exists, that metric links
+  it directly. Each metric also carries a <strong>tier</strong>:
+</p>
+<table class="security-table">
+  <thead><tr><th scope="col">Tier</th><th scope="col">Meaning</th></tr></thead>
+  <tbody>
+    <tr><td><span class="badge badge--tier badge--tier-established">established</span></td><td>Widely used in CHAOSS and/or peer-reviewed literature, with a standard formula.</td></tr>
+    <tr><td><span class="badge badge--tier badge--tier-proxy">proxy</span></td><td>A defensible stand-in for something not directly observable (e.g. "reviewer" from a commit-trailer convention).</td></tr>
+    <tr><td><span class="badge badge--tier badge--tier-experimental">experimental</span></td><td>Mathematically well-defined, not yet validated for this project.</td></tr>
+    <tr><td><span class="badge badge--tier badge--tier-classified">classified</span></td><td>Derived from classifying message text (Phase 2 only; preliminary — see below).</td></tr>
+  </tbody>
+</table>
+<p class="page-intro">
+  Full principles: <a href="{{ d.d1 }}">DECISIONS.md D1</a> (phasing) and the project's own
+  <a href="{{ metrics_spec_url }}">METRICS.md</a> conventions (§0).
+</p>
+{% endcall %}
+
+{% call sections.section("data-sources", "Data sources", None) %}
+<p class="page-intro">Nightly for Cassandra's own data; weekly (Sundays) for the five peer projects.</p>
+<div class="gov-table-wrap">
+<table class="security-table">
+  <thead>
+    <tr>
+      <th scope="col">Source</th>
+      <th scope="col">Collected</th>
+      <th scope="col">Not collected</th>
+      <th scope="col">Cadence</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for row in data_sources %}
+    <tr>
+      <td>{{ row.name }}</td>
+      <td>{{ row.collected }}</td>
+      <td>{{ row.not_collected if row.not_collected else "—" }}</td>
+      <td>{{ row.cadence }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+</div>
+<p class="page-intro">
+  Full source-by-source detail (verification method, rate limits, identity-resolution notes):
+  <a href="{{ data_sources_spec_url }}">DATA-SOURCES.md</a>.
+</p>
+{% endcall %}
+
+{% call sections.section("metric-catalogue", "Metric catalogue", None) %}
+<p class="page-intro">
+  Every metric this site publishes, generated directly from the same registry the site renders
+  from — a metric added here always appears below automatically, with no separate list to update.
+</p>
+<div class="gov-table-wrap">
+<table class="security-table">
+  <thead>
+    <tr>
+      <th scope="col">Metric</th>
+      <th scope="col">Definition</th>
+      <th scope="col">Tier</th>
+      <th scope="col">Window</th>
+      <th scope="col">Based on</th>
+      <th scope="col">Page</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for entry in catalogue %}
+    <tr id="catalogue-{{ entry.metric_id }}">
+      <td><a href="{{ base_prefix }}{{ entry.anchor_href }}">{{ entry.name }}</a></td>
+      <td>{{ entry.definition }}</td>
+      <td><span class="badge badge--tier badge--tier-{{ entry.tier }}">{{ entry.tier }}</span></td>
+      <td>{{ entry.window }}</td>
+      <td>
+        {% if entry.prior_art_url %}<a href="{{ entry.prior_art_url }}">{{ entry.prior_art_label }}</a>{% else %}{{ entry.prior_art_label }}{% endif %}
+      </td>
+      <td>{{ entry.page_title }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+</div>
+<p class="page-intro">
+  Full prose definitions, formulas, and strengths/weaknesses for every metric:
+  <a href="{{ metrics_spec_url }}">METRICS.md</a>.
+</p>
+{% endcall %}
+
+{% call sections.section("conversation-patterns-method", "Conversation patterns (classified)", d.d26, chaoss_label="DECISIONS.md D26") %}
+<div class="banner banner--preliminary" role="status">
+  <strong>Preliminary.</strong> Published ahead of PMC review and production calibration of the
+  classification cutoffs (<a href="{{ d.d26 }}">D26</a>, <a href="{{ d.d27 }}">D27</a>) — read the
+  method below, and judge accordingly.
+</div>
+<ul class="governance-reference-list">
+  <li>Pinned classifier model: <code>{{ model_id }}</code> — never <code>-latest</code>; a model change is a versioned recompute.</li>
+  <li>Thread sampling: up to K={{ sample_k }} threads per venue-quarter stratum, seeded (seed={{ sample_seed }}) for reproducibility.</li>
+  <li>Message-level labels map to one of 7 intensity tiers (−2 closing/positive … 4 attack); thread-level outcomes (escalation, resolution, abandonment) are derived deterministically from those tiers, never judged by the model directly.</li>
+  <li>Cutoffs (0.5 / 0.7 / 0.9) are the private run's own fixed values, not yet calibrated against a precision/recall gate.</li>
+  <li>Public-benchmark results against six human-labeled datasets: <a href="{{ benchmark_public_url }}">docs/benchmark/public-v1.md</a> — strong ground truth for personal_attack/hostility/sarcasm, partial or none for the rest.</li>
+  <li>Not yet covered: GitHub PR comments and ASF Slack (Phase 2a/2b scope).</li>
+</ul>
+<p class="page-intro">Full taxonomy, thread model, and validation gates: <a href="{{ community_health_spec_url }}">COMMUNITY-HEALTH.md</a>.</p>
+{% endcall %}
+
+{% call sections.section("peers-method", "Peers", d.d30, chaoss_label="DECISIONS.md D30") %}
+<p class="page-intro">
+  {% if peer_names %}{{ peer_names | join(", ") }}{% else %}(peer list unavailable in this build){% endif %}
+  — the owner's choice of comparable ASF top-level projects at a broadly similar scale, picked for
+  real GitHub-PR activity, a real git history, and real GA releases. Not a statistically
+  representative sample, and not a ranking — the same code computes the same metrics for Cassandra
+  and every peer; no targets, no color-coding, no sort order implying rank.
+</p>
+<p class="page-intro">Config: <a href="{{ peers_config_url }}">projects/peers.yaml</a>.</p>
+{% endcall %}
+
+{% call sections.section("reproducibility", "Reproducibility", None) %}
+<p class="page-intro">
+  Every number on this site comes from a plain script, never an LLM at runtime (the pinned
+  classifier above is the one exception — its output is cached by input hash, so re-rendering
+  never calls the model again; <a href="{{ d.d22 }}">D22</a>).
+</p>
+<pre class="code-block">data branch
+├── raw/&lt;source&gt;/&lt;table&gt;/date=YYYY-MM-DD/part-*.parquet   # append-only
+├── snapshots/&lt;run_id&gt;/metrics.parquet                     # this run's full metric output
+└── manifests/&lt;run_id&gt;.json                                 # this run's manifest</pre>
+<p class="page-intro">
+  This build's run id and code revision are in the footer below, on every page. To re-run the
+  pipeline yourself: <code>project-health run --project projects/cassandra.yaml --data-dir &lt;data branch checkout&gt;</code>.
+  Source: <a href="{{ data_branch_url }}">the data branch</a> &middot; <a href="https://github.com/pmcfadin/cassandra-project-health">this repository</a>.
+</p>
+{% endcall %}
+
+{% call sections.section("known-limitations", "Known limitations", None) %}
+<ul class="governance-reference-list">
+  <li><strong>Identity resolution.</strong> Two raw identifiers (a git email, a GitHub login, a JIRA username) merge automatically only on a mechanical, high-confidence match (exact email, the GitHub-noreply pattern); everything else needs a human-reviewed <a href="{{ identity_overrides_url }}">identity_overrides.yaml</a> entry and stays as separate, unresolved identities until then.</li>
+  <li><strong>Sampling and small-n.</strong> Classified metrics rest on a stratified sample (see Conversation patterns above); every rate/ratio/concentration/latency metric also carries its own minimum-sample floor (<a href="{{ metrics_spec_url }}">METRICS.md</a> §0.6) — below it, the site shows "insufficient data" rather than an unstable number.</li>
+  <li><strong>GitHub-only vs. JIRA review.</strong> GitHub-PR-specific metrics (e.g. PR time to first review) see only the review activity that happened on GitHub, a subset of Cassandra's JIRA-centric review process — reported as a separate, narrower companion to the git-trailer/JIRA-reviewer-field proxy metrics, never merged with them.</li>
+  <li><strong>Partial peer collection.</strong> A peer project's GitHub-PR backfill can span several weekly runs; /peers/ shows "Collecting — N of 3 passes complete" rather than a number that looks final while that's in progress.</li>
+</ul>
+{% endcall %}
+{% endblock %}

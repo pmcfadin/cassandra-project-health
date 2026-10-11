@@ -522,6 +522,17 @@ main {
   padding: 0.75rem 1rem;
   font-size: 0.9rem;
 }
+/* Methodology page's data-branch layout block (issue #160) -- wraps rather
+   than overflowing horizontally at narrow (390px) viewport widths. */
+.code-block {
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.75rem 1rem;
+  font-size: 0.85rem;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
 .governance-reference-list {
   list-style: none;
   padding: 0;

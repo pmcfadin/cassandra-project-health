@@ -1,0 +1,48 @@
+name: Data correction (general)
+description: >-
+  Report a wrong number, a stale value, a broken link, or any other data
+  problem on the site that doesn't fit the identity-correction,
+  governance-correction, thread-disagreement, or conversation-patterns-
+  feedback forms. See /corrections/ for the full list of correction paths.
+title: "Data correction: "
+labels:
+  - data-correction
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this form for a data problem that isn't covered by one of this
+        project's other correction forms (identity correction, governance
+        check correction, thread disagreement, conversation patterns
+        feedback) -- see
+        [`/corrections/`](https://pmcfadin.github.io/cassandra-project-health/corrections/)
+        for the full list.
+
+        This form only *requests* a correction -- nothing changes until a
+        maintainer reviews it. A fix typically lands as a pull request
+        (a config change, a code fix, or a data-branch correction) and
+        shows up on the site after the next nightly run.
+  - type: input
+    id: link
+    attributes:
+      label: Link to the page, chart, or download showing the problem
+      placeholder: "https://pmcfadin.github.io/cassandra-project-health/..."
+    validations:
+      required: true
+  - type: textarea
+    id: whats_wrong
+    attributes:
+      label: What's wrong?
+      description: What you see now, and what you'd expect instead.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence
+      description: >-
+        Be as specific as possible -- e.g. a link to the primary source
+        (a commit, a JIRA issue, a GitHub PR, a release tag) that shows
+        the correct value.
+    validations:
+      required: true

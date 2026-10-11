@@ -54,7 +54,11 @@
 </main>
 
 <footer class="site-footer">
-  <p><a href="{{ methodology_url }}">Methodology</a></p>
+  <p>
+    <a href="{{ base_prefix }}methodology/">Methodology</a>
+    &middot;
+    <a href="{{ base_prefix }}corrections/">Corrections</a>
+  </p>
   <p>Run <code>{{ run_id }}</code> &middot; code <code title="{{ pipeline_code_sha }}">{{ short_sha }}</code></p>
 </footer>
 

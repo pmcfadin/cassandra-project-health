@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% block title %}Corrections — Cassandra Project Health{% endblock %}
+{% block content %}
+<p class="page-intro">
+  How to request a correction to anything on this site, and what happens after you do. See
+  <a href="{{ base_prefix }}methodology/">/methodology/</a> for how the numbers themselves are
+  produced.
+</p>
+
+<section class="corrections-paths" aria-labelledby="correction-paths-heading">
+  <h2 id="correction-paths-heading">How to request a correction</h2>
+  <ul class="governance-reference-list">
+    {% for path in correction_paths %}
+    <li>
+      <a href="{{ path.template_url }}">{{ path.title }}</a>
+      <p class="card-prior-art">{{ path.description }}</p>
+    </li>
+    {% endfor %}
+  </ul>
+</section>
+
+<section class="corrections-process" aria-labelledby="correction-process-heading">
+  <h2 id="correction-process-heading">What happens next</h2>
+  <ul class="governance-reference-list">
+    <li>A maintainer of this project reviews the issue.</li>
+    <li>
+      A data or identity fix lands as a pull request to a config file — e.g.
+      <a href="{{ identity_overrides_url }}">identity_overrides.yaml</a> or
+      <a href="{{ governance_overrides_url }}">governance_overrides.yaml</a> — and shows on the
+      site after the next nightly run, once merged.
+    </li>
+    <li>
+      A classification disagreement (conversation patterns, thread explorer) feeds the
+      classification-cutoff calibration work tracked in issue
+      <a href="https://github.com/pmcfadin/cassandra-project-health/issues/47">#47</a>, rather than
+      being hand-overridden one message at a time.
+    </li>
+  </ul>
+</section>
+
+<section class="corrections-response-time" aria-labelledby="response-time-heading">
+  <h2 id="response-time-heading">Response time</h2>
+  <p class="page-intro">
+    No committed response time yet — see the open question in
+    <a href="{{ open_questions_url }}">OPEN-QUESTIONS.md</a>.
+  </p>
+</section>
+{% endblock %}

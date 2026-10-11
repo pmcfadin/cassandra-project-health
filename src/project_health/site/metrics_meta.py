@@ -805,6 +805,131 @@ M0_METRICS: dict[str, MetricMeta] = {
         # named equivalent for 'unanswered thread rate' specifically."
         prior_art=(),
     ),
+    # issue #158: user@ parameterised companions -- same cards/metadata
+    # shape as the dev@ pair above, rendered in the Conversations page's own
+    # "user@" collapsible section (generate.py) rather than the flat
+    # dimension grid (`MAILING_LIST_METRIC_IDS` below is excluded from that
+    # grid for every metric_id in this block).
+    "time_to_first_reply_userlist": MetricMeta(
+        metric_id="time_to_first_reply_userlist",
+        name="Time to First Reply — user@",
+        dimension="responsiveness",
+        tier="established",
+        window="monthly",
+        definition=(
+            "Median days from a user@ thread's first message to the first qualifying "
+            "reply, excluding self-replies and automated senders."
+        ),
+        direction_of_good="lower",
+        value_kind="days",
+        page="conversations",
+        sources=("ponymail",),
+        prior_art=(
+            PriorArt(
+                "CHAOSS: Time to First Response (applied to email)",
+                "https://www.chaoss.community/kb/metric-time-to-first-response/",
+            ),
+        ),
+    ),
+    "unanswered_thread_rate_userlist": MetricMeta(
+        metric_id="unanswered_thread_rate_userlist",
+        name="Unanswered Thread Rate — user@",
+        dimension="responsiveness",
+        tier="established",
+        window="monthly",
+        definition=(
+            "Share of user@ threads with no qualifying reply within 30 days of the "
+            "thread's first message."
+        ),
+        direction_of_good="lower",
+        value_kind="percent",
+        page="conversations",
+        sources=("ponymail",),
+        prior_art=(),
+    ),
+    # issue #158: plain mailing-list volume, both lists -- rendered in the
+    # Conversations page's own "List activity" section (generate.py) as
+    # two-line (dev@/user@) charts rather than individual cards; still
+    # individually downloadable at data/<metric_id>.json|.csv like every
+    # other registered metric.
+    "mailing_list_messages_monthly_dev": MetricMeta(
+        metric_id="mailing_list_messages_monthly_dev",
+        name="Mailing List Messages — dev@",
+        dimension="responsiveness",
+        tier="established",
+        window="monthly",
+        definition="Total dev@ messages per month, no exclusions.",
+        direction_of_good=None,
+        value_kind="count",
+        page="conversations",
+        sources=("ponymail",),
+        prior_art=(),
+    ),
+    "mailing_list_messages_monthly_user": MetricMeta(
+        metric_id="mailing_list_messages_monthly_user",
+        name="Mailing List Messages — user@",
+        dimension="responsiveness",
+        tier="established",
+        window="monthly",
+        definition="Total user@ messages per month, no exclusions.",
+        direction_of_good=None,
+        value_kind="count",
+        page="conversations",
+        sources=("ponymail",),
+        prior_art=(),
+    ),
+    "mailing_list_new_threads_monthly_dev": MetricMeta(
+        metric_id="mailing_list_new_threads_monthly_dev",
+        name="New Threads — dev@",
+        dimension="responsiveness",
+        tier="established",
+        window="monthly",
+        definition="Distinct dev@ threads whose own earliest message falls in the month.",
+        direction_of_good=None,
+        value_kind="count",
+        page="conversations",
+        sources=("ponymail",),
+        prior_art=(),
+    ),
+    "mailing_list_new_threads_monthly_user": MetricMeta(
+        metric_id="mailing_list_new_threads_monthly_user",
+        name="New Threads — user@",
+        dimension="responsiveness",
+        tier="established",
+        window="monthly",
+        definition="Distinct user@ threads whose own earliest message falls in the month.",
+        direction_of_good=None,
+        value_kind="count",
+        page="conversations",
+        sources=("ponymail",),
+        prior_art=(),
+    ),
+    "mailing_list_distinct_senders_monthly_dev": MetricMeta(
+        metric_id="mailing_list_distinct_senders_monthly_dev",
+        name="Distinct Senders — dev@",
+        dimension="responsiveness",
+        tier="established",
+        window="monthly",
+        definition="Distinct dev@ sender addresses with at least one message in the month.",
+        direction_of_good=None,
+        value_kind="count",
+        page="conversations",
+        sources=("ponymail",),
+        prior_art=(),
+    ),
+    "mailing_list_distinct_senders_monthly_user": MetricMeta(
+        metric_id="mailing_list_distinct_senders_monthly_user",
+        name="Distinct Senders — user@",
+        dimension="responsiveness",
+        tier="established",
+        window="monthly",
+        definition="Distinct user@ sender addresses with at least one message in the month.",
+        direction_of_good=None,
+        value_kind="count",
+        page="conversations",
+        sources=("ponymail",),
+        prior_art=(),
+    ),
     # issue #54: GitHub-PR development metrics + JIRA responsiveness
     "pr_merge_lead_time": MetricMeta(
         metric_id="pr_merge_lead_time",
@@ -1053,6 +1178,28 @@ M0_METRICS: dict[str, MetricMeta] = {
         ),
     ),
 }
+
+# issue #158: every `page == "conversations"` metric_id that renders
+# through the Conversations page's dedicated "dev@"/"user@"/"List activity"
+# collapsible sections (`generate.py::_render_pages`) instead of through the
+# generic dimension-grouped card grid every other conversations metric (and
+# every community/governance metric) uses -- mirrors `PR_BACKLOG_METRICS`'
+# own "excluded from the grid, has its own section" treatment on the
+# Community page, except these 10 metric_ids stay in `M0_METRICS` itself
+# (they're computed in the main `metrics.parquet` pass, not a separate
+# snapshot file) rather than their own dict.
+MAILING_LIST_METRIC_IDS: tuple[str, ...] = (
+    "time_to_first_reply_devlist",
+    "unanswered_thread_rate_devlist",
+    "time_to_first_reply_userlist",
+    "unanswered_thread_rate_userlist",
+    "mailing_list_messages_monthly_dev",
+    "mailing_list_messages_monthly_user",
+    "mailing_list_new_threads_monthly_dev",
+    "mailing_list_new_threads_monthly_user",
+    "mailing_list_distinct_senders_monthly_dev",
+    "mailing_list_distinct_senders_monthly_user",
+)
 
 # Governance compliance engine (issue #36, D14/D15): one monthly pass-rate
 # card per scored governance-policy.yaml check
@@ -1452,7 +1599,23 @@ class CatalogueEntry:
 # each one by name (no published metric_id is silently dropped from it),
 # anchored to that shared section's heading instead of a per-metric card
 # id that doesn't exist for them.
-_CATALOGUE_SHARED_ANCHOR: dict[str, str] = dict.fromkeys(PR_BACKLOG_METRICS, "pr-backlog-heading")
+#
+# issue #158's six mailing-list volume metrics (`mailing_list_messages_
+# monthly_*`/`_new_threads_monthly_*`/`_distinct_senders_monthly_*`,
+# `MAILING_LIST_METRIC_IDS` above minus the two dev@/user@ reply-
+# responsiveness pairs, which DO get their own per-metric cards) are the
+# same shape: each pair (dev@/user@) renders as one combined two-series
+# chart in the Conversations page's "List activity" section
+# (`generate.py::_mailing_list_activity_context`), not as six separate
+# per-metric cards -- so they share that section's own heading id instead
+# of a nonexistent `metric-<id>` anchor.
+_MAILING_LIST_VOLUME_METRIC_IDS: tuple[str, ...] = tuple(
+    metric_id for metric_id in MAILING_LIST_METRIC_IDS if metric_id.startswith("mailing_list_")
+)
+_CATALOGUE_SHARED_ANCHOR: dict[str, str] = {
+    **dict.fromkeys(PR_BACKLOG_METRICS, "pr-backlog-heading"),
+    **dict.fromkeys(_MAILING_LIST_VOLUME_METRIC_IDS, "conv-list-activity-heading"),
+}
 
 
 def metric_catalogue() -> tuple[CatalogueEntry, ...]:

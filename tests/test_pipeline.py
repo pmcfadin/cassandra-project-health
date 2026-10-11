@@ -37,6 +37,7 @@ from project_health.pipeline import (
     _dedupe_governance_commit_records,
     _dedupe_issue_rows,
     _dedupe_jira_review_events,
+    _dedupe_message_rows,
     _dedupe_pr_issue_link_rows,
     _dedupe_pr_review_rows,
     _dedupe_pr_rows,
@@ -1492,6 +1493,101 @@ class TestDedupe:
         assert by_id["cassandra-5.0.2"]["source_snapshot_id"] == "run-2:release"
         assert by_id["cassandra-5.0.3"]["version"] == "5.0.3"
 
+    def _message_row(
+        self,
+        *,
+        message_id: str,
+        list_name: str,
+        source_snapshot_id: str,
+        sender_raw_value: str = "alice@a.org",
+        occurred_at: datetime = datetime(2024, 1, 2, tzinfo=timezone.utc),
+        thread_id: str | None = None,
+    ) -> dict:
+        return {
+            "message_id": message_id,
+            "list": list_name,
+            "sender_identity_id": None,
+            "sender_raw_type": "mailing_list_address",
+            "sender_raw_value": sender_raw_value,
+            "sender_display_name": None,
+            "occurred_at": occurred_at,
+            "subject_hash": "hash-1",
+            "in_reply_to": None,
+            "references": None,
+            "thread_id": thread_id or message_id,
+            "source_snapshot_id": source_snapshot_id,
+        }
+
+    def test_dedupe_message_rows_keeps_one_row_per_list_for_a_cross_posted_message_id(self):
+        """Issue #158 (orchestrator review): a real RFC Message-ID can be,
+        and on Cassandra's own archive is (902 cases), cross-posted to more
+        than one configured list -- `<msg-1>` below appears on both dev@ and
+        user@ with the SAME message_id. Deduping on `message_id` alone
+        would collapse these two independent, real archive facts into a
+        single row, silently dropping whichever list's copy didn't have the
+        lexicographically-latest `source_snapshot_id` -- the dedupe key
+        must be `(list, message_id)`, so the cross-posted message survives
+        once per list it was actually archived on."""
+        schema = get_schema("message")
+        rows = [
+            self._message_row(
+                message_id="<msg-1>", list_name="dev", source_snapshot_id="run-1:ponymail"
+            ),
+            self._message_row(
+                message_id="<msg-1>", list_name="user", source_snapshot_id="run-1:ponymail"
+            ),
+            # A dev@-only message, for contrast.
+            self._message_row(
+                message_id="<msg-2>", list_name="dev", source_snapshot_id="run-1:ponymail"
+            ),
+        ]
+        table = validate("message", pa.Table.from_pylist(rows, schema=schema))
+
+        deduped = _dedupe_message_rows(table)
+
+        assert deduped.num_rows == 3
+        by_key = {(r["list"], r["message_id"]): r for r in deduped.to_pylist()}
+        assert ("dev", "<msg-1>") in by_key
+        assert ("user", "<msg-1>") in by_key
+        assert ("dev", "<msg-2>") in by_key
+
+    def test_dedupe_message_rows_collapses_repeated_snapshots_of_the_same_list_and_id(self):
+        """The current-month-always-refetched overlap case this dedupe
+        exists for (ARCHITECTURE.md §4.3): the SAME (list, message_id) seen
+        in two different runs' raw partitions collapses to one row, keeping
+        the latest `source_snapshot_id` -- unchanged behavior from before
+        this issue's `(list, message_id)` key fix, just no longer
+        conflated with the cross-posted-to-another-list case above."""
+        schema = get_schema("message")
+        rows = [
+            self._message_row(
+                message_id="<msg-1>",
+                list_name="user",
+                source_snapshot_id="run-1:ponymail",
+                sender_raw_value="alice@a.org",
+            ),
+            self._message_row(
+                message_id="<msg-1>",
+                list_name="user",
+                source_snapshot_id="run-2:ponymail",
+                sender_raw_value="alice@a.org",
+            ),
+            # Same message_id, but on a DIFFERENT list -- must survive as
+            # its own row, not be treated as a third snapshot of the same
+            # (list, message_id) key.
+            self._message_row(
+                message_id="<msg-1>", list_name="dev", source_snapshot_id="run-1:ponymail"
+            ),
+        ]
+        table = validate("message", pa.Table.from_pylist(rows, schema=schema))
+
+        deduped = _dedupe_message_rows(table)
+
+        assert deduped.num_rows == 2
+        by_key = {(r["list"], r["message_id"]): r for r in deduped.to_pylist()}
+        assert by_key[("user", "<msg-1>")]["source_snapshot_id"] == "run-2:ponymail"
+        assert by_key[("dev", "<msg-1>")]["source_snapshot_id"] == "run-1:ponymail"
+
     def test_dedupe_functions_are_noop_on_empty_tables(self):
         assert _dedupe_issue_rows(get_schema("issue").empty_table()).num_rows == 0
         assert _dedupe_jira_review_events(get_schema("review_event").empty_table()).num_rows == 0
@@ -1509,6 +1605,7 @@ class TestDedupe:
             == 0
         )
         assert _dedupe_release_rows(get_schema("release").empty_table()).num_rows == 0
+        assert _dedupe_message_rows(get_schema("message").empty_table()).num_rows == 0
 
     def test_dedupe_commit_trailer_review_events_keeps_highest_parser_version_per_commit(self):
         """Issue #77: a commit reparsed under a newer `PARSER_VERSION` must

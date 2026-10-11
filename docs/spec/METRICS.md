@@ -159,6 +159,14 @@ each `none`/debatable assignment is in that metric's own section below, not just
 | `time_to_first_response_jira` | Time to First Response — JIRA Issue | responsiveness | established | 1 | monthly | lower | **key** |
 | `time_to_first_reply_devlist` | Time to First Reply — dev@ Thread | responsiveness | established | 1 | monthly | lower | **key** |
 | `unanswered_thread_rate_devlist` | Unanswered Thread Rate — dev@ | responsiveness | established | 1 | monthly | lower | supporting |
+| `time_to_first_reply_userlist` | Time to First Reply — user@ Thread | responsiveness | established | 1 | monthly | lower | supporting |
+| `unanswered_thread_rate_userlist` | Unanswered Thread Rate — user@ | responsiveness | established | 1 | monthly | lower | supporting |
+| `mailing_list_messages_monthly_dev` | Mailing List Messages — dev@ | responsiveness | established | 1 | monthly | none — see §4 | supporting |
+| `mailing_list_messages_monthly_user` | Mailing List Messages — user@ | responsiveness | established | 1 | monthly | none — see §4 | supporting |
+| `mailing_list_new_threads_monthly_dev` | New Threads — dev@ | responsiveness | established | 1 | monthly | none — see §4 | supporting |
+| `mailing_list_new_threads_monthly_user` | New Threads — user@ | responsiveness | established | 1 | monthly | none — see §4 | supporting |
+| `mailing_list_distinct_senders_monthly_dev` | Distinct Senders — dev@ | responsiveness | established | 1 | monthly | none — see §4 | supporting |
+| `mailing_list_distinct_senders_monthly_user` | Distinct Senders — user@ | responsiveness | established | 1 | monthly | none — see §4 | supporting |
 | `change_request_closure_ratio_pr` | Change Request Closure Ratio — GitHub PR | responsiveness | proxy | 1 | monthly | higher | supporting |
 | `change_request_closure_ratio_jira_patch` | Change Request Closure Ratio — JIRA Patch Submissions | responsiveness | established | 1 | monthly | higher | supporting |
 | `stale_pr_rate` | Stale PR Rate | responsiveness | established | 1 | monthly | lower | supporting |
@@ -763,7 +771,8 @@ baseline or an improving/stable/declining status (see `SCORING.md` §6). All are
 - **Direction of good:** lower. **Role:** **key** (responsiveness) — one of this dimension's 1–3 key metrics
   (SCORING.md §5.3): design discussion and CEPs happen on dev@ (DECISIONS.md), so this is the dimension's
   mailing-list-channel representative, distinct in kind from the two JIRA/PR-channel supporting-or-key metrics.
-- **Formula:** as above, restricted to dev@ (and optionally user@, reported separately) threads.
+- **Formula:** as above, restricted to dev@ threads. See `time_to_first_reply_userlist` below for the same
+  formula applied to user@, reported as its own series (issue #158) rather than combined with this one.
 - **Population & exclusions:** §0.5, §0.6. Metadata-only per D1/Phase-1 scope — sender, timestamp, thread
   structure; message bodies are not collected in Phase 1.
 - **Window:** monthly.
@@ -793,6 +802,65 @@ baseline or an improving/stable/declining status (see `SCORING.md` §6). All are
   "received a reply," not "received a satisfying resolution."
 - **CHAOSS equivalent:** adjacent to CHAOSS responsiveness metrics; no exact named equivalent for "unanswered
   thread rate" specifically.
+
+### `time_to_first_reply_userlist` / `unanswered_thread_rate_userlist` (issue #158)
+- **Definition:** The exact same two definitions as `time_to_first_reply_devlist`/`unanswered_thread_rate_devlist`
+  above — median time to first qualifying reply, and the zero-reply-within-30-days rate — applied to user@
+  instead of dev@. Reused implementation parameterised by list (`metrics/engine.py`), not a forked copy: same
+  self-reply exclusion, same automated-sender exclusion/root-drop, same 30-day completed-period rule for the
+  unanswered rate, same not-dense-during-backfill `details_json.backfill_in_progress` disclosure (gated by
+  user@'s own Pony Mail watermark, independent of dev@'s).
+- **Direction of good:** lower, for both. **Role:** supporting (responsiveness) — dev@'s pair already holds this
+  dimension's mailing-list-channel key/supporting slots (SCORING.md §5.3's 1–3 cap); user@ is reported for
+  context, never combined with dev@ into one number, since the two lists serve different audiences (dev@ is
+  design/CEP discussion; user@ is operator/end-user support).
+- **Formula:** identical to the dev@ pair's, restricted to `list = 'user'`.
+- **Population & exclusions:** §0.5, §0.6; identical to the dev@ pair's own exclusions. Metadata-only per
+  D1/Phase-1 scope.
+- **Window:** monthly.
+- **Required data / source:** Apache Pony Mail JSON API for `user@cassandra.apache.org` (metadata fields only).
+- **Strengths:** Same as the dev@ pair; user@ additionally surfaces how quickly operator/end-user questions get a
+  reply, a distinct community-health signal from dev@'s design-discussion responsiveness.
+- **Weaknesses / gaming risk:** Same as the dev@ pair. user@ has had materially lower sustained volume than dev@
+  in recent years (§4's `mailing_list_messages_monthly_user` below), so its reply-latency series is more prone to
+  small-`n` months even where the raw thread count would otherwise be reportable.
+- **CHAOSS equivalent:** `time_to_first_reply_userlist` —
+  [Time to First Response](https://www.chaoss.community/kb/metric-time-to-first-response/) applied to email, same
+  citation as the dev@ series. `unanswered_thread_rate_userlist` — adjacent to CHAOSS responsiveness metrics; no
+  exact named equivalent, same as the dev@ series.
+
+### `mailing_list_messages_monthly_*` / `mailing_list_new_threads_monthly_*` / `mailing_list_distinct_senders_monthly_*` (issue #158)
+- **Definition:** Plain monthly activity-volume counts for each mailing list (`dev`, `user`, separate metric_ids
+  per list per the registry's existing per-list-suffix convention): total messages, distinct threads whose own
+  earliest message falls in the month, and distinct sender addresses with at least one message in the month.
+- **Direction of good:** none — a volume count alone is not a health verdict (a quiet month on user@ could mean
+  "nothing is broken" just as easily as "nobody's asking for help here anymore"); shown as context alongside the
+  reply-responsiveness metrics above, and in the site's own "List activity" chart (both lists, one line each).
+  **Role:** supporting (responsiveness).
+- **Formula:** `Messages(list, m) = |{ messages in list with occurred_at in m }|`;
+  `NewThreads(list, m) = |{ threads in list whose earliest message's occurred_at falls in m }|`;
+  `DistinctSenders(list, m) = |{ distinct sender_raw_value in list with occurred_at in m }|`.
+- **Population & exclusions:** none of the reply-responsiveness pair's exclusions apply here — every message
+  counts, including one from an automated sender, and a thread's root being automated-sent does not drop it from
+  `NewThreads`. These are raw activity-volume facts, not the reply-responsiveness population. Headcount-style (no
+  §0.6 sample-size floor, issue #27's reasoning): reports its value for any `n`, including 0, always with
+  `flag = 'ok'`. Sender addresses are raw, pre-identity-resolution strings (`sender_raw_value`) — one person
+  posting from two addresses in the same month counts twice in `DistinctSenders`.
+- **Window:** monthly, capped at each list's own Pony Mail backfill watermark (same `details_json.
+  backfill_in_progress` disclosure as the reply-responsiveness pair, so a not-yet-collected month never renders
+  as a false zero count).
+- **Required data / source:** Apache Pony Mail JSON API (metadata fields only), both lists.
+- **Strengths:** Simple, fully deterministic counts; lets a reader see for themselves whether a change in reply
+  latency/unanswered rate coincides with a change in list volume, without this project asserting a causal claim
+  either way.
+- **Weaknesses / gaming risk:** None of the usual gaming risk (a count can't be "gamed" the way a ratio can), but
+  a raw message count mixes substantive discussion with automated traffic, and mixes a single long thread's many
+  replies with many short, separate threads — `NewThreads` and `DistinctSenders` are reported alongside
+  `Messages` specifically so a reader isn't left to guess which of those shapes a given month's message count
+  represents.
+- **CHAOSS equivalent:** project-specific — no exact CHAOSS Knowledge Base metric for plain mailing-list message/
+  thread/sender volume was found (checked for a "Conversation"/"Activity"-style metric per this issue; none
+  returned a live page).
 
 ### `change_request_closure_ratio_pr` / `change_request_closure_ratio_jira_patch` (issue #136, DECISIONS.md D29)
 - **Definition:** CHAOSS's Change Request Closure Ratio — closed/opened in the period — reported as two labelled

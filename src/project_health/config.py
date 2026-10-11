@@ -90,13 +90,18 @@ class MailingListsConfig(BaseModel):
     # addresses (JIRA-to-list bridge, GitHub notifications, CI, ASF INFRA
     # automation) -- Python `re` patterns matched against a message's
     # lowercased `sender_raw_value` (schema/tables.py `MESSAGE`).
-    # `time_to_first_reply_devlist`/`unanswered_thread_rate_devlist`
-    # (METRICS.md §4) exclude any message from a matching sender as a
-    # candidate "reply", and exclude a whole thread from either metric's
-    # population when its root message's sender matches (METRICS.md
-    # `unanswered_thread_rate_devlist` "Population & exclusions": "excludes
-    # threads that are themselves auto-generated"). Additive default `[]` so
-    # a project config without this key still loads.
+    # `time_to_first_reply_devlist`/`unanswered_thread_rate_devlist` and
+    # their issue #158 user@ companions, `time_to_first_reply_userlist`/
+    # `unanswered_thread_rate_userlist` (METRICS.md §4), exclude any message
+    # from a matching sender as a candidate "reply", and exclude a whole
+    # thread from either metric's population when its root message's sender
+    # matches (METRICS.md `unanswered_thread_rate_devlist` "Population and
+    # exclusions": "excludes threads that are themselves auto-generated").
+    # The issue #158 mailing-list *volume* metrics (`mailing_list_messages_
+    # monthly_*`/`_new_threads_monthly_*`/`_distinct_senders_monthly_*`)
+    # deliberately do NOT apply this exclusion -- they count raw activity
+    # volume, not the reply-responsiveness population. Additive default
+    # `[]` so a project config without this key still loads.
     automated_senders: list[str] = []
 
 

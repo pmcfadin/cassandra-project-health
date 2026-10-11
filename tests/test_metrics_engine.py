@@ -2441,7 +2441,7 @@ def test_time_to_first_response_jira_empty_checked_table_never_flags_backfill():
     """An entirely empty `comment_backfill_checked` table (e.g. every golden
     test above this section, none of which model backfill state at all) is
     treated as "not modeling backfill" and never flags any month -- mirrors
-    `_devlist_eligible_months`'s `watermark_month=None` fallback for the
+    `_mailing_list_eligible_months`'s `watermark_month=None` fallback for the
     same reason."""
     issue_rows = [
         {
@@ -2856,3 +2856,355 @@ def test_devlist_metrics_never_missing_when_no_messages_collected_yet():
     assert unanswered_rows[0]["n"] == 0
     assert unanswered_rows[0]["value"] is None
     assert unanswered_rows[0]["flag"] == "insufficient_data"
+
+
+# --- time_to_first_reply_userlist / unanswered_thread_rate_userlist (issue #158) --
+
+
+def test_userlist_metrics_golden_mirrors_devlist_and_lists_are_isolated():
+    """Issue #158: user@ reuses the exact same definitions/populations/
+    exclusions as the devlist pair (self-replies and automated senders
+    excluded, dense months, the 30-day completed-period rule for the
+    unanswered rate) -- this scenario mixes dev@ and user@ messages in the
+    same run and asserts each list's metrics only ever see its own list's
+    threads, reported as separate series."""
+    rows = []
+
+    def add(list_name: str, thread_id: str, sender: str, when: datetime) -> None:
+        rows.append(
+            {
+                "thread_id": thread_id,
+                "sender_raw_value": sender,
+                "occurred_at": when,
+                "list": list_name,
+            }
+        )
+
+    # user@ t1..t5: five qualifying, answered threads (1-5 day replies).
+    for i, delay_days in enumerate((1, 2, 3, 4, 5), start=1):
+        tid = f"u{i}"
+        add("user", tid, "alice@a.org", _ts(2024, 1, 2))
+        add("user", tid, f"replier{i}@a.org", _ts(2024, 1, 2 + delay_days))
+
+    # user@ t6: self-reply only -- never counts as an answer.
+    add("user", "u6", "alice@a.org", _ts(2024, 1, 8))
+    add("user", "u6", "alice@a.org", _ts(2024, 1, 9))
+
+    # user@ t7: automated-sender reply only -- never counts as an answer.
+    add("user", "u7", "alice@a.org", _ts(2024, 1, 10))
+    add("user", "u7", "jenkins@builds.apache.org", _ts(2024, 1, 11))
+
+    # user@ t8: automated-sender *root* -- excluded from the population
+    # entirely, even though it has a real, fast human reply.
+    add("user", "u8", "jenkins@builds.apache.org", _ts(2024, 1, 12))
+    add("user", "u8", "bob@a.org", _ts(2024, 1, 13))
+
+    # A single dev@ thread, same thread_id namespace as a user@ one would
+    # use, with a reply fast enough it would change the user@ median if the
+    # two lists were ever accidentally mixed together.
+    add("dev", "u1", "carol@a.org", _ts(2024, 1, 2))
+    add("dev", "u1", "dave@a.org", _ts(2024, 1, 2, hh=13))
+
+    message_table = messages(rows)
+    as_of = date(2024, 4, 5)
+
+    result = compute_all(
+        {"message": message_table},
+        as_of=as_of,
+        run_id=RUN_ID,
+        computed_at=COMPUTED_AT,
+        config=CONFIG,
+    )
+
+    reply_rows = _rows_for(result, "time_to_first_reply_userlist")
+    assert [r["window_start"] for r in reply_rows] == [
+        date(2024, 1, 1),
+        date(2024, 2, 1),
+        date(2024, 3, 1),
+    ]
+    jan = reply_rows[0]
+    assert jan["n"] == 5  # u1..u5 only -- u6/u7 excluded, u8's automated root dropped
+    assert jan["flag"] == "ok"
+    assert jan["value"] == pytest.approx(3.0)  # median of [1, 2, 3, 4, 5] days
+    jan_details = _details(jan)
+    assert jan_details["threads_started"] == 7  # u1..u7 (u8's automated root excludes it)
+
+    unanswered_rows = _rows_for(result, "unanswered_thread_rate_userlist")
+    assert [r["window_start"] for r in unanswered_rows] == [date(2024, 1, 1), date(2024, 2, 1)]
+    jan_u = unanswered_rows[0]
+    assert jan_u["n"] == 7
+    assert jan_u["value"] == pytest.approx(2 / 7)  # u6, u7 unanswered out of 7 qualifying threads
+
+    # The dev@ thread sharing the "u1" thread_id must never leak into
+    # user@'s own population -- also check dev@'s own series sees exactly
+    # that one thread, isolated the other direction too.
+    dev_reply_rows = _rows_for(result, "time_to_first_reply_devlist")
+    dev_jan = dev_reply_rows[0]
+    # Exactly dev@'s own one thread ("carol"/"dave") -- not the 7 user@
+    # threads that happen to share the "u1" thread_id namespace. n=1 is
+    # below the latency floor (5), so it still renders insufficient_data,
+    # but the isolation itself is what `n == 1` (not 8) proves.
+    assert dev_jan["n"] == 1
+    assert dev_jan["value"] is None
+    assert dev_jan["flag"] == "insufficient_data"
+    assert _details(dev_jan)["threads_started"] == 1
+
+
+def test_userlist_metrics_watermark_caps_backfill_gap_independently_of_devlist():
+    """Issue #158: user@'s own Pony Mail watermark gates user@'s dense-month
+    range independently of dev@'s -- a backfill gap on one list must never
+    affect the other list's own eligible-months computation."""
+    rows = [
+        {
+            "thread_id": "old1",
+            "sender_raw_value": "alice@a.org",
+            "occurred_at": _ts(2020, 1, 5),
+            "list": "user",
+        },
+        {
+            "thread_id": "old1",
+            "sender_raw_value": "bob@a.org",
+            "occurred_at": _ts(2020, 1, 6),
+            "list": "user",
+        },
+        {
+            "thread_id": "new1",
+            "sender_raw_value": "carol@a.org",
+            "occurred_at": _ts(2024, 8, 1),
+            "list": "user",
+        },
+        {
+            "thread_id": "new1",
+            "sender_raw_value": "dave@a.org",
+            "occurred_at": _ts(2024, 8, 2),
+            "list": "user",
+        },
+        # dev@ has full, un-backfilled history (no "dev" watermark supplied)
+        # -- its own dense range must still be the ordinary, uncapped one.
+        {
+            "thread_id": "dev1",
+            "sender_raw_value": "erin@a.org",
+            "occurred_at": _ts(2024, 1, 10),
+            "list": "dev",
+        },
+        {
+            "thread_id": "dev1",
+            "sender_raw_value": "frank@a.org",
+            "occurred_at": _ts(2024, 1, 11),
+            "list": "dev",
+        },
+    ]
+    message_table = messages(rows)
+
+    result = compute_all(
+        {"message": message_table},
+        as_of=date(2024, 9, 10),
+        run_id=RUN_ID,
+        computed_at=COMPUTED_AT,
+        config=CONFIG,
+        ponymail_watermarks={"user": "2020-03"},
+    )
+
+    user_reply_rows = _rows_for(result, "time_to_first_reply_userlist")
+    assert [r["window_start"] for r in user_reply_rows] == [
+        date(2020, 1, 1),
+        date(2020, 2, 1),
+        date(2020, 3, 1),
+        date(2024, 8, 1),
+    ]
+    for row in user_reply_rows:
+        assert _details(row)["backfill_in_progress"] is True
+
+    # dev@'s own dense range (Jan 2024 through the last completed month,
+    # Mar 2024) is unaffected by user@'s watermark -- no backfill flag.
+    dev_reply_rows = _rows_for(result, "time_to_first_reply_devlist")
+    assert [r["window_start"] for r in dev_reply_rows] == [
+        date(2024, 1, 1),
+        date(2024, 2, 1),
+        date(2024, 3, 1),
+        date(2024, 4, 1),
+        date(2024, 5, 1),
+        date(2024, 6, 1),
+        date(2024, 7, 1),
+        date(2024, 8, 1),
+    ]
+    for row in dev_reply_rows:
+        assert "backfill_in_progress" not in _details(row)
+
+
+def test_userlist_metrics_never_missing_when_no_messages_collected_yet():
+    """Mirrors test_devlist_metrics_never_missing_when_no_messages_collected_yet
+    for the issue #158 user@ companions -- a registered metric must never
+    come back with zero rows."""
+    result = compute_all(
+        {},
+        as_of=AS_OF,
+        run_id=RUN_ID,
+        computed_at=COMPUTED_AT,
+        config=CONFIG,
+    )
+
+    reply_rows = _rows_for(result, "time_to_first_reply_userlist")
+    assert len(reply_rows) == 1
+    assert reply_rows[0]["n"] == 0
+    assert reply_rows[0]["value"] is None
+    assert reply_rows[0]["flag"] == "insufficient_data"
+
+    unanswered_rows = _rows_for(result, "unanswered_thread_rate_userlist")
+    assert len(unanswered_rows) == 1
+    assert unanswered_rows[0]["n"] == 0
+    assert unanswered_rows[0]["value"] is None
+    assert unanswered_rows[0]["flag"] == "insufficient_data"
+
+
+# --- mailing_list_messages_monthly / _new_threads_monthly / _distinct_senders_monthly
+# (issue #158) -----------------------------------------------------------------
+
+
+def test_mailing_list_volume_metrics_golden_counts_dense_months_no_exclusions():
+    """Issue #158: plain monthly volume, both lists -- no automated-sender
+    or self-reply exclusion (unlike the reply-responsiveness metrics,
+    these are raw activity counts), dense months, no sample-size floor
+    (always flag='ok', value=n)."""
+    rows = [
+        # dev@ Jan 2024: 2 threads, 3 messages, 2 distinct senders (jenkins
+        # counted here even though it would be excluded from the reply
+        # metrics' population).
+        {
+            "thread_id": "d1",
+            "sender_raw_value": "alice@a.org",
+            "occurred_at": _ts(2024, 1, 2),
+            "list": "dev",
+        },
+        {
+            "thread_id": "d1",
+            "sender_raw_value": "jenkins@builds.apache.org",
+            "occurred_at": _ts(2024, 1, 3),
+            "list": "dev",
+        },
+        {
+            "thread_id": "d2",
+            "sender_raw_value": "alice@a.org",
+            "occurred_at": _ts(2024, 1, 20),
+            "list": "dev",
+        },
+        # user@ Jan 2024: 1 thread, 1 message, 1 distinct sender.
+        {
+            "thread_id": "u1",
+            "sender_raw_value": "bob@a.org",
+            "occurred_at": _ts(2024, 1, 15),
+            "list": "user",
+        },
+    ]
+    message_table = messages(rows)
+    as_of = date(2024, 4, 5)  # Jan/Feb/Mar 2024 completed.
+
+    result = compute_all(
+        {"message": message_table},
+        as_of=as_of,
+        run_id=RUN_ID,
+        computed_at=COMPUTED_AT,
+        config=CONFIG,
+    )
+
+    dev_messages = _rows_for(result, "mailing_list_messages_monthly_dev")
+    assert [r["window_start"] for r in dev_messages] == [
+        date(2024, 1, 1),
+        date(2024, 2, 1),
+        date(2024, 3, 1),
+    ]
+    jan_dev_messages = dev_messages[0]
+    assert jan_dev_messages["value"] == pytest.approx(3.0)
+    assert jan_dev_messages["n"] == 3
+    assert jan_dev_messages["flag"] == "ok"
+    for gap_row in dev_messages[1:]:  # Feb, Mar: dense, zero dev@ messages
+        assert gap_row["value"] == pytest.approx(0.0)
+        assert gap_row["n"] == 0
+        assert gap_row["flag"] == "ok"  # headcount metrics: never insufficient_data
+
+    dev_threads = _rows_for(result, "mailing_list_new_threads_monthly_dev")
+    assert dev_threads[0]["value"] == pytest.approx(2.0)  # d1, d2
+
+    dev_senders = _rows_for(result, "mailing_list_distinct_senders_monthly_dev")
+    assert dev_senders[0]["value"] == pytest.approx(2.0)  # alice, jenkins -- not excluded here
+
+    user_messages = _rows_for(result, "mailing_list_messages_monthly_user")
+    assert user_messages[0]["value"] == pytest.approx(1.0)
+    assert user_messages[0]["n"] == 1
+
+    user_threads = _rows_for(result, "mailing_list_new_threads_monthly_user")
+    assert user_threads[0]["value"] == pytest.approx(1.0)
+
+    user_senders = _rows_for(result, "mailing_list_distinct_senders_monthly_user")
+    assert user_senders[0]["value"] == pytest.approx(1.0)
+
+
+def test_mailing_list_volume_metrics_watermark_caps_backfill_gap_and_flags_it():
+    """Same backfill-safety treatment as the reply-responsiveness metrics
+    (issue #158): a not-yet-collected month must never render as a false
+    zero count."""
+    rows = [
+        {
+            "thread_id": "old1",
+            "sender_raw_value": "alice@a.org",
+            "occurred_at": _ts(2020, 1, 5),
+            "list": "dev",
+        },
+        {
+            "thread_id": "new1",
+            "sender_raw_value": "bob@a.org",
+            "occurred_at": _ts(2024, 8, 1),
+            "list": "dev",
+        },
+    ]
+    message_table = messages(rows)
+
+    result = compute_all(
+        {"message": message_table},
+        as_of=date(2024, 9, 10),
+        run_id=RUN_ID,
+        computed_at=COMPUTED_AT,
+        config=CONFIG,
+        ponymail_watermarks={"dev": "2020-03"},
+    )
+
+    dev_messages = _rows_for(result, "mailing_list_messages_monthly_dev")
+    assert [r["window_start"] for r in dev_messages] == [
+        date(2020, 1, 1),
+        date(2020, 2, 1),
+        date(2020, 3, 1),
+        date(2024, 8, 1),
+    ]
+    for row in dev_messages:
+        assert _details(row)["backfill_in_progress"] is True
+    assert dev_messages[0]["value"] == pytest.approx(1.0)
+    assert dev_messages[-1]["value"] == pytest.approx(1.0)
+    for gap_row in dev_messages[1:3]:
+        assert gap_row["value"] == pytest.approx(0.0)
+
+
+def test_mailing_list_volume_metrics_never_missing_when_no_messages_collected_yet():
+    """A registered metric must never come back with zero rows (pipeline.py's
+    `metrics_missing` check) -- even before Pony Mail has collected any
+    history for either list at all."""
+    result = compute_all(
+        {},
+        as_of=AS_OF,
+        run_id=RUN_ID,
+        computed_at=COMPUTED_AT,
+        config=CONFIG,
+    )
+
+    for metric_id in (
+        "mailing_list_messages_monthly_dev",
+        "mailing_list_messages_monthly_user",
+        "mailing_list_new_threads_monthly_dev",
+        "mailing_list_new_threads_monthly_user",
+        "mailing_list_distinct_senders_monthly_dev",
+        "mailing_list_distinct_senders_monthly_user",
+    ):
+        rows = _rows_for(result, metric_id)
+        assert len(rows) == 1, metric_id
+        assert rows[0]["n"] == 0
+        assert rows[0]["value"] == pytest.approx(0.0)
+        assert rows[0]["flag"] == "ok"

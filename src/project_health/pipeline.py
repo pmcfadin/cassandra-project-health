@@ -82,6 +82,13 @@ never rewritten or deleted:
   different reason. `collectors/governance_git.py`'s `commit_record` table
   gets the identical treatment, keyed on its own plain `sha` column, via
   `_dedupe_governance_commit_records`.
+- `message` rows (issue #35/#158) are deduped on `(list, message_id)` --
+  **not** `message_id` alone: a real RFC `Message-ID` can be, and on
+  Cassandra's own archive is (902 cases), cross-posted to more than one
+  configured list, and each list's copy is its own real archive fact worth
+  keeping. `_dedupe_message_rows` keeps the latest `source_snapshot_id` per
+  `(list, message_id)`, same "current month always re-fetched" overlap
+  reason `collectors/ponymail.py` documents.
 """
 
 from __future__ import annotations
@@ -546,28 +553,42 @@ def _dedupe_release_rows(table: pa.Table) -> pa.Table:
 
 
 def _dedupe_message_rows(table: pa.Table) -> pa.Table:
-    """Keep the latest `source_snapshot_id` row per `message_id` (issue #35).
+    """Keep the latest `source_snapshot_id` row per `(list, message_id)`
+    (issue #35; keyed on `(list, message_id)` rather than `message_id`
+    alone since issue #158's orchestrator review: a real RFC `Message-ID`
+    can be cross-posted to more than one configured list -- 902 of them are,
+    on Cassandra's own dev@/user@ -- and a dedupe keyed on `message_id`
+    alone collapses a cross-posted message's two independent per-list
+    archive copies into a single row, silently dropping whichever list's
+    copy didn't happen to have the lexicographically-latest
+    `source_snapshot_id` (in practice, almost always the user@ copy on this
+    project's data, since `list = 'user'` is processed after `list = 'dev'`
+    within most runs). The two copies are genuinely two distinct facts --
+    "this Message-ID appeared on dev@" and "this Message-ID appeared on
+    user@" are each real archive events worth keeping -- not duplicates of
+    each other, so `(list, message_id)` is this table's true natural key).
 
     `collectors/ponymail.py`'s watermark strategy always re-fetches the
     list's current month in full on every run (ARCHITECTURE.md §4.3), so the
-    same `message_id` can land in more than one run's raw partition before
-    that month completes. `source_snapshot_id` is `f"{run_id}:ponymail"`
-    (collectors/ponymail.py), and `run_id`s sort lexicographically by
-    collection time (same convention `_dedupe_roster_entries` relies on), so
-    "latest `source_snapshot_id`" is "latest run that saw this message" --
-    content for a given `message_id` never actually changes between runs
-    (it's an immutable archived email), so this is a pure dedupe, not a
-    "pick the freshest fact" resolution the way `_dedupe_issue_rows` is.
+    same `(list, message_id)` can land in more than one run's raw partition
+    before that month completes. `source_snapshot_id` is
+    `f"{run_id}:ponymail"` (collectors/ponymail.py), and `run_id`s sort
+    lexicographically by collection time (same convention
+    `_dedupe_roster_entries` relies on), so "latest `source_snapshot_id`"
+    is "latest run that saw this message" -- content for a given
+    `(list, message_id)` never actually changes between runs (it's an
+    immutable archived email), so this is a pure dedupe, not a "pick the
+    freshest fact" resolution the way `_dedupe_issue_rows` is.
     """
     if table.num_rows == 0:
         return table
-    best: dict[str, dict[str, Any]] = {}
+    best: dict[tuple[str, str], dict[str, Any]] = {}
     for row in table.to_pylist():
-        message_id = row["message_id"]
-        current = best.get(message_id)
+        key = (row["list"], row["message_id"])
+        current = best.get(key)
         if current is None or row["source_snapshot_id"] > current["source_snapshot_id"]:
-            best[message_id] = row
-    kept = sorted(best.values(), key=lambda r: r["message_id"])
+            best[key] = row
+    kept = sorted(best.values(), key=lambda r: (r["list"], r["message_id"]))
     return pa.Table.from_pylist(kept, schema=table.schema)
 
 

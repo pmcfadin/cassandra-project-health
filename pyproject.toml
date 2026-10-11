@@ -10,7 +10,7 @@ readme = "README.md"
 license = {text = "Apache License 2.0"}
 requires-python = ">=3.12"
 dependencies = [
-    "duckdb>=1.0.0",
+    "duckdb>=1.5.6",
     # issue #102: DuckDB's Python client needs pytz at runtime to construct
     # timezone-aware `datetime` objects when a query result column is fetched
     # (`.fetchall()`) as `TIMESTAMPTZ` -- every other metric in this project

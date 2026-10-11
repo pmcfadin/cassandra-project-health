@@ -382,3 +382,16 @@ def test_expand_dialog_present_on_every_page(tmp_path):
         html_text = (out_dir / page).read_text()
         assert html_text.count('id="chart-expand-dialog"') == 1
         assert "static/chart_expand.js" in html_text
+
+
+def test_closed_expand_dialog_is_hidden_by_css():
+    """A display rule on the <dialog> itself overrides the UA's hiding of a
+    closed dialog; display must be scoped to [open] and :not([open]) hidden."""
+    from pathlib import Path
+    import re
+
+    css = Path("src/project_health/site/static/style.css").read_text()
+    assert re.search(r"\.chart-expand-dialog:not\(\[open\]\)\s*\{\s*display:\s*none", css)
+    assert re.search(r"\.chart-expand-dialog\[open\]\s*\{\s*display:\s*flex", css)
+    base_rule = re.search(r"\.chart-expand-dialog\s*\{[^}]*\}", css).group(0)
+    assert "display" not in base_rule

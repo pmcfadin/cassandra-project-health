@@ -1237,6 +1237,15 @@ main {
 /* The dialog itself: ~90vw x 85vh on desktop, full-screen at <=640px
    (issue #156's own spec) -- `<dialog>` handles the backdrop, focus trap
    and Esc-to-close natively, so none of that is reimplemented here. */
+/* `display` set only while open: an author `display` on a <dialog> overrides
+   the browser's own hiding of a closed dialog, which left an empty box at
+   the bottom of every page. */
+.chart-expand-dialog:not([open]) {
+  display: none;
+}
+.chart-expand-dialog[open] {
+  display: flex;
+}
 .chart-expand-dialog {
   width: 90vw;
   height: 85vh;
@@ -1247,7 +1256,6 @@ main {
   background: var(--bg);
   color: var(--fg);
   padding: 1rem;
-  display: flex;
   flex-direction: column;
   gap: 0.5rem;
   /* A chart with many controls (tone-over-time's 7 series checkboxes

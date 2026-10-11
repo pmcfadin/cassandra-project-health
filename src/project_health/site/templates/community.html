@@ -291,13 +291,22 @@
     </p>
     <p class="card-staleness">
       {{ contributor_pipeline.survival.event_count }} churn event(s),
-      {{ contributor_pipeline.survival.censored_count }} still-active (censored)
+      {{ contributor_pipeline.survival.censored_count }} still-active (censored),
+      {{ contributor_pipeline.survival.max_follow_up_months }} months max follow-up
     </p>
     {% call charts.chart_shell("Contributor tenure survival curve") %}
     <div class="chart" data-vega-spec='{{ contributor_pipeline.survival.vega_spec_json }}' data-chart-id="{{ contributor_pipeline.survival.chart_id }}" data-chart-meta='{{ contributor_pipeline.survival.chart_meta_json }}' role="img" aria-label="Contributor tenure survival curve">
       <noscript>Enable JavaScript to see this chart.</noscript>
     </div>
     {% endcall %}
+    <p class="governance-note">
+      Tick marks show right-censored (still-active) contributors at the time they were last
+      observed.
+      {% if contributor_pipeline.survival.has_faded_tail %}
+      The curve beyond the point where fewer than 10 contributors remain at risk is shown at
+      reduced opacity -- it rests on very few people and is noisier than the rest of the line.
+      {% endif %}
+    </p>
     {% else %}
     <h4>Tenure survival</h4>
     <p class="card-empty-state">

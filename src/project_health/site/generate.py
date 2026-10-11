@@ -905,15 +905,46 @@ _FUNNEL_STAGE_LABELS: dict[str, str] = {
 }
 
 
-def _km_curve_vega_spec(curve: list[dict[str, Any]]) -> dict[str, Any]:
+# issue #159 (orchestrator review fixup): a KM step past this few
+# contributors still at risk rests on very little data -- faded (not
+# hidden) rather than shown at the same visual confidence as the
+# well-populated part of the curve. Presentation-only, like
+# `chart_spec.LOW_N_DISPLAY_FLOOR` -- never changes `n`, `value`, or `flag`.
+KM_LOW_N_AT_RISK_FADE_THRESHOLD = 10
+KM_LOW_N_AT_RISK_OPACITY = 0.35
+
+
+def _km_curve_vega_spec(
+    curve: list[dict[str, Any]], censor_marks: list[dict[str, Any]]
+) -> dict[str, Any]:
     """A step line (survival) plus a shaded Greenwood's-formula confidence
-    band, over months-since-first-contribution. The curve always starts at
-    `(0, 1.0)` -- everyone survives at tenure zero by construction -- even
-    though `metrics/contributor_pipeline.py`'s own `details_json.curve`
-    only carries the KM estimator's actual step points (at observed event
-    times)."""
+    band, over months-since-first-contribution, extended flat out to the
+    maximum observed follow-up time (`curve`'s own last point --
+    `metrics/contributor_pipeline.py::_kaplan_meier` already appends that
+    trailing extension, standard KM-plotting convention, rather than
+    stopping the line at the last event). The curve always starts at
+    `(0, 1.0)` -- everyone survives at tenure zero by construction.
+
+    The tail past `KM_LOW_N_AT_RISK_FADE_THRESHOLD` contributors still at
+    risk renders at reduced opacity (both the line and its CI band) -- a
+    second, separately-styled pair of layers rather than a per-point
+    opacity channel, since a single `line`/`area` mark renders one
+    continuous path and Vega-Lite has no per-*segment* opacity; the split
+    point is duplicated into both halves so the two segments still meet
+    with no visual gap.
+
+    `censor_marks` adds a small tick at each right-censored contributor's
+    own `(time, survival-at-that-time)` -- the standard KM-plot convention
+    for marking a censoring event without implying a step/drop."""
+    first_n_at_risk = curve[0]["n_at_risk"] if curve else None
     values: list[dict[str, Any]] = [
-        {"t_months": 0.0, "survival": 1.0, "ci_low": 1.0, "ci_high": 1.0}
+        {
+            "t_months": 0.0,
+            "survival": 1.0,
+            "ci_low": 1.0,
+            "ci_high": 1.0,
+            "n_at_risk": first_n_at_risk,
+        }
     ]
     for point in curve:
         values.append(
@@ -922,15 +953,105 @@ def _km_curve_vega_spec(curve: list[dict[str, Any]]) -> dict[str, Any]:
                 "survival": point["survival"],
                 "ci_low": point["ci_low"],
                 "ci_high": point["ci_high"],
+                "n_at_risk": point["n_at_risk"],
             }
         )
+
+    split_index = len(values)
+    for i, v in enumerate(values):
+        if v["n_at_risk"] is not None and v["n_at_risk"] < KM_LOW_N_AT_RISK_FADE_THRESHOLD:
+            split_index = i
+            break
+    stable_values = values[: split_index + 1]
+    faded_values = values[split_index:] if split_index < len(values) else []
+
+    tooltip = [
+        {"field": "t_months", "type": "quantitative", "title": "Months"},
+        {
+            "field": "survival",
+            "type": "quantitative",
+            "title": "Survival probability",
+            "format": ".1%",
+        },
+        {"field": "ci_low", "type": "quantitative", "title": "95% CI, low", "format": ".1%"},
+        {"field": "ci_high", "type": "quantitative", "title": "95% CI, high", "format": ".1%"},
+        {"field": "n_at_risk", "type": "quantitative", "title": "n at risk"},
+    ]
+
+    def _band_layer(layer_values: list[dict[str, Any]], opacity: float) -> dict[str, Any]:
+        return {
+            "data": {"values": layer_values},
+            "mark": {"type": "area", "opacity": opacity * 0.2, "interpolate": "step-after"},
+            "encoding": {
+                "y": {
+                    "field": "ci_low",
+                    "type": "quantitative",
+                    "title": "Survival probability",
+                    "scale": {"domain": [0, 1]},
+                    "axis": {"format": ".0%"},
+                },
+                "y2": {"field": "ci_high"},
+            },
+        }
+
+    def _line_layer(layer_values: list[dict[str, Any]], opacity: float) -> dict[str, Any]:
+        return {
+            "data": {"values": layer_values},
+            "mark": {
+                "type": "line",
+                "interpolate": "step-after",
+                "clip": True,
+                "opacity": opacity,
+            },
+            "encoding": {
+                "y": {"field": "survival", "type": "quantitative"},
+                "tooltip": tooltip,
+            },
+        }
+
+    layers: list[dict[str, Any]] = [
+        _band_layer(stable_values, 1.0),
+        _line_layer(stable_values, 1.0),
+    ]
+    if faded_values:
+        layers.append(_band_layer(faded_values, KM_LOW_N_AT_RISK_OPACITY))
+        layers.append(_line_layer(faded_values, KM_LOW_N_AT_RISK_OPACITY))
+
+    if censor_marks:
+        layers.append(
+            {
+                "data": {
+                    "values": [
+                        {"t_months": mark["t_months"], "survival": mark["survival"]}
+                        for mark in censor_marks
+                    ]
+                },
+                "mark": {"type": "tick", "thickness": 2, "size": 7, "opacity": 0.8},
+                "encoding": {
+                    "y": {"field": "survival", "type": "quantitative"},
+                    "tooltip": [
+                        {
+                            "field": "t_months",
+                            "type": "quantitative",
+                            "title": "Months (censored)",
+                        },
+                        {
+                            "field": "survival",
+                            "type": "quantitative",
+                            "title": "Survival probability",
+                            "format": ".1%",
+                        },
+                    ],
+                },
+            }
+        )
+
     return {
         "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
         "width": "container",
         "height": 220,
         "autosize": {"type": "fit-x", "contains": "padding"},
         "background": None,
-        "data": {"values": values},
         "encoding": {
             "x": {
                 "field": "t_months",
@@ -938,48 +1059,7 @@ def _km_curve_vega_spec(curve: list[dict[str, Any]]) -> dict[str, Any]:
                 "title": "Months since first contribution",
             }
         },
-        "layer": [
-            {
-                "mark": {"type": "area", "opacity": 0.2, "interpolate": "step-after"},
-                "encoding": {
-                    "y": {
-                        "field": "ci_low",
-                        "type": "quantitative",
-                        "title": "Survival probability",
-                        "scale": {"domain": [0, 1]},
-                        "axis": {"format": ".0%"},
-                    },
-                    "y2": {"field": "ci_high"},
-                },
-            },
-            {
-                "mark": {"type": "line", "interpolate": "step-after", "clip": True},
-                "encoding": {
-                    "y": {"field": "survival", "type": "quantitative"},
-                    "tooltip": [
-                        {"field": "t_months", "type": "quantitative", "title": "Months"},
-                        {
-                            "field": "survival",
-                            "type": "quantitative",
-                            "title": "Survival probability",
-                            "format": ".1%",
-                        },
-                        {
-                            "field": "ci_low",
-                            "type": "quantitative",
-                            "title": "95% CI, low",
-                            "format": ".1%",
-                        },
-                        {
-                            "field": "ci_high",
-                            "type": "quantitative",
-                            "title": "95% CI, high",
-                            "format": ".1%",
-                        },
-                    ],
-                },
-            },
-        ],
+        "layer": layers,
         "config": {"view": {"stroke": None}},
     }
 
@@ -1070,6 +1150,10 @@ def build_contributor_pipeline_context(data_dir: Path, run_id: str) -> dict[str,
         latest = survival_rows[-1]
         details = json.loads(latest["details_json"]) if latest["details_json"] else {}
         if latest["flag"] == "ok" and details.get("curve"):
+            curve = details["curve"]
+            has_faded_tail = any(
+                point["n_at_risk"] < KM_LOW_N_AT_RISK_FADE_THRESHOLD for point in curve
+            )
             ctx["survival"] = {
                 "insufficient": False,
                 "cohort_size": details.get("cohort_size"),
@@ -1077,10 +1161,14 @@ def build_contributor_pipeline_context(data_dir: Path, run_id: str) -> dict[str,
                 "censored_count": details.get("censored_count"),
                 "median_tenure_months": details.get("median_tenure_months"),
                 "median_not_reached": details.get("median_not_reached"),
+                "max_follow_up_months": details.get("max_follow_up_months"),
+                "has_faded_tail": has_faded_tail,
                 "window_start": latest["window_start"],
                 "window_end": latest["window_end"],
                 "chart_id": "contributor_tenure_survival_curve",
-                "vega_spec_json": json.dumps(_km_curve_vega_spec(details["curve"])),
+                "vega_spec_json": json.dumps(
+                    _km_curve_vega_spec(curve, details.get("censor_marks", []))
+                ),
                 "chart_meta_json": chart_spec.chart_meta_json(
                     chart_id="contributor_tenure_survival_curve",
                     title="Contributor tenure survival (Kaplan–Meier)",

@@ -13,7 +13,7 @@ is always the current, excluded month.
 from __future__ import annotations
 
 import json
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import pyarrow as pa
 import pytest
@@ -334,6 +334,10 @@ def test_contributor_tenure_survival_golden_curve_at_floor():
     assert point["n_events"] == 30
     assert point["ci_low"] == pytest.approx(0.0)
     assert point["ci_high"] == pytest.approx(0.0)
+    # Everyone's duration is 0 (no censored contributors, no later
+    # follow-up) -- no extension point past the one event, no censor marks.
+    assert details["max_follow_up_days"] == 0
+    assert details["censor_marks"] == []
 
 
 def test_contributor_tenure_survival_censors_a_recently_active_contributor():
@@ -341,10 +345,11 @@ def test_contributor_tenure_survival_censors_a_recently_active_contributor():
     # (event at t=0); 1 ("recent") commits again close to AS_OF, so their
     # inactivity_cutoff (last + 365d) is still in the future -- right-
     # censored at as_of - first, not treated as churned.
+    recent_first = date(2022, 6, 1)
     rows = []
     for i in range(29):
         rows += _commits(f"dev{i}@example.org", [date(2022, 6, 1)])
-    rows += _commits("recent@example.org", [date(2022, 6, 1), date(2024, 1, 1)])
+    rows += _commits("recent@example.org", [recent_first, date(2024, 1, 1)])
 
     result = _compute(rows)
     row = _rows_for(result, "contributor_tenure_survival")[0]
@@ -352,13 +357,29 @@ def test_contributor_tenure_survival_censors_a_recently_active_contributor():
     details = _details(row)
     assert details["event_count"] == 29
     assert details["censored_count"] == 1
+
+    censor_duration = (AS_OF - recent_first).days
+
     # The one censored contributor doesn't produce a KM step of its own
-    # (only event times do) -- the curve still drops fully to 0 at the
-    # shared event time (t=0) among the other 29.
-    assert len(details["curve"]) == 1
-    assert details["curve"][0]["t_days"] == 0
-    assert details["curve"][0]["n_events"] == 29
-    assert details["curve"][0]["n_at_risk"] == 30  # the censored one is still at risk at t=0
+    # (only event times do), but the curve now (orchestrator review of
+    # issue #159 fixup) extends flat out to the maximum observed follow-up
+    # time -- here, the censored contributor's own duration -- rather than
+    # stopping at the last event, so it has 2 points: the t=0 event step,
+    # and the trailing extension at the censored contributor's duration.
+    assert len(details["curve"]) == 2
+    event_point, extension_point = details["curve"]
+    assert event_point["t_days"] == 0
+    assert event_point["n_events"] == 29
+    assert event_point["n_at_risk"] == 30  # the censored one is still at risk at t=0
+    assert extension_point["t_days"] == censor_duration
+    assert extension_point["n_events"] == 0
+    assert extension_point["n_at_risk"] == 1  # only the censored contributor is left
+    assert extension_point["survival"] == pytest.approx(event_point["survival"])
+
+    assert details["max_follow_up_days"] == censor_duration
+    assert len(details["censor_marks"]) == 1
+    assert details["censor_marks"][0]["t_days"] == censor_duration
+    assert details["censor_marks"][0]["survival"] == pytest.approx(event_point["survival"])
 
 
 def test_contributor_tenure_survival_event_time_is_dated_to_last_activity_not_window_end():
@@ -403,9 +424,16 @@ def test_contributor_tenure_survival_event_time_is_dated_to_last_activity_not_wi
 
     event_b_days = (group_b_last - group_b_first).days
     assert event_b_days == 214
+    censor_c_days = (AS_OF - group_c_first).days
+    assert censor_c_days > event_b_days  # group C's censoring duration is the max follow-up
 
+    # Orchestrator review of issue #159 fixup: the curve now extends flat
+    # out to the maximum observed follow-up time -- group C's censoring
+    # duration -- not just to the last EVENT time, so it has 3 points: the
+    # two event steps (t=0, t=event_b_days) plus a trailing extension at
+    # censor_c_days.
     curve_by_t = {point["t_days"]: point for point in details["curve"]}
-    assert set(curve_by_t) == {0, event_b_days}
+    assert set(curve_by_t) == {0, event_b_days, censor_c_days}
 
     # t=0: all 30 still at risk (group C's censoring duration is far larger
     # than 0), 10 events (group A). Ŝ(0) = 1 - 10/30 = 2/3.
@@ -422,9 +450,85 @@ def test_contributor_tenure_survival_event_time_is_dated_to_last_activity_not_wi
     assert point_b["n_events"] == 10
     assert point_b["survival"] == pytest.approx((20 / 30) * (1 - 10 / 20), abs=1e-4)
 
+    # t=censor_c_days: the trailing extension point -- only group C (10
+    # people, all sharing the same censoring duration) is still at risk;
+    # no event there, survival unchanged from the event_b_days step.
+    point_c = curve_by_t[censor_c_days]
+    assert point_c["n_at_risk"] == 10
+    assert point_c["n_events"] == 0
+    assert point_c["survival"] == pytest.approx(point_b["survival"], abs=1e-4)
+
     assert details["median_tenure_days"] == event_b_days
     assert details["median_not_reached"] is False
-    # Ŝ(365 days) reads off the last step at or before t=365 -- still the
-    # event_b_days step (214 < 365), since no censored contributor's
-    # duration crosses the 365d mark to produce a later step.
+    # Ŝ(365 days) reads off the last point at or before t=365 -- that's the
+    # censor_c_days extension point here (288 < 365 < the next thing that
+    # would exist), but since the extension only carries the event_b_days
+    # step's value forward unchanged, the number is the same either way.
+    assert censor_c_days < 365
     assert details["survival_at_12m"] == pytest.approx(point_b["survival"], abs=1e-4)
+
+    assert details["max_follow_up_days"] == censor_c_days
+    # All 10 group-C members share the identical first/last commit dates,
+    # so they all produce the same censor mark.
+    assert len(details["censor_marks"]) == 10
+    for mark in details["censor_marks"]:
+        assert mark["t_days"] == censor_c_days
+        assert mark["survival"] == pytest.approx(point_b["survival"], abs=1e-4)
+
+
+def test_contributor_tenure_survival_curve_tracks_at_risk_through_staggered_censoring():
+    """Orchestrator review of issue #159 fixup: the curve must carry a
+    point at every distinct observed time (event or censoring), not just
+    event times, so the low-n tail fade has a real point to split on where
+    the risk set actually crosses the threshold -- not just at the final
+    point. 20 contributors churn together at t=0; 15 more are censored at
+    15 distinct, staggered durations (50, 60, ..., 190 days), so n_at_risk
+    declines one-by-one across those 15 points (15, 14, ..., 1) instead of
+    jumping straight from 20 to 1.
+    """
+    rows = []
+    for i in range(20):
+        rows += _commits(f"onetimer{i}@example.org", [date(2022, 6, 1)])
+
+    staggered_durations = list(range(50, 200, 10))  # 50, 60, ..., 190 -- 15 values
+    assert len(staggered_durations) == 15
+    for i, duration_days in enumerate(staggered_durations):
+        first = AS_OF - timedelta(days=duration_days)
+        rows += _commits(f"staggered{i}@example.org", [first])
+
+    result = _compute(rows)
+    row = _rows_for(result, "contributor_tenure_survival")[0]
+    assert row["n"] == 35
+    assert row["flag"] == "ok"
+
+    details = _details(row)
+    assert details["event_count"] == 20
+    assert details["censored_count"] == 15
+    assert details["max_follow_up_days"] == 190
+
+    curve_by_t = {point["t_days"]: point for point in details["curve"]}
+    # One point for the t=0 event, plus one per distinct staggered
+    # censoring duration -- the engine must not collapse the 15 distinct
+    # censoring times down to just a single trailing point.
+    assert set(curve_by_t) == {0, *staggered_durations}
+
+    assert curve_by_t[0]["n_at_risk"] == 35
+    assert curve_by_t[0]["n_events"] == 20
+
+    # n_at_risk declines by exactly 1 at each successive staggered
+    # censoring point (15 down to 1), with n_events == 0 throughout (none
+    # of these are confirmed churns).
+    for rank, duration_days in enumerate(staggered_durations):
+        point = curve_by_t[duration_days]
+        assert point["n_at_risk"] == 15 - rank
+        assert point["n_events"] == 0
+
+    # The low-n fade threshold (10) is first crossed at the 7th staggered
+    # point (n_at_risk drops from 10 to 9 there) -- a real, distinct point
+    # mid-curve, not just the final one.
+    first_faded = staggered_durations[6]
+    assert curve_by_t[first_faded]["n_at_risk"] == 9
+    assert curve_by_t[staggered_durations[5]]["n_at_risk"] == 10
+
+    assert len(details["censor_marks"]) == 15
+    assert {mark["t_days"] for mark in details["censor_marks"]} == set(staggered_durations)

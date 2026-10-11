@@ -480,27 +480,52 @@ def _kaplan_meier(durations: list[tuple[int, str]]) -> dict:
     band (METRICS.md `contributor_tenure_survival`'s own formula:
     `Ŝ(t) = Π_{t_i<=t} (1 - d_i/n_i)`). `durations` is
     `[(duration_days, "event"|"censored"), ...]`. Returns `{"curve": [...],
-    "median_days": int | None}` -- `median_days` is the first event time at
-    which Ŝ(t) <= 0.5, or `None` if the curve never reaches it (a
-    legitimate, healthy outcome -- "median not reached" -- not a computation
-    failure, see `_contributor_tenure_survival`'s own handling of this)."""
-    if not durations:
-        return {"curve": [], "median_days": None}
+    "median_days": int | None, "censor_marks": [...], "max_duration_days":
+    int | None}`:
 
-    event_times = sorted({d for d, status in durations if status == "event"})
+    - `median_days` is the first event time at which Ŝ(t) <= 0.5, or
+      `None` if the curve never reaches it (a legitimate, healthy outcome
+      -- "median not reached" -- not a computation failure, see
+      `_contributor_tenure_survival`'s own handling of this).
+    - `curve` carries one point for every distinct observed time (event OR
+      censoring), not just event times. Survival only ever steps at an
+      event time -- `n_events == 0` for a censoring-only point -- but
+      `n_at_risk` is recorded at every observed time, because the risk set
+      shrinks at a censoring too, just without a drop in Ŝ(t). This serves
+      two purposes: (1) the last point is always at the maximum observed
+      follow-up time (event or censoring), so the curve extends flat out
+      to the true end of observation rather than stopping at the last
+      event, which would understate how long this project has actually
+      been watching the cohort for; (2) the site's low-n tail fade
+      (`site/generate.py::KM_LOW_N_AT_RISK_FADE_THRESHOLD`) has a real
+      point to split on at the moment the risk set actually crosses that
+      threshold, not just at the final point (orchestrator review of issue
+      #159 fixup).
+    - `censor_marks` is one entry per right-censored contributor,
+      `{t_days, t_months, survival}` -- `survival` is the step-function
+      value as of that contributor's own censoring time, for the site's
+      censoring-tick layer (another standard KM-plot convention: a
+      censored observation gets a tick, not a step, since it isn't a
+      confirmed event).
+    """
+    if not durations:
+        return {"curve": [], "median_days": None, "censor_marks": [], "max_duration_days": None}
+
+    all_times = sorted({d for d, _status in durations})
     survival = 1.0
     greenwood_sum = 0.0
     curve: list[dict] = []
     median_days: int | None = None
 
-    for t in event_times:
+    for t in all_times:
         at_risk = sum(1 for d, _status in durations if d >= t)
         events_at_t = sum(1 for d, status in durations if d == t and status == "event")
         if at_risk == 0:
             continue
-        survival *= 1 - events_at_t / at_risk
-        if at_risk > events_at_t:
-            greenwood_sum += events_at_t / (at_risk * (at_risk - events_at_t))
+        if events_at_t > 0:
+            survival *= 1 - events_at_t / at_risk
+            if at_risk > events_at_t:
+                greenwood_sum += events_at_t / (at_risk * (at_risk - events_at_t))
         se = survival * math.sqrt(greenwood_sum) if survival > 0 else 0.0
         ci_low = max(0.0, survival - 1.96 * se)
         ci_high = min(1.0, survival + 1.96 * se)
@@ -518,7 +543,24 @@ def _kaplan_meier(durations: list[tuple[int, str]]) -> dict:
         if median_days is None and survival <= 0.5:
             median_days = t
 
-    return {"curve": curve, "median_days": median_days}
+    max_duration = all_times[-1]
+
+    censor_marks = [
+        {
+            "t_days": d,
+            "t_months": round(d / 30.4368, 2),
+            "survival": _survival_at(curve, d),
+        }
+        for d, status in durations
+        if status == "censored"
+    ]
+
+    return {
+        "curve": curve,
+        "median_days": median_days,
+        "censor_marks": censor_marks,
+        "max_duration_days": max_duration,
+    }
 
 
 def _survival_at(curve: list[dict], t_days: float) -> float:
@@ -674,6 +716,13 @@ def _contributor_tenure_survival(
                 ),
                 "median_not_reached": km["median_days"] is None,
                 "curve": km["curve"],
+                "censor_marks": km["censor_marks"],
+                "max_follow_up_days": km["max_duration_days"],
+                "max_follow_up_months": (
+                    round(km["max_duration_days"] / 30.4368, 2)
+                    if km["max_duration_days"] is not None
+                    else None
+                ),
             },
         )
     ]

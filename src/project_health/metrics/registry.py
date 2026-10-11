@@ -61,6 +61,12 @@ _VERSIONS: dict[str, str] = {
     "release_regularity": "1.0",
     "time_since_last_release": "1.0",
     "days_between_releases": "1.0",
+    # issue #159 (metrics/contributor_pipeline.py)
+    "first_to_second_conversion_rate": "1.0",
+    "funnel_stage_conversion": "1.0",
+    "contributor_tenure_survival": "1.0",
+    "contributor_churn_rate": "1.0",
+    "sustained_contributor_count": "1.0",
 }
 
 _INITIAL_M0_CHANGELOG_NOTE = "Initial M0 implementation (issue #7)."
@@ -82,6 +88,16 @@ _INITIAL_ISSUE_54_CHANGELOG_NOTE = "Initial implementation (issue #54)."
 _INITIAL_ISSUE_136_CHANGELOG_NOTE = (
     "Initial implementation (issue #136, DECISIONS.md D29 -- CHAOSS Change Request Closure "
     "Ratio)."
+)
+_INITIAL_ISSUE_159_CHANGELOG_NOTE = (
+    "Initial implementation (issue #159): the five contributor-pipeline metrics METRICS.md "
+    "always named but never implemented -- first_to_second_conversion_rate, "
+    "funnel_stage_conversion, contributor_tenure_survival (Kaplan-Meier), "
+    "contributor_churn_rate, and sustained_contributor_count. 'Qualifying activity' is scoped "
+    "to code_commit only (a disclosed simplification, METRICS.md and "
+    "metrics/contributor_pipeline.py's own module docstring); funnel_stage_conversion's "
+    "committer/pmc_member stages are reported status='not_available' (no confirmed ASF-roster "
+    "-> git/JIRA identity link exists yet)."
 )
 _INITIAL_ISSUE_135_CHANGELOG_NOTE = (
     "Initial implementation (issue #135): the release cadence collector "
@@ -138,6 +154,11 @@ _CHANGELOG_NOTES: dict[str, str] = {
     "release_regularity": _INITIAL_ISSUE_135_CHANGELOG_NOTE,
     "time_since_last_release": _INITIAL_ISSUE_135_CHANGELOG_NOTE,
     "days_between_releases": _INITIAL_ISSUE_135_CHANGELOG_NOTE,
+    "first_to_second_conversion_rate": _INITIAL_ISSUE_159_CHANGELOG_NOTE,
+    "funnel_stage_conversion": _INITIAL_ISSUE_159_CHANGELOG_NOTE,
+    "contributor_tenure_survival": _INITIAL_ISSUE_159_CHANGELOG_NOTE,
+    "contributor_churn_rate": _INITIAL_ISSUE_159_CHANGELOG_NOTE,
+    "sustained_contributor_count": _INITIAL_ISSUE_159_CHANGELOG_NOTE,
 }
 
 # metric_id -> description, condensed from METRICS.md's own "## <id>" sections.
@@ -613,6 +634,73 @@ _DESCRIPTIONS: dict[str, str] = {
         "updated monthly. CHAOSS equivalent: no exact match; the closest published CHAOSS "
         "Knowledge Base entry is 'Release Frequency' (verified live 2026-10-09), which measures "
         "count-over-time rather than inter-release gap length directly. METRICS.md §6."
+    ),
+    # issue #159 (metrics/contributor_pipeline.py): the five
+    # contributor-pipeline metrics METRICS.md always named but never implemented.
+    "first_to_second_conversion_rate": (
+        "Of contributors whose first code_commit landed in cohort month m, the share who land "
+        "a second commit (any file, any time) within 180 days of the first, evaluated only "
+        "once every member's 180-day window has fully elapsed. Tier: proxy. Dimension: "
+        "contributor sustainability. Role: supporting. Direction of good: higher. Window: "
+        "cohort-month. Floor: 5 (METRICS.md §0.6 rate/ratio floor); cohorts below 30 are shown "
+        "but flagged low_confidence in details_json rather than suppressed. 'Qualifying "
+        "activity' is code_commit only -- a disclosed scope decision, see "
+        "metrics/contributor_pipeline.py's module docstring. CHAOSS equivalent: Conversion "
+        "Rate. METRICS.md."
+    ),
+    "funnel_stage_conversion": (
+        "Cohort-based conversion through the funnel stages named in the research brief: first "
+        "contribution -> second contribution -> 5th contribution -> sustained contributor "
+        "(sustained_contributor_count's own 5-commit threshold) -> committer -> PMC member, for "
+        "a fixed 24-month (730-day) observation horizon per contributor. Reports reached / "
+        "in_flight / not_reached fractions per stage in details_json, never merged into one "
+        "ratio; committer/pmc_member are status='not_available' (no confirmed ASF-roster-to-git "
+        "identity link exists yet -- never fabricated). value/n is the deepest computable "
+        "stage's (sustained_contributor) reached fraction/cohort size. Tier: proxy. Dimension: "
+        "contributor sustainability. Role: supporting. Direction of good: higher. Window: "
+        "cohort-month, 24-month horizon. Floor: 5; cohorts below 30 flagged low_confidence. "
+        "CHAOSS equivalent: no single metric; composed from Conversion Rate and New "
+        "Contributors concepts. METRICS.md."
+    ),
+    "contributor_tenure_survival": (
+        "Kaplan-Meier survival curve over contributor tenure (time origin: first code_commit), "
+        "churn event = 12 months (365 days) of no further commit, dated to last observed "
+        "activity; still-active contributors are right-censored at the run's as_of date. One "
+        "snapshot row per run (window = the trailing-24m cohort-intake window), not a monthly "
+        "series. Cohort floor 30 (METRICS.md §0.6); below that, value=None/flag="
+        "'insufficient_data' and details_json carries a simple still-active-at-N-months count "
+        "table instead of a curve. value/n above the floor is Ŝ(365 days) (the 12-month "
+        "survival probability), not the median -- the median (details_json."
+        "median_tenure_days/median_tenure_months) can legitimately be 'not reached' (None), "
+        "which is a healthy finding, not a computation failure. details_json.curve carries the "
+        "full step function plus a Greenwood's-formula 95% CI band. Tier: experimental. "
+        "Dimension: contributor sustainability. Role: supporting. Direction of good: higher. "
+        "Window: trailing-24m cohort intake, recomputed monthly. 'Qualifying activity' is "
+        "code_commit only (disclosed scope decision, see module docstring). CHAOSS equivalent: "
+        "none; grounded in Lin/Robles/Serebrenik (2017) and Foucault et al. (2015). METRICS.md."
+    ),
+    "contributor_churn_rate": (
+        "Share of contributors active in the trailing-12m window ending 12 months before month "
+        "m (i.e. [m-24, m-12)) whose last-ever code_commit (over the full accumulated history) "
+        "falls inside that same window -- the same churn/inactivity definition "
+        "contributor_tenure_survival's Event uses, dense monthly. Tier: proxy. Dimension: "
+        "contributor sustainability. Role: supporting. Direction of good: lower. Window: "
+        "trailing-12m, evaluated on completed months only (D5). Floor: 5. 'Qualifying activity' "
+        "is code_commit only (disclosed scope decision, see module docstring). CHAOSS "
+        "equivalent: none directly. METRICS.md."
+    ),
+    "sustained_contributor_count": (
+        "Count of contributors with >= 5 code_commits in a trailing-12m window, dense monthly -- "
+        "the '5 contributions' funnel stage from the research brief. No sample-size floor "
+        "(METRICS.md §0.6: this metric's own 'Population & exclusions' line cites only §0.5, "
+        "not §0.6) -- a raw headcount is meaningful at any n including 0, same reasoning as "
+        "active_contributors_monthly/new_contributors_monthly/unique_reviewers_monthly (issue "
+        "#27); always reports value=n, flag='ok'. Tier: established. Dimension: contributor "
+        "sustainability. Role: key (one of this dimension's key metrics, SCORING.md §5.3 -- "
+        "the most direct, fully deterministic read of the funnel actually producing repeat "
+        "contributors). Direction of good: higher. Window: trailing-12m, updated monthly. "
+        "CHAOSS equivalent: adjacent to Contributors with a custom activity-count filter; no "
+        "standardized '5 contributions' threshold. METRICS.md."
     ),
 }
 

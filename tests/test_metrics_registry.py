@@ -45,6 +45,12 @@ EXPECTED_METRIC_IDS = {
     "release_regularity",
     "time_since_last_release",
     "days_between_releases",
+    # issue #159
+    "first_to_second_conversion_rate",
+    "funnel_stage_conversion",
+    "contributor_tenure_survival",
+    "contributor_churn_rate",
+    "sustained_contributor_count",
 }
 
 HEADCOUNT_METRIC_IDS = {

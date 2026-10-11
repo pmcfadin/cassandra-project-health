@@ -256,6 +256,18 @@ each `none`/debatable assignment is in that metric's own section below, not just
   metric-definition version bump (D3) with a full-history recompute. Says nothing about *why* someone didn't
   return.
 - **CHAOSS equivalent:** [Conversion Rate](https://chaoss.community/kb/metric-conversion-rate/).
+- **Implementation note (issue #159, ambiguity resolution):** "qualifying activity" for the cohort and the
+  second-commit check is scoped to `code_commit` only, not the full §0.3 catalog — the simplest reading, and
+  consistent with every contributor-sustainability metric already shipped (`active_contributors_monthly`,
+  `new_contributors_monthly`, `truck_factor`, `contributor_hhi`, `contributor_absence_factor`), none of which
+  span JIRA/GitHub-PR/mailing-list activity either. A cross-source union isn't actually possible yet in any
+  case: `normalize.identity.extract_raw_identifiers` only ever reads `contribution_event`/`review_event`/`issue`
+  — `message`, `pr`/`pr_review`, and `roster_entry.asf_id` are never fed into identity resolution, so a wider
+  union would silently conflate unlinked raw identifiers from different sources. Cohorts whose 180-day window
+  has not fully elapsed are omitted from the emitted series entirely (not shown as `insufficient_data`), per
+  this section's own "evaluated only once ... has fully elapsed" text. See
+  `metrics/contributor_pipeline.py`'s module docstring for the full rationale (shared by all five metrics this
+  issue adds).
 
 ### `funnel_stage_conversion`
 - **Name:** Contributor Funnel Conversion
@@ -286,6 +298,20 @@ each `none`/debatable assignment is in that metric's own section below, not just
   stage does not necessarily mean unhealthy — this metric measures the funnel, not causes.
 - **CHAOSS equivalent:** No single CHAOSS metric covers the full funnel; composed from [Conversion Rate](https://chaoss.community/kb/metric-conversion-rate/)
   and [New Contributors](https://www.chaoss.community/kb/metric-new-contributors/) concepts.
+- **Implementation note (issue #159):** the 24-month horizon is operationalized as 730 days from each
+  contributor's own first commit (not a calendar-month-anchored horizon), and "qualifying activity" for the
+  first four stages is `code_commit` only (same scope decision as `first_to_second_conversion_rate` above).
+  The "5th contribution" stage is a *cumulative*, ever-reached count (the contributor's 5th commit, whenever it
+  lands within the horizon); "sustained contributor" additionally requires those 5 commits to fall within any
+  365-day span — a window-free proxy for "reached `sustained_contributor_count`'s own trailing-12m threshold at
+  some point in the horizon," chosen to avoid re-gridding each contributor's history to calendar months. The
+  **committer and PMC member stages are `not_available`**, not fabricated: computing them needs an ASF roster
+  (`roster_entry.asf_id`) row joined to the same cohort identity the git-commit stages use, and no such
+  confirmed link exists in this project today — `roster_entry.identity_id` is written `NULL` by every
+  collector, `identity_overrides.yaml` is empty, and `normalize.identity.extract_raw_identifiers`/
+  `resolve_identities` never process `roster_entry.asf_id` at all. D2.5 forbids auto-matching an ASF `availid`
+  to a git email without a confirmed link, so these two stages report `status: "not_available"` with this
+  reason in `details_json`, every run, until that identity link exists.
 
 ### `contributor_tenure_survival`
 - **Name:** Contributor Tenure (Kaplan–Meier survival)
@@ -332,6 +358,17 @@ each `none`/debatable assignment is in that metric's own section below, not just
     (ICGSE), 66–75. https://doi.org/10.1109/ICGSE.2017.11
   - Foucault, M., Palyart, M., Blanc, X., Murphy, G. C., & Falleri, J.-R. (2015). *Impact of Developer Turnover on
     Quality in Open-Source Software.* ESEC/FSE 2015, 829–841. https://doi.org/10.1145/2786805.2786870
+- **Implementation note (issue #159):** "qualifying activity" (the Event's inactivity clock, and the cohort's
+  time origin) is `code_commit` only — same scope decision as the other four metrics in this issue, see
+  `first_to_second_conversion_rate`'s own implementation note above for the full rationale. One snapshot row
+  per run (window = the trailing-24m cohort-intake window), not a monthly time series, mirroring
+  `stale_jira_rate`/`stale_pr_rate`'s existing single-snapshot convention for a metric whose own definition is
+  a point-in-time read. The published `value` is Ŝ(365 days) (the 12-month survival probability), not the
+  median survival time — the median can legitimately be "not reached" (`None`, a healthy outcome, not a
+  computation failure) when the curve never drops to 0.5, so it is reported only in `details_json`
+  (`median_tenure_days`/`median_tenure_months`/`median_not_reached`), never as the metric's headline `value`.
+  Below the 30-contributor floor, `details_json.still_active_table` reports share still active (no 12-month
+  inactivity gap yet) at 3/6/12/18/24 months of tenure, per this section's own small-cohort fallback text.
 
 ### `contributor_churn_rate`
 - **Name:** Contributor Churn Rate
@@ -352,6 +389,12 @@ each `none`/debatable assignment is in that metric's own section below, not just
   from "a few long-tenure core people churned" — severity is invisible here; that is what `truck_factor` and
   `contributor_hhi` are for. Never combine this rate with concentration metrics into one number.
 - **CHAOSS equivalent:** none directly (adjacent to CHAOSS Contributors/Retention discussion, no fixed CHAOSS formula).
+- **Implementation note (issue #159):** "qualifying activity" is `code_commit` only (same scope decision as
+  this issue's other four metrics). `last_active(c)` is each contributor's single global last-commit date over
+  the *entire* accumulated history (D3's full recompute), fixed regardless of the reporting month `m` — so a
+  contributor who returns after a long gap is correctly read as "not churned" for every historical `m`, the
+  same hindsight-aware reading `contributor_tenure_survival`'s censoring logic uses, rather than a `m`-relative
+  "no activity since `m`" read that would contradict the two metrics' own shared-definition claim above.
 
 ### `sustained_contributor_count`
 - **Name:** Sustained Contributors
@@ -372,6 +415,11 @@ each `none`/debatable assignment is in that metric's own section below, not just
   quality. The threshold (5) is arbitrary but disclosed; changing it is a version bump.
 - **CHAOSS equivalent:** adjacent to [Contributors](https://chaoss.community/kb/metric-contributors/) with a
   custom activity-count filter; CHAOSS does not standardize a "5 contributions" threshold.
+- **Implementation note (issue #159):** this metric's own "Population & exclusions" line above cites only §0.5,
+  not §0.6 — implemented as a plain headcount, exempt from the §0.6 sample-size floor for the same reason
+  `active_contributors_monthly`/`new_contributors_monthly`/`unique_reviewers_monthly` are (issue #27): a count
+  of "how many contributors cleared the 5-commit threshold" is already the complete, meaningful statistic at
+  any `n`, including 0. Always reports `value = n`, `flag = 'ok'`. See `engine.HEADCOUNT_METRICS`.
 
 ### `pmc_joins_quarterly`
 - **Name:** PMC Joins per Quarter

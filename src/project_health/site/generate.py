@@ -54,6 +54,9 @@ import pyarrow.parquet as pq
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from project_health import storage
+from project_health.metrics.contributor_pipeline import (
+    LOW_CONFIDENCE_COHORT_FLOOR,
+)
 from project_health.metrics.windows import add_months, month_start
 from project_health.schema import get_schema, validate
 from project_health.site import chart_spec
@@ -95,6 +98,12 @@ VEGA_EMBED_VERSION = "6.26.0"
 # ARCHITECTURE.md §7.1 mitigation 2: warn if the manifest's completed_at is
 # older than this, relative to build time.
 FRESHNESS_WARNING_HOURS = 36
+
+# issue #159 (orchestrator review fixup): how many of the latest horizon-
+# elapsed `funnel_stage_conversion` monthly cohorts to pool into the
+# Community page's single funnel-stage bar chart, so a single noisy
+# 5-person cohort doesn't stand in for the whole read.
+FUNNEL_POOL_COHORTS = 12
 
 _PACKAGE_DIR = Path(__file__).parent
 TEMPLATES_DIR = _PACKAGE_DIR / "templates"
@@ -875,6 +884,395 @@ def _headline_metric_context(series: MetricSeries, last_completed_month: date) -
     }
 
 
+# --- Contributor pipeline: KM curve + funnel bar chart (issue #159) --------
+#
+# `contributor_tenure_survival`/`funnel_stage_conversion` already get an
+# ordinary card + generic per-metric line chart like every other M0 metric
+# (`_card_context`/`_vega_lite_spec` above, via `M0_METRICS`/
+# `COMMUNITY_METRIC_SECTION`) -- this section builds the two *additional*,
+# bespoke chart shapes METRICS.md's own definitions call for on top of
+# that: a Kaplan-Meier step curve with a Greenwood confidence band, and a
+# per-funnel-stage bar chart. Both are read entirely from each metric's own
+# latest `metric_value` row's `details_json` (`metrics/contributor_pipeline.py`
+# already computed everything in it) -- nothing here recomputes a number.
+
+_FUNNEL_STAGE_LABELS: dict[str, str] = {
+    "second_contribution": "2nd contribution",
+    "fifth_contribution": "5th contribution",
+    "sustained_contributor": "Sustained contributor",
+    "committer": "Committer",
+    "pmc_member": "PMC member",
+}
+
+
+# issue #159 (orchestrator review fixup): a KM step past this few
+# contributors still at risk rests on very little data -- faded (not
+# hidden) rather than shown at the same visual confidence as the
+# well-populated part of the curve. Presentation-only, like
+# `chart_spec.LOW_N_DISPLAY_FLOOR` -- never changes `n`, `value`, or `flag`.
+KM_LOW_N_AT_RISK_FADE_THRESHOLD = 10
+KM_LOW_N_AT_RISK_OPACITY = 0.35
+
+
+def _km_curve_vega_spec(
+    curve: list[dict[str, Any]], censor_marks: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """A step line (survival) plus a shaded Greenwood's-formula confidence
+    band, over months-since-first-contribution, extended flat out to the
+    maximum observed follow-up time (`curve`'s own last point --
+    `metrics/contributor_pipeline.py::_kaplan_meier` already appends that
+    trailing extension, standard KM-plotting convention, rather than
+    stopping the line at the last event). The curve always starts at
+    `(0, 1.0)` -- everyone survives at tenure zero by construction.
+
+    The tail past `KM_LOW_N_AT_RISK_FADE_THRESHOLD` contributors still at
+    risk renders at reduced opacity (both the line and its CI band) -- a
+    second, separately-styled pair of layers rather than a per-point
+    opacity channel, since a single `line`/`area` mark renders one
+    continuous path and Vega-Lite has no per-*segment* opacity; the split
+    point is duplicated into both halves so the two segments still meet
+    with no visual gap.
+
+    `censor_marks` adds a small tick at each right-censored contributor's
+    own `(time, survival-at-that-time)` -- the standard KM-plot convention
+    for marking a censoring event without implying a step/drop."""
+    first_n_at_risk = curve[0]["n_at_risk"] if curve else None
+    values: list[dict[str, Any]] = [
+        {
+            "t_months": 0.0,
+            "survival": 1.0,
+            "ci_low": 1.0,
+            "ci_high": 1.0,
+            "n_at_risk": first_n_at_risk,
+        }
+    ]
+    for point in curve:
+        values.append(
+            {
+                "t_months": point["t_months"],
+                "survival": point["survival"],
+                "ci_low": point["ci_low"],
+                "ci_high": point["ci_high"],
+                "n_at_risk": point["n_at_risk"],
+            }
+        )
+
+    split_index = len(values)
+    for i, v in enumerate(values):
+        if v["n_at_risk"] is not None and v["n_at_risk"] < KM_LOW_N_AT_RISK_FADE_THRESHOLD:
+            split_index = i
+            break
+    stable_values = values[: split_index + 1]
+    faded_values = values[split_index:] if split_index < len(values) else []
+
+    tooltip = [
+        {"field": "t_months", "type": "quantitative", "title": "Months"},
+        {
+            "field": "survival",
+            "type": "quantitative",
+            "title": "Survival probability",
+            "format": ".1%",
+        },
+        {"field": "ci_low", "type": "quantitative", "title": "95% CI, low", "format": ".1%"},
+        {"field": "ci_high", "type": "quantitative", "title": "95% CI, high", "format": ".1%"},
+        {"field": "n_at_risk", "type": "quantitative", "title": "n at risk"},
+    ]
+
+    def _band_layer(layer_values: list[dict[str, Any]], opacity: float) -> dict[str, Any]:
+        return {
+            "data": {"values": layer_values},
+            "mark": {"type": "area", "opacity": opacity * 0.2, "interpolate": "step-after"},
+            "encoding": {
+                "y": {
+                    "field": "ci_low",
+                    "type": "quantitative",
+                    "title": "Survival probability",
+                    "scale": {"domain": [0, 1]},
+                    "axis": {"format": ".0%"},
+                },
+                "y2": {"field": "ci_high"},
+            },
+        }
+
+    def _line_layer(layer_values: list[dict[str, Any]], opacity: float) -> dict[str, Any]:
+        return {
+            "data": {"values": layer_values},
+            "mark": {
+                "type": "line",
+                "interpolate": "step-after",
+                "clip": True,
+                "opacity": opacity,
+            },
+            "encoding": {
+                "y": {"field": "survival", "type": "quantitative"},
+                "tooltip": tooltip,
+            },
+        }
+
+    layers: list[dict[str, Any]] = [
+        _band_layer(stable_values, 1.0),
+        _line_layer(stable_values, 1.0),
+    ]
+    if faded_values:
+        layers.append(_band_layer(faded_values, KM_LOW_N_AT_RISK_OPACITY))
+        layers.append(_line_layer(faded_values, KM_LOW_N_AT_RISK_OPACITY))
+
+    if censor_marks:
+        layers.append(
+            {
+                "data": {
+                    "values": [
+                        {"t_months": mark["t_months"], "survival": mark["survival"]}
+                        for mark in censor_marks
+                    ]
+                },
+                "mark": {"type": "tick", "thickness": 2, "size": 7, "opacity": 0.8},
+                "encoding": {
+                    "y": {"field": "survival", "type": "quantitative"},
+                    "tooltip": [
+                        {
+                            "field": "t_months",
+                            "type": "quantitative",
+                            "title": "Months (censored)",
+                        },
+                        {
+                            "field": "survival",
+                            "type": "quantitative",
+                            "title": "Survival probability",
+                            "format": ".1%",
+                        },
+                    ],
+                },
+            }
+        )
+
+    return {
+        "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+        "width": "container",
+        "height": 220,
+        "autosize": {"type": "fit-x", "contains": "padding"},
+        "background": None,
+        "encoding": {
+            "x": {
+                "field": "t_months",
+                "type": "quantitative",
+                "title": "Months since first contribution",
+            }
+        },
+        "layer": layers,
+        "config": {"view": {"stroke": None}},
+    }
+
+
+def _funnel_stage_vega_spec(stages: dict[str, Any], stage_order: list[str]) -> dict[str, Any]:
+    """A normalized (0-100%) stacked bar, one bar per funnel stage, segments
+    `reached` / `in flight` / `not reached` -- or a single `not available`
+    segment for a stage METRICS.md discloses it can't compute (the
+    committer/PMC stages, no confirmed ASF-roster identity link yet)."""
+    order = stage_order or list(stages)
+    values: list[dict[str, Any]] = []
+    for stage in order:
+        info = stages.get(stage, {})
+        label = _FUNNEL_STAGE_LABELS.get(stage, stage)
+        if info.get("status") == "not_available":
+            values.append({"stage": label, "status": "not available", "fraction": 1.0})
+            continue
+        values.append(
+            {"stage": label, "status": "reached", "fraction": info.get("reached_fraction", 0.0)}
+        )
+        values.append(
+            {
+                "stage": label,
+                "status": "in flight",
+                "fraction": info.get("in_flight_fraction", 0.0),
+            }
+        )
+        values.append(
+            {
+                "stage": label,
+                "status": "not reached",
+                "fraction": info.get("not_reached_fraction", 0.0),
+            }
+        )
+    status_order = ["reached", "in flight", "not reached", "not available"]
+    return {
+        "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+        "width": "container",
+        "height": 220,
+        "autosize": {"type": "fit-x", "contains": "padding"},
+        "background": None,
+        "data": {"values": values},
+        "mark": {"type": "bar"},
+        "encoding": {
+            "x": {
+                "field": "stage",
+                "type": "nominal",
+                "sort": [_FUNNEL_STAGE_LABELS.get(s, s) for s in order],
+                "title": None,
+            },
+            "y": {
+                "field": "fraction",
+                "type": "quantitative",
+                "stack": "normalize",
+                "axis": {"format": ".0%"},
+                "title": "Share of cohort",
+            },
+            "color": {"field": "status", "type": "nominal", "sort": status_order},
+            "tooltip": [
+                {"field": "stage", "type": "nominal", "title": "Stage"},
+                {"field": "status", "type": "nominal", "title": "Status"},
+                {"field": "fraction", "type": "quantitative", "title": "Share", "format": ".1%"},
+            ],
+        },
+        "config": {"view": {"stroke": None}},
+    }
+
+
+def build_contributor_pipeline_context(data_dir: Path, run_id: str) -> dict[str, Any]:
+    """Context for the Community page's bespoke KM-curve/funnel-bar charts
+    (issue #159). Reads `metrics.parquet` a second time (same "own small
+    additive call" pattern `build_leaderboard_page_context`/
+    `build_pr_backlog_context` already use) because the shared
+    `MetricPoint`/`MetricSeries` machinery above deliberately drops
+    `details_json` -- these two charts need it."""
+    ctx: dict[str, Any] = {"survival": None, "funnel": None}
+    try:
+        metrics_table = _read_metrics(data_dir, run_id)
+    except FileNotFoundError:
+        return ctx
+    rows = metrics_table.to_pylist()
+
+    survival_rows = sorted(
+        (r for r in rows if r["metric_id"] == "contributor_tenure_survival"),
+        key=lambda r: r["window_end"],
+    )
+    if survival_rows:
+        latest = survival_rows[-1]
+        details = json.loads(latest["details_json"]) if latest["details_json"] else {}
+        if latest["flag"] == "ok" and details.get("curve"):
+            curve = details["curve"]
+            has_faded_tail = any(
+                point["n_at_risk"] < KM_LOW_N_AT_RISK_FADE_THRESHOLD for point in curve
+            )
+            ctx["survival"] = {
+                "insufficient": False,
+                "cohort_size": details.get("cohort_size"),
+                "event_count": details.get("event_count"),
+                "censored_count": details.get("censored_count"),
+                "median_tenure_months": details.get("median_tenure_months"),
+                "median_not_reached": details.get("median_not_reached"),
+                "max_follow_up_months": details.get("max_follow_up_months"),
+                "has_faded_tail": has_faded_tail,
+                "window_start": latest["window_start"],
+                "window_end": latest["window_end"],
+                "chart_id": "contributor_tenure_survival_curve",
+                "vega_spec_json": json.dumps(
+                    _km_curve_vega_spec(curve, details.get("censor_marks", []))
+                ),
+                "chart_meta_json": chart_spec.chart_meta_json(
+                    chart_id="contributor_tenure_survival_curve",
+                    title="Contributor tenure survival (Kaplan–Meier)",
+                    time_field=None,
+                    has_band=True,
+                ),
+            }
+        else:
+            ctx["survival"] = {
+                "insufficient": True,
+                "cohort_size": details.get("cohort_size"),
+                "note": details.get("note"),
+                "still_active_table": details.get("still_active_table"),
+            }
+
+    # Orchestrator review of issue #159 fixup: a cohort whose 730-day
+    # horizon hasn't fully elapsed yet can't be called "completed" -- its
+    # bars are mostly "in flight" by construction, which misrepresents the
+    # funnel as if it were a finished read. A row is horizon-elapsed when
+    # every one of its computed stages has `in_flight == 0` (METRICS.md
+    # `funnel_stage_conversion`'s per-contributor horizon check already
+    # resolves this at compute time, so it's readable straight back out of
+    # `details_json` without needing `as_of` here).
+    def _horizon_elapsed(details: dict[str, Any]) -> bool:
+        stages = details.get("stages") or {}
+        return all(
+            stage.get("in_flight", 0) == 0
+            for stage in stages.values()
+            if stage.get("status") == "computed"
+        )
+
+    funnel_candidates = []
+    for r in rows:
+        if r["metric_id"] != "funnel_stage_conversion" or r["flag"] != "ok":
+            continue
+        details = json.loads(r["details_json"]) if r["details_json"] else {}
+        if details.get("stages") and _horizon_elapsed(details):
+            funnel_candidates.append((r, details))
+    funnel_candidates.sort(key=lambda pair: pair[0]["window_start"])
+
+    if funnel_candidates:
+        # Pool the last FUNNEL_POOL_COHORTS horizon-elapsed monthly cohorts
+        # rather than showing the single latest one: at METRICS.md's own
+        # floor (5), a single cohort's bars are noisy enough to be
+        # misleading on their own (one or two contributors swing a stage's
+        # share by 20+ points) -- pooling raw reached/not_reached counts
+        # across cohorts before computing shares gives a materially more
+        # stable, still-honest read, the same reasoning
+        # `sustained_contributor_count`'s trailing-12m window already
+        # applies to a single-month headcount. committer/pmc_member stay
+        # `not_available` either way (no per-cohort data to pool there).
+        pooled = funnel_candidates[-FUNNEL_POOL_COHORTS:]
+        first_month = pooled[0][0]["window_start"]
+        last_month = pooled[-1][0]["window_start"]
+        stage_order = pooled[-1][1].get("stage_order", [])
+        pooled_cohort_size = sum(r["n"] for r, _ in pooled)
+
+        pooled_stages: dict[str, Any] = {}
+        for stage_id in stage_order:
+            sample_stage = pooled[-1][1]["stages"].get(stage_id, {})
+            if sample_stage.get("status") == "not_available":
+                pooled_stages[stage_id] = sample_stage
+                continue
+            reached = sum(d["stages"][stage_id]["reached"] for _, d in pooled)
+            not_reached = sum(d["stages"][stage_id]["not_reached"] for _, d in pooled)
+            pooled_stages[stage_id] = {
+                "status": "computed",
+                "reached": reached,
+                "in_flight": 0,
+                "not_reached": not_reached,
+                "reached_fraction": round(reached / pooled_cohort_size, 4)
+                if pooled_cohort_size
+                else None,
+                "in_flight_fraction": 0.0,
+                "not_reached_fraction": round(not_reached / pooled_cohort_size, 4)
+                if pooled_cohort_size
+                else None,
+            }
+
+        label_months = (
+            first_month.strftime("%b %Y")
+            if first_month == last_month
+            else f"{first_month.strftime('%b %Y')} – {last_month.strftime('%b %Y')}"
+        )
+        ctx["funnel"] = {
+            "cohort_month_label": label_months,
+            "cohort_count": len(pooled),
+            "cohort_size": pooled_cohort_size,
+            "pooled": len(pooled) > 1,
+            "low_confidence": pooled_cohort_size < LOW_CONFIDENCE_COHORT_FLOOR,
+            "chart_id": "funnel_stage_conversion_bar",
+            "vega_spec_json": json.dumps(
+                _funnel_stage_vega_spec(pooled_stages, stage_order)
+            ),
+            "chart_meta_json": chart_spec.chart_meta_json(
+                chart_id="funnel_stage_conversion_bar",
+                title="Contributor funnel, pooled horizon-elapsed cohorts",
+                time_field=None,
+                series_field="status",
+            ),
+        }
+    return ctx
+
+
 # --- Collapsible page sections (issue #144) ---------------------------------
 #
 # `_sparkline_spec`/`_section_headline_item` build a section's collapsed
@@ -1244,6 +1642,11 @@ def _render_pages(
     # plus the disclosed "base branch split isn't available" note, same
     # "own small additive call" pattern as review-responsiveness above.
     pr_backlog_context = build_pr_backlog_context(data_dir, run_id)
+    # Contributor pipeline (issue #159): the bespoke KM-curve/funnel-bar
+    # charts for contributor_tenure_survival/funnel_stage_conversion, on
+    # top of their own ordinary cards in `community_sections` above -- same
+    # "own small additive call" pattern as leaderboard/pr_backlog above.
+    contributor_pipeline_context = build_contributor_pipeline_context(data_dir, run_id)
     community_html = env.get_template("community.html").render(
         current_page="community",
         base_prefix=SUBPAGE_BASE_PREFIX,
@@ -1251,6 +1654,7 @@ def _render_pages(
         leaderboard=leaderboard_context,
         review_responsiveness=review_responsiveness_context,
         pr_backlog=pr_backlog_context,
+        contributor_pipeline=contributor_pipeline_context,
         conversation_patterns=conversation_patterns_context,
         thread_explorer=thread_explorer_context,
         peers=peers_context,

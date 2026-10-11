@@ -116,6 +116,16 @@ DEFINITION_VERSIONS: dict[str, str] = {
     "release_regularity": "1.0",
     "time_since_last_release": "1.0",
     "days_between_releases": "1.0",
+    # issue #159 (metrics/contributor_pipeline.py): the five
+    # contributor-pipeline metrics METRICS.md always named but never
+    # implemented -- first-to-second conversion, the multi-stage funnel,
+    # Kaplan-Meier tenure survival, churn rate, and sustained-contributor
+    # headcount.
+    "first_to_second_conversion_rate": "1.0",
+    "funnel_stage_conversion": "1.0",
+    "contributor_tenure_survival": "1.0",
+    "contributor_churn_rate": "1.0",
+    "sustained_contributor_count": "1.0",
     # issue #145, DECISIONS.md D30 (metrics/peer_metrics.py): the one
     # genuinely new metric the peer-context page introduces -- first
     # non-author, non-bot GitHub-PR review *or* comment. Computed for
@@ -134,6 +144,12 @@ HEADCOUNT_METRICS = frozenset(
         "new_contributors_monthly",
         "unique_reviewers_monthly",
         "pmc_joins_quarterly",
+        # issue #159: sustained_contributor_count's own "Population &
+        # exclusions" line cites only METRICS.md §0.5, not §0.6 -- a raw
+        # headcount of contributors clearing the 5-commit threshold is
+        # already the complete, meaningful statistic at any n, same
+        # reasoning as the three metrics above (issue #27).
+        "sustained_contributor_count",
     }
 )
 
@@ -2161,6 +2177,7 @@ def compute_all(
     # would make a module-level import here circular. By call time this
     # module is already fully initialized, so the deferred import resolves
     # cleanly.
+    from project_health.metrics.contributor_pipeline import compute_contributor_pipeline
     from project_health.metrics.dev_metrics import compute_dev_metrics
     from project_health.metrics.release_cadence import compute_release_cadence
 
@@ -2213,6 +2230,10 @@ def compute_all(
         # issue #135 (metrics/release_cadence.py): release cadence
         # dimension's three metrics, computed from the `release` raw table.
         rows.extend(compute_release_cadence(con, as_of, run_id, computed_at))
+        # issue #159 (metrics/contributor_pipeline.py): first-to-second
+        # conversion, the multi-stage funnel, KM tenure survival, churn
+        # rate, and sustained-contributor headcount.
+        rows.extend(compute_contributor_pipeline(con, as_of, run_id, computed_at))
     finally:
         con.close()
 

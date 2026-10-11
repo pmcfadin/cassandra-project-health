@@ -335,6 +335,132 @@ M0_METRICS: dict[str, MetricMeta] = {
             ),
         ),
     ),
+    # issue #159 (metrics/contributor_pipeline.py): the five
+    # contributor-pipeline metrics METRICS.md always named but never
+    # implemented. value_kind="percent" for the four ratio metrics
+    # (each stores/reports a 0-1 fraction); sustained_contributor_count is
+    # a plain headcount ("count"), same as active/new_contributors_monthly.
+    "first_to_second_conversion_rate": MetricMeta(
+        metric_id="first_to_second_conversion_rate",
+        name="First → Second Contribution Conversion",
+        dimension="contributor sustainability",
+        tier="proxy",
+        window="cohort-month",
+        definition=(
+            "Share of a cohort month's first-time committers who land a second commit "
+            "within 180 days."
+        ),
+        direction_of_good="higher",
+        value_kind="percent",
+        page="community",
+        sources=("git",),
+        prior_art=(
+            PriorArt(
+                "CHAOSS: Conversion Rate",
+                "https://chaoss.community/kb/metric-conversion-rate/",
+            ),
+        ),
+    ),
+    "funnel_stage_conversion": MetricMeta(
+        metric_id="funnel_stage_conversion",
+        name="Contributor Funnel Conversion",
+        dimension="contributor sustainability",
+        tier="proxy",
+        window="cohort-month (730d horizon)",
+        definition=(
+            "Share of a cohort month's first-time committers reaching each later "
+            "funnel stage (2nd/5th/sustained/committer/PMC) within 24 months."
+        ),
+        direction_of_good="higher",
+        value_kind="percent",
+        page="community",
+        sources=("git",),
+        # METRICS.md: "No single CHAOSS metric covers the full funnel;
+        # composed from Conversion Rate and New Contributors concepts" --
+        # named adjacent concepts, not an exact match (same "(adjacent)"
+        # convention unique_reviewers_monthly's own prior_art uses below).
+        prior_art=(
+            PriorArt(
+                "CHAOSS: Conversion Rate (adjacent)",
+                "https://chaoss.community/kb/metric-conversion-rate/",
+            ),
+            PriorArt(
+                "CHAOSS: New Contributors (adjacent)",
+                "https://www.chaoss.community/kb/metric-new-contributors/",
+            ),
+        ),
+    ),
+    "contributor_tenure_survival": MetricMeta(
+        metric_id="contributor_tenure_survival",
+        name="Contributor Tenure (Kaplan–Meier)",
+        dimension="contributor sustainability",
+        tier="experimental",
+        window="trailing-24m cohort, snapshot",
+        definition=(
+            "Kaplan-Meier survival probability over contributor tenure, using a "
+            "12-month-inactivity churn definition."
+        ),
+        direction_of_good="higher",
+        value_kind="percent",
+        page="community",
+        sources=("git",),
+        # METRICS.md: "none directly; grounded in academic survival-analysis
+        # literature rather than CHAOSS" -- these DOIs resolve (302) to the
+        # publisher's own page (IEEE Xplore / ACM DL) but return a
+        # non-200 status to a scripted/non-browser request (202/403,
+        # publisher-side bot protection), verified 2026-10-10 -- the same
+        # citation METRICS.md's own `contributor_tenure_survival` section
+        # already uses verbatim.
+        prior_art=(
+            PriorArt(
+                "Lin, Robles & Serebrenik (2017), Developer Turnover in Global, "
+                "Industrial Open Source Projects",
+                "https://doi.org/10.1109/ICGSE.2017.11",
+            ),
+            PriorArt(
+                "Foucault et al. (2015), Impact of Developer Turnover on Quality "
+                "in Open-Source Software",
+                "https://doi.org/10.1145/2786805.2786870",
+            ),
+        ),
+    ),
+    "contributor_churn_rate": MetricMeta(
+        metric_id="contributor_churn_rate",
+        name="Contributor Churn Rate",
+        dimension="contributor sustainability",
+        tier="proxy",
+        window="monthly",
+        definition=(
+            "Share of contributors active 12-24 months before the month with no "
+            "commit since."
+        ),
+        direction_of_good="lower",
+        value_kind="percent",
+        page="community",
+        sources=("git",),
+        # METRICS.md: "none directly (adjacent to CHAOSS Contributors/
+        # Retention discussion, no fixed CHAOSS formula)" -- no single
+        # concrete link to cite.
+        prior_art=(),
+    ),
+    "sustained_contributor_count": MetricMeta(
+        metric_id="sustained_contributor_count",
+        name="Sustained Contributors",
+        dimension="contributor sustainability",
+        tier="established",
+        window="trailing-12m",
+        definition="Count of contributors with at least 5 commits in the trailing 12 months.",
+        direction_of_good="higher",
+        value_kind="count",
+        page="community",
+        sources=("git",),
+        prior_art=(
+            PriorArt(
+                "CHAOSS: Contributors (adjacent)",
+                "https://chaoss.community/kb/metric-contributors/",
+            ),
+        ),
+    ),
     # (fixup: orchestrator review of issue #86) `pmc_joins_quarterly` is
     # registered in `metrics.registry.METRIC_IDS` and computed every run
     # (`metrics/engine.py::_pmc_joins_quarterly`, reading `roster_entry`
@@ -1522,6 +1648,12 @@ COMMUNITY_METRIC_SECTION: dict[str, str] = {
     "contributor_absence_factor": "contributor-sustainability",
     "contributor_hhi": "contributor-sustainability",
     "pr_review_engagement": "contributor-sustainability",
+    # issue #159
+    "first_to_second_conversion_rate": "contributor-sustainability",
+    "funnel_stage_conversion": "contributor-sustainability",
+    "contributor_tenure_survival": "contributor-sustainability",
+    "contributor_churn_rate": "contributor-sustainability",
+    "sustained_contributor_count": "contributor-sustainability",
     # Organizational participation.
     "elephant_factor": "organizational-participation",
     "organizational_hhi": "organizational-participation",

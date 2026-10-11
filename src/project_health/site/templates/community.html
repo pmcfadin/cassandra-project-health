@@ -268,6 +268,102 @@
   {% endif %}
 
   {% if section.id == "contributor-sustainability" %}
+  <section class="contributor-pipeline" aria-labelledby="contributor-pipeline-heading">
+    <h3 id="contributor-pipeline-heading">Contributor pipeline</h3>
+    <p class="page-intro">
+      Two additional views of the cards above: a Kaplan&ndash;Meier survival curve over
+      contributor tenure, and a per-stage breakdown of the latest completed first-time-contributor
+      cohort's funnel. Both are computed from git commit history only; the committer and PMC
+      funnel stages are not available (no confirmed identity link between the ASF roster and
+      this project's git/JIRA identities exists yet).
+    </p>
+
+    {% if contributor_pipeline.survival %}
+    {% if not contributor_pipeline.survival.insufficient %}
+    <h4>Tenure survival ({{ contributor_pipeline.survival.window_start.strftime("%b %Y") }} &ndash; {{ contributor_pipeline.survival.window_end.strftime("%b %Y") }} cohort intake, n={{ contributor_pipeline.survival.cohort_size }})</h4>
+    <p class="card-value">
+      {% if contributor_pipeline.survival.median_not_reached %}
+      <span class="value value--insufficient">median tenure not reached</span>
+      {% else %}
+      <span class="value">{{ contributor_pipeline.survival.median_tenure_months }} months</span>
+      <span class="value-period">median tenure</span>
+      {% endif %}
+    </p>
+    <p class="card-staleness">
+      {{ contributor_pipeline.survival.event_count }} churn event(s),
+      {{ contributor_pipeline.survival.censored_count }} still-active (censored),
+      {{ contributor_pipeline.survival.max_follow_up_months }} months max follow-up
+    </p>
+    {% call charts.chart_shell("Contributor tenure survival curve") %}
+    <div class="chart" data-vega-spec='{{ contributor_pipeline.survival.vega_spec_json }}' data-chart-id="{{ contributor_pipeline.survival.chart_id }}" data-chart-meta='{{ contributor_pipeline.survival.chart_meta_json }}' role="img" aria-label="Contributor tenure survival curve">
+      <noscript>Enable JavaScript to see this chart.</noscript>
+    </div>
+    {% endcall %}
+    <p class="governance-note">
+      Tick marks show right-censored (still-active) contributors at the time they were last
+      observed.
+      {% if contributor_pipeline.survival.has_faded_tail %}
+      The curve beyond the point where fewer than 10 contributors remain at risk is shown at
+      reduced opacity -- it rests on very few people and is noisier than the rest of the line.
+      {% endif %}
+    </p>
+    {% else %}
+    <h4>Tenure survival</h4>
+    <p class="card-empty-state">
+      Cohort size (n={{ contributor_pipeline.survival.cohort_size }}) is below the 30-contributor
+      floor for a Kaplan&ndash;Meier curve; showing a still-active count instead.
+    </p>
+    {% if contributor_pipeline.survival.still_active_table %}
+    <table class="security-table">
+      <thead>
+        <tr>
+          <th scope="col">Months since first contribution</th>
+          <th scope="col">Eligible</th>
+          <th scope="col">Still active</th>
+          <th scope="col">Share</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in contributor_pipeline.survival.still_active_table %}
+        <tr>
+          <td>{{ row.months }}</td>
+          <td>{{ row.eligible }}</td>
+          <td>{{ row.still_active }}</td>
+          <td>{{ "%.1f%%"|format(row.still_active_fraction * 100) if row.still_active_fraction is not none else "insufficient data" }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+    {% endif %}
+    {% else %}
+    <p class="card-empty-state">Tenure survival isn't published yet.</p>
+    {% endif %}
+
+    {% if contributor_pipeline.funnel %}
+    {% if contributor_pipeline.funnel.pooled %}
+    <h4>Funnel, pooled across the last {{ contributor_pipeline.funnel.cohort_count }} horizon-elapsed cohorts ({{ contributor_pipeline.funnel.cohort_month_label }}, n={{ contributor_pipeline.funnel.cohort_size }})</h4>
+    <p class="governance-note">
+      Pooled rather than shown as a single cohort month: at this cohort size, one month's bars are noisy
+      enough on their own to be misleading, and the 730-day observation horizon means only cohorts old
+      enough to be fully resolved are included here (no "in flight" segment).
+    </p>
+    {% else %}
+    <h4>Funnel, latest horizon-elapsed cohort ({{ contributor_pipeline.funnel.cohort_month_label }}, n={{ contributor_pipeline.funnel.cohort_size }})</h4>
+    {% endif %}
+    {% if contributor_pipeline.funnel.low_confidence %}
+    <p class="card-staleness"><span class="badge badge--preliminary" role="status">low confidence (n &lt; 30)</span></p>
+    {% endif %}
+    {% call charts.chart_shell("Contributor funnel, pooled horizon-elapsed cohorts") %}
+    <div class="chart" data-vega-spec='{{ contributor_pipeline.funnel.vega_spec_json }}' data-chart-id="{{ contributor_pipeline.funnel.chart_id }}" data-chart-meta='{{ contributor_pipeline.funnel.chart_meta_json }}' role="img" aria-label="Contributor funnel, pooled horizon-elapsed cohorts">
+      <noscript>Enable JavaScript to see this chart.</noscript>
+    </div>
+    {% endcall %}
+    {% else %}
+    <p class="card-empty-state">The contributor funnel isn't published yet.</p>
+    {% endif %}
+  </section>
+
   <section class="leaderboard" aria-labelledby="leaderboard-heading">
     <h3 id="leaderboard-heading">Contributor leaderboard</h3>
     {% if leaderboard.staleness_badges %}

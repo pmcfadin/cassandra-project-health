@@ -616,13 +616,28 @@ def _contributor_tenure_survival(
             )
         ]
 
+    # METRICS.md: the churn event is "dated to their last observed
+    # activity" -- tenure (time-to-event) is last_activity - first_activity,
+    # NOT last_activity + the 12-month inactivity window. The 12-month
+    # window only decides whether a churn is *observed* (confirmed) as of
+    # `as_of`: once 12 months have passed with no further activity, we date
+    # the departure back to the last time the contributor was actually
+    # seen, not to the end of the confirmation window. A contributor with
+    # only one commit ever therefore has tenure 0 once confirmed (orchestrator
+    # review of issue #159 fixup: the original implementation dated the
+    # event at last_activity + 365 days instead, which flattened every
+    # churned contributor's tenure to a multiple of ~12 months and produced
+    # a nonsensical "everyone churns at exactly 12 months" curve).
+    # Still-within-the-window contributors (not yet confirmed either way)
+    # are right-censored at `as_of - first_activity` -- they might still
+    # return, so their true tenure is unknown, not necessarily shorter.
     durations: list[tuple[int, str]] = []
     for dates in cohort.values():
         first = dates[0]
         last = dates[-1]
         inactivity_cutoff = last + timedelta(days=CHURN_INACTIVITY_DAYS)
         if inactivity_cutoff <= as_of:
-            durations.append(((inactivity_cutoff - first).days, "event"))
+            durations.append(((last - first).days, "event"))
         else:
             durations.append(((as_of - first).days, "censored"))
 

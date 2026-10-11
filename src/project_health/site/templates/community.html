@@ -332,12 +332,21 @@
     {% endif %}
 
     {% if contributor_pipeline.funnel %}
-    <h4>Funnel, latest completed cohort ({{ contributor_pipeline.funnel.cohort_month_label }}, n={{ contributor_pipeline.funnel.cohort_size }})</h4>
+    {% if contributor_pipeline.funnel.pooled %}
+    <h4>Funnel, pooled across the last {{ contributor_pipeline.funnel.cohort_count }} horizon-elapsed cohorts ({{ contributor_pipeline.funnel.cohort_month_label }}, n={{ contributor_pipeline.funnel.cohort_size }})</h4>
+    <p class="governance-note">
+      Pooled rather than shown as a single cohort month: at this cohort size, one month's bars are noisy
+      enough on their own to be misleading, and the 730-day observation horizon means only cohorts old
+      enough to be fully resolved are included here (no "in flight" segment).
+    </p>
+    {% else %}
+    <h4>Funnel, latest horizon-elapsed cohort ({{ contributor_pipeline.funnel.cohort_month_label }}, n={{ contributor_pipeline.funnel.cohort_size }})</h4>
+    {% endif %}
     {% if contributor_pipeline.funnel.low_confidence %}
     <p class="card-staleness"><span class="badge badge--preliminary" role="status">low confidence (n &lt; 30)</span></p>
     {% endif %}
-    {% call charts.chart_shell("Contributor funnel, latest cohort") %}
-    <div class="chart" data-vega-spec='{{ contributor_pipeline.funnel.vega_spec_json }}' data-chart-id="{{ contributor_pipeline.funnel.chart_id }}" data-chart-meta='{{ contributor_pipeline.funnel.chart_meta_json }}' role="img" aria-label="Contributor funnel, latest cohort">
+    {% call charts.chart_shell("Contributor funnel, pooled horizon-elapsed cohorts") %}
+    <div class="chart" data-vega-spec='{{ contributor_pipeline.funnel.vega_spec_json }}' data-chart-id="{{ contributor_pipeline.funnel.chart_id }}" data-chart-meta='{{ contributor_pipeline.funnel.chart_meta_json }}' role="img" aria-label="Contributor funnel, pooled horizon-elapsed cohorts">
       <noscript>Enable JavaScript to see this chart.</noscript>
     </div>
     {% endcall %}

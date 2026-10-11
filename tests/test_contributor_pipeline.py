@@ -300,8 +300,11 @@ def test_contributor_tenure_survival_below_floor_shows_still_active_table_not_a_
 def test_contributor_tenure_survival_golden_curve_at_floor():
     # 30 contributors (== FLOOR_COHORT_SURVIVAL), each with exactly one
     # commit on the same day inside the trailing-24m cohort window -- a
-    # fully hand-computable KM curve: everyone churns at the same time
-    # (last commit + 365d), so the curve has one step, straight to 0.
+    # one-time contributor's tenure is 0 (METRICS.md: the churn event is
+    # "dated to their last observed activity", i.e. last - first, not
+    # last + the 12-month confirmation window -- orchestrator review of
+    # issue #159 fixup). Fully hand-computable KM curve: everyone churns at
+    # the same time (t=0), so the curve has one step, straight to 0.
     rows = []
     for i in range(30):
         rows += _commits(f"dev{i}@example.org", [date(2022, 6, 1)])
@@ -319,13 +322,13 @@ def test_contributor_tenure_survival_golden_curve_at_floor():
     assert details["cohort_size"] == 30
     assert details["event_count"] == 30
     assert details["censored_count"] == 0
-    assert details["median_tenure_days"] == 365
+    assert details["median_tenure_days"] == 0
     assert details["median_not_reached"] is False
     assert details["survival_at_12m"] == pytest.approx(0.0)
     curve = details["curve"]
     assert len(curve) == 1
     point = curve[0]
-    assert point["t_days"] == 365
+    assert point["t_days"] == 0
     assert point["survival"] == pytest.approx(0.0)
     assert point["n_at_risk"] == 30
     assert point["n_events"] == 30
@@ -334,9 +337,10 @@ def test_contributor_tenure_survival_golden_curve_at_floor():
 
 
 def test_contributor_tenure_survival_censors_a_recently_active_contributor():
-    # 30 contributors, all first-committing 2022-06-01: 29 never commit
-    # again (churn at +365d); 1 ("recent") commits again just before AS_OF,
-    # so their inactivity_cutoff is still in the future -- right-censored.
+    # 30 contributors, all first-committing 2022-06-01: 29 are one-timers
+    # (event at t=0); 1 ("recent") commits again close to AS_OF, so their
+    # inactivity_cutoff (last + 365d) is still in the future -- right-
+    # censored at as_of - first, not treated as churned.
     rows = []
     for i in range(29):
         rows += _commits(f"dev{i}@example.org", [date(2022, 6, 1)])
@@ -350,6 +354,77 @@ def test_contributor_tenure_survival_censors_a_recently_active_contributor():
     assert details["censored_count"] == 1
     # The one censored contributor doesn't produce a KM step of its own
     # (only event times do) -- the curve still drops fully to 0 at the
-    # shared event time among the other 29.
+    # shared event time (t=0) among the other 29.
     assert len(details["curve"]) == 1
+    assert details["curve"][0]["t_days"] == 0
     assert details["curve"][0]["n_events"] == 29
+    assert details["curve"][0]["n_at_risk"] == 30  # the censored one is still at risk at t=0
+
+
+def test_contributor_tenure_survival_event_time_is_dated_to_last_activity_not_window_end():
+    """Orchestrator review of issue #159 fixup: the churn EVENT must be
+    dated to the contributor's own last observed activity (tenure = last -
+    first), never to last + the 12-month confirmation window -- that
+    window only decides whether a churn is confirmed as of `as_of`, not
+    when it's dated. Three explicit scenarios, 10 contributors each (30
+    total, meets the KM floor):
+
+    - group A ("one-timer"): a single commit, long since confirmed churned
+      -> event at t=0.
+    - group B ("active 0-7 months then silent"): two commits ~7 months
+      apart, long since confirmed churned -> event at t=(last-first).days
+      (~214 days, ~7 months) -- NOT at +365d/+12 months.
+    - group C ("active within the last 12 months"): last commit recent
+      enough that churn isn't confirmed yet -> right-censored at
+      as_of - first, not an event at all.
+    """
+    group_a_first = date(2022, 6, 1)
+    group_b_first = date(2022, 6, 1)
+    group_b_last = date(2023, 1, 1)  # 214 days after group_b_first (~7 months)
+    group_c_first = date(2023, 6, 1)
+    group_c_last = date(2024, 1, 1)  # within 12 months of AS_OF (2024-03-15)
+
+    rows = []
+    for i in range(10):
+        rows += _commits(f"onetimer{i}@example.org", [group_a_first])
+    for i in range(10):
+        rows += _commits(f"sevenmonth{i}@example.org", [group_b_first, group_b_last])
+    for i in range(10):
+        rows += _commits(f"recent{i}@example.org", [group_c_first, group_c_last])
+
+    result = _compute(rows)
+    row = _rows_for(result, "contributor_tenure_survival")[0]
+    assert row["n"] == 30
+    assert row["flag"] == "ok"
+
+    details = _details(row)
+    assert details["event_count"] == 20  # groups A + B
+    assert details["censored_count"] == 10  # group C
+
+    event_b_days = (group_b_last - group_b_first).days
+    assert event_b_days == 214
+
+    curve_by_t = {point["t_days"]: point for point in details["curve"]}
+    assert set(curve_by_t) == {0, event_b_days}
+
+    # t=0: all 30 still at risk (group C's censoring duration is far larger
+    # than 0), 10 events (group A). Ŝ(0) = 1 - 10/30 = 2/3.
+    point_a = curve_by_t[0]
+    assert point_a["n_at_risk"] == 30
+    assert point_a["n_events"] == 10
+    assert point_a["survival"] == pytest.approx(20 / 30, abs=1e-4)
+
+    # t=event_b_days: group A (duration 0) has already left the risk set;
+    # 20 left at risk (group B + group C), 10 events (group B).
+    # Ŝ(event_b_days) = 2/3 * (1 - 10/20) = 1/3.
+    point_b = curve_by_t[event_b_days]
+    assert point_b["n_at_risk"] == 20
+    assert point_b["n_events"] == 10
+    assert point_b["survival"] == pytest.approx((20 / 30) * (1 - 10 / 20), abs=1e-4)
+
+    assert details["median_tenure_days"] == event_b_days
+    assert details["median_not_reached"] is False
+    # Ŝ(365 days) reads off the last step at or before t=365 -- still the
+    # event_b_days step (214 < 365), since no censored contributor's
+    # duration crosses the 365d mark to produce a later step.
+    assert details["survival_at_12m"] == pytest.approx(point_b["survival"], abs=1e-4)

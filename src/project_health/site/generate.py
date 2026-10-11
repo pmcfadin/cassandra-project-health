@@ -54,6 +54,9 @@ import pyarrow.parquet as pq
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from project_health import storage
+from project_health.metrics.contributor_pipeline import (
+    LOW_CONFIDENCE_COHORT_FLOOR,
+)
 from project_health.metrics.windows import add_months, month_start
 from project_health.schema import get_schema, validate
 from project_health.site import chart_spec
@@ -95,6 +98,12 @@ VEGA_EMBED_VERSION = "6.26.0"
 # ARCHITECTURE.md §7.1 mitigation 2: warn if the manifest's completed_at is
 # older than this, relative to build time.
 FRESHNESS_WARNING_HOURS = 36
+
+# issue #159 (orchestrator review fixup): how many of the latest horizon-
+# elapsed `funnel_stage_conversion` monthly cohorts to pool into the
+# Community page's single funnel-stage bar chart, so a single noisy
+# 5-person cohort doesn't stand in for the whole read.
+FUNNEL_POOL_COHORTS = 12
 
 _PACKAGE_DIR = Path(__file__).parent
 TEMPLATES_DIR = _PACKAGE_DIR / "templates"
@@ -1087,30 +1096,92 @@ def build_contributor_pipeline_context(data_dir: Path, run_id: str) -> dict[str,
                 "still_active_table": details.get("still_active_table"),
             }
 
-    funnel_rows = sorted(
-        (r for r in rows if r["metric_id"] == "funnel_stage_conversion" and r["flag"] == "ok"),
-        key=lambda r: r["window_start"],
-    )
-    if funnel_rows:
-        latest = funnel_rows[-1]
-        details = json.loads(latest["details_json"]) if latest["details_json"] else {}
+    # Orchestrator review of issue #159 fixup: a cohort whose 730-day
+    # horizon hasn't fully elapsed yet can't be called "completed" -- its
+    # bars are mostly "in flight" by construction, which misrepresents the
+    # funnel as if it were a finished read. A row is horizon-elapsed when
+    # every one of its computed stages has `in_flight == 0` (METRICS.md
+    # `funnel_stage_conversion`'s per-contributor horizon check already
+    # resolves this at compute time, so it's readable straight back out of
+    # `details_json` without needing `as_of` here).
+    def _horizon_elapsed(details: dict[str, Any]) -> bool:
         stages = details.get("stages") or {}
-        if stages:
-            ctx["funnel"] = {
-                "cohort_month_label": latest["window_start"].strftime("%b %Y"),
-                "cohort_size": details.get("cohort_size"),
-                "low_confidence": details.get("low_confidence", False),
-                "chart_id": "funnel_stage_conversion_bar",
-                "vega_spec_json": json.dumps(
-                    _funnel_stage_vega_spec(stages, details.get("stage_order", []))
-                ),
-                "chart_meta_json": chart_spec.chart_meta_json(
-                    chart_id="funnel_stage_conversion_bar",
-                    title="Contributor funnel, latest cohort",
-                    time_field=None,
-                    series_field="status",
-                ),
+        return all(
+            stage.get("in_flight", 0) == 0
+            for stage in stages.values()
+            if stage.get("status") == "computed"
+        )
+
+    funnel_candidates = []
+    for r in rows:
+        if r["metric_id"] != "funnel_stage_conversion" or r["flag"] != "ok":
+            continue
+        details = json.loads(r["details_json"]) if r["details_json"] else {}
+        if details.get("stages") and _horizon_elapsed(details):
+            funnel_candidates.append((r, details))
+    funnel_candidates.sort(key=lambda pair: pair[0]["window_start"])
+
+    if funnel_candidates:
+        # Pool the last FUNNEL_POOL_COHORTS horizon-elapsed monthly cohorts
+        # rather than showing the single latest one: at METRICS.md's own
+        # floor (5), a single cohort's bars are noisy enough to be
+        # misleading on their own (one or two contributors swing a stage's
+        # share by 20+ points) -- pooling raw reached/not_reached counts
+        # across cohorts before computing shares gives a materially more
+        # stable, still-honest read, the same reasoning
+        # `sustained_contributor_count`'s trailing-12m window already
+        # applies to a single-month headcount. committer/pmc_member stay
+        # `not_available` either way (no per-cohort data to pool there).
+        pooled = funnel_candidates[-FUNNEL_POOL_COHORTS:]
+        first_month = pooled[0][0]["window_start"]
+        last_month = pooled[-1][0]["window_start"]
+        stage_order = pooled[-1][1].get("stage_order", [])
+        pooled_cohort_size = sum(r["n"] for r, _ in pooled)
+
+        pooled_stages: dict[str, Any] = {}
+        for stage_id in stage_order:
+            sample_stage = pooled[-1][1]["stages"].get(stage_id, {})
+            if sample_stage.get("status") == "not_available":
+                pooled_stages[stage_id] = sample_stage
+                continue
+            reached = sum(d["stages"][stage_id]["reached"] for _, d in pooled)
+            not_reached = sum(d["stages"][stage_id]["not_reached"] for _, d in pooled)
+            pooled_stages[stage_id] = {
+                "status": "computed",
+                "reached": reached,
+                "in_flight": 0,
+                "not_reached": not_reached,
+                "reached_fraction": round(reached / pooled_cohort_size, 4)
+                if pooled_cohort_size
+                else None,
+                "in_flight_fraction": 0.0,
+                "not_reached_fraction": round(not_reached / pooled_cohort_size, 4)
+                if pooled_cohort_size
+                else None,
             }
+
+        label_months = (
+            first_month.strftime("%b %Y")
+            if first_month == last_month
+            else f"{first_month.strftime('%b %Y')} – {last_month.strftime('%b %Y')}"
+        )
+        ctx["funnel"] = {
+            "cohort_month_label": label_months,
+            "cohort_count": len(pooled),
+            "cohort_size": pooled_cohort_size,
+            "pooled": len(pooled) > 1,
+            "low_confidence": pooled_cohort_size < LOW_CONFIDENCE_COHORT_FLOOR,
+            "chart_id": "funnel_stage_conversion_bar",
+            "vega_spec_json": json.dumps(
+                _funnel_stage_vega_spec(pooled_stages, stage_order)
+            ),
+            "chart_meta_json": chart_spec.chart_meta_json(
+                chart_id="funnel_stage_conversion_bar",
+                title="Contributor funnel, pooled horizon-elapsed cohorts",
+                time_field=None,
+                series_field="status",
+            ),
+        }
     return ctx
 
 

@@ -50,6 +50,12 @@
           </p>
         </div>
         {% endfor %}
+        {% for note in card.shared_notes %}
+        <p class="card-empty-state">
+          {{ note.text }}
+          <a href="{{ note.href }}">{{ note.link_label }} &rarr;</a>
+        </p>
+        {% endfor %}
       {% endif %}
     </article>
     {% endfor %}

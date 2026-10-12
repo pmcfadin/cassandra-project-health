@@ -1665,28 +1665,93 @@ def _summary_card_context(
 # the top-level per-metric-id loop in `generate()` already writes.
 
 
+# issue #171 fixup round 1 (orchestrator review of PR #178): the CHAOSS
+# Starter "Time to First Response" / "Change Request Closure Ratio" cards
+# cite specific venues by name (GitHub PR / JIRA / dev@) -- a subproject
+# whose dev@ is shared (`DiscoveredProject.conversations_shared`) or that
+# has no JIRA tracker at all (`DiscoveredProject.has_jira`, e.g.
+# easy-stress) must never show an empty/insufficient-data series for a
+# venue it categorically doesn't have, nor claim a venue its own
+# `mapping_note` text doesn't actually describe.
+_CHAOSS_DEVLIST_METRIC_ID = "time_to_first_reply_devlist"
+_CHAOSS_JIRA_RESPONSE_METRIC_ID = "time_to_first_response_jira"
+_CHAOSS_JIRA_PATCH_METRIC_ID = "change_request_closure_ratio_jira_patch"
+
+
 def _chaoss_starter_cards(
     series_by_id: dict[str, MetricSeries],
     last_completed_month: date,
     manifest: RunManifest,
     *,
     project_display_name: str = "Cassandra",
+    dev_mailing_list_shared: bool = False,
+    has_jira: bool = True,
+    cassandra_home_href: str | None = None,
 ) -> list[dict[str, Any]]:
+    # Every one of the three new keyword args defaults to Cassandra's own
+    # values (not shared, has JIRA), so a Cassandra render (`project_
+    # display_name == "Cassandra"`, true for both `project=None` and a
+    # Cassandra `ProjectSiteContext`) never exercises the branches below --
+    # `excluded_metric_ids`/`shared_notes` stay empty and `mapping_note`
+    # stays `meta.mapping_note`, byte-identical to before this fixup.
+    is_subproject = project_display_name != "Cassandra"
     cards = []
     for meta in CHAOSS_STARTER_METRICS:
-        # Issue #171: `mapping_note` (metrics_meta.py) is written for
-        # Cassandra by name ("Computed for Cassandra from ..."); a plain
-        # word swap is this landing block's own "de-Cassandra the copy"
-        # (every word of the note besides the project name itself is
-        # project-agnostic -- which venues a given CHAOSS concept is
-        # computed from, not anything specific to Cassandra as a project).
-        mapping_note = (
-            meta.mapping_note
-            if project_display_name == "Cassandra"
-            else meta.mapping_note.replace("Cassandra", project_display_name)
-        )
+        excluded_metric_ids: set[str] = set()
+        mapping_note = meta.mapping_note
+        shared_notes: list[dict[str, Any]] = []
+
+        if meta.key == "time_to_first_response":
+            if dev_mailing_list_shared:
+                excluded_metric_ids.add(_CHAOSS_DEVLIST_METRIC_ID)
+                if cassandra_home_href:
+                    shared_notes.append(
+                        {
+                            "text": (
+                                "dev@ is shared across all Apache Cassandra subprojects."
+                            ),
+                            "link_label": "See Apache Cassandra",
+                            "href": cassandra_home_href,
+                        }
+                    )
+            if not has_jira:
+                excluded_metric_ids.add(_CHAOSS_JIRA_RESPONSE_METRIC_ID)
+            if is_subproject:
+                if dev_mailing_list_shared and has_jira:
+                    mapping_note = (
+                        f"Computed for {project_display_name} from two venues, shown "
+                        "separately: GitHub PR time to first review and JIRA time to "
+                        "first response."
+                    )
+                elif dev_mailing_list_shared and not has_jira:
+                    mapping_note = (
+                        f"Computed for {project_display_name} from one venue: GitHub "
+                        "PR time to first review."
+                    )
+                elif not dev_mailing_list_shared and not has_jira:
+                    mapping_note = (
+                        f"Computed for {project_display_name} from two venues, shown "
+                        "separately: GitHub PR time to first review and dev@ time to "
+                        "first reply."
+                    )
+                else:
+                    mapping_note = meta.mapping_note.replace("Cassandra", project_display_name)
+        elif meta.key == "change_request_closure_ratio":
+            if not has_jira:
+                excluded_metric_ids.add(_CHAOSS_JIRA_PATCH_METRIC_ID)
+            if is_subproject:
+                mapping_note = (
+                    meta.mapping_note.replace("Cassandra", project_display_name)
+                    if has_jira
+                    else f"Computed for {project_display_name} from GitHub pull requests."
+                )
+        elif is_subproject:
+            mapping_note = meta.mapping_note.replace("Cassandra", project_display_name)
+
         series_cards = []
         for s in meta.series:
+            if s.metric_id in excluded_metric_ids:
+                continue
             series = series_by_id.get(s.metric_id)
             if series is None:
                 continue
@@ -1714,6 +1779,7 @@ def _chaoss_starter_cards(
                 "mapping_note": mapping_note,
                 "pending": meta.pending,
                 "series": series_cards,
+                "shared_notes": shared_notes,
             }
         )
     return cards
@@ -1842,6 +1908,19 @@ def _render_pages(
     conversation_patterns_context = build_conversation_patterns_context(
         data_dir, now=build_time
     )
+    # issue #171 fixup round 1: classified conversation patterns (and the
+    # "Tone over time" sparklines nested inside that same Community-page
+    # section) are derived from the PMC-wide dev@ mailing list, same as the
+    # Conversations tab's own mailing-list content -- never independently
+    # computed per subproject. `conversation_patterns.available` is already
+    # `False` for a realistic subproject (no `conversation_patterns`
+    # snapshot in its own data_dir), but the template's default empty
+    # state ("aren't published yet") reads as a temporary gap rather than
+    # the categorical "this is PMC-wide, not per-project" fact -- `shared`
+    # tells `community.html` which message to show instead.
+    conversation_patterns_context["shared"] = bool(
+        current_project is not None and current_project.conversations_shared
+    )
     # Thread explorer (issue #122, D27) -- computed here (not down by the
     # Conversations page below) so both the Community card and the
     # Conversations page's own link can gate on `thread_explorer.available`
@@ -1891,14 +1970,57 @@ def _render_pages(
         _summary_card_context(page, series_by_page[page_id], last_completed_month, manifest)
         for page_id, page in PAGES.items()
     ]
+    # issue #171 fixup round 1 (orchestrator review of PR #178): a summary
+    # card's `metrics` list is whichever `page_series` entries sort first
+    # in `series_by_id` (`_summary_card_context`) -- for the Conversations
+    # page that can easily be the dev@/user@ reply-responsiveness metrics,
+    # which would otherwise show "Time to First Reply — dev@ · insufficient
+    # data" right here on Home even though the Conversations/Governance tab
+    # itself already renders a "shared" notice instead of those metrics
+    # (same `conversations_shared`/`governance_shared` gate below). Strip
+    # the headline list and swap in a short factual `empty_message` instead
+    # of the generic "no data yet" one (`metrics_meta.PAGES`), so Home never
+    # names a venue this project categorically doesn't have.
+    if current_project is not None:
+        for card in summary_cards:
+            if card["page_id"] == "conversations" and current_project.conversations_shared:
+                card["metrics"] = []
+                card["empty_message"] = (
+                    "Mailing-list metrics are shared across all Apache Cassandra "
+                    "subprojects — see Apache Cassandra's Conversations page."
+                )
+            elif card["page_id"] == "governance" and current_project.governance_shared:
+                card["metrics"] = []
+                card["empty_message"] = (
+                    "Governance compliance tracking and the ASF PMC roster are "
+                    "maintained once for the whole Apache Cassandra project — see "
+                    "Apache Cassandra's Governance page."
+                )
     # CHAOSS Starter Project Health block (issue #136, DECISIONS.md D29) —
     # the landing page leads with this published external standard instead
     # of the retired in-house composite score (D20, reversed by D29).
+    home_extras = _project_extras(HOME_BASE_PREFIX, "home")
+    # Cassandra's own root_path is always "" (`project_site.py`), so its
+    # home page is always exactly `site_root_prefix + "index.html"` --
+    # where a subproject's dev@-is-shared note (issue #171 fixup round 1)
+    # links to. `None` when there's no other project to link to at all
+    # (single-project builds), which `_chaoss_starter_cards` treats as "no
+    # shared-note line, just drop the excluded series silently".
+    cassandra_home_href = (
+        f"{home_extras['site_root_prefix']}index.html"
+        if current_project is not None and not current_project.is_cassandra
+        else None
+    )
     chaoss_starter_cards = _chaoss_starter_cards(
         series_by_id,
         last_completed_month,
         manifest,
         project_display_name=common_ctx["project_display_name"],
+        dev_mailing_list_shared=(
+            current_project.conversations_shared if current_project is not None else False
+        ),
+        has_jira=(current_project.has_jira if current_project is not None else True),
+        cassandra_home_href=cassandra_home_href,
     )
     home_html = env.get_template("home.html").render(
         current_page="home",
@@ -1906,7 +2028,7 @@ def _render_pages(
         summary_cards=summary_cards,
         chaoss_starter_cards=chaoss_starter_cards,
         releases=releases_context,
-        **_project_extras(HOME_BASE_PREFIX, "home"),
+        **home_extras,
         **common_ctx,
     )
     (out_dir / "index.html").write_text(home_html)
@@ -1962,6 +2084,7 @@ def _render_pages(
     # top of their own ordinary cards in `community_sections` above -- same
     # "own small additive call" pattern as leaderboard/pr_backlog above.
     contributor_pipeline_context = build_contributor_pipeline_context(data_dir, run_id)
+    community_extras = _project_extras(SUBPAGE_BASE_PREFIX, "community")
     community_html = env.get_template("community.html").render(
         current_page="community",
         base_prefix=SUBPAGE_BASE_PREFIX,
@@ -1971,10 +2094,16 @@ def _render_pages(
         pr_backlog=pr_backlog_context,
         contributor_pipeline=contributor_pipeline_context,
         conversation_patterns=conversation_patterns_context,
+        # issue #171 fixup round 1: where the "shared, not per-subproject"
+        # Conversation patterns notice (community.html) links -- Cassandra's
+        # own Conversations tab, at the site root (`conversations_shared`
+        # is only ever `True` when `current_project` is set and isn't
+        # Cassandra, so this href is only read in that case).
+        shared_conversations_href=f"{community_extras['site_root_prefix']}conversations/",
         thread_explorer=thread_explorer_context,
         peers=peers_context,
         releases=releases_context,
-        **_project_extras(SUBPAGE_BASE_PREFIX, "community"),
+        **community_extras,
         **common_ctx,
     )
     _write_subpage(out_dir, "community", community_html)

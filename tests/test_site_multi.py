@@ -24,13 +24,14 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
+import pyarrow as pa
 import pyarrow.parquet as pq
 import yaml
 
-from project_health.schema import get_schema
+from project_health.schema import get_schema, validate
 from project_health.site.generate import generate, generate_all_projects
 from project_health.site.project_site import (
     DiscoveredProject,
@@ -124,6 +125,138 @@ def _all_html_files(out_dir: Path) -> list[Path]:
     return sorted(out_dir.rglob("*.html"))
 
 
+# --- Realistic subproject fixture (orchestrator review of PR #178, fixup
+# round 1) -----------------------------------------------------------------
+#
+# The two-project fixture above reuses an *empty* metrics snapshot for its
+# fake subproject -- fine for structural assertions (page existence, link-
+# checking, byte-identity), but it can't catch a shared-source leak: with
+# zero rows, `demo-sub`'s dev@ CHAOSS series would already read as
+# "insufficient data" whether or not the exclusion logic below ever ran.
+# This fixture instead writes *real* `metric_value` rows for exactly the
+# git/GitHub/JIRA-sourced M0 metrics a real subproject's own pipeline run
+# would compute (java-driver-shaped: has its own JIRA tracker, CASSJAVA) --
+# and deliberately never a mailing-list (`ponymail`)/governance-sourced
+# metric_id, since a real subproject's data_dir never collects those at
+# all (PMC-wide, `shared_sources`). If the CHAOSS card venue-filtering or
+# the Conversation patterns "shared" notice (generate.py, this fixup round)
+# regressed, this is the fixture that would actually catch it: every
+# `MetricSeries` dict entry always exists (`_build_series` registers one
+# per `M0_METRICS` key regardless of row count, `generate.py`'s own
+# docstring), so an unfiltered dev@ series here would render as a real
+# "insufficient data" card with an empty chart, not simply vanish.
+REALISTIC_SUB_RUN_ID = "2026-10-12T000000Z-aaa111"
+
+# (metric_id, starting value, per-month step, n) -- six months of a
+# plausible-looking trend, enough for a real "latest value" card + chart,
+# never zero rows. Covers all four CHAOSS Starter cards' own non-shared
+# series (`metrics_meta.CHAOSS_STARTER_METRICS`): GitHub PR review/closure,
+# JIRA response/closure, contributor absence factor, release frequency.
+_REALISTIC_METRIC_SERIES: tuple[tuple[str, float, float, int], ...] = (
+    ("pr_time_to_first_review", 1.4, -0.05, 18),
+    ("change_request_closure_ratio_pr", 0.52, 0.01, 18),
+    ("time_to_first_response_jira", 0.9, -0.02, 12),
+    ("change_request_closure_ratio_jira_patch", 0.47, 0.01, 12),
+    ("contributor_absence_factor", 3, 0, 22),
+    ("release_frequency", 2, 0, 22),
+)
+
+
+def _realistic_subproject_metric_rows(run_id: str) -> list[dict]:
+    rows = []
+    months = [date(2026, m, 1) for m in range(1, 7)]
+    for metric_id, start_value, step, n in _REALISTIC_METRIC_SERIES:
+        for i, month_start in enumerate(months):
+            month_end = date(month_start.year, month_start.month, 28)
+            rows.append(
+                {
+                    "metric_id": metric_id,
+                    "definition_version": "1.0",
+                    "window_start": month_start,
+                    "window_end": month_end,
+                    "value": float(start_value) + step * i,
+                    "n": n,
+                    "flag": "ok",
+                    "run_id": run_id,
+                    "computed_at": datetime(2026, 7, 1, tzinfo=UTC),
+                    "details_json": None,
+                }
+            )
+    return rows
+
+
+def _realistic_metric_value_table(rows: list[dict]) -> pa.Table:
+    columns = {name: [row[name] for row in rows] for name in rows[0]}
+    table = pa.table(
+        {
+            "metric_id": pa.array(columns["metric_id"], type=pa.string()),
+            "definition_version": pa.array(columns["definition_version"], type=pa.string()),
+            "window_start": pa.array(columns["window_start"], type=pa.date32()),
+            "window_end": pa.array(columns["window_end"], type=pa.date32()),
+            "value": pa.array(columns["value"], type=pa.float64()),
+            "n": pa.array(columns["n"], type=pa.int64()),
+            "flag": pa.array(columns["flag"], type=pa.string()),
+            "run_id": pa.array(columns["run_id"], type=pa.string()),
+            "computed_at": pa.array(columns["computed_at"], type=pa.timestamp("us", tz="UTC")),
+            "details_json": pa.array(columns["details_json"], type=pa.string()),
+        }
+    )
+    return validate("metric_value", table)
+
+
+def _write_realistic_subproject_data(data_dir: Path, run_id: str) -> None:
+    snapshot_dir = data_dir / "snapshots" / run_id
+    snapshot_dir.mkdir(parents=True, exist_ok=True)
+    table = _realistic_metric_value_table(_realistic_subproject_metric_rows(run_id))
+    pq.write_table(table, snapshot_dir / "metrics.parquet")
+    _write_manifest(data_dir, run_id)
+
+
+def _write_realistic_index(tmp_path: Path) -> Path:
+    """Like `_write_two_project_index`, but the subproject
+    (`demo-driver`) carries a real `issue_tracker: {type: jira}` (modeling
+    java-driver/gocql-driver/..., which all have their own JIRA project) so
+    `DiscoveredProject.has_jira` is `True` -- exercising the "GitHub + JIRA,
+    no dev@" CHAOSS copy branch, not the JIRA-less "GitHub only" one
+    (covered instead by a direct `_chaoss_starter_cards` unit check)."""
+    (tmp_path / "cassandra.yaml").write_text(
+        yaml.safe_dump({"project": {"id": "cassandra", "display_name": "Apache Cassandra"}})
+    )
+    (tmp_path / "demo-driver.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "project": {"id": "demo-driver", "display_name": "Demo Driver"},
+                "issue_tracker": {"type": "jira", "project_key": "DEMO"},
+                "shared_sources": ["asf_roster", "ponymail", "governance"],
+            }
+        )
+    )
+    index_path = tmp_path / "index.yaml"
+    index_path.write_text(
+        yaml.safe_dump(
+            [
+                {"id": "cassandra", "config": "cassandra.yaml", "enabled": True},
+                {"id": "demo-driver", "config": "demo-driver.yaml", "enabled": True},
+            ]
+        )
+    )
+    return index_path
+
+
+def _build_realistic_fixture(tmp_path: Path) -> tuple[Path, Path, Path]:
+    """Returns (index_path, data_dir, out_dir). Cassandra keeps the plain
+    empty-snapshot fixture (its own CHAOSS cards/community cards reading
+    "insufficient data" is expected and unrelated to this fixup); the
+    subproject gets the realistic git/GitHub/JIRA-only data above."""
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    index_path = _write_realistic_index(tmp_path)
+    data_dir = tmp_path / "data"
+    _write_project_data(data_dir, CASSANDRA_RUN_ID)
+    _write_realistic_subproject_data(data_dir / "projects" / "demo-driver", REALISTIC_SUB_RUN_ID)
+    out_dir = tmp_path / "out"
+    return index_path, data_dir, out_dir
+
+
 def test_two_project_fixture_yields_expected_pages(tmp_path):
     index_path, data_dir, out_dir = _build_two_project_fixture(tmp_path)
 
@@ -184,10 +317,10 @@ def test_subproject_conversations_and_governance_show_shared_notice(tmp_path):
         assert forbidden not in governance_html
 
 
-def test_link_checker_every_relative_link_resolves(tmp_path):
-    index_path, data_dir, out_dir = _build_two_project_fixture(tmp_path)
-    generate_all_projects(index_path, data_dir, out_dir)
-
+def _find_broken_links(out_dir: Path) -> list[str]:
+    """Walk every generated page's relative href/src and return the ones
+    that don't resolve to a real file under `out_dir` -- shared by every
+    link-checker test in this module."""
     broken: list[str] = []
     for html_path in _all_html_files(out_dir):
         html = html_path.read_text()
@@ -207,7 +340,14 @@ def test_link_checker_every_relative_link_resolves(tmp_path):
                 resolved = resolved / "index.html"
             if not resolved.is_file():
                 broken.append(f"{html_path.relative_to(out_dir)} -> {link}")
+    return broken
 
+
+def test_link_checker_every_relative_link_resolves(tmp_path):
+    index_path, data_dir, out_dir = _build_two_project_fixture(tmp_path)
+    generate_all_projects(index_path, data_dir, out_dir)
+
+    broken = _find_broken_links(out_dir)
     assert not broken, "broken relative link(s):\n" + "\n".join(broken)
 
 
@@ -231,6 +371,7 @@ def test_cassandra_output_identical_single_vs_multi_project(tmp_path):
         conversations_shared=False,
         governance_shared=False,
         releases_available=False,
+        has_jira=True,
         data_dir=data_dir,
         run_id=CASSANDRA_RUN_ID,
     )
@@ -315,3 +456,151 @@ def test_switcher_absent_with_one_project_present_with_two(tmp_path):
         assert "Demo Subproject" in home_html
     assert 'aria-current="page"' in cassandra_home
     assert 'aria-current="page"' in sub_home
+
+
+def _dev_at_occurrences_outside_shared_note(html: str) -> list[str]:
+    """Every substring surrounding a "dev@" occurrence in `html` that is
+    NOT part of the shared-mailing-list note -- should always be empty for
+    a subproject whose dev@ is shared (orchestrator review of PR #178)."""
+    bad = []
+    for m in re.finditer("dev@", html):
+        start, end = m.start(), m.end()
+        snippet = html[max(0, start - 100) : end + 100]
+        if "shared across all Apache Cassandra subprojects" not in snippet:
+            bad.append(snippet)
+    return bad
+
+
+def test_realistic_subproject_home_chaoss_cards_reflect_actual_venues(tmp_path):
+    """A subproject with its own JIRA tracker but shared (PMC-wide) dev@
+    (java-driver/gocql-driver-shaped): the Home CHAOSS cards must cite only
+    the venues this project actually has data for -- GitHub PR + JIRA, no
+    dev@ venue claimed, and the dev@ series collapses to one shared-note
+    line instead of an empty "insufficient data" card+chart."""
+    index_path, data_dir, out_dir = _build_realistic_fixture(tmp_path)
+    rendered = generate_all_projects(index_path, data_dir, out_dir)
+    assert set(rendered) == {"cassandra", "demo-driver"}
+
+    home_html = (out_dir / "p" / "demo-driver" / "index.html").read_text()
+
+    # Venue-aware mapping_note copy (reviewer's own example wording).
+    assert (
+        "Computed for Demo Driver from two venues, shown separately: "
+        "GitHub PR time to first review and JIRA time to first response."
+        in home_html
+    )
+    # change_request_closure_ratio keeps its JIRA-patch venue since this
+    # project DOES have JIRA -- only the "Patch Available (X's ...)" phrase
+    # substitutes the project's own name, never leaves "Cassandra" behind.
+    # (Jinja autoescapes the apostrophe to `&#39;`.)
+    assert "Patch Available (Demo Driver&#39;s patch-submission equivalent" in home_html
+    assert "Patch Available (Cassandra&#39;s patch-submission equivalent" not in home_html
+
+    # No dev@ text anywhere except the one shared-note line, and that line
+    # links back to Cassandra's own home page.
+    leaks = _dev_at_occurrences_outside_shared_note(home_html)
+    assert not leaks, f"unexpected dev@ text outside the shared note: {leaks}"
+    assert "dev@ is shared across all Apache Cassandra subprojects." in home_html
+    # Home's own `base_prefix` is "./" (not "../"), so its `site_root_prefix`
+    # is "./" + the project's own "../../" depth, not a clean "../../../".
+    assert 'href="./../../index.html"' in home_html
+
+    # No empty chart container for the excluded dev@ series -- its
+    # chart_id never appears at all (the series was dropped, not rendered
+    # with zero data points).
+    assert "time_to_first_reply_devlist" not in home_html
+
+    # The venues this project DOES have render with real values, not
+    # "insufficient data" placeholders.
+    assert "chaoss-time_to_first_response-pr_time_to_first_review" in home_html
+    assert "chaoss-time_to_first_response-time_to_first_response_jira" in home_html
+
+
+def test_realistic_subproject_community_shared_sections_use_notice_not_empty_chart(tmp_path):
+    index_path, data_dir, out_dir = _build_realistic_fixture(tmp_path)
+    generate_all_projects(index_path, data_dir, out_dir)
+
+    community_html = (out_dir / "p" / "demo-driver" / "community" / "index.html").read_text()
+
+    conv_section_match = re.search(
+        r'<section class="conversation-patterns-summary".*?</section>', community_html, re.DOTALL
+    )
+    assert conv_section_match, "conversation-patterns-summary section missing"
+    conv_section = conv_section_match.group(0)
+
+    # Shared/classified content (Tone over time, conversation patterns)
+    # shows the shared notice, never a chart container or "not published
+    # yet" (which would wrongly imply it's just late, not categorically
+    # PMC-wide) -- and links back to Cassandra's own Conversations tab.
+    assert "data-vega-spec" not in conv_section
+    assert "Tone over time" not in conv_section
+    assert "not published yet" not in conv_section
+    assert re.search(r"shared across all\s+Apache Cassandra subprojects", conv_section)
+    assert 'href="../../../conversations/"' in conv_section
+
+    leaks = _dev_at_occurrences_outside_shared_note(community_html)
+    # Community's own notice text doesn't literally say "dev@ is shared
+    # across all Apache Cassandra subprojects" (it says "classified from
+    # the dev@ mailing list, shared across..."), so check the actual
+    # wording used there too rather than reusing the Home helper verbatim.
+    for snippet in leaks:
+        assert "classified from the dev@ mailing list, shared across" in snippet, snippet
+
+    # Peers/thread-explorer stay Cassandra-only (unchanged from issue #171).
+    assert "peer-context-summary" in community_html  # section always present
+    assert 'href="../peers/"' not in community_html
+
+
+def test_link_checker_passes_on_realistic_subproject_fixture(tmp_path):
+    index_path, data_dir, out_dir = _build_realistic_fixture(tmp_path)
+    generate_all_projects(index_path, data_dir, out_dir)
+
+    broken = _find_broken_links(out_dir)
+    assert not broken, "broken relative link(s):\n" + "\n".join(broken)
+
+
+def test_chaoss_cards_github_only_when_no_jira(tmp_path):
+    """Direct unit coverage of the other venue-text branch (reviewer's
+    "GitHub-only when no JIRA" case, e.g. easy-stress) without a second
+    full fixture: `generate._chaoss_starter_cards` with `has_jira=False`
+    must drop the JIRA series from both multi-venue cards and never say
+    "Patch Available"."""
+    from project_health.site.generate import _build_series, _chaoss_starter_cards
+    from project_health.site.metrics_meta import CHAOSS_STARTER_METRICS, M0_METRICS
+    from project_health.site.manifest import RunManifest
+
+    rows = _realistic_subproject_metric_rows(REALISTIC_SUB_RUN_ID)
+    table = _realistic_metric_value_table(rows)
+    series_by_id = _build_series(table, M0_METRICS)
+    manifest = RunManifest(
+        run_id=REALISTIC_SUB_RUN_ID, pipeline_code_sha="a" * 40, sources={}
+    )
+
+    cards = _chaoss_starter_cards(
+        series_by_id,
+        date(2026, 6, 1),
+        manifest,
+        project_display_name="Easy Stress",
+        dev_mailing_list_shared=True,
+        has_jira=False,
+        cassandra_home_href="../../index.html",
+    )
+    by_key = {c["key"]: c for c in cards}
+
+    assert by_key["time_to_first_response"]["mapping_note"] == (
+        "Computed for Easy Stress from one venue: GitHub PR time to first review."
+    )
+    assert {s["label"] for s in by_key["time_to_first_response"]["series"]} == {"GitHub PR"}
+    assert by_key["time_to_first_response"]["shared_notes"][0]["text"] == (
+        "dev@ is shared across all Apache Cassandra subprojects."
+    )
+
+    assert (
+        by_key["change_request_closure_ratio"]["mapping_note"]
+        == "Computed for Easy Stress from GitHub pull requests."
+    )
+    assert {s["label"] for s in by_key["change_request_closure_ratio"]["series"]} == {
+        "GitHub PR"
+    }
+    assert "Patch Available" not in by_key["change_request_closure_ratio"]["mapping_note"]
+    assert CHAOSS_STARTER_METRICS  # sanity: the catalogue itself still loads

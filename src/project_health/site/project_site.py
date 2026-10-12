@@ -124,6 +124,16 @@ class DiscoveredProject:
     # Cassandra's own Releases page on the rare build where Cassandra
     # itself has no release-line data collected yet.
     releases_available: bool
+    # Whether this project has its own JIRA issue tracker configured
+    # (`issue_tracker: {type: jira, ...}`) -- some subprojects don't
+    # (`easy-stress` tracks issues on GitHub only). Unlike `conversations_
+    # shared`/`governance_shared`, this isn't a "shared with the PMC"
+    # question -- it's a plain per-project config fact the CHAOSS Starter
+    # Project Health landing cards (`generate.py::_chaoss_starter_cards`)
+    # need to know which JIRA-sourced venues/series actually apply to this
+    # project, so a JIRA-less project's card never cites a JIRA venue it
+    # has no data for.
+    has_jira: bool
     data_dir: Path
     run_id: str
 
@@ -198,6 +208,10 @@ def discover_projects(
         releases_available = bool(
             build_releases_context(project_data_dir, run_id).get("available")
         )
+        has_jira = (
+            project_config.issue_tracker is not None
+            and project_config.issue_tracker.type == "jira"
+        )
         discovered.append(
             DiscoveredProject(
                 id=entry.id,
@@ -210,6 +224,7 @@ def discover_projects(
                     and ("governance" in shared or "asf_roster" in shared)
                 ),
                 releases_available=releases_available,
+                has_jira=has_jira,
                 data_dir=project_data_dir,
                 run_id=run_id,
             )

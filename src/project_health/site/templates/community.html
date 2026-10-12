@@ -485,6 +485,12 @@
       </p>
     </article>
   </div>
+  {% elif conversation_patterns.shared %}
+  <p class="card-empty-state">
+    Conversation patterns are classified from the dev@ mailing list, shared across all
+    Apache Cassandra subprojects — not computed per subproject.
+    <a href="{{ shared_conversations_href }}">See Apache Cassandra's Conversations page &rarr;</a>
+  </p>
   {% else %}
   <p class="card-empty-state">
     Conversation patterns aren't published yet — they appear once a preliminary classified

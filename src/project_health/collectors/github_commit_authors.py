@@ -84,7 +84,7 @@ GRAPHQL_ENDPOINT = "https://api.github.com"
 
 _QUERY = """
 query($owner: String!, $name: String!, $branch: String!, $cursor: String, $pageSize: Int!) {
-  rateLimit { remaining resetAt cost }
+  rateLimit { limit remaining resetAt cost }
   repository(owner: $owner, name: $name) {
     ref(qualifiedName: $branch) {
       target {

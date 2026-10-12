@@ -52,7 +52,7 @@ configured repo's PR history sorts and cursors independently.
 
 ## Rate-limit budgeting — stop cleanly, never hammer
 
-Every query requests `rateLimit { remaining resetAt cost }` alongside the
+Every query requests `rateLimit { limit remaining resetAt cost }` alongside the
 real data (free — it reflects usage *after* this call's own cost, not an
 extra call). After each page, if `remaining` has dropped to or below
 `rate_limit_floor`, this collector stops paginating **that repo**
@@ -151,7 +151,7 @@ PR_ISSUE_LINK_BACKFILL_PAGE_SIZE = 100
 
 _PR_ISSUE_LINK_BACKFILL_QUERY = """
 query($owner: String!, $name: String!, $cursor: String, $pageSize: Int!) {
-  rateLimit { remaining resetAt cost }
+  rateLimit { limit remaining resetAt cost }
   repository(owner: $owner, name: $name) {
     pullRequests(first: $pageSize, after: $cursor, orderBy: {field: CREATED_AT, direction: ASC}) {
       pageInfo { hasNextPage endCursor }
@@ -165,7 +165,7 @@ GRAPHQL_ENDPOINT = "https://api.github.com"
 
 _QUERY = """
 query($owner: String!, $name: String!, $cursor: String, $pageSize: Int!) {
-  rateLimit { remaining resetAt cost }
+  rateLimit { limit remaining resetAt cost }
   repository(owner: $owner, name: $name) {
     pullRequests(first: $pageSize, after: $cursor, orderBy: {field: UPDATED_AT, direction: ASC}) {
       pageInfo { hasNextPage endCursor }
@@ -260,7 +260,7 @@ _PR_NODE_FIELDS = """
 _PRS_CREATED_DESC_QUERY = (
     """
 query($owner: String!, $name: String!, $cursor: String, $pageSize: Int!) {
-  rateLimit { remaining resetAt cost }
+  rateLimit { limit remaining resetAt cost }
   repository(owner: $owner, name: $name) {
     pullRequests(first: $pageSize, after: $cursor, orderBy: {field: CREATED_AT, direction: DESC}) {
       pageInfo { hasNextPage endCursor }
@@ -282,7 +282,7 @@ query($owner: String!, $name: String!, $cursor: String, $pageSize: Int!) {
 _OPEN_PRS_QUERY = (
     """
 query($owner: String!, $name: String!, $cursor: String, $pageSize: Int!) {
-  rateLimit { remaining resetAt cost }
+  rateLimit { limit remaining resetAt cost }
   repository(owner: $owner, name: $name) {
     pullRequests(
       first: $pageSize, after: $cursor, states: [OPEN]
@@ -313,7 +313,7 @@ query($owner: String!, $name: String!, $cursor: String, $pageSize: Int!) {
 _PR_SEARCH_QUERY = (
     """
 query($searchQuery: String!, $cursor: String, $pageSize: Int!) {
-  rateLimit { remaining resetAt cost }
+  rateLimit { limit remaining resetAt cost }
   search(query: $searchQuery, type: ISSUE, first: $pageSize, after: $cursor) {
     issueCount
     pageInfo { hasNextPage endCursor }
@@ -577,6 +577,7 @@ class GitHubCollector:
         max_retries: int = DEFAULT_MAX_RETRIES,
         min_request_interval: float = DEFAULT_MIN_REQUEST_INTERVAL,
         rate_limit_floor: int = DEFAULT_RATE_LIMIT_FLOOR,
+        rate_limit_floor_fraction: float | None = None,
         sleep_fn: Callable[[float], None] = time.sleep,
         clock: Callable[[], float] = time.monotonic,
         timeout: float = DEFAULT_TIMEOUT,
@@ -596,6 +597,7 @@ class GitHubCollector:
         self._max_retries = max_retries
         self._min_request_interval = min_request_interval
         self._rate_limit_floor = rate_limit_floor
+        self._rate_limit_floor_fraction = rate_limit_floor_fraction
         self._sleep_fn = sleep_fn
         self._clock = clock
         self._last_request_at: float | None = None
@@ -619,6 +621,24 @@ class GitHubCollector:
         without reaching into a private attribute.
         """
         return self._rate_limit_floor
+
+    def effective_floor(self, rate_limit: dict | None) -> int:
+        """The stop threshold for a page whose response carried `rate_limit`.
+
+        With `rate_limit_floor_fraction` set, the floor is capped at that
+        fraction of the token's own hourly `limit`, so a token with a small
+        allowance (the Actions `GITHUB_TOKEN`) still makes progress instead of
+        stopping at once because a fixed floor exceeds its whole budget.
+        """
+        limit = (rate_limit or {}).get("limit")
+        if self._rate_limit_floor_fraction is None or not limit:
+            return self._rate_limit_floor
+        return min(self._rate_limit_floor, int(limit * self._rate_limit_floor_fraction))
+
+    def floor_reached(self, rate_limit: dict | None) -> bool:
+        """True once `remaining` is at or below `effective_floor`."""
+        remaining = (rate_limit or {}).get("remaining")
+        return remaining is not None and remaining <= self.effective_floor(rate_limit)
 
     def close(self) -> None:
         self._client.close()
@@ -820,11 +840,11 @@ class GitHubCollector:
             if max_prs is not None and fetched >= max_prs:
                 break
 
-            if remaining is not None and remaining <= self._rate_limit_floor:
+            if self.floor_reached(rate_limit):
                 status = "rate_limited"
                 error = (
                     f"rate limit budget floor reached ({remaining} remaining "
-                    f"<= floor {self._rate_limit_floor})"
+                    f"<= floor {self.effective_floor(rate_limit)})"
                 )
                 break
 

@@ -535,10 +535,19 @@ class _FloorCapturingCollector:
     (`peers_config.collection.github_rate_limit_floor`) is observable from
     outside `peer_collect`."""
 
+    seen_fractions: list = []
     seen_floors: list[int] = []
 
-    def __init__(self, config, token=None, rate_limit_floor=500, transport=None):
+    def __init__(
+        self,
+        config,
+        token=None,
+        rate_limit_floor=500,
+        transport=None,
+        rate_limit_floor_fraction=None,
+    ):
         type(self).seen_floors.append(rate_limit_floor)
+        type(self).seen_fractions.append(rate_limit_floor_fraction)
 
     def __enter__(self):
         return self
@@ -559,8 +568,11 @@ def test_collect_and_write_github_passes_configured_reserve_as_rate_limit_floor(
         collection=CollectionConfig(github_rate_limit_floor=2500),
     )
     seen_floors: list[int] = []
+    seen_fractions: list = []
     fake_collector = type(
-        "_FakeCollector", (_FloorCapturingCollector,), {"seen_floors": seen_floors}
+        "_FakeCollector",
+        (_FloorCapturingCollector,),
+        {"seen_floors": seen_floors, "seen_fractions": seen_fractions},
     )
     monkeypatch.setattr(peer_collect, "GitHubCollector", fake_collector)
     monkeypatch.setattr(peer_collect, "run_created_desc_pass", lambda *a, **k: _empty_pass_result())
@@ -574,6 +586,8 @@ def test_collect_and_write_github_passes_configured_reserve_as_rate_limit_floor(
     )
 
     assert seen_floors == [2500]
+    # the default fraction is passed through so a small-allowance token still progresses
+    assert seen_fractions == [0.5]
 
 
 def _git_env() -> dict[str, str]:

@@ -3270,6 +3270,13 @@ class _StubPrIssueLinkCollector:
         self.calls: list[tuple[str, str | None]] = []
         self.closed = False
 
+    def effective_floor(self, rate_limit):
+        return self.rate_limit_floor
+
+    def floor_reached(self, rate_limit):
+        remaining = (rate_limit or {}).get("remaining")
+        return remaining is not None and remaining <= self.rate_limit_floor
+
     def fetch_pr_issue_link_backfill_page(self, repo_label: str, cursor: str | None) -> dict:
         self.calls.append((repo_label, cursor))
         return self._pages_by_repo[repo_label][cursor]

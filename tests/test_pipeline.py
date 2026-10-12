@@ -29,6 +29,7 @@ from project_health.collectors.github import GitHubCollector
 from project_health.collectors.jira import JiraCollector
 from project_health.collectors.ponymail import PonyMailCollector
 from project_health.collectors.release import ReleaseCollector
+from project_health.collectors.release_lines import ReleaseLinesCollector
 from project_health.collectors.security import SecurityCollector
 from project_health.config import FlexibleSection, load_project
 from project_health.pipeline import (
@@ -54,6 +55,7 @@ from tests.fixtures.git.build_repo import build_repo
 JIRA_FIXTURES_DIR = Path(__file__).parent / "fixtures" / "jira"
 ROSTER_FIXTURES_DIR = Path(__file__).parent / "fixtures" / "asf_roster"
 SECURITY_FIXTURES_DIR = Path(__file__).parent / "fixtures" / "security"
+RELEASE_LINES_FIXTURES_DIR = Path(__file__).parent / "fixtures" / "release_lines"
 
 
 def _load_jira_fixture(name: str) -> dict:
@@ -77,6 +79,75 @@ PUBLIC_LDAP_PROJECTS = _load_roster_fixture("public_ldap_projects_cassandra.json
 
 SCORECARD_RESPONSE = _load_security_fixture("scorecard_cassandra.json")
 NVD_RESPONSE = _load_security_fixture("nvd_cassandra.json")
+
+
+def _load_release_lines_fixture(name: str) -> dict:
+    return json.loads((RELEASE_LINES_FIXTURES_DIR / name).read_text())
+
+
+RELEASE_LINES_JIRA_VERSIONS = _load_release_lines_fixture("jira_versions.json")
+RELEASE_LINES_BUTLER = _load_release_lines_fixture("butler_trends.json")
+RELEASE_LINES_JENKINS = _load_release_lines_fixture("jenkins_jobs.json")
+RELEASE_LINES_FIXVER_FIXTURES = {
+    "6.0-alpha": "jira_fixver_6_0_alpha.json",
+    "6.0": "jira_fixver_6_0.json",
+    "6.0.x": "jira_fixver_6_0_x.json",
+}
+
+
+def _release_lines_transport(*, fail: set[str] | None = None) -> httpx.MockTransport:
+    """Mock transport for JIRA versions/search + Butler + Jenkins (issue
+    #166). `fail` names which of {"jira", "butler", "jenkins"} should
+    return a 503 instead of its real fixture, for the independent-
+    degradation tests below."""
+    fail = fail or set()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        url_str = str(request.url)
+        if "butler.cassandra.apache.org" in url_str:
+            if "butler" in fail:
+                return httpx.Response(503)
+            return httpx.Response(200, json=RELEASE_LINES_BUTLER)
+        if "ci-cassandra.apache.org" in url_str:
+            if "jenkins" in fail:
+                return httpx.Response(503)
+            return httpx.Response(200, json=RELEASE_LINES_JENKINS)
+        if "/project/CASSANDRA/versions" in url_str:
+            if "jira" in fail:
+                return httpx.Response(503)
+            return httpx.Response(200, json=RELEASE_LINES_JIRA_VERSIONS)
+        if "/rest/api/2/search" in url_str:
+            if "jira" in fail:
+                return httpx.Response(503)
+            jql = request.url.params.get("jql", "")
+            marker = 'fixVersion="'
+            start = jql.find(marker)
+            fix_version = None
+            if start != -1:
+                start += len(marker)
+                fix_version = jql[start : jql.find('"', start)]
+            fixture_name = RELEASE_LINES_FIXVER_FIXTURES.get(fix_version or "")
+            if fixture_name:
+                return httpx.Response(200, json=_load_release_lines_fixture(fixture_name))
+            return httpx.Response(200, json={"issues": [], "total": 0})
+        raise AssertionError(f"unexpected release_lines request: {url_str}")
+
+    return httpx.MockTransport(handler)
+
+
+def _release_lines_factory(transport: httpx.MockTransport | None = None):
+    transport = transport or _release_lines_transport()
+
+    def factory(config):
+        return ReleaseLinesCollector(
+            config,
+            transport=transport,
+            max_retries=1,
+            min_request_interval=0,
+            sleep_fn=lambda s: None,
+        )
+
+    return factory
 
 NOW = datetime(2026, 9, 25, 6, 0, tzinfo=timezone.utc)
 
@@ -3726,3 +3797,148 @@ class TestReleaseIntegration:
             "cassandra-5.0.0",
             "cassandra-5.0.1",
         ]
+
+
+def _run_release_lines_pipeline(
+    *, data_dir, config, workdir, release_lines_collector_factory, now=NOW
+):
+    """Runs every M0-registered-metric source PLUS `release_lines`, same
+    "the other sources still need to run so nothing else goes
+    metrics_missing" reasoning `_run_release_pipeline` above gives --
+    including the (distinct) `release` source, since `release_frequency`/
+    `release_regularity`/`time_since_last_release`/`days_between_releases`
+    are registered METRIC_IDS that would otherwise go `metrics_missing`
+    and mark the whole run `degraded`, independent of anything
+    `release_lines` does."""
+    return run_pipeline(
+        config=config,
+        data_dir=data_dir,
+        workdir=workdir,
+        sources=["git", "jira", "asf_roster", "release", "release_lines", "github"],
+        now=now,
+        code_sha="abc1234",
+        jira_collector_factory=_jira_factory(
+            _paginated_transport({0: PAGE_1, 5: PAGE_2, 10: EMPTY_PAGE})
+        ),
+        asf_roster_collector_factory=_roster_factory(),
+        github_collector_factory=_github_factory(),
+        release_collector_factory=_release_factory(),
+        release_lines_collector_factory=release_lines_collector_factory,
+    )
+
+
+class TestReleaseLinesIntegration:
+    """Issue #166: the `release_lines` source (JIRA versions/blockers +
+    Butler + Jenkins) -- each of the three sub-sources degrades
+    independently, never failing the nightly run as a whole."""
+
+    def test_release_lines_source_produces_all_four_partitions(
+        self, tmp_path, config, git_workdir
+    ):
+        data_dir = tmp_path / "data"
+
+        result = _run_release_lines_pipeline(
+            data_dir=data_dir,
+            config=config,
+            workdir=git_workdir,
+            release_lines_collector_factory=_release_lines_factory(),
+        )
+
+        assert result.exit_code == 0
+        assert result.manifest["sources"]["release_lines"]["status"] == "ok"
+        assert result.manifest["sources"]["release_lines"]["jira_status"] == "ok"
+        assert result.manifest["sources"]["release_lines"]["butler_status"] == "ok"
+        assert result.manifest["sources"]["release_lines"]["jenkins_status"] == "ok"
+
+        for table in ("jira_version", "release_blocker_issue", "ci_job_status", "ci_trend_point"):
+            raw_dir = data_dir / "raw" / "release_lines" / table
+            assert list(raw_dir.glob("date=*/part-*.parquet")), f"no partition written for {table}"
+
+        jira_version_table = storage.read_table(data_dir, "release_lines", "jira_version")
+        assert "6.0-alpha" in jira_version_table.column("name").to_pylist()
+
+    def test_jira_outage_degrades_only_the_jira_block(self, tmp_path, config, git_workdir):
+        """A JIRA outage leaves `jira_version`/`release_blocker_issue`
+        unwritten this run, but Jenkins/Butler still collect and write
+        their own partitions -- one source's outage never takes the other
+        two down (issue #166: 'a failing source degrades to unavailable
+        for that block, never fails the nightly')."""
+        data_dir = tmp_path / "data"
+
+        result = _run_release_lines_pipeline(
+            data_dir=data_dir,
+            config=config,
+            workdir=git_workdir,
+            release_lines_collector_factory=_release_lines_factory(
+                _release_lines_transport(fail={"jira"})
+            ),
+        )
+
+        assert result.exit_code == 0
+        assert result.manifest["sources"]["release_lines"]["status"] == "degraded"
+        assert result.manifest["sources"]["release_lines"]["jira_status"] == "failed"
+        assert result.manifest["sources"]["release_lines"]["butler_status"] == "ok"
+        assert result.manifest["sources"]["release_lines"]["jenkins_status"] == "ok"
+
+        assert not list(
+            (data_dir / "raw" / "release_lines" / "jira_version").glob("date=*/part-*.parquet")
+        )
+        assert list(
+            (data_dir / "raw" / "release_lines" / "ci_job_status").glob("date=*/part-*.parquet")
+        )
+        assert list(
+            (data_dir / "raw" / "release_lines" / "ci_trend_point").glob("date=*/part-*.parquet")
+        )
+
+    def test_butler_and_jenkins_outage_degrades_only_the_ci_blocks(
+        self, tmp_path, config, git_workdir
+    ):
+        data_dir = tmp_path / "data"
+
+        result = _run_release_lines_pipeline(
+            data_dir=data_dir,
+            config=config,
+            workdir=git_workdir,
+            release_lines_collector_factory=_release_lines_factory(
+                _release_lines_transport(fail={"butler", "jenkins"})
+            ),
+        )
+
+        assert result.exit_code == 0
+        assert result.manifest["sources"]["release_lines"]["status"] == "degraded"
+        assert result.manifest["sources"]["release_lines"]["jira_status"] == "ok"
+        assert result.manifest["sources"]["release_lines"]["butler_status"] == "failed"
+        assert result.manifest["sources"]["release_lines"]["jenkins_status"] == "failed"
+
+        assert list(
+            (data_dir / "raw" / "release_lines" / "jira_version").glob("date=*/part-*.parquet")
+        )
+        assert not list(
+            (data_dir / "raw" / "release_lines" / "ci_job_status").glob("date=*/part-*.parquet")
+        )
+        assert not list(
+            (data_dir / "raw" / "release_lines" / "ci_trend_point").glob("date=*/part-*.parquet")
+        )
+
+    def test_release_lines_never_registers_a_metric_so_never_marks_the_run_degraded_by_itself(
+        self, tmp_path, config, git_workdir
+    ):
+        """Mirrors `test_governance_never_registered_in_metric_ids_so_never_
+        marks_run_degraded`: `release_lines` is purely informational (like
+        `security`), so a total outage of all three of its sub-sources
+        still leaves the overall run `status: ok` -- only a registered,
+        zero-row METRIC_IDS entry can do that."""
+        data_dir = tmp_path / "data"
+
+        result = _run_release_lines_pipeline(
+            data_dir=data_dir,
+            config=config,
+            workdir=git_workdir,
+            release_lines_collector_factory=_release_lines_factory(_always_503_transport()),
+        )
+
+        assert result.exit_code == 0
+        assert result.manifest["status"] == "ok"
+        assert result.manifest["sources"]["release_lines"]["status"] == "degraded"
+        for block in ("jira_status", "butler_status", "jenkins_status"):
+            assert result.manifest["sources"]["release_lines"][block] == "failed"

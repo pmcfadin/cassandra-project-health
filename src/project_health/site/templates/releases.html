@@ -1,0 +1,212 @@
+{% extends "base.html" %}
+{% import "_sections.html" as sections %}
+{% import "_charts.html" as charts %}
+{% block title %}Releases — Cassandra Project Health{% endblock %}
+{% block content %}
+<h2>Releases</h2>
+
+{% if available %}
+<p class="page-intro">
+  What ASF JIRA's own version bookkeeping and the project's own CI (Jenkins + the Butler
+  trends API) show right now for each active release line, plus trunk. This page states
+  plain facts only — it never judges whether a release is ready.
+</p>
+
+{% if not jira_available %}
+<div class="banner banner--stale" role="status">JIRA versions/blockers: unavailable.</div>
+{% elif not jira_fresh %}
+<div class="banner banner--stale" role="status">JIRA versions/blockers: showing the last successfully collected data (this run's JIRA fetch did not complete).</div>
+{% endif %}
+{% if not jenkins_available %}
+<div class="banner banner--stale" role="status">Jenkins CI status: unavailable.</div>
+{% elif not jenkins_fresh %}
+<div class="banner banner--stale" role="status">Jenkins CI status: showing the last successfully collected data (this run's Jenkins fetch did not complete).</div>
+{% endif %}
+{% if not butler_available %}
+<div class="banner banner--stale" role="status">Butler CI trends: unavailable.</div>
+{% elif not butler_fresh %}
+<div class="banner banner--stale" role="status">Butler CI trends: showing the last successfully collected data (this run's Butler fetch did not complete).</div>
+{% endif %}
+
+{{ sections.section_nav(release_sections) }}
+
+<section class="releases-summary" aria-labelledby="releases-summary-heading">
+  <h3 id="releases-summary-heading">Summary</h3>
+  <div class="gov-table-wrap">
+  <table class="security-table releases-summary-table">
+    <thead>
+      <tr>
+        <th scope="col">Line</th>
+        <th scope="col">Latest release</th>
+        <th scope="col">Next targeted version</th>
+        <th scope="col">Open blockers</th>
+        <th scope="col">CI</th>
+        <th scope="col">Last build</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for line in lines %}
+      <tr>
+        <th scope="row"><a href="#{{ line.id }}">{{ line.line }}</a></th>
+        <td>{% if line.latest_release %}{{ line.latest_release.version }} ({{ line.latest_release.release_date }}){% else %}—{% endif %}</td>
+        <td>
+          {% if line.next_versions %}
+            {{ line.next_versions | map(attribute="name") | join(", ") }}
+          {% else %}
+            —
+          {% endif %}
+        </td>
+        <td>{{ line.total_open_blockers }}</td>
+        <td>{{ line.ci.last_build_result if line.ci.last_build_result else "unavailable" }}{% if line.ci.latest_test_failures is not none %} ({{ line.ci.latest_test_failures }} failures){% endif %}</td>
+        <td>{% if line.ci.last_build_number %}#{{ line.ci.last_build_number }}{% else %}—{% endif %}</td>
+      </tr>
+      {% endfor %}
+      <tr>
+        <th scope="row">trunk (CI only)</th>
+        <td>—</td>
+        <td>—</td>
+        <td>{{ trunk_ci.last_build_result if trunk_ci.last_build_result else "unavailable" }}{% if trunk_ci.latest_test_failures is not none %} ({{ trunk_ci.latest_test_failures }} failures){% endif %}</td>
+        <td>{% if trunk_ci.last_build_number %}#{{ trunk_ci.last_build_number }}{% else %}—{% endif %}</td>
+      </tr>
+    </tbody>
+  </table>
+  </div>
+</section>
+
+{% for line in lines %}
+{% call sections.section(line.id, line.line, None, None, chaoss_label="") %}
+
+  <section class="releases-timeline" aria-labelledby="timeline-{{ line.id }}-heading">
+    <h4 id="timeline-{{ line.id }}-heading">Timeline</h4>
+    {% if line.timeline %}
+    <ul class="releases-timeline-list">
+      {% for v in line.timeline %}
+      <li>{{ v.version }} — {{ v.release_date }}</li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p class="card-empty-state">No released versions recorded for this line yet.</p>
+    {% endif %}
+  </section>
+
+  <section class="releases-ladder" aria-labelledby="ladder-{{ line.id }}-heading">
+    <h4 id="ladder-{{ line.id }}-heading">Blocker ladder</h4>
+    {% if line.ladder %}
+    <ol class="releases-ladder-list">
+      {% for step in line.ladder %}
+      <li class="releases-ladder-step">
+        <p><strong>{{ step.name }}</strong>{% if step.description %} — &ldquo;{{ step.description }}&rdquo;{% endif %} ({{ step.open_count }} open)</p>
+        {% if step.issues %}
+        <ul class="releases-issue-list">
+          {% for issue in step.issues %}
+          <li>
+            <a href="https://issues.apache.org/jira/browse/{{ issue.issue_key }}">{{ issue.issue_key }}</a>
+            {{ issue.summary }} — {{ issue.status }}{% if issue.priority %}, {{ issue.priority }}{% endif %},
+            {{ issue.assignee_raw if issue.assignee_raw else "unassigned" }}
+          </li>
+          {% endfor %}
+        </ul>
+        {% endif %}
+      </li>
+      {% endfor %}
+    </ol>
+    {% else %}
+    <p class="card-empty-state">No blocker-ladder placeholders tracked for this line.</p>
+    {% endif %}
+
+    {% if line.ga_target %}
+    <p><strong>{{ line.ga_target.name }}</strong> (GA target, {{ line.ga_target.open_count }} open)</p>
+    {% if line.ga_target.issues %}
+    <ul class="releases-issue-list">
+      {% for issue in line.ga_target.issues %}
+      <li>
+        <a href="https://issues.apache.org/jira/browse/{{ issue.issue_key }}">{{ issue.issue_key }}</a>
+        {{ issue.summary }} — {{ issue.status }}{% if issue.priority %}, {{ issue.priority }}{% endif %},
+        {{ issue.assignee_raw if issue.assignee_raw else "unassigned" }}
+      </li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+    {% endif %}
+
+    {% if line.next_versions %}
+    <p>Next targeted version(s): {{ line.next_versions | map(attribute="name") | join(", ") }}</p>
+    {% endif %}
+  </section>
+
+  <section class="releases-ci" aria-labelledby="ci-{{ line.id }}-heading">
+    <h4 id="ci-{{ line.id }}-heading">CI</h4>
+    <p>
+      Jenkins (<a href="https://ci-cassandra.apache.org/job/{{ line.ci.job_name }}/">{{ line.ci.job_name if line.ci.job_name else "Cassandra-" + line.line }}</a>):
+      {{ line.ci.last_build_result if line.ci.last_build_result else "unavailable" }}
+      {% if line.ci.last_build_number %}(build #{{ line.ci.last_build_number }}, {{ line.ci.last_build_timestamp }}){% endif %}
+    </p>
+    {% if line.ci.has_trend %}
+    {% call charts.chart_shell("CI test failures for " + line.line) %}
+    <div class="chart" data-vega-spec='{{ line.ci.vega_spec_json }}' data-chart-id="{{ line.ci.chart_id }}" data-chart-meta='{{ line.ci.chart_meta_json }}' role="img" aria-label="CI test failures for {{ line.line }}">
+      <noscript>Enable JavaScript to see this chart.</noscript>
+    </div>
+    {% endcall %}
+    {% else %}
+    <p class="card-empty-state">No CI trend history available for this line.</p>
+    {% endif %}
+    <p class="card-links"><a href="https://butler.cassandra.apache.org/">Butler</a></p>
+  </section>
+
+  {% if line.series %}
+  <section class="releases-backlog" aria-labelledby="backlog-{{ line.id }}-heading">
+    <details>
+      <summary id="backlog-{{ line.id }}-heading">Patch backlog ({{ line.series.name }}) — {{ line.series.open_count }} open</summary>
+      {% if line.series.description %}<p>&ldquo;{{ line.series.description }}&rdquo;</p>{% endif %}
+      {% if line.series.issues %}
+      <ul class="releases-issue-list">
+        {% for issue in line.series.issues %}
+        <li>
+          <a href="https://issues.apache.org/jira/browse/{{ issue.issue_key }}">{{ issue.issue_key }}</a>
+          {{ issue.summary }} — {{ issue.status }}{% if issue.priority %}, {{ issue.priority }}{% endif %},
+          {{ issue.assignee_raw if issue.assignee_raw else "unassigned" }}
+        </li>
+        {% endfor %}
+      </ul>
+      {% endif %}
+    </details>
+  </section>
+  {% endif %}
+{% endcall %}
+{% endfor %}
+
+{% call sections.section("trunk", "trunk (CI only)", None, None, chaoss_label="") %}
+  <p>trunk has no JIRA release line of its own — tracked for CI only.</p>
+  <p>
+    Jenkins (<a href="https://ci-cassandra.apache.org/job/{{ trunk_ci.job_name }}/">{{ trunk_ci.job_name if trunk_ci.job_name else "Cassandra-trunk" }}</a>):
+    {{ trunk_ci.last_build_result if trunk_ci.last_build_result else "unavailable" }}
+    {% if trunk_ci.last_build_number %}(build #{{ trunk_ci.last_build_number }}, {{ trunk_ci.last_build_timestamp }}){% endif %}
+  </p>
+  {% if trunk_ci.has_trend %}
+  {% call charts.chart_shell("CI test failures for trunk") %}
+  <div class="chart" data-vega-spec='{{ trunk_ci.vega_spec_json }}' data-chart-id="{{ trunk_ci.chart_id }}" data-chart-meta='{{ trunk_ci.chart_meta_json }}' role="img" aria-label="CI test failures for trunk">
+    <noscript>Enable JavaScript to see this chart.</noscript>
+  </div>
+  {% endcall %}
+  {% else %}
+  <p class="card-empty-state">No CI trend history available for trunk.</p>
+  {% endif %}
+{% endcall %}
+
+{% call sections.section("sources-and-limits", "Sources & limits", None, None, chaoss_label="") %}
+  <p>{{ sources_and_limits }}</p>
+  <p class="card-links">
+    <a href="https://issues.apache.org/jira/projects/CASSANDRA/versions">JIRA versions</a> &middot;
+    <a href="https://butler.cassandra.apache.org/">Butler</a> &middot;
+    <a href="https://ci-cassandra.apache.org/">Jenkins</a>
+  </p>
+{% endcall %}
+
+{% else %}
+<p class="card-empty-state">
+  Release-line data isn't published yet — it appears once the nightly run has collected
+  JIRA versions, Jenkins, and Butler CI state at least once.
+</p>
+{% endif %}
+
+{% endblock %}

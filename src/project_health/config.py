@@ -231,6 +231,12 @@ class ProjectConfig(BaseModel):
     # collector endpoints; a `FlexibleSection` like `roster`, since its full
     # shape is owned by `collectors/security.py`, not core.
     security: FlexibleSection | None = None
+    # `release_lines:` (issue #166, Releases tab) — Butler/Jenkins CI
+    # endpoints for the per-branch release-line model; a `FlexibleSection`
+    # like `security`/`releases` above, since its shape is owned by
+    # `collectors/release_lines.py`. JIRA versions/issues reuse
+    # `issue_tracker.base_url`/`.project_key`, not a field here.
+    release_lines: FlexibleSection | None = None
     affiliations_file: str | None = None
     # D6, issue #52: a reviewed email-domain -> organization map (see
     # normalize/affiliation.py). Optional -- a project with no reviewed

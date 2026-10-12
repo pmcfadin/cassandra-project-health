@@ -6,8 +6,16 @@
 # than a distinct `project_key`.
 #
 # Live-verified 2026-10-12 (gh api repos/apache/cassandra-accord,
-# .../tags?per_page=30): default_branch=trunk, NO tags at all -- no
-# systematic release-tag scheme, hence `releases.tag_prefix: ""`.
+# .../tags?per_page=30): default_branch=trunk, NO tags at all -- no GA
+# release tags, ever. No `releases:` section below (issue #181): with no
+# systematic release-tag scheme to point `git_tags_cross_checked_archive`
+# at, release cadence is not a thing this project has, not a thing it has
+# zero data for -- omitting the section makes `pipeline.applicable_sources`
+# treat `release` as not_applicable (metrics_not_applicable), rather than
+# collecting a real-but-always-empty `release` table that degrades the run
+# every time (release_frequency/release_regularity/time_since_last_release/
+# days_between_releases all emit zero rows with zero GA dates -- see
+# `metrics/release_cadence.py`).
 # `has_issues: false` -- no github_issues section.
 #
 # Identity/bot settings are PMC-wide -- inherited from projects/_identity.yaml
@@ -33,13 +41,11 @@ pull_requests:
   type: github
   repos: [apache/cassandra-accord]
 
-releases:
-  type: git_tags_cross_checked_archive
-  tag_prefix: ""        # verified live: no tags at all, no systematic scheme
-  # Verified live 2026-10-12: https://archive.apache.org/dist/cassandra/cassandra-accord/
-  # and https://archive.apache.org/dist/cassandra/accord/ both return HTTP 404 -- no
-  # archive.apache.org/dist distribution for this repo (consistent with it having no GA
-  # tags at all).
-  archive_url: null
+# No `releases:` section -- see the module-top comment (issue #181): accord
+# has no GA release tags at all, so release cadence is not_applicable here,
+# not a degraded/missing metric. (Also verified live 2026-10-12:
+# https://archive.apache.org/dist/cassandra/cassandra-accord/ and
+# https://archive.apache.org/dist/cassandra/accord/ both 404 -- no
+# archive.apache.org/dist distribution either.)
 
 shared_sources: [asf_roster, ponymail, governance]

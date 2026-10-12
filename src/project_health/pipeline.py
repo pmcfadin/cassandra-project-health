@@ -106,7 +106,6 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from project_health import storage
-from project_health.data_layout import project_data_dir
 from project_health.leaderboard import build_leaderboards
 from project_health.collectors.asf_roster import AsfRosterCollector
 from project_health.collectors.git import (
@@ -470,7 +469,15 @@ def _dedupe_issue_rows(table: pa.Table) -> pa.Table:
         return table
 
     def rank(row: dict[str, Any]) -> tuple:
-        return (row["updated_at"], row.get("resolution") is not None)
+        # Then prefer a row carrying `reporter_raw`: the Patch Available
+        # backfill re-emits issue rows without `reporter`, and keeping that
+        # stub on a tie made a reporter's own comment count as a "first
+        # response from someone else" in JIRA time-to-first-response.
+        return (
+            row["updated_at"],
+            row.get("resolution") is not None,
+            row.get("reporter_raw") is not None,
+        )
 
     best: dict[str, dict[str, Any]] = {}
     for row in table.to_pylist():
@@ -3718,10 +3725,35 @@ def _write_leaderboard_snapshot(data_dir: Path, run_id: str, leaderboard_table: 
 def _write_latest_run_pointer(
     data_dir: Path, config: ProjectConfig, run_id: str, finished_at: datetime
 ) -> Path:
-    """`state/latest_run.json` under THIS project's own data dir (issue
-    #170, epic #168's multi-project data layout -- `data_layout.
-    project_data_dir`: Cassandra's own data dir is `data_dir` itself,
-    unchanged; every other project gets `data_dir/projects/<id>/`).
+    """`state/latest_run.json` directly under `data_dir` -- issue #170,
+    epic #168's multi-project data layout, fixed up by issue #172.
+
+    `data_dir` here is exactly what the caller passed to `run_pipeline`,
+    used as-is -- the SAME contract every other write in this module
+    already follows (`storage.write_partition(data_dir, ...)`,
+    `storage.write_watermark(data_dir, ...)`, etc.): resolving which
+    directory a given project's data lives under
+    (`data_layout.project_data_dir`: `data_dir` itself for Cassandra,
+    `data_dir/projects/<id>/` for every other project) is the *caller's*
+    job (the CLI's `--data-dir`; issue #172's nightly workflow passes
+    `../data` for Cassandra and `../data/projects/<id>` for every other
+    enabled project), done once, before `run_pipeline` is ever called.
+
+    issue #170's original version of this function applied
+    `data_layout.project_data_dir` a *second* time here, on top of
+    whatever resolution the caller had already done -- harmless for
+    Cassandra (`project_data_dir(root, "cassandra") == root`, a no-op) but
+    for any other project, called the real way (`data_dir` already
+    `root/projects/<id>`), it double-nested the pointer to
+    `root/projects/<id>/projects/<id>/state/latest_run.json`. Nothing ever
+    looked there: `site/project_site.py`'s `resolve_latest_run_id` computes
+    the *same* single-level `project_data_dir(root, id)` itself before
+    checking for the pointer, so it silently never found it and fell back
+    to its own (still-correct, but slower) `manifests/*.json` glob every
+    time -- caught in issue #172's own real end-to-end verification run,
+    not by any existing test (see `TestLatestRunPointer`'s nightly-shape
+    round-trip test, which pins this contract against
+    `project_site.resolve_latest_run_id` directly).
 
     A small, always-overwritten pointer -- `run_id`, the project's own `id`/
     `display_name`, and `finished_at` -- so a reader (or a future
@@ -3730,8 +3762,7 @@ def _write_latest_run_pointer(
     metrics succeeded this run (§7.3: a failed run never publishes anything
     as current).
     """
-    project_root = project_data_dir(data_dir, config.project.id)
-    state_dir = project_root / "state"
+    state_dir = Path(data_dir) / "state"
     state_dir.mkdir(parents=True, exist_ok=True)
     path = state_dir / "latest_run.json"
     path.write_text(

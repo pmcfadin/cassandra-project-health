@@ -32,6 +32,7 @@ from project_health.collectors.release import ReleaseCollector
 from project_health.collectors.release_lines import ReleaseLinesCollector
 from project_health.collectors.security import SecurityCollector
 from project_health.config import FlexibleSection, load_project
+from project_health.data_layout import project_data_dir
 from project_health.pipeline import (
     ALL_SOURCES,
     _collect_github_pr_issue_link_backfill,
@@ -53,6 +54,7 @@ from project_health.pipeline import (
 )
 from project_health.schema import get_schema, validate
 from project_health.site.manifest import load_manifest
+from project_health.site.project_site import resolve_latest_run_id
 from tests.fixtures.git.build_repo import build_repo
 
 JIRA_FIXTURES_DIR = Path(__file__).parent / "fixtures" / "jira"
@@ -1263,6 +1265,28 @@ class TestDedupe:
             deduped = _dedupe_issue_rows(table)
 
             assert deduped.to_pylist()[0]["resolution"] == "Fixed"
+
+    def test_dedupe_issue_rows_tie_prefers_row_with_reporter(self):
+        """The Patch Available backfill writes issue rows without `reporter`;
+        on a full tie (same `updated_at`, both resolved) the row carrying
+        `reporter_raw` must win in either storage order, or the reporter's
+        own comment counts as a JIRA first response."""
+        schema = get_schema("issue")
+        base = {
+            "issue_key": "CASSJAVA-80",
+            "created_at": datetime(2025, 2, 11, tzinfo=timezone.utc),
+            "updated_at": datetime(2025, 2, 21, tzinfo=timezone.utc),
+            "resolved_at": datetime(2025, 2, 21, tzinfo=timezone.utc),
+            "resolution": "Fixed",
+            "source_snapshot_id": "run-1:jira",
+        }
+        for order in ([None, "aratnofsky"], ["aratnofsky", None]):
+            rows = [{**base, "reporter_raw": value} for value in order]
+            table = validate("issue", pa.Table.from_pylist(rows, schema=schema))
+
+            deduped = _dedupe_issue_rows(table)
+
+            assert deduped.to_pylist()[0]["reporter_raw"] == "aratnofsky"
 
     def test_dedupe_issue_rows_boundary_prevents_double_counting_resolution_latency(self, config):
         """Orchestrator review of issue #134/PR #137: the raw `jira/issue`
@@ -4187,13 +4211,25 @@ class TestSubprojectFixturePipeline:
 
 
 class TestLatestRunPointer:
-    """issue #170: `state/latest_run.json` under the project's own data
-    dir, written only on a successful metrics computation."""
+    """issue #170: `state/latest_run.json`, written only on a successful
+    metrics computation. Issue #172 fixup: `_write_latest_run_pointer`
+    writes directly under whatever `data_dir` `run_pipeline` was called
+    with -- the same contract every other write in this module already
+    follows -- rather than re-resolving it through `data_layout.
+    project_data_dir` a second time; resolving which directory a project's
+    data lives under is the *caller's* job (the CLI's `--data-dir`), done
+    once, before `run_pipeline` is called at all. See
+    `_write_latest_run_pointer`'s own docstring for the double-nesting bug
+    this replaced."""
 
-    def test_written_under_project_data_dir_for_a_subproject(self, tmp_path, git_workdir):
+    def test_written_directly_under_data_dir_with_no_further_nesting(self, tmp_path, git_workdir):
+        """`data_dir` is used exactly as passed. Passing an already-
+        per-project-resolved directory (as a real `--data-dir
+        .../projects/<id>` caller would) must not grow an extra
+        `projects/<id>/` layer underneath it."""
         config_path = _minimal_subproject_config(tmp_path, "apache", "cassandra-fixture")
         fixture_config = load_project(config_path)
-        data_dir = tmp_path / "data"
+        data_dir = tmp_path / "data" / "projects" / "fixture-subproject"
 
         result = run_pipeline(
             config=fixture_config,
@@ -4207,7 +4243,7 @@ class TestLatestRunPointer:
             github_profile_collector_factory=_github_profile_factory(),
         )
 
-        pointer_path = data_dir / "projects" / "fixture-subproject" / "state" / "latest_run.json"
+        pointer_path = data_dir / "state" / "latest_run.json"
         assert pointer_path.is_file()
         pointer = json.loads(pointer_path.read_text())
         assert pointer["run_id"] == result.run_id
@@ -4215,9 +4251,50 @@ class TestLatestRunPointer:
         assert pointer["display_name"] == "Fixture Subproject"
         assert pointer["finished_at"]
 
-        # Cassandra (the root project) must NOT get a `projects/cassandra/`
-        # subdirectory -- data_layout.project_data_dir's own contract.
-        assert not (data_dir / "projects" / "cassandra").exists()
+        # No extra `projects/fixture-subproject/` nesting underneath `data_dir`
+        # -- `data_dir` is already this project's own resolved root.
+        assert not (data_dir / "projects").exists()
+
+    def test_matches_discover_projects_lookup_for_the_nightly_invocation_shape(
+        self, tmp_path, git_workdir
+    ):
+        """Reproduces issue #172's actual nightly.yml invocation shape end
+        to end: the caller resolves `data_layout.project_data_dir(root,
+        id)` itself and passes THAT as `--data-dir` -- `run_pipeline` never
+        sees the unresolved root. `site/project_site.py`'s
+        `resolve_latest_run_id` -- what `project-health site`'s
+        `discover_projects` actually calls to find a project's current
+        run -- must find the pointer `run_pipeline` just wrote at the
+        exact same `project_data_dir(root, id)` it independently computes.
+
+        This pins the write side (`_write_latest_run_pointer`) and the
+        read side (`project_site.resolve_latest_run_id`) against each
+        other in one test, the way the double-nesting bug slipped past the
+        existing unit tests before this fixup: each side's own test
+        checked its own path convention in isolation, and both passed
+        while silently disagreeing with each other about where the
+        pointer lived.
+        """
+        config_path = _minimal_subproject_config(tmp_path, "apache", "cassandra-fixture")
+        fixture_config = load_project(config_path)
+        root = tmp_path / "data"
+        project_root = project_data_dir(root, "fixture-subproject")
+
+        result = run_pipeline(
+            config=fixture_config,
+            data_dir=project_root,
+            workdir=git_workdir,
+            now=NOW,
+            code_sha="abc1234",
+            security_collector_factory=_security_factory(),
+            github_collector_factory=_github_factory(),
+            github_commit_author_collector_factory=_github_commit_author_factory(),
+            github_profile_collector_factory=_github_profile_factory(),
+        )
+
+        assert (
+            resolve_latest_run_id(project_data_dir(root, "fixture-subproject")) == result.run_id
+        )
 
     def test_written_at_data_dir_root_for_cassandra(self, tmp_path, config, git_workdir):
         transport = _paginated_transport({0: PAGE_1, 5: PAGE_2, 10: EMPTY_PAGE})

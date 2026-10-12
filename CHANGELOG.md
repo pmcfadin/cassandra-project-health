@@ -3,6 +3,27 @@
 Metric-definition changelog (ARCHITECTURE.md §4.4 / D2 rule 6: "nothing changes silently"). Entries are ordered
 newest-first; a future version bump adds a new dated entry at the top.
 
+## 2026-10-12
+
+### Multi-project site (epic #168): Cassandra + 10 subprojects
+
+The site now covers Apache Cassandra and ten subprojects (Java, Go, Python, C/C++ and Node.js
+drivers, Sidecar, Analytics, Accord, easy-stress, CCM), chosen from a header dropdown. Cassandra
+stays at the site root; subprojects live under `/p/<id>/`. Each subproject's metrics come from its
+own repository, its own JIRA project (Accord and CCM: CASSANDRA filtered by component, so those
+issues also count in Cassandra's figures), and its own git tags. The dev@/user@ lists, the ASF
+roster and governance are shared by the whole PMC and are shown once, on Cassandra's pages.
+Cassandra's own figures are unchanged by this entry (its PR repo set is unchanged until issue #173).
+
+### Fix: JIRA issue dedupe kept reporter-less rows (time_to_first_response_jira and other reporter-based JIRA metrics)
+
+The Patch Available backfill re-emits issue rows without `reporter`. When such a row tied the
+regular row on `updated_at` and `resolution`, dedupe could keep the reporter-less copy, and the
+reporter's own comment then counted as a "first response from someone else". Dedupe now prefers
+the row carrying `reporter_raw`. Cassandra's latest published JIRA time to first response
+(2026-09, n=45, 1.05 days) is unchanged; some earlier months and the subprojects' values change
+(e.g. Java driver 2025-02 from 4 min to about 3.5 h).
+
 ## 2026-10-09
 
 ### New metric_id time_to_first_response_pr (1.0) -- peer context (issue #145, DECISIONS.md D30)

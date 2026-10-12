@@ -25,12 +25,17 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
-    # First run crawls all of JIRA (~215 pages, ~2 min) plus a full blobless
-    # clone of apache/cassandra; 60 min gives ample headroom under GitHub's
-    # 6-hour hard job limit (ARCHITECTURE.md §7.2).
-    timeout-minutes: 60
+    # Issue #172 (epic #168's multi-project nightly): Cassandra's own run
+    # (first, unchanged) plus a loop over every other enabled
+    # `projects/index.yaml` entry, each capped at 15m and continuing past a
+    # failure, plus one multi-project site build -- a large first backfill
+    # across several brand-new subprojects can legitimately use most of
+    # this budget; 90 min keeps ample headroom under GitHub's 6-hour hard
+    # job limit (ARCHITECTURE.md §7.2).
+    timeout-minutes: 90
     outputs:
       pipeline-success: ${{ steps.pipeline.outcome == 'success' }}
+      site-success: ${{ steps.site.outcome == 'success' }}
     steps:
       - name: Checkout main
         uses: actions/checkout@v7
@@ -67,6 +72,26 @@ jobs:
           key: apache-cassandra-clone-${{ steps.cache-week.outputs.week }}
           restore-keys: |
             apache-cassandra-clone-
+
+      # Issue #172: every enabled subproject (`project-health list-projects`,
+      # looped below) gets its own `../work/<id>` clone, but which ids are
+      # enabled is only known at `list-projects` runtime, not at workflow
+      # author time -- so a literal "one actions/cache step per repo,
+      # keyed by id" isn't expressible here the way the single, known-ahead-
+      # of-time apache/cassandra clone above is. One multi-path cache
+      # covering the whole `work/` tree (minus apache-cassandra's own,
+      # already-cached subdirectory) gets the same accelerator benefit for
+      # however many subprojects are enabled on a given night, with no
+      # per-id step to maintain as the registry grows.
+      - name: Cache subproject clones
+        uses: actions/cache@v6
+        with:
+          path: |
+            work
+            !work/apache-cassandra
+          key: subproject-clones-${{ steps.cache-week.outputs.week }}
+          restore-keys: |
+            subproject-clones-
 
       - name: Check whether the data branch exists
         id: data-branch
@@ -120,6 +145,11 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      # Issue #172: Cassandra's own run stays exactly as it was -- same
+      # flags, same data dir -- except it no longer renders the site itself
+      # (`--site-out` removed). The multi-project `project-health site` step
+      # below renders Cassandra's page alongside every other enabled
+      # project's, once, after every project's run has had its turn.
       - name: Run pipeline
         id: pipeline
         working-directory: main
@@ -141,9 +171,64 @@ jobs:
             --project projects/cassandra.yaml \
             --data-dir ../data \
             --workdir ../work/apache-cassandra \
-            --site-out ../site \
             --identity-overrides identity_overrides.yaml \
             --trigger "${{ github.event_name }}"
+
+      # Issue #172: every other enabled `projects/index.yaml` entry gets its
+      # own run, each writing under its own `projects/<id>/` data dir
+      # (`data_layout.project_data_dir`) and its own `../work/<id>` clone.
+      # No `GH_PAT` is configured for this repo (issue #172's own
+      # description) -- the built-in `GITHUB_TOKEN`'s GraphQL budget is
+      # shared across Cassandra's run above AND every subproject run here,
+      # so each subproject run is capped at 15m and a failure or timeout
+      # only warns and moves on to the next project (and still lets the
+      # data-branch commit + site build below run) rather than failing the
+      # whole nightly job -- a subproject that doesn't finish its backfill
+      # tonight simply resumes from its own watermark tomorrow night.
+      #
+      # Before each subproject's own run: `seed-subproject` (idempotent,
+      # see src/project_health/seed_subproject.py) copies that subproject's
+      # GitHub PR/review/comment rows + cursor out of Cassandra's own
+      # already-collected `raw/github` tables, if Cassandra's
+      # `pull_requests.repos` happens to cover that subproject's repo --
+      # sparing a newly-enabled subproject's first run from re-fetching PR
+      # history on this same shared token budget. A no-op (same `::warning::`
+      # + continue treatment) once a subproject has its own watermark, or
+      # for a subproject whose repo Cassandra's config doesn't cover.
+      - name: Run subproject pipelines
+        id: subprojects
+        working-directory: main
+        env:
+          PROJECT_HEALTH_GITHUB_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+          GH_PAT: ${{ secrets.GH_PAT }}
+          GITHUB_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+        run: |
+          set -uo pipefail
+          while IFS=$'\t' read -r project_id config_path; do
+            [ -z "$project_id" ] && continue
+            if [ "$project_id" = "cassandra" ]; then
+              continue
+            fi
+            echo "::group::${project_id}"
+            if ! project-health seed-subproject \
+              --from ../data \
+              --project "$config_path" \
+              --data-dir "../data/projects/${project_id}"; then
+              echo "::warning::seed-subproject failed for project '${project_id}'; continuing without seeding"
+            fi
+            if timeout 15m project-health run \
+              --project "$config_path" \
+              --data-dir "../data/projects/${project_id}" \
+              --workdir "../work/${project_id}" \
+              --identity-overrides identity_overrides.yaml \
+              --trigger "${{ github.event_name }}"; then
+              echo "project-health run succeeded for '${project_id}'"
+            else
+              echo "::warning::project-health run failed or timed out for project '${project_id}'; continuing with the rest of the nightly run"
+            fi
+            echo "::endgroup::"
+          done < <(project-health list-projects --index projects/index.yaml)
 
       - name: Commit and push data branch
         working-directory: data
@@ -156,7 +241,13 @@ jobs:
           if ! git remote get-url origin > /dev/null 2>&1; then
             git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
           fi
-          git add raw snapshots manifests state
+          # Issue #172: `projects/` (every subproject's own raw/snapshots/
+          # manifests/state tree, data_layout.project_data_dir) joins the
+          # existing four top-level dirs. `mkdir -p` first so `git add`
+          # never fails over a directory that doesn't exist yet (e.g. the
+          # very first night any subproject run produced no output at all).
+          mkdir -p raw snapshots manifests state projects
+          git add raw snapshots manifests state projects
           if git diff --cached --quiet; then
             echo "No new data to commit"
           else
@@ -164,20 +255,37 @@ jobs:
             git push origin HEAD:data
           fi
 
-      # ARCHITECTURE.md §7.3: deploy only if the pipeline (metric
-      # computation) succeeded -- a failed run must never publish a
-      # half-computed dashboard. The data branch commit above still runs
-      # regardless, since raw partitions/watermarks are valid even when
-      # metrics computation itself failed.
+      # Issue #172: renders every enabled `projects/index.yaml` entry that
+      # has data -- Cassandra at the site root, every other project under
+      # `p/<id>/` -- replacing the single-project `--site-out` Cassandra's
+      # own run used to pass. Runs after the data-branch commit above (so a
+      # site build failure never blocks that commit) but reads straight
+      # from the local `../data` checkout, not the just-pushed remote.
+      - name: Build multi-project site
+        id: site
+        working-directory: main
+        continue-on-error: true
+        run: |
+          project-health site \
+            --index projects/index.yaml \
+            --data-dir ../data \
+            --out ../site
+
+      # ARCHITECTURE.md §7.3: deploy only if BOTH Cassandra's own pipeline
+      # (metric computation) and the multi-project site build succeeded --
+      # a failed run, or a site build that crashed partway through another
+      # project, must never publish a half-built dashboard. The data branch
+      # commit above still runs regardless, since raw partitions/watermarks
+      # are valid even when metrics computation or site rendering fails.
       - name: Upload Pages artifact
-        if: steps.pipeline.outcome == 'success'
+        if: steps.pipeline.outcome == 'success' && steps.site.outcome == 'success'
         uses: actions/upload-pages-artifact@v5
         with:
           path: site
 
   deploy:
     needs: build
-    if: needs.build.outputs.pipeline-success == 'true'
+    if: needs.build.outputs.pipeline-success == 'true' && needs.build.outputs.site-success == 'true'
     runs-on: ubuntu-latest
     environment:
       name: github-pages

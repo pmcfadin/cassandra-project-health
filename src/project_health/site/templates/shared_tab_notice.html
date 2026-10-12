@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{# A subproject's Conversations/Governance tab (issue #171): both sources
+   are tracked once, project-wide (a project's own `shared_sources:`,
+   config.py/project_site.py), so there's no honest per-subproject number
+   to show here -- a short factual notice plus a link to where the real
+   numbers live, never a verdict (D25). #}
+{% block title %}{{ heading }} — {{ project_title }}{% endblock %}
+{% block content %}
+<h2>{{ heading }}</h2>
+<div class="banner banner--neutral" role="status">
+  <p>{{ notice_text }}</p>
+  <p class="card-links"><a href="{{ notice_link_href }}">{{ notice_link_label }} &rarr;</a></p>
+</div>
+{% endblock %}

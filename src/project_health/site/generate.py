@@ -60,6 +60,8 @@ from project_health.metrics.contributor_pipeline import (
 from project_health.metrics.windows import add_months, month_start
 from project_health.schema import get_schema, validate
 from project_health.site import chart_spec
+from project_health.site import project_site
+from project_health.site.project_site import ProjectSiteContext
 from project_health.site.conversation_patterns_page import build_conversation_patterns_context
 from project_health.site.thread_explorer_page import build_thread_explorer_context
 from project_health.site.manifest import RunManifest, load_manifest
@@ -214,6 +216,7 @@ def generate(
     out_dir: str | Path,
     *,
     now: datetime | None = None,
+    project: ProjectSiteContext | None = None,
 ) -> None:
     """Build the static site for `run_id` into `out_dir`.
 
@@ -222,6 +225,15 @@ def generate(
     `now` is the build-time reference used for the freshness banner
     (ARCHITECTURE.md §7.1 mitigation 2); it defaults to the current UTC
     time — tests pass an explicit value for determinism.
+
+    `project` is `None` for every existing single-project call (`project-
+    health run --site-out`, and every test that predates issue #171) --
+    that path's output is untouched by this parameter, byte-for-byte. Issue
+    #171's multi-project `project-health site` command passes a real
+    `ProjectSiteContext` instead, one call per enabled project with data;
+    see `project_site.py`'s own module docstring for how those calls differ
+    (output directory, shared static/methodology/corrections, the header
+    switcher, and the Conversations/Governance "shared" notice).
     """
     data_dir = Path(data_dir)
     out_dir = Path(out_dir)
@@ -267,8 +279,15 @@ def generate(
         _write_json(data_out / f"{metric_id}.json", series, manifest)
         _write_csv(data_out / f"{metric_id}.csv", series, manifest)
 
-    _copy_static(out_dir)
-    _render_pages(out_dir, series_by_id, manifest, build_time, data_dir, run_id)
+    # Static assets are copied once, at the overall *site* root (issue
+    # #171) -- for Cassandra (`project is None`, or `project.current.
+    # is_cassandra`) that root IS `out_dir`, unchanged from before this
+    # issue; a subproject's own `out_dir` (`p/<id>/`, the multi-project
+    # orchestrator's choice, `project_site.py`) never gets its own copy --
+    # its pages reach the shared one via `site_root_prefix` instead.
+    if project is None or project.current.is_cassandra:
+        _copy_static(out_dir)
+    _render_pages(out_dir, series_by_id, manifest, build_time, data_dir, run_id, project)
 
 
 def _read_metrics(data_dir: Path, run_id: str) -> pa.Table:
@@ -1650,9 +1669,22 @@ def _chaoss_starter_cards(
     series_by_id: dict[str, MetricSeries],
     last_completed_month: date,
     manifest: RunManifest,
+    *,
+    project_display_name: str = "Cassandra",
 ) -> list[dict[str, Any]]:
     cards = []
     for meta in CHAOSS_STARTER_METRICS:
+        # Issue #171: `mapping_note` (metrics_meta.py) is written for
+        # Cassandra by name ("Computed for Cassandra from ..."); a plain
+        # word swap is this landing block's own "de-Cassandra the copy"
+        # (every word of the note besides the project name itself is
+        # project-agnostic -- which venues a given CHAOSS concept is
+        # computed from, not anything specific to Cassandra as a project).
+        mapping_note = (
+            meta.mapping_note
+            if project_display_name == "Cassandra"
+            else meta.mapping_note.replace("Cassandra", project_display_name)
+        )
         series_cards = []
         for s in meta.series:
             series = series_by_id.get(s.metric_id)
@@ -1679,7 +1711,7 @@ def _chaoss_starter_cards(
                 "key": meta.key,
                 "chaoss_name": meta.chaoss_name,
                 "chaoss_url": meta.chaoss_url,
-                "mapping_note": meta.mapping_note,
+                "mapping_note": mapping_note,
                 "pending": meta.pending,
                 "series": series_cards,
             }
@@ -1687,10 +1719,20 @@ def _chaoss_starter_cards(
     return cards
 
 
-def _common_page_context(manifest: RunManifest, build_time: datetime) -> dict[str, Any]:
+def _common_page_context(
+    manifest: RunManifest, build_time: datetime, project: ProjectSiteContext | None = None
+) -> dict[str, Any]:
     """Context shared by every page's template render: the freshness
-    banner, per-source badges, footer attribution, and pinned asset
-    versions (ARCHITECTURE.md §7.1 mitigation 2, §7.3, §8)."""
+    banner, per-source badges, footer attribution, pinned asset versions
+    (ARCHITECTURE.md §7.1 mitigation 2, §7.3, §8), and (issue #171) this
+    project's own title/tagline/description copy.
+
+    `project is None` (every existing single-project call) or a Cassandra
+    `ProjectSiteContext` both render the exact pre-#171 Cassandra copy, so
+    neither changes a single project's existing output; any other project
+    gets its own `display_name` substituted in instead -- the "de-Cassandra
+    the copy" half of issue #171.
+    """
     source_badges = [
         {
             "source": name,
@@ -1699,8 +1741,28 @@ def _common_page_context(manifest: RunManifest, build_time: datetime) -> dict[st
         }
         for name, status in sorted(manifest.sources.items())
     ]
+    current = project.current if project is not None else None
+    if current is None or current.is_cassandra:
+        project_is_cassandra = True
+        project_display_name = "Cassandra"
+        project_title = "Cassandra Project Health"
+        project_tagline = "Automated, reproducible metrics for the Apache Cassandra project."
+        project_description = (
+            "Automated, reproducible health metrics for the Apache Cassandra project."
+        )
+    else:
+        project_is_cassandra = False
+        project_display_name = current.display_name
+        project_title = f"{current.display_name} · Project Health"
+        project_tagline = f"Automated, reproducible metrics for {current.display_name}."
+        project_description = f"Automated, reproducible health metrics for {current.display_name}."
     return {
         "is_stale": _is_stale(manifest, build_time),
+        "project_is_cassandra": project_is_cassandra,
+        "project_display_name": project_display_name,
+        "project_title": project_title,
+        "project_tagline": project_tagline,
+        "project_description": project_description,
         "completed_at": manifest.completed_at.isoformat() if manifest.completed_at else None,
         "source_badges": source_badges,
         "run_id": manifest.run_id,
@@ -1731,6 +1793,7 @@ def _render_pages(
     build_time: datetime,
     data_dir: Path,
     run_id: str,
+    project: ProjectSiteContext | None = None,
 ) -> None:
     """Render all four top-level pages (D13): `/`, `/community/`,
     `/conversations/`, `/governance/`, sharing `templates/base.html`'s nav
@@ -1739,9 +1802,36 @@ def _render_pages(
         loader=FileSystemLoader(str(TEMPLATES_DIR)),
         autoescape=select_autoescape(["html"]),
     )
-    common_ctx = _common_page_context(manifest, build_time)
+    common_ctx = _common_page_context(manifest, build_time, project)
     series_by_page = _group_by_page(series_by_id)
     last_completed_month = _last_completed_month(manifest, build_time)
+
+    # Issue #171: this page's own project (`None` for every pre-#171 call --
+    # see `generate()`'s docstring) and the extra `../` hops its own
+    # `root_path` needs to reach the *site* root, where `static/`/
+    # `methodology/`/`corrections/` live (shared across every project, not
+    # duplicated per project). `_project_extras` below folds that into each
+    # individual page render call's own `site_root_prefix`/`project_
+    # switcher`, since -- unlike `common_ctx` above -- both depend on which
+    # page (its own `base_prefix`) and which nav tab is being rendered.
+    current_project = project.current if project is not None else None
+    is_cassandra = current_project is None or current_project.is_cassandra
+    _extra_up_to_site_root = (
+        "../" * project_site.project_path_depth(current_project.root_path)
+        if current_project is not None
+        else ""
+    )
+
+    def _project_extras(base_prefix: str, tab: str) -> dict[str, Any]:
+        site_root_prefix = base_prefix + _extra_up_to_site_root
+        switcher = (
+            project_site.switcher_entries(
+                project.available, current_project.id, tab, site_root_prefix
+            )
+            if project is not None
+            else []
+        )
+        return {"site_root_prefix": site_root_prefix, "project_switcher": switcher}
     # Conversation patterns (issue #118, D26) -- preliminary, classified
     # message/thread patterns published from `snapshots/conversation_patterns/
     # <run date>.json` (written by `private_run.publish`, entirely outside
@@ -1768,7 +1858,16 @@ def _render_pages(
     # `base.html`'s own "Peers" nav link -- same "no snapshot -> no dangling
     # link" discipline D27 documents for the thread explorer.
     peers_context = build_peers_context(data_dir)
-    common_ctx["peers_nav_available"] = bool(peers_context.get("available"))
+    # Issue #171: Peers and the thread explorer are a deliberate Cassandra-
+    # only feature (`project_site.CASSANDRA_ONLY_TABS`) -- forced
+    # unavailable for any other project regardless of what either builder
+    # above happened to find in that project's own data_dir, so a
+    # subproject's Community-page teaser section / nav link never appears
+    # even if (e.g. in a test fixture) the data happened to be there.
+    if not is_cassandra:
+        thread_explorer_context = {"available": False}
+        peers_context = {"available": False}
+    common_ctx["peers_nav_available"] = is_cassandra and bool(peers_context.get("available"))
     # Releases tab (`/releases/`, issue #166) -- computed here (not down by
     # its own page-write further below) so the Home page's "Release lines"
     # row and the Community page's Releases-section link can both read
@@ -1777,7 +1876,15 @@ def _render_pages(
     # available"]` gates `base.html`'s own "Releases" nav link -- same
     # "no data -> no dangling link" discipline D27/D30 already use.
     releases_context = build_releases_context(data_dir, run_id)
-    common_ctx["releases_nav_available"] = bool(releases_context.get("available"))
+    # Issue #171: every project's site emits a Releases page, data or not
+    # (the template's own `{% else %}` already renders an honest "not
+    # published yet" empty state) -- Cassandra keeps the pre-#171 "no data
+    # -> no page" behavior unchanged (`project is None`, or a Cassandra
+    # `ProjectSiteContext`, both covered by `is_cassandra` here).
+    force_releases_page = not is_cassandra
+    common_ctx["releases_nav_available"] = (
+        force_releases_page or bool(releases_context.get("available"))
+    )
 
     # Home (`/`).
     summary_cards = [
@@ -1787,13 +1894,19 @@ def _render_pages(
     # CHAOSS Starter Project Health block (issue #136, DECISIONS.md D29) —
     # the landing page leads with this published external standard instead
     # of the retired in-house composite score (D20, reversed by D29).
-    chaoss_starter_cards = _chaoss_starter_cards(series_by_id, last_completed_month, manifest)
+    chaoss_starter_cards = _chaoss_starter_cards(
+        series_by_id,
+        last_completed_month,
+        manifest,
+        project_display_name=common_ctx["project_display_name"],
+    )
     home_html = env.get_template("home.html").render(
         current_page="home",
         base_prefix=HOME_BASE_PREFIX,
         summary_cards=summary_cards,
         chaoss_starter_cards=chaoss_starter_cards,
         releases=releases_context,
+        **_project_extras(HOME_BASE_PREFIX, "home"),
         **common_ctx,
     )
     (out_dir / "index.html").write_text(home_html)
@@ -1861,6 +1974,7 @@ def _render_pages(
         thread_explorer=thread_explorer_context,
         peers=peers_context,
         releases=releases_context,
+        **_project_extras(SUBPAGE_BASE_PREFIX, "community"),
         **common_ctx,
     )
     _write_subpage(out_dir, "community", community_html)
@@ -1875,61 +1989,90 @@ def _render_pages(
     # dimension-grouped shape as `/community/` for any other conversations
     # metric that might be added later; the "what's coming" section (Phase
     # 2a/2b) always renders too.
-    conversations_card_series = [
-        series
-        for series in series_by_page["conversations"]
-        if series.meta.metric_id not in MAILING_LIST_METRIC_IDS
-    ]
-    conversations_dimensions = [
-        {
-            "dimension": dimension,
-            "metrics": [
-                _card_context(s, SUBPAGE_BASE_PREFIX, last_completed_month, manifest)
-                for s in series_list
-            ],
-        }
-        for dimension, series_list in _group_by_dimension(conversations_card_series)
-    ]
-    mailing_lists_context = {
-        "dev": {
-            "cards": _mailing_list_reply_cards(
-                series_by_id, "dev", SUBPAGE_BASE_PREFIX, last_completed_month, manifest
-            )
-        },
-        "user": {
-            "cards": _mailing_list_reply_cards(
-                series_by_id, "user", SUBPAGE_BASE_PREFIX, last_completed_month, manifest
-            )
-        },
-        "list_activity": _mailing_list_activity_context(series_by_id, SUBPAGE_BASE_PREFIX),
-    }
-    conversations_html = env.get_template("conversations.html").render(
-        current_page="conversations",
-        base_prefix=SUBPAGE_BASE_PREFIX,
-        dimensions=conversations_dimensions,
-        mailing_lists=mailing_lists_context,
-        conversation_patterns=conversation_patterns_context,
-        thread_explorer=thread_explorer_context,
-        **common_ctx,
-    )
-    _write_subpage(out_dir, "conversations", conversations_html)
-
-    # Thread explorer (`/conversations/threads/`, issue #122, D27) -- a
-    # filterable/sortable table of every sampled, classified thread, linked
-    # to its public archive record. "No-snapshot -> no page": this route is
-    # only written when a `threads-*.json` snapshot has actually been
-    # published, so nothing links to (or 200s from) a page with nothing on
-    # it -- mirrors every other honest-empty-state convention on this site,
-    # taken one step further since this is a whole standalone route rather
-    # than a section within an always-rendered page.
-    if thread_explorer_context["available"]:
-        thread_explorer_html = env.get_template("conversations_threads.html").render(
+    # Issue #171: a project whose own config declares the dev@/user@ lists
+    # a `shared_source` (every subproject today, `projects/<id>.yaml`'s
+    # `shared_sources: [... ponymail ...]`) gets a short factual notice
+    # instead -- list metadata can't attribute a thread to one subproject,
+    # so showing this project's own (necessarily empty/meaningless) mailing-
+    # list cards would be actively misleading, not just absent data (D25:
+    # no verdict, just the fact and a link to where the real numbers live).
+    if current_project is not None and current_project.conversations_shared:
+        conversations_extras = _project_extras(SUBPAGE_BASE_PREFIX, "conversations")
+        conversations_html = env.get_template("shared_tab_notice.html").render(
             current_page="conversations",
-            base_prefix=NESTED_SUBPAGE_BASE_PREFIX,
-            **thread_explorer_context,
+            base_prefix=SUBPAGE_BASE_PREFIX,
+            heading="Conversations",
+            notice_text=(
+                "The dev@ and user@ mailing lists cover all Apache Cassandra subprojects; "
+                "list metadata can't attribute a thread to one subproject."
+            ),
+            notice_link_label="See Apache Cassandra's Conversations page",
+            notice_link_href=f"{conversations_extras['site_root_prefix']}conversations/",
+            **conversations_extras,
             **common_ctx,
         )
-        _write_subpage(out_dir, "conversations/threads", thread_explorer_html)
+        _write_subpage(out_dir, "conversations", conversations_html)
+    else:
+        conversations_card_series = [
+            series
+            for series in series_by_page["conversations"]
+            if series.meta.metric_id not in MAILING_LIST_METRIC_IDS
+        ]
+        conversations_dimensions = [
+            {
+                "dimension": dimension,
+                "metrics": [
+                    _card_context(s, SUBPAGE_BASE_PREFIX, last_completed_month, manifest)
+                    for s in series_list
+                ],
+            }
+            for dimension, series_list in _group_by_dimension(conversations_card_series)
+        ]
+        mailing_lists_context = {
+            "dev": {
+                "cards": _mailing_list_reply_cards(
+                    series_by_id, "dev", SUBPAGE_BASE_PREFIX, last_completed_month, manifest
+                )
+            },
+            "user": {
+                "cards": _mailing_list_reply_cards(
+                    series_by_id, "user", SUBPAGE_BASE_PREFIX, last_completed_month, manifest
+                )
+            },
+            "list_activity": _mailing_list_activity_context(series_by_id, SUBPAGE_BASE_PREFIX),
+        }
+        conversations_html = env.get_template("conversations.html").render(
+            current_page="conversations",
+            base_prefix=SUBPAGE_BASE_PREFIX,
+            dimensions=conversations_dimensions,
+            mailing_lists=mailing_lists_context,
+            conversation_patterns=conversation_patterns_context,
+            thread_explorer=thread_explorer_context,
+            **_project_extras(SUBPAGE_BASE_PREFIX, "conversations"),
+            **common_ctx,
+        )
+        _write_subpage(out_dir, "conversations", conversations_html)
+
+        # Thread explorer (`/conversations/threads/`, issue #122, D27) -- a
+        # filterable/sortable table of every sampled, classified thread,
+        # linked to its public archive record. "No-snapshot -> no page":
+        # this route is only written when a `threads-*.json` snapshot has
+        # actually been published, so nothing links to (or 200s from) a
+        # page with nothing on it -- mirrors every other honest-empty-state
+        # convention on this site, taken one step further since this is a
+        # whole standalone route rather than a section within an
+        # always-rendered page. Cassandra-only (issue #171); `thread_
+        # explorer_context["available"]` is already forced `False` for any
+        # other project above.
+        if thread_explorer_context["available"]:
+            thread_explorer_html = env.get_template("conversations_threads.html").render(
+                current_page="conversations",
+                base_prefix=NESTED_SUBPAGE_BASE_PREFIX,
+                **thread_explorer_context,
+                **_project_extras(NESTED_SUBPAGE_BASE_PREFIX, "conversations/threads"),
+                **common_ctx,
+            )
+            _write_subpage(out_dir, "conversations/threads", thread_explorer_html)
 
     # Governance (`/governance/`) — per-commit compliance trends and detail
     # (issue #37, D14/D15), the Security section (OpenSSF Scorecard + CVE/
@@ -1937,77 +2080,106 @@ def _render_pages(
     # template (`_security.html`) so it stays isolated from this page
     # section's own churn, same reasoning `governance_page.py`'s own
     # docstring gives for staying out of this module.
-    security_context = _read_security_context(data_dir, manifest)
-    governance_context = build_governance_page_context(
-        data_dir, run_id, out_dir, manifest, base_prefix=SUBPAGE_BASE_PREFIX
-    )
-    # Each scored check gets one card: the same latest-value/tier/JSON-CSV
-    # card shell every M0 metric uses (`_card_context`, keyed by this
-    # check's `governance_*_pass_rate` metric_id), with its chart swapped for
-    # the compliance-trend module's single, neutral monthly-share line
-    # (`governance_context.compliance_trends`). issue #97 (owner's
-    # 2026-09-28 "informational stance" decision): no pass/fail/unknown/
-    # exempt breakdown, no color-coding, no "backfill pending" tag tied to a
-    # verdict share -- `MetricMeta.name` (`metrics_meta.py`) is already
-    # neutral ("Commits with a named reviewer", not "... -- Pass Rate").
-    governance_cards_by_metric = {
-        s.meta.metric_id: _card_context(s, SUBPAGE_BASE_PREFIX, last_completed_month, manifest)
-        for s in series_by_page["governance"]
-    }
-    governance_trend_cards = []
-    for chart in governance_context.compliance_trends:
-        card = governance_cards_by_metric.get(chart["metric_id"])
-        name = card["name"] if card else chart["metric_id"]
-        # issue #156: this chart's own x field is "month" (`governance_page.
-        # py::_trend_vega_spec`), not the M0/conversations cards' "window_end"
-        # -- a different chart_id namespace (`gov-trend-*`) than `card`'s own
-        # (unused here; this section renders `chart["vega_spec_json"]`, not
-        # `card["vega_spec_json"]`) keeps the two from colliding if a reader
-        # ever deep-links to one.
-        chart_id = f"gov-trend-{chart['metric_id']}"
-        governance_trend_cards.append(
-            {
-                "metric_id": chart["metric_id"],
-                "name": name,
-                "latest_value_display": card["latest_value_display"] if card else None,
-                "latest_month_label": card["latest_month_label"] if card else None,
-                # issue #86: the check's own card already computed its
-                # staleness badge(s) from `MetricMeta.sources` -- reuse it
-                # rather than recomputing. This is about data freshness, not
-                # a compliance verdict.
-                "staleness_badges": card["staleness_badges"] if card else [],
-                "json_href": card["json_href"] if card else None,
-                "csv_href": card["csv_href"] if card else None,
-                "vega_spec_json": chart["vega_spec_json"],
-                "has_data": chart["has_data"],
-                "chart_id": chart_id,
-                "chart_meta_json": chart_spec.chart_meta_json(
-                    chart_id=chart_id, title=f"Monthly rate for {name}", time_field="month",
-                    time_type="month",
-                )
-                if chart["has_data"]
-                else None,
-            }
+    # Issue #171: a project whose own config declares governance/roster a
+    # `shared_source` (every subproject today, `shared_sources: [...
+    # governance, asf_roster ...]`) gets the same short-notice treatment as
+    # Conversations above -- compliance review and the ASF PMC roster are
+    # tracked once, project-wide, not per subproject, so there is no
+    # per-subproject number to show instead of Cassandra's own.
+    if current_project is not None and current_project.governance_shared:
+        governance_extras = _project_extras(SUBPAGE_BASE_PREFIX, "governance")
+        governance_html = env.get_template("shared_tab_notice.html").render(
+            current_page="governance",
+            base_prefix=SUBPAGE_BASE_PREFIX,
+            heading="Governance",
+            notice_text=(
+                "Governance compliance tracking and the ASF PMC roster are maintained once "
+                "for the whole Apache Cassandra project, not per subproject."
+            ),
+            notice_link_label="See Apache Cassandra's Governance page",
+            notice_link_href=f"{governance_extras['site_root_prefix']}governance/",
+            **governance_extras,
+            **common_ctx,
         )
-    # Collapsible page sections (issue #144): "Facts summary", "Commit
-    # history" and "References" -- summary-row headline items only; the
-    # section markup/body itself stays inline in governance.html, since
-    # (unlike Community's per-metric card grid) each of these three wraps a
-    # single, already-bespoke block rather than a metric-id-keyed list.
-    governance_sections = _governance_sections_context(
-        {s.meta.metric_id: s for s in series_by_page["governance"]},
-        last_completed_month,
-    )
-    governance_html = env.get_template("governance.html").render(
-        current_page="governance",
-        base_prefix=SUBPAGE_BASE_PREFIX,
-        security=security_context,
-        governance=governance_context,
-        governance_trend_cards=governance_trend_cards,
-        governance_sections={s["id"]: s for s in governance_sections},
-        **common_ctx,
-    )
-    _write_subpage(out_dir, "governance", governance_html)
+        _write_subpage(out_dir, "governance", governance_html)
+    else:
+        security_context = _read_security_context(data_dir, manifest)
+        governance_context = build_governance_page_context(
+            data_dir, run_id, out_dir, manifest, base_prefix=SUBPAGE_BASE_PREFIX
+        )
+        # Each scored check gets one card: the same latest-value/tier/JSON-
+        # CSV card shell every M0 metric uses (`_card_context`, keyed by
+        # this check's `governance_*_pass_rate` metric_id), with its chart
+        # swapped for the compliance-trend module's single, neutral
+        # monthly-share line (`governance_context.compliance_trends`).
+        # issue #97 (owner's 2026-09-28 "informational stance" decision):
+        # no pass/fail/unknown/exempt breakdown, no color-coding, no
+        # "backfill pending" tag tied to a verdict share --
+        # `MetricMeta.name` (`metrics_meta.py`) is already neutral
+        # ("Commits with a named reviewer", not "... -- Pass Rate").
+        governance_cards_by_metric = {
+            s.meta.metric_id: _card_context(
+                s, SUBPAGE_BASE_PREFIX, last_completed_month, manifest
+            )
+            for s in series_by_page["governance"]
+        }
+        governance_trend_cards = []
+        for chart in governance_context.compliance_trends:
+            card = governance_cards_by_metric.get(chart["metric_id"])
+            name = card["name"] if card else chart["metric_id"]
+            # issue #156: this chart's own x field is "month" (`governance_
+            # page.py::_trend_vega_spec`), not the M0/conversations cards'
+            # "window_end" -- a different chart_id namespace
+            # (`gov-trend-*`) than `card`'s own (unused here; this section
+            # renders `chart["vega_spec_json"]`, not `card["vega_spec_
+            # json"]`) keeps the two from colliding if a reader ever
+            # deep-links to one.
+            chart_id = f"gov-trend-{chart['metric_id']}"
+            governance_trend_cards.append(
+                {
+                    "metric_id": chart["metric_id"],
+                    "name": name,
+                    "latest_value_display": card["latest_value_display"] if card else None,
+                    "latest_month_label": card["latest_month_label"] if card else None,
+                    # issue #86: the check's own card already computed its
+                    # staleness badge(s) from `MetricMeta.sources` -- reuse
+                    # it rather than recomputing. This is about data
+                    # freshness, not a compliance verdict.
+                    "staleness_badges": card["staleness_badges"] if card else [],
+                    "json_href": card["json_href"] if card else None,
+                    "csv_href": card["csv_href"] if card else None,
+                    "vega_spec_json": chart["vega_spec_json"],
+                    "has_data": chart["has_data"],
+                    "chart_id": chart_id,
+                    "chart_meta_json": chart_spec.chart_meta_json(
+                        chart_id=chart_id, title=f"Monthly rate for {name}", time_field="month",
+                        time_type="month",
+                    )
+                    if chart["has_data"]
+                    else None,
+                }
+            )
+        # Collapsible page sections (issue #144): "Facts summary", "Commit
+        # history" and "References" -- summary-row headline items only;
+        # the section markup/body itself stays inline in governance.html,
+        # since (unlike Community's per-metric card grid) each of these
+        # three wraps a single, already-bespoke block rather than a
+        # metric-id-keyed list.
+        governance_sections = _governance_sections_context(
+            {s.meta.metric_id: s for s in series_by_page["governance"]},
+            last_completed_month,
+        )
+        governance_html = env.get_template("governance.html").render(
+            current_page="governance",
+            base_prefix=SUBPAGE_BASE_PREFIX,
+            security=security_context,
+            governance=governance_context,
+            governance_trend_cards=governance_trend_cards,
+            governance_sections={s["id"]: s for s in governance_sections},
+            **_project_extras(SUBPAGE_BASE_PREFIX, "governance"),
+            **common_ctx,
+        )
+        _write_subpage(out_dir, "governance", governance_html)
 
     # Peer context (`/peers/`, issue #145, D30) -- own weekly-updated
     # snapshot family (`snapshots/peers/<run_id>/...`, entirely separate
@@ -2015,50 +2187,64 @@ def _render_pages(
     # no page" discipline as the thread explorer above. `peers_context`
     # itself was computed earlier in this function so the Community page's
     # own summary card (below) could also read its `available` flag.
+    # Cassandra-only (issue #171) -- `peers_context["available"]` is
+    # already forced `False` for any other project above.
     if peers_context.get("available"):
         peers_html = env.get_template("peers.html").render(
             current_page="peers",
             base_prefix=SUBPAGE_BASE_PREFIX,
             **peers_context,
+            **_project_extras(SUBPAGE_BASE_PREFIX, "peers"),
             **common_ctx,
         )
         _write_subpage(out_dir, "peers", peers_html)
 
-    # Releases (`/releases/`, issue #166) -- "no data -> no page" discipline,
-    # same as `/peers/` immediately above. `releases_context` itself was
-    # computed earlier in this function so the Home/Community pages' own
-    # links (above) could also read its `available` flag.
-    if releases_context.get("available"):
+    # Releases (`/releases/`, issue #166) -- "no data -> no page" discipline
+    # for Cassandra, unchanged; every other project's site always emits
+    # this page (issue #171: "Every project emits Home, Community,
+    # Conversations, Governance, Releases"), falling back to the
+    # template's own honest "not published yet" empty state
+    # (`releases.html`'s `{% else %}`) when `releases_context` has no data.
+    # `releases_context` itself was computed earlier in this function so
+    # the Home/Community pages' own links (above) could also read its
+    # `available` flag.
+    if releases_context.get("available") or force_releases_page:
         releases_html = env.get_template("releases.html").render(
             current_page="releases",
             base_prefix=SUBPAGE_BASE_PREFIX,
             **releases_context,
+            **_project_extras(SUBPAGE_BASE_PREFIX, "releases"),
             **common_ctx,
         )
         _write_subpage(out_dir, "releases", releases_html)
 
-    # Methodology (`/methodology/`, issue #160) — a real, generated page
-    # replacing the footer's old straight-to-GitHub-docs link. Static
-    # (config/code facts only, no `data_dir`/snapshot read), so it always
-    # renders the same way regardless of this run's own data.
-    methodology_html = env.get_template("methodology.html").render(
-        current_page="methodology",
-        base_prefix=SUBPAGE_BASE_PREFIX,
-        **build_methodology_context(),
-        **common_ctx,
-    )
-    _write_subpage(out_dir, "methodology", methodology_html)
+    # Methodology (`/methodology/`, issue #160) and Corrections (`/
+    # corrections/`, issue #160) are rendered once, at the overall *site*
+    # root -- never duplicated per project (issue #171's "methodology/
+    # corrections stay site-level at root"). Cassandra's own call (or the
+    # pre-#171 single-project call, `project is None`) is that one render;
+    # any other project's call skips both entirely and reaches the shared
+    # pair through `site_root_prefix` in its footer instead.
+    if is_cassandra:
+        methodology_html = env.get_template("methodology.html").render(
+            current_page="methodology",
+            base_prefix=SUBPAGE_BASE_PREFIX,
+            site_root_prefix=SUBPAGE_BASE_PREFIX,
+            project_switcher=[],
+            **build_methodology_context(),
+            **common_ctx,
+        )
+        _write_subpage(out_dir, "methodology", methodology_html)
 
-    # Corrections (`/corrections/`, issue #160) — the single front door for
-    # every existing correction/feedback path plus a new general catch-all.
-    # Also static.
-    corrections_html = env.get_template("corrections.html").render(
-        current_page="corrections",
-        base_prefix=SUBPAGE_BASE_PREFIX,
-        **build_corrections_context(),
-        **common_ctx,
-    )
-    _write_subpage(out_dir, "corrections", corrections_html)
+        corrections_html = env.get_template("corrections.html").render(
+            current_page="corrections",
+            base_prefix=SUBPAGE_BASE_PREFIX,
+            site_root_prefix=SUBPAGE_BASE_PREFIX,
+            project_switcher=[],
+            **build_corrections_context(),
+            **common_ctx,
+        )
+        _write_subpage(out_dir, "corrections", corrections_html)
 
 
 def _write_subpage(out_dir: Path, dirname: str, html: str) -> None:
@@ -2073,3 +2259,40 @@ def _copy_static(out_dir: Path) -> None:
     for item in STATIC_DIR.iterdir():
         if item.is_file():
             shutil.copy2(item, dest / item.name)
+
+
+def generate_all_projects(
+    index_path: str | Path,
+    data_dir: str | Path,
+    out_dir: str | Path,
+    *,
+    now: datetime | None = None,
+) -> list[str]:
+    """Render the whole multi-project site (issue #171, epic #168):
+    `project-health site --index projects/index.yaml --data-dir D --out O`.
+
+    Every *enabled* `projects/index.yaml` entry that has at least one
+    resolvable run (`project_site.discover_projects`) gets its own
+    `generate()` call -- Cassandra straight into `out_dir` (unchanged from
+    today's single-project layout), every other project into its own
+    `out_dir/p/<id>/`. An enabled project with no data yet is silently
+    skipped, matching this command's own "renders every enabled project
+    *with data*" contract rather than failing the whole build over one
+    project that hasn't had its first nightly run.
+
+    Returns the ids of the projects actually rendered, in `index.yaml`
+    order, for the caller to report (empty if none had data).
+    """
+    index_path = Path(index_path)
+    data_dir = Path(data_dir)
+    out_dir = Path(out_dir)
+
+    discovered = project_site.discover_projects(index_path, data_dir)
+    available = tuple(discovered)
+    rendered: list[str] = []
+    for disc in discovered:
+        project_out_dir = out_dir if disc.is_cassandra else out_dir / "p" / disc.id
+        site_project = ProjectSiteContext(current=disc, available=available)
+        generate(disc.data_dir, disc.run_id, project_out_dir, now=now, project=site_project)
+        rendered.append(disc.id)
+    return rendered

@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% import "_sections.html" as sections %}
 {% import "_charts.html" as charts %}
-{% block title %}Community — Cassandra Project Health{% endblock %}
+{% block title %}Community — {{ project_title }}{% endblock %}
 {% block content %}
 <p class="page-intro">Code and contributor health metrics: sustainability, review capacity, and responsiveness — computed from Git, ASF JIRA and GitHub PR history.</p>
 
@@ -384,7 +384,7 @@
       <strong>Identity-resolution limits.</strong> {{ leaderboard.identity_limitations_note }}
       <a href="{{ leaderboard.corrections_url }}">Request an identity correction</a> (every row's
       own "Report an issue" link below uses this same form) — see
-      <a href="{{ base_prefix }}corrections/">/corrections/</a> for what happens next.
+      <a href="{{ site_root_prefix }}corrections/">/corrections/</a> for what happens next.
     </p>
 
     {% if leaderboard.has_data %}

@@ -68,6 +68,7 @@ from project_health.pilot.report import (
 from project_health.peers.config import load_peers
 from project_health.peers.pipeline import run_peers_collection
 from project_health.pipeline import ALL_SOURCES, run_pipeline
+from project_health.site.generate import generate_all_projects
 from project_health.private_run.quarters import parse_quarters_arg
 from project_health.private_run.runner import DEFAULT_MONTHLY_CAP_USD as PRIVATE_RUN_DEFAULT_CAP
 from project_health.private_run.runner import run_private_run
@@ -436,6 +437,28 @@ def _build_parser() -> argparse.ArgumentParser:
         default="projects/index.yaml",
         help="Path to the project registry (default: projects/index.yaml)",
     )
+
+    site_parser = subparsers.add_parser(
+        "site",
+        help=(
+            "Issue #171: render the multi-project static site -- every enabled "
+            "projects/index.yaml entry that has data, Cassandra at the site root, every "
+            "other project under p/<id>/, sharing one static/ and one methodology/corrections "
+            "pair. `project-health run --site-out` keeps rendering a single project's site "
+            "on its own, unchanged."
+        ),
+    )
+    site_parser.add_argument(
+        "--index",
+        default="projects/index.yaml",
+        help="Path to the project registry (default: projects/index.yaml)",
+    )
+    site_parser.add_argument(
+        "--data-dir",
+        required=True,
+        help="Root of the data branch checkout (each project's own data dir resolves under it)",
+    )
+    site_parser.add_argument("--out", required=True, help="Output directory for the rendered site")
 
     verify_policy_sources_parser = subparsers.add_parser(
         "verify-policy-sources",
@@ -1017,6 +1040,15 @@ def _cmd_list_projects(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_site(args: argparse.Namespace) -> int:
+    rendered = generate_all_projects(args.index, args.data_dir, args.out)
+    if not rendered:
+        print("site: no enabled project has data to render yet", file=sys.stderr)
+        return 1
+    print(f"site: rendered {len(rendered)} project(s): {', '.join(rendered)}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
@@ -1038,6 +1070,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_benchmark_public(args)
     if args.command == "list-projects":
         return _cmd_list_projects(args)
+    if args.command == "site":
+        return _cmd_site(args)
     if args.command == "verify-policy-sources":
         return _cmd_verify_policy_sources(args)
     if args.command == "private-run":

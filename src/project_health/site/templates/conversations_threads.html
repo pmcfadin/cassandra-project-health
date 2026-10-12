@@ -4,7 +4,7 @@
    `sample_k`, ...), so importing this macro under that same name would
    shadow it. #}
 {% import "_charts.html" as chart_ui %}
-{% block title %}Thread explorer — Cassandra Project Health{% endblock %}
+{% block title %}Thread explorer — {{ project_title }}{% endblock %}
 {% block content %}
 <section class="thread-explorer" id="thread-explorer" aria-labelledby="thread-explorer-heading">
   <p class="card-links"><a href="{{ base_prefix }}conversations/#conversation-patterns">Charts and trends &larr;</a></p>
@@ -220,5 +220,5 @@
   </p>
   {% endif %}
 </section>
-<script src="{{ base_prefix }}static/thread_explorer.js" defer></script>
+<script src="{{ site_root_prefix }}static/thread_explorer.js" defer></script>
 {% endblock %}

@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% import "_sections.html" as sections %}
 {% import "_charts.html" as charts %}
-{% block title %}Governance — Cassandra Project Health{% endblock %}
+{% block title %}Governance — {{ project_title }}{% endblock %}
 {% block content %}
 {% if governance.has_data %}
 <p class="page-intro">{{ governance.page_intro }}</p>
@@ -303,7 +303,7 @@
   <a href="{{ governance.overrides_url }}">governance_overrides.yaml</a>.
 </section>
 {% endcall %}
-<script src="{{ base_prefix }}static/governance.js" defer></script>
+<script src="{{ site_root_prefix }}static/governance.js" defer></script>
 {% endif %}
 
 {# Security section (OpenSSF Scorecard + CVE/advisory history, issue #55,

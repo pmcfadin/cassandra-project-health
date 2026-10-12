@@ -171,6 +171,7 @@ from project_health.provenance import (
 )
 from project_health.site.generate import generate as generate_site
 from project_health.site.manifest import manifest_path
+from project_health.site.metrics_meta import M0_METRICS
 
 # --- Governance compliance engine (issue #36) -------------------------------
 #
@@ -3271,6 +3272,11 @@ def _collect_release(
         else f"{repo_cfg.name}-"
     )
     ga_major_only = bool(getattr(config.releases, "ga_major_only", False))
+    # issue #170 (PR #179 review fixup): see `config.ReleasesConfig.
+    # ga_require_patch`'s docstring -- apache/cassandra-java-driver has
+    # four bogus bare `major.minor` donation-artifact tags that aren't
+    # real releases.
+    ga_require_patch = bool(getattr(config.releases, "ga_require_patch", False))
     snapshot_id = f"{run_id}:release"
 
     _log("source_collect_started", source="release", repo=repo_label)
@@ -3283,6 +3289,7 @@ def _collect_release(
             tag_prefix=tag_prefix,
             snapshot_id=snapshot_id,
             ga_major_only=ga_major_only,
+            ga_require_patch=ga_require_patch,
         )
         partition_date = started_at.date()
         storage.write_partition(
@@ -3866,6 +3873,21 @@ def run_pipeline(
     applicable = set(applicable_sources(config))
     active_sources = [source for source in requested_sources if source in applicable]
     not_applicable_sources = [source for source in requested_sources if source not in applicable]
+    # issue #170 fixup: which sources are not applicable to THIS PROJECT's
+    # config at all (`ALL_SOURCES - applicable_sources(config)`) -- distinct
+    # from `not_applicable_sources` above, which is scoped to what was
+    # *requested* this run. `metrics_missing` filtering below needs the
+    # project-level set: a metric whose every declared source is
+    # config-inapplicable (e.g. every `jira`-sourced metric, for a project
+    # with no `issue_tracker:` at all) can never produce a row for this
+    # project, ever, regardless of which `sources=` subset any particular
+    # call happens to request -- so it must never count as "missing" (and
+    # degrade the run) even when a test/CLI caller explicitly restricts
+    # `sources=` to something smaller than every applicable source. For
+    # `projects/cassandra.yaml` this is always the empty set, so every
+    # existing Cassandra-config test (including ones that deliberately
+    # narrow `sources=`) is unaffected.
+    config_inapplicable_sources = set(ALL_SOURCES) - applicable
 
     started_at = now if now is not None else datetime.now(timezone.utc)
     if started_at.tzinfo is None:
@@ -4103,6 +4125,7 @@ def run_pipeline(
     completed_at = datetime.now(timezone.utc)
     metrics_computed: list[str] = []
     metrics_missing: list[str] = []
+    metrics_not_applicable: list[str] = []
     exit_code = 0
 
     if metrics_table is not None:
@@ -4118,9 +4141,32 @@ def run_pipeline(
         # (that still emits an `insufficient_data` row and is never
         # "missing"). Surface it loudly rather than letting the manifest say
         # `status: ok` while a metric quietly produced nothing.
+        #
+        # issue #170 fixup: a zero-row metric whose EVERY declared source
+        # (`site.metrics_meta.M0_METRICS[metric_id].sources`) is not
+        # applicable to this project's config at all
+        # (`config_inapplicable_sources`) can never produce a row for this
+        # project -- that's not a collector/engine defect, it's "this
+        # project doesn't have that kind of data" (e.g. every jira-sourced
+        # metric, for easy-stress's GitHub-Issues-only config). Those go to
+        # `metrics_not_applicable` instead and never degrade the run or the
+        # exit code. A metric with at least one applicable source still
+        # counts as a genuine gap in `metrics_missing` even if it produced
+        # zero rows -- partial applicability is not full applicability.
         computed_metric_ids = {row["metric_id"] for row in metric_rows}
-        metrics_missing = sorted(set(METRIC_IDS) - computed_metric_ids)
+        for metric_id in sorted(set(METRIC_IDS) - computed_metric_ids):
+            required_sources = M0_METRICS[metric_id].sources if metric_id in M0_METRICS else ()
+            if required_sources and config_inapplicable_sources.issuperset(required_sources):
+                metrics_not_applicable.append(metric_id)
+            else:
+                metrics_missing.append(metric_id)
         _log("metrics_computed", run_id=run_id, metrics=metrics_computed)
+        if metrics_not_applicable:
+            _log(
+                "metrics_not_applicable",
+                run_id=run_id,
+                metrics_not_applicable=metrics_not_applicable,
+            )
         if metrics_missing:
             _log("metrics_missing", run_id=run_id, metrics_missing=metrics_missing)
             exit_code = 1
@@ -4215,6 +4261,7 @@ def run_pipeline(
         status=run_status,
         error=metrics_error,
         metrics_missing=metrics_missing,
+        metrics_not_applicable=metrics_not_applicable,
     )
 
     # --- Governance compliance engine (issue #36) ---------------------------

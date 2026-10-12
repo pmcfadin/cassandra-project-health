@@ -104,6 +104,14 @@ _GA_SUFFIX_RE = re.compile(r"^(\d+\.\d+(?:\.\d+)?)(-final)?$")
 # `config.ReleasesConfig.ga_major_only`'s docstring) -- no dotted
 # `major.minor[.patch]` at all, so `_GA_SUFFIX_RE` would never match.
 _GA_MAJOR_ONLY_SUFFIX_RE = re.compile(r"^(\d+)$")
+# issue #170 (PR #179 review fixup): the inverse of `_GA_MAJOR_ONLY_SUFFIX_RE`
+# -- a repo whose tag history has bare `major.minor` tags that are NOT real
+# GA releases (verified live for apache/cassandra-java-driver's `1.0`/
+# `2.0`/`2.1`/`2.2`, see `config.ReleasesConfig.ga_require_patch`'s
+# docstring: all four created within two minutes of each other at the
+# donation commit, never an actual release). Requires all three of
+# `major.minor.patch`, unlike `_GA_SUFFIX_RE`'s optional `.patch`.
+_GA_SUFFIX_REQUIRE_PATCH_RE = re.compile(r"^(\d+\.\d+\.\d+)(-final)?$")
 # Pre-release suffix anywhere at the end of a tag's suffix -- checked before
 # `_GA_SUFFIX_RE` so e.g. "5.0-rc1" is excluded outright rather than simply
 # failing to match (it wouldn't match `_GA_SUFFIX_RE` either way, but this
@@ -128,7 +136,12 @@ def _run_git(repo_path: Path, args: list[str]) -> str:
     return result.stdout
 
 
-def _ga_version(tag_name: str, tag_prefix: str, ga_major_only: bool = False) -> str | None:
+def _ga_version(
+    tag_name: str,
+    tag_prefix: str,
+    ga_major_only: bool = False,
+    ga_require_patch: bool = False,
+) -> str | None:
     """The normalized version string (e.g. "5.0.2") if `tag_name` is a GA
     release tag under `tag_prefix`, else `None` -- see module docstring for
     the exact inclusion/exclusion rules.
@@ -137,14 +150,26 @@ def _ga_version(tag_name: str, tag_prefix: str, ga_major_only: bool = False) -> 
     switches the suffix pattern to `_GA_MAJOR_ONLY_SUFFIX_RE` (a bare
     integer, e.g. "9") instead of `_GA_SUFFIX_RE`'s dotted
     `major.minor[.patch]` -- for a repo like apache/cassandra-easy-stress
-    whose GA tags carry no minor/patch component at all.
+    whose GA tags carry no minor/patch component at all. `ga_require_patch`
+    (issue #170 PR #179 review fixup, `config.ReleasesConfig.
+    ga_require_patch`) is the opposite tightening -- `_GA_SUFFIX_REQUIRE_
+    PATCH_RE`, requiring a `.patch` component, for a repo (apache/
+    cassandra-java-driver) whose history has bogus bare `major.minor` tags
+    that are NOT real releases. The two are mutually exclusive in practice;
+    if both are set, `ga_major_only` takes precedence.
     """
     if not tag_name.startswith(tag_prefix):
         return None
     suffix = tag_name[len(tag_prefix) :]
     if _PRERELEASE_SUFFIX_RE.search(suffix):
         return None
-    match = (_GA_MAJOR_ONLY_SUFFIX_RE if ga_major_only else _GA_SUFFIX_RE).match(suffix)
+    if ga_major_only:
+        pattern = _GA_MAJOR_ONLY_SUFFIX_RE
+    elif ga_require_patch:
+        pattern = _GA_SUFFIX_REQUIRE_PATCH_RE
+    else:
+        pattern = _GA_SUFFIX_RE
+    match = pattern.match(suffix)
     if not match:
         return None
     return match.group(1)
@@ -166,7 +191,10 @@ class GaTag:
 
 
 def list_ga_tags(
-    repo_path: str | Path, tag_prefix: str, ga_major_only: bool = False
+    repo_path: str | Path,
+    tag_prefix: str,
+    ga_major_only: bool = False,
+    ga_require_patch: bool = False,
 ) -> list[GaTag]:
     """Every GA release tag in `repo_path`'s local clone, dated by each
     tag's own `creatordate` (git's tagger date for an annotated tag, or the
@@ -177,8 +205,8 @@ def list_ga_tags(
     callers (`pipeline._collect_release`) run `clone_or_fetch` first, the
     same way `pipeline._collect_git` does for the ordinary commit walk.
 
-    `ga_major_only` (issue #170) is threaded straight through to
-    `_ga_version`.
+    `ga_major_only`/`ga_require_patch` (issue #170) are threaded straight
+    through to `_ga_version`.
     """
     repo_path = Path(repo_path)
     output = _run_git(
@@ -191,7 +219,9 @@ def list_ga_tags(
         if not line:
             continue
         tag_name, _, date_str = line.partition("\x1f")
-        version = _ga_version(tag_name, tag_prefix, ga_major_only=ga_major_only)
+        version = _ga_version(
+            tag_name, tag_prefix, ga_major_only=ga_major_only, ga_require_patch=ga_require_patch
+        )
         if version is None:
             continue
         # The first 10 characters of an ISO-8601 (or ISO-strict, with a
@@ -337,6 +367,7 @@ class ReleaseCollector:
         tag_prefix: str,
         snapshot_id: str,
         ga_major_only: bool = False,
+        ga_require_patch: bool = False,
     ) -> ReleaseCollectionResult:
         """List every GA tag in `repo_path`'s clone, cross-check each
         against the live archive listing, and return the validated
@@ -345,10 +376,12 @@ class ReleaseCollector:
         `repo_path` must already be cloned (caller's responsibility, same
         as `GitCollector.collect`) -- this never clones/fetches itself.
 
-        `ga_major_only` (issue #170) is threaded straight through to
-        `list_ga_tags`.
+        `ga_major_only`/`ga_require_patch` (issue #170) are threaded
+        straight through to `list_ga_tags`.
         """
-        tags = list_ga_tags(repo_path, tag_prefix, ga_major_only=ga_major_only)
+        tags = list_ga_tags(
+            repo_path, tag_prefix, ga_major_only=ga_major_only, ga_require_patch=ga_require_patch
+        )
         archive_versions = self.fetch_archive_versions()
         collected_at = datetime.now(timezone.utc)
 

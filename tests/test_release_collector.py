@@ -122,6 +122,49 @@ def major_only_tagged_repo(tmp_path):
     return repo
 
 
+@pytest.fixture
+def java_driver_shaped_repo(tmp_path):
+    """Replicates apache/cassandra-java-driver's real donation-artifact
+    shape (issue #170 PR #179 review fixup, live-verified 2026-10-12): real
+    `major.minor.patch` GA tags, plus four bogus bare `major.minor` tags
+    all created within the same couple of minutes at the donation commit --
+    `1.0`/`2.0`/`2.1`/`2.2` -- that are NOT releases (no `tag_prefix`,
+    matching java-driver's own `releases.tag_prefix: ""`)."""
+    repo = tmp_path / "java-driver-repo"
+    _init_repo(repo)
+    _tag(repo, "1.0.0", "2013-05-09T00:00:00")
+    _tag(repo, "2.0.0", "2014-07-29T00:00:00")
+    _tag(repo, "2.1.0", "2014-09-05T00:00:00")
+    # The four bogus donation-artifact tags -- all within ~2 minutes.
+    _tag(repo, "1.0", "2023-11-28T19:31:16")
+    _tag(repo, "2.0", "2023-11-28T19:31:46")
+    _tag(repo, "2.1", "2023-11-28T19:33:01")
+    _tag(repo, "2.2", "2023-11-28T19:33:20")
+    return repo
+
+
+class TestListGaTagsRequirePatch:
+    """issue #170 PR #179 review fixup: `ga_require_patch=True` excludes
+    the four bogus bare `major.minor` tags without excluding any real
+    `major.minor.patch` release."""
+
+    def test_excludes_bogus_bare_major_minor_tags(self, java_driver_shaped_repo):
+        tags = list_ga_tags(java_driver_shaped_repo, "", ga_require_patch=True)
+        names = {t.tag_name for t in tags}
+        assert names == {"1.0.0", "2.0.0", "2.1.0"}
+        assert "1.0" not in names
+        assert "2.0" not in names
+        assert "2.1" not in names
+        assert "2.2" not in names
+
+    def test_without_the_flag_the_bogus_tags_are_included(self, java_driver_shaped_repo):
+        # Confirms `ga_require_patch` isn't a no-op -- without it, the
+        # ordinary `major.minor[.patch]` pattern matches the bogus tags too.
+        tags = list_ga_tags(java_driver_shaped_repo, "", ga_require_patch=False)
+        names = {t.tag_name for t in tags}
+        assert {"1.0", "2.0", "2.1", "2.2"}.issubset(names)
+
+
 class TestGaVersionRegex:
     @pytest.mark.parametrize(
         ("tag_name", "expected"),
@@ -157,6 +200,25 @@ class TestGaVersionRegex:
     )
     def test_ga_version_major_only(self, tag_name, expected):
         assert _ga_version(tag_name, "v", ga_major_only=True) == expected
+
+    @pytest.mark.parametrize(
+        ("tag_name", "expected"),
+        [
+            # issue #170 PR #179 review fixup: apache/cassandra-java-driver
+            # has four bogus bare `major.minor` donation-artifact tags
+            # (`1.0`/`2.0`/`2.1`/`2.2`, verified live) that are NOT real
+            # releases -- `ga_require_patch=True` excludes them without
+            # excluding any real `major.minor.patch` release.
+            ("1.0.0", "1.0.0"),
+            ("2.1.4", "2.1.4"),
+            ("1.0", None),  # bogus bare major.minor -- excluded
+            ("2.2", None),  # bogus bare major.minor -- excluded
+            ("1.0.0-final", "1.0.0"),  # -final suffix still stripped
+            ("1.0.0-rc1", None),  # pre-release still excluded
+        ],
+    )
+    def test_ga_version_require_patch(self, tag_name, expected):
+        assert _ga_version(tag_name, "", ga_require_patch=True) == expected
 
 
 class TestListGaTags:

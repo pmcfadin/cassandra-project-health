@@ -39,6 +39,17 @@ releases:
   # exists and lists bare-version directories (e.g. `4.19.3/`, mtime 2026-06-01) in the
   # same autoindex format collectors/release.py's `_parse_archive_listing` already parses.
   archive_url: https://archive.apache.org/dist/cassandra/cassandra-java-driver/
+  # issue #170 PR #179 review fixup: this repo's tag history has four bogus
+  # bare `major.minor` tags -- `1.0`, `2.0`, `2.1`, `2.2` -- all created
+  # within two minutes of each other on 2023-11-28 (donation-time
+  # branch-archive tags, verified live via `git for-each-ref`), not real
+  # GA releases (the real `1.0.0`/`2.0.0` are tagged 2013/2014
+  # respectively, and `2.2` never shipped a GA release at all -- it went
+  # straight from `2.1.x` to `3.0.x`). `ga_require_patch: true` requires a
+  # tag's suffix to carry a `.patch` component, excluding all four without
+  # excluding any real release (every real line here has at least one
+  # `major.minor.patch` tag).
+  ga_require_patch: true
 
 # PMC-wide sources (dev@/user@, roster, governance) are shown as a shared
 # notice on this project's site tabs rather than independently collected

@@ -270,11 +270,29 @@ class ReleasesConfig(FlexibleSection):
     - `ga_major_only`: a repo whose GA tags are bare major versions (e.g.
       apache/cassandra-easy-stress's `v9`/`v8`/`v7`, verified live) rather
       than full `major.minor.patch` semver.
+    - `ga_require_patch` (issue #170 PR #179 review fixup): a repo whose
+      tag history has bare `major.minor` tags that are NOT real GA
+      releases -- verified live (2026-10-12) for
+      apache/cassandra-java-driver: `1.0`/`2.0`/`2.1`/`2.2` are all four
+      created within two minutes of each other on 2023-11-28 (donation-time
+      branch-archive tags, not releases -- the real `1.0.0`/`2.0.0`
+      releases are tagged 2013/2014 respectively, and `2.2` never shipped a
+      GA release at all, going straight from `2.1.x` to `3.0.x`). `True`
+      requires a tag's suffix to carry all three of `major.minor.patch`
+      (`_GA_SUFFIX_REQUIRE_PATCH_RE` in `collectors/release.py`) --
+      stricter than (and never combined with) `_GA_SUFFIX_RE`'s normal
+      "`.patch` optional." Every OTHER subproject's live tag list was
+      audited the same way (`gh api --paginate repos/apache/<repo>/tags`)
+      and found clean -- no other repo has this artifact, so this flag is
+      `False` (the default) everywhere except `projects/java-driver.yaml`.
+      Mutually exclusive with `ga_major_only` in practice (no project needs
+      both); if a config somehow sets both, `ga_major_only` wins.
     """
 
     tag_prefix: str | None = None
     archive_url: str | None = None
     ga_major_only: bool = False
+    ga_require_patch: bool = False
 
     def effective_tag_prefix(self, repo_name: str) -> str:
         """Resolve the tag prefix to cross-check this repo's GA tags

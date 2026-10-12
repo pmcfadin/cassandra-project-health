@@ -4037,9 +4037,13 @@ class TestSubprojectFixturePipeline:
     """issue #170 acceptance: a git+GitHub-only subproject config completes
     a full `run_pipeline` call without crashing, with every source this
     config doesn't support recorded `not_applicable` (not `failed`), and
-    the metrics that depend on those sources flagged `insufficient_data`
-    (METRICS.md §0.6's own sample-floor behavior for an empty table), not
-    missing from the run or raising."""
+    the registered metrics that depend ENTIRELY on those sources recorded
+    `metrics_not_applicable` (not `metrics_missing`) -- a `'degraded'`
+    status/non-zero exit code is reserved for a genuine gap, never for
+    "this project doesn't have this kind of data at all" (issue #170 PR
+    review fixup: every subproject marks `ponymail` `shared_sources`, and
+    several have no JIRA at all, so without this fix EVERY subproject run
+    would have been permanently `'degraded'`)."""
 
     def test_completes_and_marks_unconfigured_sources_not_applicable(
         self, tmp_path, git_workdir
@@ -4060,8 +4064,10 @@ class TestSubprojectFixturePipeline:
             github_profile_collector_factory=_github_profile_factory(),
         )
 
-        # Completed without raising, and produced a metrics snapshot.
-        assert result.manifest["status"] in ("ok", "degraded")
+        # Completed without raising, produced a metrics snapshot, and is a
+        # full success -- not merely "didn't crash."
+        assert result.manifest["status"] == "ok"
+        assert result.exit_code == 0
         assert (data_dir / "snapshots" / result.run_id / "metrics.parquet").is_file()
 
         for source in ("jira", "ponymail", "asf_roster", "release", "release_lines"):
@@ -4080,17 +4086,16 @@ class TestSubprojectFixturePipeline:
         assert "governance" not in result.manifest
         assert result.manifest["sources"]["governance"]["status"] == "not_applicable"
 
-    def test_jira_dependent_metrics_never_crash_the_run(self, tmp_path, git_workdir):
-        """A jira-backed metric over a completely empty `issue` table (this
-        config never collects jira at all, ever) has no window to compute
-        a row for at all, so it's absent from `metrics_computed` and shows
-        up in `metrics_missing` -- `metrics/engine.py`'s existing
-        per-metric-id zero-rows check (issue #24), unrelated to this
-        issue's own scope. That's a `'degraded'` run, never a crash and
-        never `'failed'` -- distinguishing "this project doesn't have this
-        kind of data at all" from an actual collector/metrics defect is
-        tracked as a follow-up, not fixed by this test.
-        """
+    def test_jira_and_release_dependent_metrics_are_not_applicable_not_missing(
+        self, tmp_path, git_workdir
+    ):
+        """A registered metric whose EVERY declared source
+        (`site.metrics_meta.M0_METRICS[metric_id].sources`) is not
+        applicable to this config at all -- every jira-sourced metric
+        (no `issue_tracker:`), every release-sourced metric (no
+        `releases:`), `pmc_joins_quarterly` (no `roster:`) -- must land in
+        `metrics_not_applicable`, never `metrics_missing`, and must never
+        mark the run `'degraded'`."""
         config_path = _minimal_subproject_config(tmp_path, "apache", "cassandra-fixture")
         fixture_config = load_project(config_path)
         data_dir = tmp_path / "data"
@@ -4107,8 +4112,27 @@ class TestSubprojectFixturePipeline:
             github_profile_collector_factory=_github_profile_factory(),
         )
 
-        assert result.manifest["status"] in ("ok", "degraded")
-        assert "median_resolution_latency_jira" in result.manifest["metrics_missing"]
+        assert result.manifest["status"] == "ok"
+        assert result.exit_code == 0
+        assert result.manifest["metrics_missing"] == []
+        for metric_id in (
+            "median_resolution_latency_jira",
+            "median_resolution_latency_jira_cohort_12m",
+            "time_to_first_response_jira",
+            "change_request_closure_ratio_jira_patch",
+            "release_frequency",
+            "release_regularity",
+            "time_since_last_release",
+            "days_between_releases",
+            "pmc_joins_quarterly",
+        ):
+            assert metric_id in result.manifest["metrics_not_applicable"], metric_id
+
+        # `stale_jira_rate` is dense over months regardless of whether any
+        # jira issue exists, so it's still fully `computed` (with an
+        # `insufficient_data`-flagged row, not absent) -- neither
+        # `metrics_missing` nor `metrics_not_applicable`.
+        assert "stale_jira_rate@1.0" in result.manifest["metrics_computed"]
 
         metrics_table = validate(
             "metric_value",

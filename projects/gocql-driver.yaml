@@ -1,0 +1,32 @@
+# Apache Cassandra Go Driver (gocql) — placeholder config (issue #169, epic #168).
+# `enabled: false` in projects/index.yaml -- not yet wired into site/pipeline.
+#
+# Live-verified 2026-10-12 (gh api repos/apache/cassandra-gocql-driver,
+# .../tags?per_page=30): default_branch=trunk, newest tags v2.1.2/v2.1.1/...
+# -- `v` prefix. `has_issues: true` -- GitHub Issues is enabled on this repo
+# ALONGSIDE its JIRA tracker, hence both `issue_tracker` and `github_issues`
+# below.
+
+project:
+  id: gocql-driver
+  display_name: Apache Cassandra Go Driver (gocql)
+
+repos:
+  - owner: apache
+    name: cassandra-gocql-driver
+    default_branch: trunk
+
+issue_tracker:
+  type: jira
+  base_url: https://issues.apache.org/jira
+  project_key: CASSGO
+
+github_issues:
+  repos: [apache/cassandra-gocql-driver]   # verified live: has_issues=true
+
+releases:
+  type: git_tags_cross_checked_archive
+  tag_prefix: "v"        # verified live: tags are `v2.1.2`
+  archive_url: null      # no archive.apache.org/dist distribution for this repo
+
+shared_sources: [asf_roster, ponymail, governance]

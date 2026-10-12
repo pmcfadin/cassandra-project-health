@@ -54,6 +54,39 @@ class FlexibleSection(BaseModel):
     type: str | None = None
 
 
+class IssueTrackerConfig(FlexibleSection):
+    """`issue_tracker:` block. Adds `jql_filter` (issue #169, multi-project
+    registry): a subproject that shares a JIRA project with another one
+    (rather than having its own `project_key`) scopes to just its own
+    issues with a JQL clause -- e.g. `projects/accord.yaml` and
+    `projects/ccm.yaml` both set `project_key: CASSANDRA` with
+    `jql_filter: component = Accord` / `component = "Tool/CCM"`
+    respectively, verified live against the two components' issue counts
+    in ASF JIRA. `None` (the default, Cassandra's own config) means no
+    extra JQL clause -- `project = <project_key>` alone, today's behavior.
+    Wiring `jql_filter` into the JIRA collector's actual query is left to
+    whichever issue builds that collector call for a multi-tracker project;
+    this issue only adds the field so it round-trips through config load.
+    """
+
+    jql_filter: str | None = None
+
+
+class GitHubIssuesConfig(BaseModel):
+    """`github_issues:` block (issue #169) -- a project's GitHub-native
+    Issues tracker, independent of (and possibly alongside) `issue_tracker:`
+    (JIRA). Some subprojects (e.g. easy-stress) use GitHub Issues as their
+    ONLY tracker, with no `issue_tracker:` section at all; others (gocql,
+    ccm -- both verified live with `has_issues: true`) have GitHub Issues
+    enabled ALONGSIDE a JIRA `issue_tracker:`, so this is its own optional
+    section rather than a variant of `issue_tracker.type`.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    repos: list[str] = []
+
+
 class MailingListsConfig(BaseModel):
     """`mailing_lists:` block — selects `collectors/ponymail.py`
     (ARCHITECTURE.md §2.1 `MailingListAdapter`).
@@ -204,6 +237,50 @@ class SlackConfig(BaseModel):
     channels: list[str] = []
 
 
+class ReleasesConfig(FlexibleSection):
+    """`releases:` block (issue #135's `FlexibleSection`, now typed for the
+    multi-project registry, issue #169). Adds three optional fields on top
+    of the existing `archive_url` (`collectors/release.py` already reads
+    that one directly; typing it here changes nothing about who reads it):
+
+    - `tag_prefix`: the literal prefix a repo's own GA git tags carry
+      before the version number (Cassandra: `cassandra-5.0.0`). `None`
+      (the default) means "use `effective_tag_prefix`'s fallback" --
+      today's pipeline.py-hard-coded `f"{repo_cfg.name}-"` guess (~line
+      3188, unchanged by this issue; wiring this field in is issue #170).
+      An explicit `""` means the repo's tags carry NO prefix at all --
+      verified live (2026-10-12) for apache/cassandra-java-driver
+      (`4.19.4`), -python-driver (`3.30.1`), -cpp-driver (`2.17.1`), and
+      apache/cassandra-accord/-ccm (neither has a systematic version-tag
+      scheme at all).
+    - `archive_url`: unchanged in meaning, just now an explicit field
+      instead of falling out of `FlexibleSection`'s `extra="allow"` --
+      `None` documents that a project with no archive.apache.org
+      distribution in Cassandra's `dist/cassandra/` layout (verified: none
+      of the 10 subprojects added by issue #169 publish one) skips that
+      cross-check entirely rather than requiring a URL.
+    - `ga_major_only`: a repo whose GA tags are bare major versions (e.g.
+      apache/cassandra-easy-stress's `v9`/`v8`/`v7`, verified live) rather
+      than full `major.minor.patch` semver.
+    """
+
+    tag_prefix: str | None = None
+    archive_url: str | None = None
+    ga_major_only: bool = False
+
+    def effective_tag_prefix(self, repo_name: str) -> str:
+        """Resolve the tag prefix to cross-check this repo's GA tags
+        against. An explicit `tag_prefix` (including `""`, a deliberately
+        empty prefix) always wins; otherwise reproduces pipeline.py's
+        current hard-coded `f"{repo_cfg.name}-"` default, so wiring this
+        resolver into pipeline.py (issue #170) is a behavior-preserving
+        swap for Cassandra, not a behavior change.
+        """
+        if self.tag_prefix is not None:
+            return self.tag_prefix
+        return f"{repo_name}-"
+
+
 class ProjectConfig(BaseModel):
     """Root config for a project, loaded from `projects/<id>.yaml`.
 
@@ -217,16 +294,28 @@ class ProjectConfig(BaseModel):
 
     project: ProjectInfo
     repos: list[Repo] = []
-    issue_tracker: FlexibleSection | None = None
+    issue_tracker: IssueTrackerConfig | None = None
+    # `github_issues:` (issue #169) — a project's GitHub-native Issues
+    # tracker, independent of `issue_tracker:` (JIRA): some subprojects
+    # (easy-stress) use it as their only tracker, others (gocql, ccm) have
+    # it enabled alongside a JIRA `issue_tracker:`. See `GitHubIssuesConfig`.
+    github_issues: GitHubIssuesConfig | None = None
     pull_requests: FlexibleSection | None = None
     mailing_lists: MailingListsConfig | None = None
     roster: FlexibleSection | None = None
-    # `releases:` (issue #135, release cadence dimension) — a
-    # `FlexibleSection` like `roster`/`security`: `collectors/release.py`
-    # reads its own `archive_url` field directly, core only needs to pass
-    # it through. GA tags come from the repo's own local clone (`repos[0]`),
-    # not from this section.
-    releases: FlexibleSection | None = None
+    # `releases:` (issue #135, release cadence dimension; typed in issue
+    # #169, see `ReleasesConfig`). GA tags come from the repo's own local
+    # clone (`repos[0]`), not from this section.
+    releases: ReleasesConfig | None = None
+    # `shared_sources:` (issue #169) — names PMC-wide data sources (e.g.
+    # `asf_roster`, `ponymail`, `governance`) this project's own metrics do
+    # NOT independently collect/attribute; epic #168's site plan shows
+    # these as a labelled "shared — see Apache Cassandra" notice on a
+    # subproject's tabs instead of per-subproject numbers. Purely
+    # descriptive metadata at this layer -- it doesn't change what this
+    # project's own config sections above cause to be collected; wiring the
+    # site notice is a later issue in the epic.
+    shared_sources: list[str] = []
     # `security:` (issue #55, D21 item 3) — OpenSSF Scorecard + CVE/advisory
     # collector endpoints; a `FlexibleSection` like `roster`, since its full
     # shape is owned by `collectors/security.py`, not core.
@@ -258,25 +347,136 @@ class ProjectConfig(BaseModel):
     # Phase 2a (issue #43, D18): automated dev@/JIRA senders to exclude before
     # fetching/classifying a message. See `AutomatedSenderPattern` docstring.
     automated_senders: list[AutomatedSenderPattern] = []
-    reviewer_extraction: ReviewerExtraction
+    # Issue #169: optional (was required) -- a brand-new subproject YAML
+    # whose commit convention and/or JIRA custom-field IDs haven't been
+    # verified yet can load (and run every other dimension) with this
+    # section entirely absent, rather than being blocked from loading at
+    # all until a reviewer-extraction source is confirmed. Cassandra's own
+    # config always supplies it, so this widening doesn't change Cassandra's
+    # resolved config (ARCHITECTURE.md §3.1 cross-check still applies
+    # whenever the section is present).
+    reviewer_extraction: ReviewerExtraction | None = None
     truck_factor: TruckFactorConfig = Field(default_factory=TruckFactorConfig)
     baseline_window: BaselineWindow | None = None
     slack: SlackConfig | None = None
 
 
-def load_project(path: str | Path) -> ProjectConfig:
-    """Load and validate a `projects/<id>.yaml` file into a `ProjectConfig`.
+def _load_yaml_mapping(path: Path) -> dict[str, Any]:
+    """Load one YAML file's top-level content as a plain `dict`.
 
-    Raises ``FileNotFoundError`` if `path` doesn't exist, and
-    ``pydantic.ValidationError`` if the required fields (project, reviewer
-    extraction, etc.) are missing or malformed. Unknown/future sections are
-    accepted, not rejected.
+    Raises ``FileNotFoundError`` if `path` doesn't exist. An empty file
+    loads as `{}` (a `_shared.yaml` with nothing in it yet is valid).
     """
-    path = Path(path)
     if not path.is_file():
         raise FileNotFoundError(f"project config not found: {path}")
-
     raw: Any = yaml.safe_load(path.read_text())
     if raw is None:
         raw = {}
+    if not isinstance(raw, dict):
+        raise ValueError(f"project config must be a YAML mapping, got {type(raw).__name__}: {path}")
+    return raw
+
+
+def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    """Recursively merge `override` onto `base`; `override` wins conflicts.
+
+    Used by `load_project`'s `extends:` support (issue #169): a project's
+    own YAML (`override`) is merged onto its shared base (`base`, e.g.
+    `projects/_shared.yaml`). Dict values present in both are merged
+    key-by-key, recursively -- this is what lets `cassandra.yaml` override
+    just `reviewer_extraction.commit_trailer` while still inheriting
+    `_shared.yaml`'s `reviewer_extraction.jira_fields`. Any other value
+    type (list, scalar) in `override` replaces `base`'s value outright --
+    lists are never concatenated or deduped; a project that wants to adjust
+    a shared list (e.g. `bot_patterns`) repeats the whole list in its own
+    YAML rather than appending to the shared one.
+    """
+    merged = dict(base)
+    for key, override_value in override.items():
+        base_value = merged.get(key)
+        if isinstance(base_value, dict) and isinstance(override_value, dict):
+            merged[key] = _deep_merge(base_value, override_value)
+        else:
+            merged[key] = override_value
+    return merged
+
+
+def load_project(path: str | Path) -> ProjectConfig:
+    """Load and validate a `projects/<id>.yaml` file into a `ProjectConfig`.
+
+    Supports an `extends:` top-level key (issue #169, multi-project
+    registry): when present, its value is a filename resolved relative to
+    `path`'s own directory (e.g. `projects/cassandra.yaml`'s
+    `extends: _shared.yaml` resolves to `projects/_shared.yaml`), loaded as
+    a plain mapping and deep-merged (`_deep_merge`) as the base underneath
+    this file's own content, which always wins on any key both define.
+    `extends:` itself is stripped before validation -- it is a load-time
+    instruction, never a `ProjectConfig` field. The target file is loaded
+    once, non-recursively (it may not itself `extends:` another file).
+
+    Raises ``FileNotFoundError`` if `path` (or its `extends:` target)
+    doesn't exist, and ``pydantic.ValidationError`` if the required fields
+    (project, etc.) are missing or malformed. Unknown/future sections are
+    accepted, not rejected.
+    """
+    path = Path(path)
+    raw = _load_yaml_mapping(path)
+
+    extends = raw.pop("extends", None)
+    if extends:
+        base_path = path.parent / extends
+        try:
+            base_raw = _load_yaml_mapping(base_path)
+        except FileNotFoundError:
+            raise FileNotFoundError(
+                f"extends target not found: {base_path} (from {path})"
+            ) from None
+        base_raw.pop("extends", None)  # the shared base itself may not chain to another extends
+        raw = _deep_merge(base_raw, raw)
+
     return ProjectConfig.model_validate(raw)
+
+
+class ProjectIndexEntry(BaseModel):
+    """One entry in `projects/index.yaml` — issue #169's project registry.
+
+    `config` is a filename resolved relative to the index file's own
+    directory (mirroring `load_project`'s `extends:` resolution), not a
+    full path -- so the registry stays portable if `projects/` itself ever
+    moves. `enabled` gates whether a project appears in site-facing listings
+    (e.g. `project-health list-projects`, and later the epic #168 header
+    switcher); `load_project` itself doesn't consult it -- a disabled
+    entry's config still loads validly, it's just not surfaced yet.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    id: str
+    config: str
+    enabled: bool = True
+
+
+def load_project_index(path: str | Path) -> list[ProjectIndexEntry]:
+    """Load `projects/index.yaml`'s ordered list of project entries.
+
+    Raises ``FileNotFoundError`` if `path` doesn't exist, and
+    ``pydantic.ValidationError`` if an entry is missing `id`/`config`.
+    """
+    path = Path(path)
+    if not path.is_file():
+        raise FileNotFoundError(f"project index not found: {path}")
+    raw: Any = yaml.safe_load(path.read_text())
+    if raw is None:
+        raw = []
+    if not isinstance(raw, list):
+        raise ValueError(f"project index must be a YAML list: {path}")
+    return [ProjectIndexEntry.model_validate(entry) for entry in raw]
+
+
+def resolve_index_config_path(index_path: str | Path, entry: ProjectIndexEntry) -> Path:
+    """Resolve one index entry's `config` filename to a full path.
+
+    Relative to `index_path`'s own directory, matching `load_project`'s
+    `extends:` resolution convention.
+    """
+    return Path(index_path).parent / entry.config

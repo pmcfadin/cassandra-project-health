@@ -1,0 +1,27 @@
+# Apache Cassandra Sidecar — placeholder config (issue #169, epic #168).
+# `enabled: false` in projects/index.yaml -- not yet wired into site/pipeline.
+#
+# Live-verified 2026-10-12 (gh api repos/apache/cassandra-sidecar,
+# .../tags?per_page=30): default_branch=trunk, newest tags
+# cassandra-sidecar-0.4.0/0.3.0/... -- `cassandra-sidecar-` prefix.
+
+project:
+  id: sidecar
+  display_name: Apache Cassandra Sidecar
+
+repos:
+  - owner: apache
+    name: cassandra-sidecar
+    default_branch: trunk
+
+issue_tracker:
+  type: jira
+  base_url: https://issues.apache.org/jira
+  project_key: CASSSIDECAR
+
+releases:
+  type: git_tags_cross_checked_archive
+  tag_prefix: "cassandra-sidecar-"   # verified live: tags are `cassandra-sidecar-0.4.0`
+  archive_url: null                  # no archive.apache.org/dist distribution for this repo
+
+shared_sources: [asf_roster, ponymail, governance]

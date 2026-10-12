@@ -1,0 +1,33 @@
+# Apache Cassandra Java Driver — placeholder config (issue #169, epic #168).
+# `enabled: false` in projects/index.yaml -- not yet wired into site/pipeline;
+# this file exists so `load_project` + `list-projects` can be exercised
+# against a real subproject before the rest of the epic turns it on.
+#
+# Live-verified 2026-10-12 (gh api repos/apache/cassandra-java-driver,
+# .../tags?per_page=30): default_branch=trunk, newest tags 4.19.4/4.19.3/...
+# -- NO prefix before the version number (unlike Cassandra's own
+# `cassandra-5.0.0`), hence `releases.tag_prefix: ""` below.
+
+project:
+  id: java-driver
+  display_name: Apache Cassandra Java Driver
+
+repos:
+  - owner: apache
+    name: cassandra-java-driver
+    default_branch: trunk
+
+issue_tracker:
+  type: jira
+  base_url: https://issues.apache.org/jira
+  project_key: CASSJAVA
+
+releases:
+  type: git_tags_cross_checked_archive
+  tag_prefix: ""        # verified live: tags are bare `4.19.4`, no prefix
+  archive_url: null     # no archive.apache.org/dist distribution for this repo
+
+# PMC-wide sources (dev@/user@, roster, governance) are shown as a shared
+# notice on this project's site tabs rather than independently collected
+# (epic #168) -- see projects/_shared.yaml.
+shared_sources: [asf_roster, ponymail, governance]

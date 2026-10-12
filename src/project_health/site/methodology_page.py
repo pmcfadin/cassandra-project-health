@@ -171,6 +171,21 @@ DATA_SOURCES: tuple[dict[str, str], ...] = (
         "cadence": "Nightly (06:17 UTC)",
     },
     {
+        "name": "Releases tab (ASF JIRA versions; Jenkins; Butler CI trends)",
+        "collected": (
+            "JIRA fixVersions (blocker-ladder placeholder descriptions, quoted "
+            "verbatim, and their open issues) for each active release line; "
+            "each line's Jenkins job (ci-cassandra.apache.org) last-build color/"
+            "result; Butler's (butler.cassandra.apache.org) per-build test-"
+            "failure/run/duration trend history."
+        ),
+        "not_collected": (
+            "Butler's per-test failure detail (its own per-suite endpoint times "
+            "out); Butler history before roughly June 2026."
+        ),
+        "cadence": "Nightly (06:17 UTC)",
+    },
+    {
         "name": "Security (OpenSSF Scorecard, published advisories)",
         "collected": "Per-check Scorecard scores and reasons; published CVE/advisory records.",
         "not_collected": "",

@@ -113,6 +113,15 @@ security:
   # results mentioning "cassandra" in passing).
   cpe_match_string: "cpe:2.3:a:apache:cassandra:*:*:*:*:*:*:*:*"
 
+# Releases tab (issue #166): per-branch CI state. JIRA versions/issues reuse
+# `issue_tracker.base_url`/`.project_key` above -- no separate URL needed.
+# Both endpoints verified live, anonymous/unauthenticated, 2026-10-12.
+release_lines:
+  type: jira_versions_butler_jenkins   # selects collectors/release_lines.py
+  active_lines: ["6.0", "5.0", "4.1", "4.0", "3.11", "3.0"]  # + trunk (CI only, no JIRA line)
+  butler_trends_url: https://butler.cassandra.apache.org/api/upstream/trends
+  jenkins_api_url: https://ci-cassandra.apache.org/api/json
+
 affiliations_file: affiliations.yaml   # D6: curated, PR-reviewed, dated ranges
 org_domains_file: org_domains.yaml     # D6: reviewed email-domain -> organization map (issue #52)
 org_aliases_file: org_aliases.yaml     # D6: reviewed GitHub company-field alias map (issue #52 fixup 1)

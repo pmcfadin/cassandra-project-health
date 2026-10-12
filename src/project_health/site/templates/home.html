@@ -56,6 +56,33 @@
   </div>
 </section>
 
+{% if releases.available %}
+<section class="releases-lines-row" aria-label="Release lines">
+  <h2>Release lines</h2>
+  <div class="gov-table-wrap">
+  <table class="security-table releases-lines-table">
+    <thead>
+      <tr>
+        <th scope="col">Line</th>
+        <th scope="col">Next targeted version</th>
+        <th scope="col">CI</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for line in releases.lines %}
+      <tr>
+        <th scope="row">{{ line.line }}</th>
+        <td>{% if line.next_versions %}{{ line.next_versions | map(attribute="name") | join(", ") }}{% else %}—{% endif %}</td>
+        <td>{{ line.ci.last_build_result if line.ci.last_build_result else "unavailable" }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  <p class="card-links"><a href="{{ base_prefix }}releases/">View release lines, CI and blockers &rarr;</a></p>
+</section>
+{% endif %}
+
 <section class="summary-grid" aria-label="Page summaries">
   {% for card in summary_cards %}
   <article class="card card--summary">

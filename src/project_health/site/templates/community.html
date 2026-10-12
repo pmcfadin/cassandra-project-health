@@ -434,6 +434,12 @@
     {% endif %}
   </section>
   {% endif %}
+
+  {% if section.id == "releases" and releases.available %}
+  <p class="card-links">
+    <a href="{{ base_prefix }}releases/">Release lines, CI and blockers &rarr; /releases/</a>
+  </p>
+  {% endif %}
 {% endcall %}
 {% endfor %}
 

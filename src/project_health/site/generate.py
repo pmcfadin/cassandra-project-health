@@ -88,6 +88,7 @@ from project_health.site.metrics_meta import (
 )
 from project_health.site.pr_backlog_page import build_pr_backlog_context
 from project_health.site.peers_page import build_peers_context
+from project_health.site.release_lines_page import build_releases_context
 
 # Pinned CDN versions (cdn.jsdelivr.net) — issue #8: pinned, not `@latest`,
 # so a chart never silently changes rendering behavior underneath a
@@ -1768,6 +1769,15 @@ def _render_pages(
     # link" discipline D27 documents for the thread explorer.
     peers_context = build_peers_context(data_dir)
     common_ctx["peers_nav_available"] = bool(peers_context.get("available"))
+    # Releases tab (`/releases/`, issue #166) -- computed here (not down by
+    # its own page-write further below) so the Home page's "Release lines"
+    # row and the Community page's Releases-section link can both read
+    # `releases_context.available`/`lines` too, same pattern as
+    # `peers_context` immediately above. `common_ctx["releases_nav_
+    # available"]` gates `base.html`'s own "Releases" nav link -- same
+    # "no data -> no dangling link" discipline D27/D30 already use.
+    releases_context = build_releases_context(data_dir, run_id)
+    common_ctx["releases_nav_available"] = bool(releases_context.get("available"))
 
     # Home (`/`).
     summary_cards = [
@@ -1783,6 +1793,7 @@ def _render_pages(
         base_prefix=HOME_BASE_PREFIX,
         summary_cards=summary_cards,
         chaoss_starter_cards=chaoss_starter_cards,
+        releases=releases_context,
         **common_ctx,
     )
     (out_dir / "index.html").write_text(home_html)
@@ -1849,6 +1860,7 @@ def _render_pages(
         conversation_patterns=conversation_patterns_context,
         thread_explorer=thread_explorer_context,
         peers=peers_context,
+        releases=releases_context,
         **common_ctx,
     )
     _write_subpage(out_dir, "community", community_html)
@@ -2011,6 +2023,19 @@ def _render_pages(
             **common_ctx,
         )
         _write_subpage(out_dir, "peers", peers_html)
+
+    # Releases (`/releases/`, issue #166) -- "no data -> no page" discipline,
+    # same as `/peers/` immediately above. `releases_context` itself was
+    # computed earlier in this function so the Home/Community pages' own
+    # links (above) could also read its `available` flag.
+    if releases_context.get("available"):
+        releases_html = env.get_template("releases.html").render(
+            current_page="releases",
+            base_prefix=SUBPAGE_BASE_PREFIX,
+            **releases_context,
+            **common_ctx,
+        )
+        _write_subpage(out_dir, "releases", releases_html)
 
     # Methodology (`/methodology/`, issue #160) — a real, generated page
     # replacing the footer's old straight-to-GitHub-docs link. Static

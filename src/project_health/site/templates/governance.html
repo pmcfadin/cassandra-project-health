@@ -7,6 +7,14 @@
 <p class="page-intro">{{ governance.page_intro }}</p>
 {% endif %}
 
+{% if releases_nav_available %}
+<p class="governance-note">
+  CI evidence below is <strong>pre-commit</strong> — what was posted on each commit's own JIRA
+  ticket before it merged. For <strong>post-commit</strong> branch CI (the state of each release
+  line's own Jenkins/Butler pipeline right now), see <a href="{{ base_prefix }}releases/">/releases/</a>.
+</p>
+{% endif %}
+
 {% if governance.backfill.has_status %}
 <section class="governance-backfill" aria-labelledby="backfill-heading">
   <h2 id="backfill-heading">Backfill status</h2>

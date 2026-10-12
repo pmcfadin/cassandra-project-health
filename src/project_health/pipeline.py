@@ -136,6 +136,7 @@ from project_health.collectors.jira import (
 )
 from project_health.collectors.ponymail import PonyMailCollector
 from project_health.collectors.release import ReleaseCollector
+from project_health.collectors.release_lines import ReleaseLinesCollector
 from project_health.collectors.security import SecurityCollector
 from project_health.config import ProjectConfig
 from project_health.metrics import (
@@ -205,6 +206,8 @@ ALL_SOURCES: tuple[str, ...] = (
     "security",
     # issue #135: GA release history (release cadence dimension).
     "release",
+    # issue #166: Releases tab (JIRA blocker ladder + Butler + Jenkins CI).
+    "release_lines",
     "github_commit_authors",
     "github_profile",
     # issue #54: wires collectors/github.py (merged as part of issue #51,
@@ -3223,6 +3226,115 @@ def _collect_release(
         collector.close()
 
 
+def _collect_release_lines(
+    config: ProjectConfig,
+    data_dir: Path,
+    run_id: str,
+    started_at: datetime,
+    collector_factory: Callable[[ProjectConfig], ReleaseLinesCollector] | None,
+) -> dict[str, Any]:
+    """Collect the Releases tab's three sources (issue #166): JIRA versions
+    + per-version open issues, Butler CI trends, Jenkins job status.
+
+    Unlike every other `_collect_*` function, a failure here is not
+    all-or-nothing: `ReleaseLinesCollector.collect()` already isolates each
+    of its three sources behind its own `try`/`except` (module docstring in
+    `collectors/release_lines.py`) and never raises for a single source's
+    outage. This function additionally only **writes** a sub-table's
+    partition when that sub-table's own source succeeded this run --
+    skipping the write on a sub-source failure leaves the last
+    successfully-written partition (if any) as the newest data
+    `storage.read_table` returns (it unions every partition ever written),
+    so the site renders the last known state rather than an artificially
+    emptied table, and renders "unavailable" only when NO partition for
+    that sub-table has ever been written. `source_results["release_lines"]`
+    carries one status per sub-source (`jira_status`/`butler_status`/
+    `jenkins_status`) rather than a single verdict, since the three can
+    independently succeed or fail in the same run.
+    """
+    snapshot_id = f"{run_id}:release_lines"
+    _log("source_collect_started", source="release_lines")
+    collector = (collector_factory or ReleaseLinesCollector)(config)
+    try:
+        result = collector.collect(snapshot_id=snapshot_id)
+        partition_date = started_at.date()
+        if result.jira_ok:
+            storage.write_partition(
+                data_dir,
+                "release_lines",
+                "jira_version",
+                partition_date,
+                run_id,
+                result.jira_version,
+            )
+            storage.write_partition(
+                data_dir,
+                "release_lines",
+                "release_blocker_issue",
+                partition_date,
+                run_id,
+                result.release_blocker_issue,
+            )
+        if result.jenkins_ok:
+            storage.write_partition(
+                data_dir,
+                "release_lines",
+                "ci_job_status",
+                partition_date,
+                run_id,
+                result.ci_job_status,
+            )
+        if result.butler_ok:
+            storage.write_partition(
+                data_dir,
+                "release_lines",
+                "ci_trend_point",
+                partition_date,
+                run_id,
+                result.ci_trend_point,
+            )
+        overall_status = (
+            "ok" if (result.jira_ok and result.butler_ok and result.jenkins_ok) else "degraded"
+        )
+        _log(
+            "source_collect_succeeded" if overall_status == "ok" else "source_collect_degraded",
+            source="release_lines",
+            jira_ok=result.jira_ok,
+            butler_ok=result.butler_ok,
+            jenkins_ok=result.jenkins_ok,
+            jira_version_count=result.jira_version_count,
+            blocker_issue_count=result.blocker_issue_count,
+            ci_job_count=result.ci_job_count,
+            ci_trend_point_count=result.ci_trend_point_count,
+            errors=result.errors,
+        )
+        return {
+            "status": overall_status,
+            "jira_status": "ok" if result.jira_ok else "failed",
+            "butler_status": "ok" if result.butler_ok else "failed",
+            "jenkins_status": "ok" if result.jenkins_ok else "failed",
+            "records_collected": (
+                result.jira_version_count
+                + result.blocker_issue_count
+                + result.ci_job_count
+                + result.ci_trend_point_count
+            ),
+            "errors": result.errors,
+        }
+    except Exception as exc:  # noqa: BLE001 - a source outage must never abort the run (§7.3)
+        _log("source_collect_failed", source="release_lines", error=str(exc))
+        return {
+            "status": "failed",
+            "jira_status": "failed",
+            "butler_status": "failed",
+            "jenkins_status": "failed",
+            "records_collected": 0,
+            "reason": str(exc),
+        }
+    finally:
+        collector.close()
+
+
 def _collect_github_commit_authors(
     config: ProjectConfig,
     data_dir: Path,
@@ -3508,6 +3620,9 @@ def run_pipeline(
     governance_github_checks_factory: Callable[[str, str], object] | None = None,
     security_collector_factory: Callable[[ProjectConfig], SecurityCollector] | None = None,
     release_collector_factory: Callable[[ProjectConfig], ReleaseCollector] | None = None,
+    release_lines_collector_factory: (
+        Callable[[ProjectConfig], ReleaseLinesCollector] | None
+    ) = None,
     github_commit_author_collector_factory: (
         Callable[[ProjectConfig], GitHubCommitAuthorCollector] | None
     ) = None,
@@ -3618,6 +3733,10 @@ def run_pipeline(
     if "release" in active_sources:
         source_results["release"] = _collect_release(
             config, data_dir, workdir, run_id, started_at, release_collector_factory
+        )
+    if "release_lines" in active_sources:
+        source_results["release_lines"] = _collect_release_lines(
+            config, data_dir, run_id, started_at, release_lines_collector_factory
         )
     if "github_commit_authors" in active_sources:
         source_results["github_commit_authors"] = _collect_github_commit_authors(

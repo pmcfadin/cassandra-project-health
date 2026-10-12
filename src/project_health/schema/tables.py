@@ -515,6 +515,117 @@ RELEASE = pa.schema(
     ]
 )
 
+# --- Release-lines tables (issue #166: Releases tab) -----------------------
+#
+# Distinct from `release` above (GA git tags, issue #135): these four tables
+# back the /releases/ page's release-line model -- JIRA fixVersions (the
+# blocker-ladder placeholders and series/next-patch versions), the open
+# issues filed against each tracked version, and per-branch CI state from
+# Jenkins + Butler. Neutral facts only (D25): no ready/not-ready verdict is
+# ever computed or stored here -- the ladder order and CI "state" are plain
+# derived facts (ordering a version's own description names, a CI system's
+# own reported result string), never a pass/fail judgment of this project's
+# own invention.
+#
+# All four are full-refresh collectors (the live version/issue/CI lists are
+# cheap to re-fetch every run), so raw partitions are deduped at read time on
+# each table's natural key, same "raw is append-only, dedupe at read time"
+# pattern as `release`/`scorecard_check` above. Each of the three underlying
+# HTTP sources (JIRA, Butler, Jenkins) is fetched independently inside
+# `collectors/release_lines.py`'s `ReleaseLinesCollector.collect()` -- one
+# source failing after retries leaves its own table(s) empty for *this run*
+# only (the prior run's partitions, if any, are still present and still read
+# by `storage.read_table`, which unions every partition ever written) rather
+# than raising and losing the other two sources' data for the same run.
+
+JIRA_VERSION = pa.schema(
+    [
+        # JIRA's own version id, e.g. "12356863" -- stable across renames.
+        pa.field("version_id", pa.string(), nullable=False),
+        # Exact JIRA version name, e.g. "6.0-alpha", "6.0.x", "5.0.10".
+        pa.field("name", pa.string(), nullable=False),
+        # Verbatim JIRA description, e.g. "Placeholder for blockers to
+        # 6.0-beta1 (unresolved tickets only)" -- quoted on the site (design
+        # rule: quote the placeholder descriptions, never paraphrase them).
+        # Null for versions JIRA has no description on (e.g. plain GA/target
+        # versions like "6.0", "6.0-alpha1").
+        pa.field("description", pa.string(), nullable=True),
+        pa.field("released", pa.bool_(), nullable=False),
+        pa.field("release_date", pa.date32(), nullable=True),
+        # Release line this version belongs to, e.g. "6.0" for both
+        # "6.0-alpha" and "6.0.x" -- derived from `name` at collection time
+        # (`collectors/release_lines.py::_major_minor_line`), never a
+        # hand-maintained mapping.
+        pa.field("major_minor", pa.string(), nullable=True),
+        pa.field("source_snapshot_id", pa.string(), nullable=False),
+        pa.field("collected_at", TIMESTAMP_UTC, nullable=False),
+    ]
+)
+
+# One row per open (resolution=Unresolved) issue under one of the JIRA
+# versions `collectors/release_lines.py` tracks (every active line's ladder
+# placeholders + its next-patch version + its `X.Y.x` series backlog). A
+# row's `version_name` is the exact fixVersion it was queried under -- an
+# issue carrying more than one tracked fixVersion appears once per version,
+# which is the correct shape for "open blockers per ladder step."
+RELEASE_BLOCKER_ISSUE = pa.schema(
+    [
+        pa.field("version_name", pa.string(), nullable=False),
+        pa.field("issue_key", pa.string(), nullable=False),
+        pa.field("summary", pa.string(), nullable=True),
+        pa.field("status", pa.string(), nullable=True),
+        pa.field("priority", pa.string(), nullable=True),
+        # Raw JIRA username, or null meaning unassigned -- never resolved
+        # through identity_link (this table isn't used by any contributor
+        # metric, only the site's plain issue listing).
+        pa.field("assignee_raw", pa.string(), nullable=True),
+        pa.field("created_at", TIMESTAMP_UTC, nullable=True),
+        pa.field("updated_at", TIMESTAMP_UTC, nullable=True),
+        pa.field("source_snapshot_id", pa.string(), nullable=False),
+        pa.field("collected_at", TIMESTAMP_UTC, nullable=False),
+    ]
+)
+
+# One row per Jenkins job (`ci-cassandra.apache.org`), one per run -- the
+# job's own reported ball `color` and last-completed-build result, verbatim.
+CI_JOB_STATUS = pa.schema(
+    [
+        # Jenkins job name, e.g. "Cassandra-6.0", "Cassandra-trunk".
+        pa.field("job_name", pa.string(), nullable=False),
+        # Branch label derived from `job_name`, e.g. "6.0", "trunk".
+        pa.field("branch_line", pa.string(), nullable=False),
+        # Jenkins' own ball color string (e.g. "red", "yellow", "blue") --
+        # a CI-system-reported fact, not a derived verdict.
+        pa.field("color", pa.string(), nullable=True),
+        pa.field("last_build_number", pa.int64(), nullable=True),
+        pa.field("last_build_result", pa.string(), nullable=True),
+        pa.field("last_build_timestamp", TIMESTAMP_UTC, nullable=True),
+        pa.field("source_snapshot_id", pa.string(), nullable=False),
+        pa.field("collected_at", TIMESTAMP_UTC, nullable=False),
+    ]
+)
+
+# One row per build, per Butler workflow trend (`butler.cassandra.apache.
+# org/api/upstream/trends`) -- `test_failures`/`test_runs`/`duration`
+# re-joined per build (Butler's own response shape is three parallel point
+# lists per workflow, keyed by the same `extra` build label) so the site's
+# CI trend chart and tooltip can read one row per build.
+CI_TREND_POINT = pa.schema(
+    [
+        # Butler's own workflow name, e.g. "Cassandra-6.0", "Cassandra-trunk".
+        pa.field("workflow", pa.string(), nullable=False),
+        pa.field("branch_line", pa.string(), nullable=False),
+        # Butler's own build label, e.g. "#416" (its `extra` field).
+        pa.field("build_label", pa.string(), nullable=False),
+        pa.field("build_timestamp", TIMESTAMP_UTC, nullable=False),
+        pa.field("test_failures", pa.int64(), nullable=True),
+        pa.field("test_runs", pa.int64(), nullable=True),
+        pa.field("duration_minutes", pa.float64(), nullable=True),
+        pa.field("source_snapshot_id", pa.string(), nullable=False),
+        pa.field("collected_at", TIMESTAMP_UTC, nullable=False),
+    ]
+)
+
 # --- GitHub profile cache (D6, issue #52) -------------------------------
 
 GITHUB_PROFILE = pa.schema(
@@ -1233,6 +1344,10 @@ TABLE_SCHEMAS: dict[str, pa.Schema] = {
     "scorecard_check": SCORECARD_CHECK,
     "security_advisory": SECURITY_ADVISORY,
     "release": RELEASE,
+    "jira_version": JIRA_VERSION,
+    "release_blocker_issue": RELEASE_BLOCKER_ISSUE,
+    "ci_job_status": CI_JOB_STATUS,
+    "ci_trend_point": CI_TREND_POINT,
     "affiliation_period": AFFILIATION_PERIOD,
     "github_commit_author": GITHUB_COMMIT_AUTHOR,
     "github_profile": GITHUB_PROFILE,

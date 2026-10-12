@@ -76,6 +76,89 @@ body {
   margin: 0;
 }
 
+/* --- Header project switcher (issue #171) --------------------------------
+   A pure-markup `<details>`/`<summary>` dropdown -- works with no JS, no
+   polyfill, same "progressive, not polyfilled" stance the collapsible
+   page sections (issue #144) and the chart-expand dialog (issue #156)
+   already take. Hidden entirely (no markup at all) on a single-project
+   build, since `base.html` only renders it when more than one project is
+   available. */
+.site-header-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.project-switcher {
+  position: relative;
+  font-size: 0.9rem;
+}
+.project-switcher > summary {
+  cursor: pointer;
+  list-style: none;
+  color: var(--fg-muted);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.35rem 0.75rem;
+  background: var(--bg-alt);
+  user-select: none;
+}
+.project-switcher > summary::-webkit-details-marker {
+  display: none;
+}
+.project-switcher[open] > summary {
+  color: var(--fg);
+}
+.project-switcher ul {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 0.35rem);
+  margin: 0;
+  padding: 0.35rem;
+  list-style: none;
+  min-width: 12rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--card-shadow);
+  z-index: 5;
+}
+.project-switcher li {
+  margin: 0;
+}
+.project-switcher a {
+  display: block;
+  padding: 0.4rem 0.6rem;
+  border-radius: calc(var(--radius) - 2px);
+  color: var(--fg);
+  text-decoration: none;
+  white-space: nowrap;
+}
+.project-switcher a:hover {
+  background: var(--bg-alt);
+}
+.project-switcher a[aria-current="page"] {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+@media (max-width: 480px) {
+  /* At narrow widths `.site-header-row` wraps (flex-wrap above) and the
+     switcher button ends up flush against the page's own left edge, not
+     the right -- anchoring the dropdown from its own `right: 0` then
+     pushes the (wider) list mostly off-screen to the left, clipped by
+     `html`'s own `overflow-x: clip`. Anchoring from `left: 0` instead
+     keeps it growing rightward, inside the viewport. */
+  .project-switcher ul {
+    left: 0;
+    right: auto;
+    min-width: 10rem;
+    max-width: calc(100vw - 2rem);
+  }
+}
+
 .site-nav {
   max-width: 60rem;
   margin: 0 auto 1rem;

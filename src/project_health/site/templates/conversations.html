@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% import "_sections.html" as sections %}
 {% import "_charts.html" as charts %}
-{% block title %}Conversations — Cassandra Project Health{% endblock %}
+{% block title %}Conversations — {{ project_title }}{% endblock %}
 {% block content %}
 {% if conversation_patterns.available %}
 <section class="conversation-patterns" id="conversation-patterns" aria-labelledby="conversation-patterns-heading">
@@ -22,7 +22,7 @@
     §7.8</a>) — it is published preliminary, clearly labeled as such, per
     <a href="{{ conversation_patterns.decisions_url }}#{{ conversation_patterns.decisions_d26_anchor }}">DECISIONS.md
     D26</a>. <a href="{{ conversation_patterns.feedback_url }}">Send feedback on this section</a>
-    (see <a href="{{ base_prefix }}corrections/">/corrections/</a> for what happens next).
+    (see <a href="{{ site_root_prefix }}corrections/">/corrections/</a> for what happens next).
   </div>
 
   <p class="page-intro">

@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% import "_charts.html" as charts %}
 {% block content %}
-<p class="page-intro">Metrics for the Apache Cassandra project. Definitions follow CHAOSS where one exists.</p>
+<p class="page-intro">Metrics for {% if project_is_cassandra %}the Apache Cassandra project{% else %}{{ project_display_name }}{% endif %}. Definitions follow CHAOSS where one exists.</p>
 
 <section class="chaoss-starter-section" aria-label="CHAOSS Starter Project Health">
   <h2>CHAOSS Starter Project Health</h2>
@@ -49,6 +49,12 @@
             <a href="{{ s.json_href }}">JSON</a> &middot; <a href="{{ s.csv_href }}">CSV</a>
           </p>
         </div>
+        {% endfor %}
+        {% for note in card.shared_notes %}
+        <p class="card-empty-state">
+          {{ note.text }}
+          <a href="{{ note.href }}">{{ note.link_label }} &rarr;</a>
+        </p>
         {% endfor %}
       {% endif %}
     </article>

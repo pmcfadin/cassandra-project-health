@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% import "_sections.html" as sections %}
 {% import "_charts.html" as charts %}
-{% block title %}Community — Cassandra Project Health{% endblock %}
+{% block title %}Community — {{ project_title }}{% endblock %}
 {% block content %}
 <p class="page-intro">Code and contributor health metrics: sustainability, review capacity, and responsiveness — computed from Git, ASF JIRA and GitHub PR history.</p>
 
@@ -11,6 +11,12 @@
 
 {% for section in community_sections %}
 {% call sections.section(section.id, section.title, section.chaoss_url, section.summary_items, chaoss_label=section.chaoss_label) %}
+  {% if section.shared_notice %}
+  <p class="card-empty-state">
+    {{ section.shared_notice.text }}
+    <a href="{{ section.shared_notice.href }}">{{ section.shared_notice.link_label }} &rarr;</a>
+  </p>
+  {% endif %}
   {% for group in section.dimensions %}
   <section class="dimension" aria-labelledby="dim-{{ section.id }}-{{ loop.index }}">
     <h3 id="dim-{{ section.id }}-{{ loop.index }}">{{ group.dimension | title }}</h3>
@@ -384,7 +390,7 @@
       <strong>Identity-resolution limits.</strong> {{ leaderboard.identity_limitations_note }}
       <a href="{{ leaderboard.corrections_url }}">Request an identity correction</a> (every row's
       own "Report an issue" link below uses this same form) — see
-      <a href="{{ base_prefix }}corrections/">/corrections/</a> for what happens next.
+      <a href="{{ site_root_prefix }}corrections/">/corrections/</a> for what happens next.
     </p>
 
     {% if leaderboard.has_data %}
@@ -485,6 +491,12 @@
       </p>
     </article>
   </div>
+  {% elif conversation_patterns.shared %}
+  <p class="card-empty-state">
+    Conversation patterns are classified from the dev@ mailing list, shared across all
+    Apache Cassandra subprojects — not computed per subproject.
+    <a href="{{ shared_conversations_href }}">See Apache Cassandra's Conversations page &rarr;</a>
+  </p>
   {% else %}
   <p class="card-empty-state">
     Conversation patterns aren't published yet — they appear once a preliminary classified
@@ -493,6 +505,11 @@
   {% endif %}
 </section>
 
+{# Peer context (issue #145, D30) is a deliberate Cassandra-only feature
+   (issue #171) -- omitted entirely (not even an empty-state placeholder)
+   off Cassandra, rather than a "not published yet" message that would
+   wrongly imply it's just a matter of time. #}
+{% if project_is_cassandra %}
 <section class="peer-context-summary" aria-labelledby="peer-context-summary-heading">
   <h2 id="peer-context-summary-heading">Peer context</h2>
   {% if peers.available %}
@@ -516,4 +533,5 @@
   </p>
   {% endif %}
 </section>
+{% endif %}
 {% endblock %}

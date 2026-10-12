@@ -3,9 +3,9 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{% block title %}Cassandra Project Health{% endblock %}</title>
-<meta name="description" content="Automated, reproducible health metrics for the Apache Cassandra project.">
-<link rel="stylesheet" href="{{ base_prefix }}static/style.css">
+<title>{% block title %}{{ project_title }}{% endblock %}</title>
+<meta name="description" content="{{ project_description }}">
+<link rel="stylesheet" href="{{ site_root_prefix }}static/style.css">
 <script src="https://cdn.jsdelivr.net/npm/vega@{{ vega_version }}"></script>
 <script src="https://cdn.jsdelivr.net/npm/vega-lite@{{ vega_lite_version }}"></script>
 <script src="https://cdn.jsdelivr.net/npm/vega-embed@{{ vega_embed_version }}"></script>
@@ -14,8 +14,25 @@
 <a class="skip-link" href="#main">Skip to content</a>
 
 <header class="site-header">
-  <h1><a class="site-title-link" href="{{ base_prefix }}index.html">Cassandra Project Health</a></h1>
-  <p class="tagline">Automated, reproducible metrics for the Apache Cassandra project.</p>
+  <div class="site-header-row">
+    <h1><a class="site-title-link" href="{{ base_prefix }}index.html">{{ project_title }}</a></h1>
+    {# Header project switcher (issue #171): a pure-markup `<details>`
+       dropdown, hidden entirely when only one project is available
+       (`project_switcher` is `[]` for every single-project build,
+       including every pre-#171 one -- `generate.py`'s own
+       `_project_extras`). #}
+    {% if project_switcher|length > 1 %}
+    <details class="project-switcher">
+      <summary>{{ project_display_name }} <span aria-hidden="true">&#9662;</span></summary>
+      <ul>
+        {% for entry in project_switcher %}
+        <li><a href="{{ entry.href }}"{% if entry.current %} aria-current="page"{% endif %}>{{ entry.display_name }}</a></li>
+        {% endfor %}
+      </ul>
+    </details>
+    {% endif %}
+  </div>
+  <p class="tagline">{{ project_tagline }}</p>
 </header>
 
 <nav class="site-nav" aria-label="Primary">
@@ -58,9 +75,9 @@
 
 <footer class="site-footer">
   <p>
-    <a href="{{ base_prefix }}methodology/">Methodology</a>
+    <a href="{{ site_root_prefix }}methodology/">Methodology</a>
     &middot;
-    <a href="{{ base_prefix }}corrections/">Corrections</a>
+    <a href="{{ site_root_prefix }}corrections/">Corrections</a>
   </p>
   <p>Run <code>{{ run_id }}</code> &middot; code <code title="{{ pipeline_code_sha }}">{{ short_sha }}</code></p>
 </footer>
@@ -99,7 +116,7 @@
   </p>
 </dialog>
 
-<script src="{{ base_prefix }}static/app.js"></script>
-<script src="{{ base_prefix }}static/chart_expand.js"></script>
+<script src="{{ site_root_prefix }}static/app.js"></script>
+<script src="{{ site_root_prefix }}static/chart_expand.js"></script>
 </body>
 </html>

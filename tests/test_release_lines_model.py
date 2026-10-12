@@ -489,3 +489,66 @@ def test_unreleased_line_with_no_placeholders_yet_is_handled_gracefully():
     assert seven.timeline == ()
     assert seven.latest_release is None
     assert seven.total_open_blockers == 0
+    assert seven.has_ga_release is False
+
+
+def test_has_ga_release_true_once_a_ga_tag_exists_for_the_line():
+    """Orchestrator review of PR #167, second round: a line with a row in
+    the git-tag `release` table has shipped a GA -- `has_ga_release` must
+    be True, even though its own legacy alpha/beta/rc ladder placeholders
+    are still present in JIRA (unrelated to this flag; the page decides
+    what to do with them)."""
+    jira_version_rows = [
+        {
+            "version_id": "1",
+            "name": "5.0-alpha",
+            "description": "Placeholder for blockers to 5.0-beta1 (unresolved tickets only)",
+            "released": False,
+            "release_date": None,
+            "major_minor": "5.0",
+        },
+    ]
+    release_rows = [
+        {"major_minor": "5.0", "version": "5.0.9", "release_date": date(2026, 8, 7)},
+    ]
+    views = build_release_line_model(
+        active_lines=["5.0"],
+        jira_version_rows=jira_version_rows,
+        blocker_issue_rows=[],
+        ci_job_rows=[],
+        ci_trend_rows=[],
+        release_rows=release_rows,
+        jira_available=True,
+    )
+    five = views[0]
+    assert five.has_ga_release is True
+    # The ladder's own real data is still carried -- suppression is a
+    # page-level display decision, not a data-loss one.
+    assert [s.version_name for s in five.ladder] == ["5.0-alpha"]
+
+
+def test_has_ga_release_false_for_a_line_with_no_ga_tag_yet():
+    """6.0 has no row in the git-tag `release` table (no GA shipped yet)
+    -- `has_ga_release` must be False even though it has its own released
+    pre-release history (6.0-alpha1/alpha2)."""
+    jira_version_rows = [
+        {
+            "version_id": "1",
+            "name": "6.0-alpha1",
+            "description": None,
+            "released": True,
+            "release_date": date(2026, 3, 21),
+            "major_minor": "6.0",
+        },
+    ]
+    views = build_release_line_model(
+        active_lines=["6.0"],
+        jira_version_rows=jira_version_rows,
+        blocker_issue_rows=[],
+        ci_job_rows=[],
+        ci_trend_rows=[],
+        release_rows=[],  # no GA tag
+        jira_available=True,
+    )
+    six = views[0]
+    assert six.has_ga_release is False

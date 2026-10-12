@@ -132,6 +132,16 @@ class ReleaseLineView:
     series: LadderStepView | None = None
     ga_target: LadderStepView | None = None
     timeline: tuple[ReleasedVersionView, ...] = ()
+    # Orchestrator review of PR #167, second round: True once this line has
+    # a GA release on record (a row in the git-tag `release` table --
+    # `collectors/release.py` only ever tags a true GA, so any row there
+    # means this line shipped). `ladder` above still carries every
+    # placeholder's real, current open-issue count regardless -- this flag
+    # is purely a presentation signal for the page: once a line is GA'd,
+    # its alpha/beta/rc placeholders are pre-GA history, not an upcoming
+    # milestone path, so the page stops presenting them as a live ladder
+    # (see `site/release_lines_page.py`).
+    has_ga_release: bool = False
     ci: CiView = field(default_factory=lambda: CiView(None, None, None, None, None))
     jira_available: bool = True
 
@@ -330,6 +340,7 @@ def build_release_line_model(
                 timeline=timeline,
                 ci=_ci_view(line),
                 jira_available=jira_available,
+                has_ga_release=bool(releases_by_line.get(line)),
             )
         )
 

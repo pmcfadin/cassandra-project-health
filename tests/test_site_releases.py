@@ -90,6 +90,18 @@ def _jira_version_rows() -> list[dict]:
         ("6.0.x", None, "6.0", False, None),
         ("6.0", None, "6.0", False, None),
         ("6.0-alpha3", None, "6.0", False, None),
+        # Orchestrator review of PR #167, second round: 5.0 already has a
+        # GA release (see `_release_rows()`/`_write_release_table` below)
+        # but still carries this legacy ladder placeholder in JIRA, same
+        # real shape as production data -- used to test that a GA'd
+        # line's ladder is suppressed in the summary/section.
+        (
+            "5.0-alpha",
+            "Placeholder for blockers to 5.0-beta1 (unresolved tickets only)",
+            "5.0",
+            False,
+            None,
+        ),
         # issue #166 orchestrator review of PR #167: released pre-release
         # versions -- 6.0 has no GA yet, so these are its ONLY release
         # history (no row in the git-tag `release` table at all).
@@ -273,6 +285,38 @@ def _write_release_lines_partitions(
             run_id,
             _table("ci_trend_point", _ci_trend_rows()),
         )
+
+
+def _release_rows() -> list[dict]:
+    """A real-shaped `release` (git-tag GA) row for the 5.0 line --
+    orchestrator review of PR #167, second round: used to mark 5.0 as
+    GA'd (`has_ga_release`), distinct from 6.0, which has no row here."""
+    return [
+        {
+            "release_id": "cassandra-5.0.9",
+            "tag_name": "cassandra-5.0.9",
+            "version": "5.0.9",
+            "major_minor": "5.0",
+            "release_date": date(2026, 8, 7),
+            "release_date_source": "git_tag",
+            "archive_verified": True,
+            "archive_date": date(2026, 8, 7),
+            "repo": "apache/cassandra",
+            "source_snapshot_id": f"{RUN_ID}:release",
+            "collected_at": BUILD_TIME,
+        }
+    ]
+
+
+def _write_release_table(data_dir: Path, *, run_id: str = RUN_ID) -> None:
+    storage.write_partition(
+        data_dir,
+        "release",
+        "release",
+        BUILD_TIME.date(),
+        run_id,
+        _table("release", _release_rows()),
+    )
 
 
 def _visible_text(html: str) -> str:
@@ -581,6 +625,151 @@ class TestOrchestratorReviewFixesPR167:
         assert seven["next_release"] is None
         assert seven["timeline"] == []
         assert seven["latest_release"] is None
+
+
+class TestGaLineHidesPreGaLadder:
+    """Orchestrator review of PR #167, second round: once a line has a GA
+    release, its pre-GA alpha/beta/rc ladder reads as a live upcoming
+    milestone path if still shown -- it must be hidden; a line with no GA
+    yet (6.0) keeps its ladder exactly as before."""
+
+    def test_ga_line_summary_shows_dash_not_a_stale_ladder(self, tmp_path):
+        data_dir = tmp_path / "data"
+        out_dir = tmp_path / "out"
+        _write_main_snapshot(data_dir)
+        _write_manifest(data_dir)
+        _write_release_lines_partitions(data_dir)
+        _write_release_table(data_dir)  # marks 5.0 as GA'd
+
+        generate(data_dir, RUN_ID, out_dir, now=BUILD_TIME)
+        releases_html = (out_dir / "releases" / "index.html").read_text()
+
+        # 5.0's summary row: "Blockers to next milestone" is "—", not the
+        # stale "beta1: 0 · rc1: 0 · GA: 0" its leftover 5.0-alpha
+        # placeholder would otherwise produce.
+        row_match = re.search(
+            r'<th scope="row"><a href="#5-0">5\.0</a></th>(.*?)</tr>', releases_html, re.DOTALL
+        )
+        assert row_match is not None
+        row_cells = re.findall(r"<td>(.*?)</td>", row_match.group(1), re.DOTALL)
+        blockers_cell = _visible_text(row_cells[2])
+        assert blockers_cell == "—"
+        assert "beta1" not in blockers_cell
+
+    def test_ga_line_section_omits_blocker_ladder_when_no_open_tickets(self, tmp_path):
+        data_dir = tmp_path / "data"
+        out_dir = tmp_path / "out"
+        _write_main_snapshot(data_dir)
+        _write_manifest(data_dir)
+        _write_release_lines_partitions(data_dir)
+        _write_release_table(data_dir)
+
+        generate(data_dir, RUN_ID, out_dir, now=BUILD_TIME)
+        releases_html = (out_dir / "releases" / "index.html").read_text()
+
+        five_section = re.search(r'<details[^>]*id="5-0">(.*?)</details>', releases_html, re.DOTALL)
+        assert five_section is not None
+        section_text = five_section.group(1)
+        assert "Blocker ladder" not in section_text
+        assert "Open tickets on pre-GA placeholder versions" not in section_text
+        assert "5.0-alpha" not in section_text
+
+    def test_ga_line_section_lists_open_tickets_under_neutral_heading(self, tmp_path):
+        """If a GA'd line's legacy placeholder still carries an open
+        ticket (an edge case, but real data can have it), it's shown under
+        the neutral heading -- never "Blocker ladder", never "blocks
+        beta1"."""
+        data_dir = tmp_path / "data"
+        out_dir = tmp_path / "out"
+        _write_main_snapshot(data_dir)
+        _write_manifest(data_dir)
+
+        blocker_rows = _blocker_issue_rows() + [
+            {
+                "version_name": "5.0-alpha",
+                "issue_key": "CASSANDRA-99999",
+                "summary": "stale leftover ticket",
+                "status": "Open",
+                "priority": "Normal",
+                "assignee_raw": None,
+                "created_at": None,
+                "updated_at": datetime(2020, 1, 1, tzinfo=UTC),
+                "source_snapshot_id": f"{RUN_ID}:release_lines",
+                "collected_at": BUILD_TIME,
+            }
+        ]
+        storage.write_partition(
+            data_dir,
+            "release_lines",
+            "jira_version",
+            BUILD_TIME.date(),
+            RUN_ID,
+            _table("jira_version", _jira_version_rows()),
+        )
+        storage.write_partition(
+            data_dir,
+            "release_lines",
+            "release_blocker_issue",
+            BUILD_TIME.date(),
+            RUN_ID,
+            _table("release_blocker_issue", blocker_rows),
+        )
+        storage.write_partition(
+            data_dir,
+            "release_lines",
+            "ci_job_status",
+            BUILD_TIME.date(),
+            RUN_ID,
+            _table("ci_job_status", _ci_job_rows()),
+        )
+        storage.write_partition(
+            data_dir,
+            "release_lines",
+            "ci_trend_point",
+            BUILD_TIME.date(),
+            RUN_ID,
+            _table("ci_trend_point", _ci_trend_rows()),
+        )
+        _write_release_table(data_dir)
+
+        generate(data_dir, RUN_ID, out_dir, now=BUILD_TIME)
+        releases_html = (out_dir / "releases" / "index.html").read_text()
+
+        five_section = re.search(r'<details[^>]*id="5-0">(.*?)</details>', releases_html, re.DOTALL)
+        assert five_section is not None
+        section_text = five_section.group(1)
+        assert "Open tickets on pre-GA placeholder versions" in section_text
+        assert "CASSANDRA-99999" in section_text
+        assert "Blocker ladder" not in section_text
+        assert "blocks beta1" not in section_text
+
+    def test_pre_ga_line_keeps_its_ladder_regardless(self, tmp_path):
+        """6.0 has no GA tag at all in this fixture -- its ladder must
+        still render exactly as before, unaffected by 5.0's suppression."""
+        data_dir = tmp_path / "data"
+        out_dir = tmp_path / "out"
+        _write_main_snapshot(data_dir)
+        _write_manifest(data_dir)
+        _write_release_lines_partitions(data_dir)
+        _write_release_table(data_dir)  # only covers 5.0, not 6.0
+
+        generate(data_dir, RUN_ID, out_dir, now=BUILD_TIME)
+        releases_html = (out_dir / "releases" / "index.html").read_text()
+
+        six_section = re.search(r'<details[^>]*id="6-0">(.*?)</details>', releases_html, re.DOTALL)
+        assert six_section is not None
+        section_text = six_section.group(1)
+        assert "Blocker ladder" in section_text
+        assert "6.0-alpha" in section_text
+        assert "blocks beta1" in section_text
+
+        row_match = re.search(
+            r'<th scope="row"><a href="#6-0">6\.0</a></th>(.*?)</tr>', releases_html, re.DOTALL
+        )
+        assert row_match is not None
+        row_cells = re.findall(r"<td>(.*?)</td>", row_match.group(1), re.DOTALL)
+        blockers_cell = _visible_text(row_cells[2])
+        assert "beta1: 2" in blockers_cell
 
 
 class TestIndependentSourceDegradation:

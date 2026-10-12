@@ -201,29 +201,58 @@ def _step_dict(step: LadderStepView) -> dict[str, Any]:
     }
 
 
-def _blockers_to_next_milestone_display(ladder: list[LadderStepView]) -> str | None:
+def _blockers_to_next_milestone_display(
+    ladder: list[LadderStepView], has_ga_release: bool
+) -> str | None:
     """"beta1: 2 · rc1: 0 · GA: 0" (issue #166 orchestrator review of PR
     #167) -- each ladder step's own `target_label`/`open_count`, in the
     ladder's own chain order. `None` (rendered as "—") when this line has
-    no ladder at all (e.g. an already-GA'd line with no open pre-release
-    placeholders tracked, or a future line before any placeholder exists)."""
-    if not ladder:
+    no ladder at all, OR (orchestrator review, second round) when the line
+    has already shipped a GA release: its alpha/beta/rc placeholders are
+    pre-GA history at that point, not an upcoming milestone path, so the
+    summary stops presenting them as one -- unconditionally, regardless of
+    whether any of them still happens to carry an open ticket (the
+    section below surfaces that separately, under a neutral heading, if
+    so)."""
+    if has_ga_release or not ladder:
         return None
     return " · ".join(f"{s.target_label or '?'}: {s.open_count}" for s in ladder)
 
 
 def _line_dict(view: ReleaseLineView) -> dict[str, Any]:
     line_id = view.line.replace(".", "-")
+    ladder_dicts = [_step_dict(s) for s in view.ladder]
+    # Orchestrator review of PR #167, second round: once a line has a GA
+    # release, its ladder is pre-GA history -- the "Blocker ladder"
+    # section is shown only for a line that hasn't GA'd yet (e.g. 6.0,
+    # whether or not it has any placeholders tracked yet -- a ladder-less
+    # pre-GA line still gets the section, with its existing empty-state
+    # message, same as before this fix). A GA'd line's ladder is omitted
+    # entirely unless one of its legacy placeholders still happens to
+    # carry an open ticket, in which case those tickets are listed under a
+    # neutral "Open tickets on pre-GA placeholder versions" heading
+    # instead -- never framed as "blocks <milestone>", since that
+    # milestone already passed.
+    show_ladder_section = not view.has_ga_release
+    pre_ga_open_issues = []
+    if view.has_ga_release:
+        for step in view.ladder:
+            pre_ga_open_issues.extend(step.issues)
     return {
         "id": line_id,
         "line": view.line,
-        "ladder": [_step_dict(s) for s in view.ladder],
+        "has_ga_release": view.has_ga_release,
+        "show_ladder_section": show_ladder_section,
+        "ladder": ladder_dicts,
+        "pre_ga_open_issues": list(pre_ga_open_issues),
         "series": _step_dict(view.series) if view.series else None,
         "ga_target": _step_dict(view.ga_target) if view.ga_target else None,
         "next_versions": [{"name": n} for n in view.next_versions],
         "next_release": _step_dict(view.next_target_step) if view.next_target_step else None,
         "total_open_blockers": view.total_open_blockers,
-        "blockers_to_next_milestone": _blockers_to_next_milestone_display(view.ladder),
+        "blockers_to_next_milestone": _blockers_to_next_milestone_display(
+            view.ladder, view.has_ga_release
+        ),
         "latest_release": (
             {
                 "version": view.latest_release.version,

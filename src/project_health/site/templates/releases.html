@@ -90,6 +90,7 @@
     {% endif %}
   </section>
 
+  {% if line.show_ladder_section %}
   <section class="releases-ladder" aria-labelledby="ladder-{{ line.id }}-heading">
     <h4 id="ladder-{{ line.id }}-heading">Blocker ladder</h4>
     {% if line.ladder %}
@@ -115,6 +116,21 @@
     <p class="card-empty-state">No blocker-ladder placeholders tracked for this line.</p>
     {% endif %}
   </section>
+  {% elif line.pre_ga_open_issues %}
+  <section class="releases-ladder" aria-labelledby="ladder-{{ line.id }}-heading">
+    <h4 id="ladder-{{ line.id }}-heading">Open tickets on pre-GA placeholder versions</h4>
+    <p>This line has a GA release; these are open tickets still filed against one of its pre-GA alpha/beta/rc placeholder versions, not an upcoming milestone.</p>
+    <ul class="releases-issue-list">
+      {% for issue in line.pre_ga_open_issues %}
+      <li>
+        <a href="https://issues.apache.org/jira/browse/{{ issue.issue_key }}">{{ issue.issue_key }}</a>
+        {{ issue.summary }} — {{ issue.status }}{% if issue.priority %}, {{ issue.priority }}{% endif %},
+        {{ issue.assignee_raw if issue.assignee_raw else "unassigned" }}
+      </li>
+      {% endfor %}
+    </ul>
+  </section>
+  {% endif %}
 
   {% if line.next_release %}
   <section class="releases-next" aria-labelledby="next-{{ line.id }}-heading">

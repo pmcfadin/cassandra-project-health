@@ -106,6 +106,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from project_health import storage
+from project_health.data_layout import project_data_dir
 from project_health.leaderboard import build_leaderboards
 from project_health.collectors.asf_roster import AsfRosterCollector
 from project_health.collectors.git import (
@@ -116,6 +117,9 @@ from project_health.collectors.git import (
 )
 from project_health.collectors.github import (
     CollectionError as GitHubCollectionError,
+)
+from project_health.collectors.github import (
+    DEFAULT_RATE_LIMIT_FLOOR as DEFAULT_GITHUB_RATE_LIMIT_FLOOR,
 )
 from project_health.collectors.github import (
     GitHubCollector,
@@ -141,6 +145,7 @@ from project_health.collectors.security import SecurityCollector
 from project_health.config import ProjectConfig
 from project_health.metrics import (
     METRIC_IDS,
+    PRIMARY_REPO,
     build_pr_backlog_registry,
     compute_all,
     compute_pr_backlog,
@@ -214,6 +219,76 @@ ALL_SOURCES: tuple[str, ...] = (
     # PR #58) into the pipeline for the first time -- see _collect_github.
     "github",
 )
+
+# issue #170: which of `ALL_SOURCES` this `source` depends on a config
+# section for, and the attribute on `ProjectConfig` whose absence (`None`)
+# means "not applicable" -- used by `applicable_sources` below. "git",
+# "security", "github_commit_authors", and "github_profile" have no entry
+# here: they only need `config.repos` (already guarded, gracefully, at each
+# `_collect_*` call site -- see those functions' own `if not config.repos`
+# checks) or no project-specific config at all.
+_SOURCE_CONFIG_ATTR: dict[str, str] = {
+    "jira": "issue_tracker",
+    "asf_roster": "roster",
+    "ponymail": "mailing_lists",
+    "release": "releases",
+    "release_lines": "release_lines",
+    "github": "pull_requests",
+    # Governance's own collection needs the same commit-trailer <-> JIRA
+    # custom-field cross-check `JiraCollector`/`ReleaseLinesCollector` need
+    # (ARCHITECTURE.md §3.1) -- without it, the compliance engine has no
+    # policy-relevant reviewer evidence to score against at all.
+    "governance": "reviewer_extraction",
+}
+
+
+def applicable_sources(config: ProjectConfig) -> tuple[str, ...]:
+    """Which of `ALL_SOURCES` make sense to collect for `config` (issue
+    #170): a subproject that hasn't configured a given source's section at
+    all (e.g. no `issue_tracker:` -- easy-stress, accord's own GitHub-only
+    peers) never attempts that source, and a source this project has
+    deliberately marked `shared_sources:` (PMC-wide data shown on its site
+    tabs as "shared -- see Apache Cassandra" instead of independently
+    collected, epic #168) is skipped too, regardless of whether its config
+    section happens to be present.
+
+    Every subproject YAML verified live so far either omits a section
+    entirely or supplies it fully, so "section present" is already an
+    unambiguous applicability signal -- no separate `enabled: true/false`
+    per-source flag is needed. `git` is always applicable (every project
+    has `repos:`); the empty-`repos` case is handled gracefully at each
+    `_collect_*` call site already, not here.
+
+    For `projects/cassandra.yaml` itself (every section configured, empty
+    `shared_sources`), this returns exactly `ALL_SOURCES` -- a
+    behavior-preserving no-op for the existing single-project pipeline.
+    """
+    shared = set(config.shared_sources)
+    applicable = []
+    for source in ALL_SOURCES:
+        if source in shared:
+            continue
+        required_attr = _SOURCE_CONFIG_ATTR.get(source)
+        if required_attr is not None and getattr(config, required_attr, None) is None:
+            continue
+        applicable.append(source)
+    return tuple(applicable)
+
+
+def _not_applicable_reason(source: str, config: ProjectConfig) -> str:
+    """Human-readable `reason` recorded on a `not_applicable` source's
+    manifest entry (issue #170) -- same role `_collect_*`'s own `"reason"`
+    field plays for a `"failed"` source."""
+    if source in config.shared_sources:
+        return (
+            f"{source} is a PMC-wide shared source for this project "
+            "(see projects/<id>.yaml's shared_sources)"
+        )
+    required_attr = _SOURCE_CONFIG_ATTR.get(source)
+    if required_attr is not None:
+        return f"projects/<id>.yaml has no `{required_attr}:` section configured"
+    return "not applicable to this project"
+
 
 # --- Governance evidence-collection tuning (issue #36 fixup cycle 1) --------
 #
@@ -1512,7 +1587,7 @@ def _collect_github_pr_issue_link_backfill(
     done_flags: dict[str, bool] = json.loads(raw_done) if raw_done else {}
 
     try:
-        collector = (collector_factory or GitHubCollector)(config)
+        collector = (collector_factory or _default_github_collector)(config)
     except Exception as exc:  # noqa: BLE001 - an evidence source's outage must not abort the run.
         _log("github_pr_issue_link_backfill_failed", error=str(exc))
         return stats
@@ -1654,7 +1729,7 @@ def _collect_github(
     snapshot_id = f"{run_id}:github"
 
     _log("source_collect_started", source="github", watermarks=watermarks)
-    collector = (collector_factory or GitHubCollector)(config)
+    collector = (collector_factory or _default_github_collector)(config)
     try:
         result = collector.collect(
             watermarks=watermarks, snapshot_id=snapshot_id, max_prs_per_repo=max_prs_per_repo
@@ -3185,7 +3260,17 @@ def _collect_release(
 
     repo_cfg = config.repos[0]
     repo_label = f"{repo_cfg.owner}/{repo_cfg.name}"
-    tag_prefix = f"{repo_cfg.name}-"
+    # issue #170: a project's own `releases.tag_prefix` (including an
+    # explicit `""`, no prefix at all -- e.g. java-driver's bare `4.19.4`
+    # tags) always wins; `effective_tag_prefix` falls back to this same
+    # `f"{repo_cfg.name}-"` guess when `releases:` is absent or leaves
+    # `tag_prefix` unset, so this is behavior-preserving for Cassandra.
+    tag_prefix = (
+        config.releases.effective_tag_prefix(repo_cfg.name)
+        if config.releases is not None
+        else f"{repo_cfg.name}-"
+    )
+    ga_major_only = bool(getattr(config.releases, "ga_major_only", False))
     snapshot_id = f"{run_id}:release"
 
     _log("source_collect_started", source="release", repo=repo_label)
@@ -3197,6 +3282,7 @@ def _collect_release(
             repo_label=repo_label,
             tag_prefix=tag_prefix,
             snapshot_id=snapshot_id,
+            ga_major_only=ga_major_only,
         )
         partition_date = started_at.date()
         storage.write_partition(
@@ -3355,7 +3441,7 @@ def _collect_github_commit_authors(
     snapshot_id = f"{run_id}:github_commit_authors"
 
     _log("source_collect_started", source="github_commit_authors", watermark=watermark)
-    collector = (collector_factory or GitHubCommitAuthorCollector)(config)
+    collector = (collector_factory or _default_github_commit_author_collector)(config)
     try:
         result = collector.collect(
             watermark=watermark, snapshot_id=snapshot_id, max_pages=max_pages
@@ -3434,7 +3520,62 @@ def _github_logins_seen(data_dir: Path) -> set[str]:
     return logins
 
 
+def _github_rate_limit_budget(config: ProjectConfig) -> tuple[int, float | None]:
+    """Per-project `(rate_limit_floor, rate_limit_floor_fraction)` for
+    `collectors.github.GitHubCollector`/`collectors.github_commit_authors.
+    GitHubCommitAuthorCollector` (issue #170) -- both constructor knobs
+    already exist (collectors/github.py's own module docstring), but
+    `pipeline.py`'s default construction never passed them, so every
+    project always got the hard-coded class default regardless of its own
+    config. Read from `projects/<id>.yaml`'s optional `github:` block
+    (same "arbitrary extra top-level key, read defensively" pattern as
+    `_governance_budget`), defaulting to `(DEFAULT_GITHUB_RATE_LIMIT_FLOOR,
+    None)` -- Cassandra's own unchanged behaviour, since it sets no such
+    block.
+    """
+    raw = getattr(config, "github", None)
+    if not isinstance(raw, dict):
+        raw = {}
+    floor = int(raw.get("rate_limit_floor", DEFAULT_GITHUB_RATE_LIMIT_FLOOR))
+    fraction = raw.get("rate_limit_floor_fraction")
+    return floor, (float(fraction) if fraction is not None else None)
+
+
+def _default_github_collector(config: ProjectConfig) -> GitHubCollector:
+    """The default `GitHubCollector(config)` construction, with this
+    project's own `rate_limit_floor`/`rate_limit_floor_fraction` (issue
+    #170, `_github_rate_limit_budget`) applied -- used wherever a caller
+    doesn't inject its own `collector_factory` (tests always do)."""
+    floor, fraction = _github_rate_limit_budget(config)
+    return GitHubCollector(config, rate_limit_floor=floor, rate_limit_floor_fraction=fraction)
+
+
+def _default_github_commit_author_collector(config: ProjectConfig) -> GitHubCommitAuthorCollector:
+    """The default `GitHubCommitAuthorCollector(config)` construction, with
+    this project's own `rate_limit_floor` (issue #170, same `github:`
+    config block `_github_rate_limit_budget` reads for `GitHubCollector`)
+    applied -- `GitHubCommitAuthorCollector` has no `rate_limit_floor_
+    fraction` constructor parameter, unlike `GitHubCollector`."""
+    floor, _fraction = _github_rate_limit_budget(config)
+    return GitHubCommitAuthorCollector(config, rate_limit_floor=floor)
+
+
+def _github_profile_budget(config: ProjectConfig) -> int:
+    """Per-project `max_per_run` for `_collect_github_profile` (issue #170)
+    from `projects/<id>.yaml`'s optional `github_profile:` block, defaulting
+    to `DEFAULT_MAX_GITHUB_PROFILES_PER_RUN` -- same "arbitrary extra
+    top-level key, read defensively" pattern as `_governance_budget`/
+    `_jira_comment_backfill_budget` (`ProjectConfig`'s own `extra="allow"`).
+    An explicit CLI/test `max_profiles` argument still always wins over
+    this (see `_collect_github_profile`'s own precedence)."""
+    raw = getattr(config, "github_profile", None)
+    if not isinstance(raw, dict):
+        raw = {}
+    return int(raw.get("max_per_run", DEFAULT_MAX_GITHUB_PROFILES_PER_RUN))
+
+
 def _collect_github_profile(
+    config: ProjectConfig,
     data_dir: Path,
     run_id: str,
     started_at: datetime,
@@ -3444,8 +3585,11 @@ def _collect_github_profile(
     """Fetch the public `company` field (D6) for `github_login`s seen via
     `collectors/github_commit_authors.py`, skipping any login already
     cached in the accumulated `github_profile` raw table -- "fetched once
-    per login" (issue #52). Budgeted via `max_profiles` (default
-    `DEFAULT_MAX_GITHUB_PROFILES_PER_RUN`, this project's API-budget rule).
+    per login" (issue #52). Budgeted via `max_profiles` (an explicit CLI/
+    test value always wins), else `projects/<id>.yaml`'s own
+    `github_profile.max_per_run` (issue #170, `_github_profile_budget`),
+    else `DEFAULT_MAX_GITHUB_PROFILES_PER_RUN` -- this project's API-budget
+    rule, unchanged for Cassandra since it sets no such block.
 
     Status is `'partial'` when the budget or a GitHub rate limit stopped
     collection before every discovered login was fetched this run --
@@ -3460,7 +3604,7 @@ def _collect_github_profile(
     }
     new_logins = sorted(_github_logins_seen(data_dir) - already_cached)
     snapshot_id = f"{run_id}:github_profile"
-    budget = max_profiles if max_profiles is not None else DEFAULT_MAX_GITHUB_PROFILES_PER_RUN
+    budget = max_profiles if max_profiles is not None else _github_profile_budget(config)
 
     collector = (
         collector_factory or (lambda: GitHubProfileCollector(token=resolve_github_token()))
@@ -3561,6 +3705,41 @@ def _write_leaderboard_snapshot(data_dir: Path, run_id: str, leaderboard_table: 
     snapshot_dir.mkdir(parents=True, exist_ok=True)
     path = snapshot_dir / "leaderboard.parquet"
     pq.write_table(leaderboard_table, path)
+    return path
+
+
+def _write_latest_run_pointer(
+    data_dir: Path, config: ProjectConfig, run_id: str, finished_at: datetime
+) -> Path:
+    """`state/latest_run.json` under THIS project's own data dir (issue
+    #170, epic #168's multi-project data layout -- `data_layout.
+    project_data_dir`: Cassandra's own data dir is `data_dir` itself,
+    unchanged; every other project gets `data_dir/projects/<id>/`).
+
+    A small, always-overwritten pointer -- `run_id`, the project's own `id`/
+    `display_name`, and `finished_at` -- so a reader (or a future
+    multi-project site build) can find "the current run for project X"
+    without listing every file under `manifests/`. Written only when
+    metrics succeeded this run (§7.3: a failed run never publishes anything
+    as current).
+    """
+    project_root = project_data_dir(data_dir, config.project.id)
+    state_dir = project_root / "state"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    path = state_dir / "latest_run.json"
+    path.write_text(
+        json.dumps(
+            {
+                "run_id": run_id,
+                "project_id": config.project.id,
+                "display_name": config.project.display_name,
+                "finished_at": finished_at.isoformat(),
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n"
+    )
     return path
 
 
@@ -3671,10 +3850,22 @@ def run_pipeline(
     data_dir = Path(data_dir)
     workdir = Path(workdir)
 
-    active_sources = list(sources) if sources else list(ALL_SOURCES)
-    unknown = set(active_sources) - set(ALL_SOURCES)
+    requested_sources = list(sources) if sources else list(ALL_SOURCES)
+    unknown = set(requested_sources) - set(ALL_SOURCES)
     if unknown:
         raise ValueError(f"unknown source(s) {sorted(unknown)}; expected one of {ALL_SOURCES}")
+
+    # issue #170: a requested source this project's config doesn't support
+    # (no matching config section, or deliberately `shared_sources:`) is
+    # never *attempted* -- it's recorded `not_applicable` in the manifest
+    # instead of being constructed and immediately raising (the old
+    # behavior, which the manifest -- and `ALL_SOURCES`-for-every-project
+    # pipeline tests -- recorded as a `'failed'` source). For
+    # `projects/cassandra.yaml`, `applicable_sources` returns all of
+    # `ALL_SOURCES`, so this is a no-op there.
+    applicable = set(applicable_sources(config))
+    active_sources = [source for source in requested_sources if source in applicable]
+    not_applicable_sources = [source for source in requested_sources if source not in applicable]
 
     started_at = now if now is not None else datetime.now(timezone.utc)
     if started_at.tzinfo is None:
@@ -3686,10 +3877,14 @@ def run_pipeline(
         "run_started",
         run_id=run_id,
         sources=active_sources,
+        sources_not_applicable=not_applicable_sources,
         pipeline_code_sha=resolved_code_sha,
     )
 
-    source_results: dict[str, dict[str, Any]] = {}
+    source_results: dict[str, dict[str, Any]] = {
+        source: {"status": "not_applicable", "reason": _not_applicable_reason(source, config)}
+        for source in not_applicable_sources
+    }
     if "git" in active_sources:
         source_results["git"] = _collect_git(config, data_dir, workdir, run_id, started_at)
     if "jira" in active_sources:
@@ -3752,7 +3947,12 @@ def run_pipeline(
         # by *this* run's own commit-author walk is eligible for the same
         # run's profile fetch, not just a login seen on some prior run.
         source_results["github_profile"] = _collect_github_profile(
-            data_dir, run_id, started_at, max_github_profiles, github_profile_collector_factory
+            config,
+            data_dir,
+            run_id,
+            started_at,
+            max_github_profiles,
+            github_profile_collector_factory,
         )
 
     # D3: identity resolution and metrics always recompute from the ENTIRE
@@ -3971,6 +4171,16 @@ def run_pipeline(
     # computation failure here is logged and skipped rather than failing
     # the whole run.
     try:
+        # issue #170: this run's own primary repo -- `config.repos[0]`, not
+        # the module's hard-coded `PRIMARY_REPO` ("apache/cassandra") --
+        # so a non-Cassandra project's own `open_pr_backlog_*` ids are
+        # scoped to ITS primary repo. Falls back to the module default
+        # (`PRIMARY_REPO`) when `repos:` is empty, matching every other
+        # `config.repos[0]` call site's existing "no repos configured"
+        # handling elsewhere in this file.
+        pr_backlog_primary_repo = (
+            f"{config.repos[0].owner}/{config.repos[0].name}" if config.repos else PRIMARY_REPO
+        )
         pr_backlog_table = compute_pr_backlog(
             {
                 "pr": pr,
@@ -3983,6 +4193,7 @@ def run_pipeline(
             as_of=started_at.date(),
             run_id=run_id,
             computed_at=started_at,
+            primary_repo=pr_backlog_primary_repo,
         )
         _write_pr_backlog_snapshot(data_dir, run_id, pr_backlog_table)
         _write_pr_backlog_registry_snapshot(
@@ -4079,6 +4290,13 @@ def run_pipeline(
     # `scoring/__init__.py` for what stays in the repo, dormant, vs. this
     # call site, which is simply gone. `manifest["scoring"]` is no longer
     # written by this run.
+
+    # issue #170: `state/latest_run.json`, under this project's own data
+    # dir -- see `_write_latest_run_pointer`'s docstring. Written only on a
+    # successful metrics computation, same "never publish anything as
+    # current from a failed run" gate `site_out`'s own write below uses.
+    if metrics_table is not None:
+        _write_latest_run_pointer(data_dir, config, run_id, completed_at)
 
     out_path = manifest_path(data_dir, run_id)
     out_path.parent.mkdir(parents=True, exist_ok=True)

@@ -99,6 +99,11 @@ DEFAULT_ARCHIVE_URL = "https://archive.apache.org/dist/cassandra/"
 # alongside their own `-rc*`/`-beta*` tags -- never present on any tag from
 # 0.4.1 onward).
 _GA_SUFFIX_RE = re.compile(r"^(\d+\.\d+(?:\.\d+)?)(-final)?$")
+# issue #170: a repo whose GA tags are bare major versions only (verified
+# live for apache/cassandra-easy-stress's `v9`/`v8`/`v7`, see
+# `config.ReleasesConfig.ga_major_only`'s docstring) -- no dotted
+# `major.minor[.patch]` at all, so `_GA_SUFFIX_RE` would never match.
+_GA_MAJOR_ONLY_SUFFIX_RE = re.compile(r"^(\d+)$")
 # Pre-release suffix anywhere at the end of a tag's suffix -- checked before
 # `_GA_SUFFIX_RE` so e.g. "5.0-rc1" is excluded outright rather than simply
 # failing to match (it wouldn't match `_GA_SUFFIX_RE` either way, but this
@@ -123,16 +128,23 @@ def _run_git(repo_path: Path, args: list[str]) -> str:
     return result.stdout
 
 
-def _ga_version(tag_name: str, tag_prefix: str) -> str | None:
+def _ga_version(tag_name: str, tag_prefix: str, ga_major_only: bool = False) -> str | None:
     """The normalized version string (e.g. "5.0.2") if `tag_name` is a GA
     release tag under `tag_prefix`, else `None` -- see module docstring for
-    the exact inclusion/exclusion rules."""
+    the exact inclusion/exclusion rules.
+
+    `ga_major_only` (issue #170, `config.ReleasesConfig.ga_major_only`)
+    switches the suffix pattern to `_GA_MAJOR_ONLY_SUFFIX_RE` (a bare
+    integer, e.g. "9") instead of `_GA_SUFFIX_RE`'s dotted
+    `major.minor[.patch]` -- for a repo like apache/cassandra-easy-stress
+    whose GA tags carry no minor/patch component at all.
+    """
     if not tag_name.startswith(tag_prefix):
         return None
     suffix = tag_name[len(tag_prefix) :]
     if _PRERELEASE_SUFFIX_RE.search(suffix):
         return None
-    match = _GA_SUFFIX_RE.match(suffix)
+    match = (_GA_MAJOR_ONLY_SUFFIX_RE if ga_major_only else _GA_SUFFIX_RE).match(suffix)
     if not match:
         return None
     return match.group(1)
@@ -153,7 +165,9 @@ class GaTag:
     release_date: date
 
 
-def list_ga_tags(repo_path: str | Path, tag_prefix: str) -> list[GaTag]:
+def list_ga_tags(
+    repo_path: str | Path, tag_prefix: str, ga_major_only: bool = False
+) -> list[GaTag]:
     """Every GA release tag in `repo_path`'s local clone, dated by each
     tag's own `creatordate` (git's tagger date for an annotated tag, or the
     pointed-at commit's author date for a lightweight one) -- the primary,
@@ -162,6 +176,9 @@ def list_ga_tags(repo_path: str | Path, tag_prefix: str) -> list[GaTag]:
     `repo_path` must already be a cloned working copy (bare or not) --
     callers (`pipeline._collect_release`) run `clone_or_fetch` first, the
     same way `pipeline._collect_git` does for the ordinary commit walk.
+
+    `ga_major_only` (issue #170) is threaded straight through to
+    `_ga_version`.
     """
     repo_path = Path(repo_path)
     output = _run_git(
@@ -174,7 +191,7 @@ def list_ga_tags(repo_path: str | Path, tag_prefix: str) -> list[GaTag]:
         if not line:
             continue
         tag_name, _, date_str = line.partition("\x1f")
-        version = _ga_version(tag_name, tag_prefix)
+        version = _ga_version(tag_name, tag_prefix, ga_major_only=ga_major_only)
         if version is None:
             continue
         # The first 10 characters of an ISO-8601 (or ISO-strict, with a
@@ -247,7 +264,16 @@ class ReleaseCollector:
         timeout: float = DEFAULT_TIMEOUT,
     ) -> None:
         releases_config = getattr(config, "releases", None)
-        self._archive_url = getattr(releases_config, "archive_url", None) or DEFAULT_ARCHIVE_URL
+        # issue #170: an explicit `releases.archive_url: null` (verified live
+        # for several subprojects with no `archive.apache.org/dist` directory
+        # at all -- see `config.ReleasesConfig.archive_url`'s docstring) must
+        # SKIP the cross-check entirely, not silently fall back to
+        # Cassandra's own archive listing. A project with no `releases:`
+        # section configured at all behaves the same way -- `None` always
+        # means "no cross-check", never "use the default". Cassandra's own
+        # config always sets an explicit URL, so this is behavior-preserving
+        # for it.
+        self._archive_url = getattr(releases_config, "archive_url", None)
         self._max_retries = max_retries
         self._sleep_fn = sleep_fn
         self._client = httpx.Client(transport=transport, timeout=timeout)
@@ -289,8 +315,14 @@ class ReleaseCollector:
 
     def fetch_archive_versions(self) -> dict[str, date] | None:
         """`{version: mtime_date}` from the live archive listing, or `None`
-        if the fetch failed after retries -- never raises (module
-        docstring: a cross-check outage is never fatal to this source)."""
+        if the fetch failed after retries, or if this project has no
+        archive cross-check configured at all (`self._archive_url is None`,
+        issue #170 -- a project with no `archive.apache.org/dist` directory
+        of its own, e.g. easy-stress/accord/ccm/cpp-driver, never makes this
+        request). Never raises either way (module docstring: a cross-check
+        outage -- or absence -- is never fatal to this source)."""
+        if self._archive_url is None:
+            return None
         try:
             response = self._get_with_retry(self._archive_url)
         except CollectionError:
@@ -304,6 +336,7 @@ class ReleaseCollector:
         repo_label: str,
         tag_prefix: str,
         snapshot_id: str,
+        ga_major_only: bool = False,
     ) -> ReleaseCollectionResult:
         """List every GA tag in `repo_path`'s clone, cross-check each
         against the live archive listing, and return the validated
@@ -311,8 +344,11 @@ class ReleaseCollector:
 
         `repo_path` must already be cloned (caller's responsibility, same
         as `GitCollector.collect`) -- this never clones/fetches itself.
+
+        `ga_major_only` (issue #170) is threaded straight through to
+        `list_ga_tags`.
         """
-        tags = list_ga_tags(repo_path, tag_prefix)
+        tags = list_ga_tags(repo_path, tag_prefix, ga_major_only=ga_major_only)
         archive_versions = self.fetch_archive_versions()
         collected_at = datetime.now(timezone.utc)
 

@@ -260,13 +260,11 @@ class ReleasesConfig(FlexibleSection):
       (java/gocql/python/nodejs-driver, sidecar, analytics) and get that
       URL here; cpp-driver/accord/easy-stress/ccm have no such directory at
       all (confirmed with a live `404` on each guessed path) and get
-      `None`. NOTE: `None` here does NOT yet make `collectors/release.py`
-      skip its archive cross-check -- `ReleaseCollector.__init__` currently
-      reads `archive_url or DEFAULT_ARCHIVE_URL`, so a `None` value falls
-      back to *Cassandra's own* archive listing, not "no cross-check."
-      Wiring a real skip (or each subproject's own URL) into the collector
-      is collector-level work left to whichever issue builds that call for
-      a non-Cassandra project (issue #170 territory) -- this field only
+      `None`. `None` here SKIPS the archive cross-check entirely (issue
+      #170 -- `ReleaseCollector.__init__` no longer falls back to
+      `DEFAULT_ARCHIVE_URL` when this field is `None`; that fallback was
+      Cassandra's own archive listing, which is wrong for a project with no
+      archive directory of its own). This field only
       records the fact of which projects have their own archive directory
       today.
     - `ga_major_only`: a repo whose GA tags are bare major versions (e.g.

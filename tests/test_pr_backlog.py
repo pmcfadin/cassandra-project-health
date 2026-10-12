@@ -497,6 +497,46 @@ def test_primary_ids_exclude_other_repos_prs():
     assert _row_for_month(result, TOTAL, 2026, 1)["value"] == 1.0
 
 
+def test_primary_repo_override_scopes_the_headline_ids_to_a_different_repo():
+    """issue #170: `pipeline.py` passes a non-Cassandra project's own
+    `config.repos[0]` as `primary_repo` instead of the module's hard-coded
+    `PRIMARY_REPO`. A PR from `apache/cassandra` itself must then be
+    treated as the "other repo" and `apache/cassandra-java-driver`'s own
+    PR must get the primary, unsuffixed `TOTAL` id."""
+    pr_rows = [
+        {"repo": REPO, "number": 1, "author_raw_value": "a", "created_at": _ts(2026, 1, 1)},
+        {
+            "repo": "apache/cassandra-java-driver",
+            "number": 1,
+            "author_raw_value": "b",
+            "created_at": _ts(2026, 1, 1),
+        },
+    ]
+    tables = _empty_tables(pr=prs(pr_rows))
+    result = compute_pr_backlog(
+        tables,
+        as_of=date(2026, 2, 1),
+        run_id=RUN_ID,
+        computed_at=_ts(2026, 2, 1),
+        primary_repo="apache/cassandra-java-driver",
+    )
+    assert _row_for_month(result, TOTAL, 2026, 1)["value"] == 1.0
+
+
+def test_primary_repo_defaults_to_the_module_constant_when_omitted():
+    """Every existing caller (peer_metrics.py, and every test above this
+    one) omits `primary_repo` entirely -- must keep resolving to
+    `PRIMARY_REPO` unchanged."""
+    pr_rows = [
+        {"repo": REPO, "number": 1, "author_raw_value": "a", "created_at": _ts(2026, 1, 1)},
+    ]
+    tables = _empty_tables(pr=prs(pr_rows))
+    result = compute_pr_backlog(
+        tables, as_of=date(2026, 2, 1), run_id=RUN_ID, computed_at=_ts(2026, 2, 1)
+    )
+    assert _row_for_month(result, TOTAL, 2026, 1)["value"] == 1.0
+
+
 def test_other_repo_rows_use_their_own_metric_id_and_repo_detail():
     pr_rows = [
         {

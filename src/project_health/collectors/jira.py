@@ -206,7 +206,7 @@ def build_patch_available_backfill_jql(project_key: str, cursor: str | None) -> 
     return jql
 
 
-def build_jql(project_key: str, watermark: str | None) -> str:
+def build_jql(project_key: str, watermark: str | None, jql_filter: str | None = None) -> str:
     """Build the issue-search JQL for `project_key`.
 
     `watermark` is a stored ISO 8601 timestamp string (a prior run's
@@ -215,8 +215,18 @@ def build_jql(project_key: str, watermark: str | None) -> str:
     is reduced by `WATERMARK_SAFETY_MARGIN` and truncated to minute
     precision before being embedded — see the module docstring's "Watermark
     strategy" section for why.
+
+    `jql_filter` (issue #170, threading `config.issue_tracker.jql_filter` --
+    see `config.IssueTrackerConfig`'s docstring) is an extra `AND`-ed JQL
+    clause for a subproject that shares a JIRA `project_key` with another
+    one instead of having its own -- e.g. `projects/accord.yaml`'s
+    `component = Accord`. `None` (the default, every project verified so far
+    except accord/ccm) omits the clause entirely, reproducing today's bare
+    `project=<key>` query unchanged.
     """
     jql = f"project={project_key}"
+    if jql_filter:
+        jql += f" AND {jql_filter}"
     if watermark:
         dt = datetime.fromisoformat(watermark)
         if dt.tzinfo is None:
@@ -467,9 +477,24 @@ class JiraCollector:
             )
 
         self._project_key = project_key
-        jira_fields = config.reviewer_extraction.jira_fields
-        self._reviewers_field = jira_fields.reviewers_field
-        self._reviewer_field = jira_fields.reviewer_field
+        # issue #170: a subproject sharing another's `project_key` (accord,
+        # ccm) scopes to just its own issues via this extra JQL clause --
+        # see `config.IssueTrackerConfig.jql_filter`'s docstring.
+        self._jql_filter = getattr(issue_tracker, "jql_filter", None)
+        # issue #170: `reviewer_extraction` is optional (issue #169 -- a
+        # subproject with an `issue_tracker:` but no verified commit-trailer/
+        # JIRA-custom-field convention yet, e.g. java-driver's own
+        # `projects/java-driver.yaml`, has `issue_tracker` set and
+        # `reviewer_extraction` absent). Issue collection/review-event
+        # extraction from the standard fields must still work; only the
+        # two JIRA custom-field ids are unavailable, so no `review_event`
+        # rows with `source='jira_field'` are ever produced for such a
+        # project -- the same "fewer sources collected" outcome
+        # `applicable_sources` already models at the pipeline level, not a
+        # crash.
+        jira_fields = config.reviewer_extraction.jira_fields if config.reviewer_extraction else None
+        self._reviewers_field = jira_fields.reviewers_field if jira_fields else None
+        self._reviewer_field = jira_fields.reviewer_field if jira_fields else None
 
         self._page_size = page_size
         self._max_retries = max_retries
@@ -583,7 +608,7 @@ class JiraCollector:
         extra HTTP calls; `_normalize_changelog` keeps only the
         `status`/`assignee` history items.
         """
-        jql = build_jql(self._project_key, watermark)
+        jql = build_jql(self._project_key, watermark, jql_filter=self._jql_filter)
         fields_param = self._fields_param()
         start_at = 0
         fetched = 0

@@ -568,11 +568,19 @@ def compute_pr_backlog(
     as_of: date,
     run_id: str,
     computed_at: datetime,
+    primary_repo: str = PRIMARY_REPO,
 ) -> pa.Table:
     """Every `open_pr_backlog_*` `metric_value` row for this run (issue
-    #142): the 12 `PRIMARY_REPO`-scoped ids, plus one total/drafts/
+    #142): the 12 `primary_repo`-scoped ids, plus one total/drafts/
     age-bucket row set per other repo found in `pr` (see module docstring
     "Scoped to apache/cassandra").
+
+    `primary_repo` (issue #170) defaults to the module's own `PRIMARY_REPO`
+    constant ("apache/cassandra") -- `pipeline.py`'s own call passes
+    `config.repos[0]` as `"owner/name"` instead, for every OTHER project's
+    run; `metrics/peer_metrics.py`'s call (every peer repo, including
+    `apache/cassandra` itself) deliberately omits this argument and keeps
+    today's `PRIMARY_REPO` behavior unchanged.
 
     Kept as its own entry point (not wired into `metrics/engine.py::
     compute_all`) -- see module docstring. Callers (`pipeline.py`) write
@@ -590,10 +598,10 @@ def compute_pr_backlog(
     if not prs:
         return get_schema("metric_value").empty_table()
 
-    primary_prs = [pr for pr in prs if pr.repo == PRIMARY_REPO]
+    primary_prs = [pr for pr in prs if pr.repo == primary_repo]
     other_prs_by_repo: dict[str, list[_PR]] = {}
     for pr in prs:
-        if pr.repo != PRIMARY_REPO:
+        if pr.repo != primary_repo:
             other_prs_by_repo.setdefault(pr.repo, []).append(pr)
 
     rows: list[dict[str, Any]] = _primary_repo_rows(

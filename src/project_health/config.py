@@ -254,11 +254,21 @@ class ReleasesConfig(FlexibleSection):
       apache/cassandra-accord/-ccm (neither has a systematic version-tag
       scheme at all).
     - `archive_url`: unchanged in meaning, just now an explicit field
-      instead of falling out of `FlexibleSection`'s `extra="allow"` --
-      `None` documents that a project with no archive.apache.org
-      distribution in Cassandra's `dist/cassandra/` layout (verified: none
-      of the 10 subprojects added by issue #169 publish one) skips that
-      cross-check entirely rather than requiring a URL.
+      instead of falling out of `FlexibleSection`'s `extra="allow"`.
+      Verified live (2026-10-12): 6 of the 10 subprojects DO publish their
+      own `archive.apache.org/dist/cassandra/cassandra-<name>/` directory
+      (java/gocql/python/nodejs-driver, sidecar, analytics) and get that
+      URL here; cpp-driver/accord/easy-stress/ccm have no such directory at
+      all (confirmed with a live `404` on each guessed path) and get
+      `None`. NOTE: `None` here does NOT yet make `collectors/release.py`
+      skip its archive cross-check -- `ReleaseCollector.__init__` currently
+      reads `archive_url or DEFAULT_ARCHIVE_URL`, so a `None` value falls
+      back to *Cassandra's own* archive listing, not "no cross-check."
+      Wiring a real skip (or each subproject's own URL) into the collector
+      is collector-level work left to whichever issue builds that call for
+      a non-Cassandra project (issue #170 territory) -- this field only
+      records the fact of which projects have their own archive directory
+      today.
     - `ga_major_only`: a repo whose GA tags are bare major versions (e.g.
       apache/cassandra-easy-stress's `v9`/`v8`/`v7`, verified live) rather
       than full `major.minor.patch` semver.
@@ -405,16 +415,24 @@ def load_project(path: str | Path) -> ProjectConfig:
     """Load and validate a `projects/<id>.yaml` file into a `ProjectConfig`.
 
     Supports an `extends:` top-level key (issue #169, multi-project
-    registry): when present, its value is a filename resolved relative to
-    `path`'s own directory (e.g. `projects/cassandra.yaml`'s
-    `extends: _shared.yaml` resolves to `projects/_shared.yaml`), loaded as
-    a plain mapping and deep-merged (`_deep_merge`) as the base underneath
-    this file's own content, which always wins on any key both define.
-    `extends:` itself is stripped before validation -- it is a load-time
-    instruction, never a `ProjectConfig` field. The target file is loaded
-    once, non-recursively (it may not itself `extends:` another file).
+    registry; list form added in fixup round 1 so a project can layer more
+    than one shared base, e.g. `projects/_identity.yaml` (bot/affiliation
+    settings every project needs) plus `projects/_shared.yaml` (PMC-wide
+    mailing_lists/roster/reviewer_extraction.jira_fields, meaningful only
+    for the main `apache/cassandra` repo today)). Its value is either one
+    filename or a list of filenames, each resolved relative to `path`'s own
+    directory (e.g. `projects/cassandra.yaml`'s
+    `extends: [_identity.yaml, _shared.yaml]` resolves to
+    `projects/_identity.yaml` and `projects/_shared.yaml`). Each target is
+    loaded as a plain mapping and the targets are deep-merged (`_deep_merge`)
+    into each other in list order, then that combined base is deep-merged
+    underneath this file's own content -- which always wins on any key any
+    of them define. `extends:` itself is stripped before validation -- it
+    is a load-time instruction, never a `ProjectConfig` field. Each target
+    is loaded once, non-recursively (a target may not itself `extends:`
+    another file).
 
-    Raises ``FileNotFoundError`` if `path` (or its `extends:` target)
+    Raises ``FileNotFoundError`` if `path` (or any `extends:` target)
     doesn't exist, and ``pydantic.ValidationError`` if the required fields
     (project, etc.) are missing or malformed. Unknown/future sections are
     accepted, not rejected.
@@ -424,15 +442,19 @@ def load_project(path: str | Path) -> ProjectConfig:
 
     extends = raw.pop("extends", None)
     if extends:
-        base_path = path.parent / extends
-        try:
-            base_raw = _load_yaml_mapping(base_path)
-        except FileNotFoundError:
-            raise FileNotFoundError(
-                f"extends target not found: {base_path} (from {path})"
-            ) from None
-        base_raw.pop("extends", None)  # the shared base itself may not chain to another extends
-        raw = _deep_merge(base_raw, raw)
+        targets = [extends] if isinstance(extends, str) else list(extends)
+        merged_base: dict[str, Any] = {}
+        for target in targets:
+            base_path = path.parent / target
+            try:
+                base_raw = _load_yaml_mapping(base_path)
+            except FileNotFoundError:
+                raise FileNotFoundError(
+                    f"extends target not found: {base_path} (from {path})"
+                ) from None
+            base_raw.pop("extends", None)  # a shared base may not itself chain to another extends
+            merged_base = _deep_merge(merged_base, base_raw)
+        raw = _deep_merge(merged_base, raw)
 
     return ProjectConfig.model_validate(raw)
 

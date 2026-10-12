@@ -8,6 +8,10 @@
 # .../tags?per_page=30): default_branch=main, newest tags v9/v8/v7/... --
 # `v` prefix, and GA tags are bare MAJOR versions (no minor/patch), hence
 # `releases.ga_major_only: true`. `has_issues: true`.
+#
+# Identity/bot settings are PMC-wide -- inherited from projects/_identity.yaml
+# via `extends:` (issue #169 fixup round 1).
+extends: _identity.yaml
 
 project:
   id: easy-stress
@@ -21,10 +25,17 @@ repos:
 github_issues:
   repos: [apache/cassandra-easy-stress]   # verified live: has_issues=true; no JIRA project
 
+pull_requests:
+  type: github
+  repos: [apache/cassandra-easy-stress]
+
 releases:
   type: git_tags_cross_checked_archive
   tag_prefix: "v"        # verified live: tags are `v9`, `v8`, `v7`, ...
   ga_major_only: true    # verified live: GA tags are bare major versions, e.g. `v9`
-  archive_url: null      # no archive.apache.org/dist distribution for this repo
+  # Verified live 2026-10-12: https://archive.apache.org/dist/cassandra/cassandra-easy-stress/
+  # and https://archive.apache.org/dist/cassandra/easy-stress/ both return HTTP 404 -- no
+  # archive.apache.org/dist distribution for this repo.
+  archive_url: null
 
 shared_sources: [asf_roster, ponymail, governance]

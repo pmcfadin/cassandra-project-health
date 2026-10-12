@@ -6,6 +6,10 @@
 # -- `v` prefix. `has_issues: true` -- GitHub Issues is enabled on this repo
 # ALONGSIDE its JIRA tracker, hence both `issue_tracker` and `github_issues`
 # below.
+#
+# Identity/bot settings are PMC-wide -- inherited from projects/_identity.yaml
+# via `extends:` (issue #169 fixup round 1).
+extends: _identity.yaml
 
 project:
   id: gocql-driver
@@ -24,9 +28,16 @@ issue_tracker:
 github_issues:
   repos: [apache/cassandra-gocql-driver]   # verified live: has_issues=true
 
+pull_requests:
+  type: github
+  repos: [apache/cassandra-gocql-driver]
+
 releases:
   type: git_tags_cross_checked_archive
   tag_prefix: "v"        # verified live: tags are `v2.1.2`
-  archive_url: null      # no archive.apache.org/dist distribution for this repo
+  # Verified live 2026-10-12: archive.apache.org/dist/cassandra/cassandra-gocql-driver/
+  # exists and lists bare-version directories (e.g. `1.7.0/`, mtime 2026-05-01) in the
+  # same autoindex format collectors/release.py's `_parse_archive_listing` already parses.
+  archive_url: https://archive.apache.org/dist/cassandra/cassandra-gocql-driver/
 
 shared_sources: [asf_roster, ponymail, governance]

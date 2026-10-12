@@ -10,8 +10,11 @@
 # Live-verified 2026-10-12 (gh api repos/apache/cassandra-ccm,
 # .../tags?per_page=30): default_branch=trunk; the only tag present is
 # `cassandra-test` -- not a version tag at all, so no systematic release-tag
-# scheme, hence `releases.tag_prefix: ""` and `archive_url: null`.
-# `has_issues: true`.
+# scheme, hence `releases.tag_prefix: ""`. `has_issues: true`.
+#
+# Identity/bot settings are PMC-wide -- inherited from projects/_identity.yaml
+# via `extends:` (issue #169 fixup round 1).
+extends: _identity.yaml
 
 project:
   id: ccm
@@ -31,9 +34,16 @@ issue_tracker:
 github_issues:
   repos: [apache/cassandra-ccm]   # verified live: has_issues=true
 
+pull_requests:
+  type: github
+  repos: [apache/cassandra-ccm]
+
 releases:
   type: git_tags_cross_checked_archive
   tag_prefix: ""        # verified live: only tag present (`cassandra-test`) isn't a version tag
-  archive_url: null     # no archive.apache.org/dist distribution for this repo
+  # Verified live 2026-10-12: https://archive.apache.org/dist/cassandra/cassandra-ccm/ and
+  # https://archive.apache.org/dist/cassandra/ccm/ both return HTTP 404 -- no
+  # archive.apache.org/dist distribution for this repo.
+  archive_url: null
 
 shared_sources: [asf_roster, ponymail, governance]

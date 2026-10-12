@@ -1,24 +1,27 @@
 # PMC-wide shared config (issue #169, epic #168).
 #
-# Sections here are the same across every Apache Cassandra PMC project, not
-# specific to the main `apache/cassandra` repo -- the ASF dev@/user@
-# mailing lists, the PMC/committer roster, bot-identity/automated-sender
-# patterns, the curated affiliation files, and the ASF JIRA instance's
-# global custom-field IDs (`reviewer_extraction.jira_fields`) are all one
-# PMC-wide fact, not a per-repo one. A project's own `projects/<id>.yaml`
-# pulls this in with `extends: _shared.yaml` (`load_project`'s deep merge,
+# Sections here are the ASF dev@/user@ mailing lists, the PMC/committer
+# roster, and the ASF JIRA instance's global custom-field IDs
+# (`reviewer_extraction.jira_fields`) -- genuinely PMC-wide facts, but
+# (unlike `projects/_identity.yaml`'s bot/affiliation settings) only
+# verified/meaningful for the main `apache/cassandra` repo today: no
+# subproject's own dev@-equivalent list, roster scope, or JIRA
+# reviewer-field usage has been confirmed yet, so only `cassandra.yaml`
+# extends this file (fixup round 1 -- see `_identity.yaml`'s header for why
+# the two are split: a subproject gets identity/bot settings without also
+# inheriting a `reviewer_extraction.jira_fields` it hasn't verified applies
+# to it). `cassandra.yaml` pulls this in (alongside `_identity.yaml`) with
+# `extends: [_identity.yaml, _shared.yaml]` (`load_project`'s deep merge,
 # `config.py::_deep_merge` -- the project's own file always wins on a key
-# both define) rather than repeating it.
+# any extended file also defines).
 #
 # Moved verbatim out of `projects/cassandra.yaml` (issue #169) -- values are
 # unchanged; see that file's git history before this change for the
 # per-field provenance comments that used to live inline here (dev@/user@
 # automated-sender list verified against a live pull 2009-01-28 through
-# 2026-09-25, bot_patterns precaution for copilot-pull-request-reviewer
-# added per PR #147 review, etc.) -- this split is a pure reorg, no values
-# changed (tests/test_config.py's before/after equality test enforces
-# Cassandra's own resolved config is byte-identical to before this file
-# existed).
+# 2026-09-25, etc.) -- this split is a pure reorg, no values changed
+# (tests/test_config.py's before/after equality test enforces Cassandra's
+# own resolved config is byte-identical to before this file existed).
 
 mailing_lists:
   type: ponymail                   # selects collectors/ponymail.py
@@ -40,21 +43,10 @@ roster:
   public_ldap_projects_url: https://whimsy.apache.org/public/public_ldap_projects.json
   podling: false
 
-affiliations_file: affiliations.yaml   # D6: curated, PR-reviewed, dated ranges
-org_domains_file: org_domains.yaml     # D6: reviewed email-domain -> organization map (issue #52)
-org_aliases_file: org_aliases.yaml     # D6: reviewed GitHub company-field alias map (issue #52 fixup 1)
-github_company_lookback_months: 24     # D6, issue #52 fixup cycle 2
-
-# Applied by identity resolution before any metric counts a contributor.
-bot_patterns:
-  - field: git_author_email
-    regex: '(?i)noreply@github\.com$|\[bot\]'
-  - field: github_login
-    regex: '(?i)-bot$|^dependabot'
-  - field: github_login
-    regex: '(?i)^copilot-pull-request-reviewer(\[bot\])?$'
-  - field: jira_username
-    regex: '(?i)^svn-role$|^git-role$'   # ASF infra service accounts
+# affiliations_file/org_domains_file/org_aliases_file/github_company_lookback_months
+# and bot_patterns live in projects/_identity.yaml (fixup round 1) --
+# extended alongside this file by cassandra.yaml's
+# `extends: [_identity.yaml, _shared.yaml]`.
 
 # Phase 2a text pipeline (issue #43, D18): automated senders whose messages
 # are dropped before fetch/preprocess. Distinct from `bot_patterns` above

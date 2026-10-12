@@ -7,6 +7,12 @@
 # .../tags?per_page=30): default_branch=trunk, newest tags 4.19.4/4.19.3/...
 # -- NO prefix before the version number (unlike Cassandra's own
 # `cassandra-5.0.0`), hence `releases.tag_prefix: ""` below.
+#
+# Identity/bot settings (bot_patterns, affiliation/org files) are PMC-wide
+# -- inherited from projects/_identity.yaml via `extends:` (issue #169
+# fixup round 1) so dependabot/CI-bot activity doesn't leak into this
+# project's own contributor metrics.
+extends: _identity.yaml
 
 project:
   id: java-driver
@@ -22,10 +28,17 @@ issue_tracker:
   base_url: https://issues.apache.org/jira
   project_key: CASSJAVA
 
+pull_requests:
+  type: github
+  repos: [apache/cassandra-java-driver]
+
 releases:
   type: git_tags_cross_checked_archive
   tag_prefix: ""        # verified live: tags are bare `4.19.4`, no prefix
-  archive_url: null     # no archive.apache.org/dist distribution for this repo
+  # Verified live 2026-10-12: archive.apache.org/dist/cassandra/cassandra-java-driver/
+  # exists and lists bare-version directories (e.g. `4.19.3/`, mtime 2026-06-01) in the
+  # same autoindex format collectors/release.py's `_parse_archive_listing` already parses.
+  archive_url: https://archive.apache.org/dist/cassandra/cassandra-java-driver/
 
 # PMC-wide sources (dev@/user@, roster, governance) are shown as a shared
 # notice on this project's site tabs rather than independently collected

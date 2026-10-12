@@ -1,0 +1,33 @@
+# Identity/bot settings shared by EVERY Apache Cassandra PMC project, not
+# just the main `apache/cassandra` repo (issue #169 fixup round 1).
+#
+# Split out of `projects/_shared.yaml` so every project -- including the 10
+# `enabled: false` subprojects, none of which have a verified commit-trailer
+# convention yet -- can `extends: _identity.yaml` without pulling in
+# `_shared.yaml`'s `reviewer_extraction.jira_fields` (which, merged without
+# a matching `commit_trailer`, would still validate since
+# `reviewer_extraction` is optional, but would misleadingly suggest a
+# cross-check source this project doesn't actually have configured).
+# Without this, a subproject's identity resolution would never exclude
+# dependabot/GitHub-bot/CI accounts from its own contributor metrics.
+#
+# `projects/_shared.yaml` itself also depends on this file (it's extended
+# alongside it by `cassandra.yaml`'s `extends: [_identity.yaml,
+# _shared.yaml]`) -- values below are unchanged from `_shared.yaml`'s
+# original single-file version, this is a pure further split.
+
+affiliations_file: affiliations.yaml   # D6: curated, PR-reviewed, dated ranges
+org_domains_file: org_domains.yaml     # D6: reviewed email-domain -> organization map (issue #52)
+org_aliases_file: org_aliases.yaml     # D6: reviewed GitHub company-field alias map (issue #52 fixup 1)
+github_company_lookback_months: 24     # D6, issue #52 fixup cycle 2
+
+# Applied by identity resolution before any metric counts a contributor.
+bot_patterns:
+  - field: git_author_email
+    regex: '(?i)noreply@github\.com$|\[bot\]'
+  - field: github_login
+    regex: '(?i)-bot$|^dependabot'
+  - field: github_login
+    regex: '(?i)^copilot-pull-request-reviewer(\[bot\])?$'
+  - field: jira_username
+    regex: '(?i)^svn-role$|^git-role$'   # ASF infra service accounts

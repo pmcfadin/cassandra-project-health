@@ -201,6 +201,34 @@ class TestExtendsDeepMerge:
         assert config.reviewer_extraction.jira_fields.reviewers_field == "cf_1"
         assert config.reviewer_extraction.commit_trailer.pattern == ".*"
 
+    def test_extends_accepts_a_list_of_bases_merged_in_order(self, tmp_path):
+        """Fixup round 1 (PR #177 review): `extends:` can be a list so a
+        project layers more than one shared base -- e.g. cassandra.yaml's
+        `extends: [_identity.yaml, _shared.yaml]`. Each base contributes
+        its own keys; the project's own file still wins over either."""
+        self._write(
+            tmp_path / "_identity.yaml",
+            {"bot_patterns": [{"field": "github_login", "regex": "identity-pattern"}]},
+        )
+        self._write(
+            tmp_path / "_shared.yaml",
+            {"affiliations_file": "shared_affiliations.yaml", "org_domains_file": "x.yaml"},
+        )
+        project_path = self._write(
+            tmp_path / "child.yaml",
+            {
+                "extends": ["_identity.yaml", "_shared.yaml"],
+                "project": {"id": "child", "display_name": "Child"},
+                "org_domains_file": "child_org_domains.yaml",
+            },
+        )
+
+        config = load_project(project_path)
+
+        assert config.bot_patterns[0].regex == "identity-pattern"
+        assert config.affiliations_file == "shared_affiliations.yaml"
+        assert config.org_domains_file == "child_org_domains.yaml"  # project's own file wins
+
     def test_missing_extends_target_raises_file_not_found(self, tmp_path):
         project_path = self._write(
             tmp_path / "child.yaml",
@@ -271,6 +299,37 @@ class TestProjectIndex:
             config = load_project(config_path)
             assert config.releases is not None
             assert config.releases.tag_prefix is not None  # every subproject sets one explicitly
+
+
+class TestSubprojectIdentityAndPullRequests:
+    """Fixup round 1 (orchestrator review of PR #177): every project in the
+    registry -- enabled or not -- must inherit PMC-wide identity/bot
+    settings (projects/_identity.yaml, via `extends:`) so dependabot/CI-bot
+    activity can't leak into its contributor metrics, and must declare its
+    own repo under `pull_requests` so PR-based review metrics have
+    something to collect from at all."""
+
+    def test_every_entry_has_non_empty_bot_patterns(self):
+        entries = load_project_index("projects/index.yaml")
+
+        for entry in entries:
+            config_path = resolve_index_config_path("projects/index.yaml", entry)
+            config = load_project(config_path)
+            assert config.bot_patterns, f"{entry.id}: bot_patterns is empty"
+
+    def test_every_entry_declares_pull_requests_for_its_own_repo(self):
+        entries = load_project_index("projects/index.yaml")
+
+        for entry in entries:
+            config_path = resolve_index_config_path("projects/index.yaml", entry)
+            config = load_project(config_path)
+            assert config.repos, f"{entry.id}: no repos configured"
+            own_repo = f"{config.repos[0].owner}/{config.repos[0].name}"
+            assert config.pull_requests is not None, f"{entry.id}: no pull_requests section"
+            assert own_repo in config.pull_requests.repos, (
+                f"{entry.id}: {own_repo!r} not in pull_requests.repos "
+                f"({config.pull_requests.repos!r})"
+            )
 
 
 class TestReleasesEffectiveTagPrefix:

@@ -2,13 +2,17 @@
 # Schema defined in docs/spec/ARCHITECTURE.md §2.1. Values below follow that schema's shape;
 # treat this file as a starting point to review before the collectors are built, not final config.
 #
-# Issue #169: PMC-wide sections (mailing_lists, roster, bot_patterns,
-# automated_senders, affiliation/org files, reviewer_extraction.jira_fields)
-# moved to projects/_shared.yaml -- inherited here via `extends`, deep-
-# merged with this file's own sections (which always win on a shared key).
+# Issue #169 (fixup round 1): PMC-wide sections moved to two shared bases,
+# both inherited here via `extends:` (a list -- deep-merged in order, then
+# this file's own sections, which always win on a shared key):
+#   - projects/_identity.yaml: bot_patterns, affiliations/org files,
+#     github_company_lookback_months -- every project extends this one.
+#   - projects/_shared.yaml: mailing_lists, roster,
+#     reviewer_extraction.jira_fields, automated_senders -- only verified
+#     for apache/cassandra today, so only this file extends it.
 # This is a pure reorg: `load_project("projects/cassandra.yaml")`'s
 # resolved `ProjectConfig` is unchanged (tests/test_config.py enforces it).
-extends: _shared.yaml
+extends: [_identity.yaml, _shared.yaml]
 
 project:
   id: cassandra
@@ -78,7 +82,8 @@ release_lines:
 
 # affiliations_file/org_domains_file/org_aliases_file/github_company_lookback_months,
 # bot_patterns, automated_senders, mailing_lists, and roster are PMC-wide --
-# inherited from projects/_shared.yaml via `extends:` above (issue #169).
+# inherited from projects/_identity.yaml + projects/_shared.yaml via
+# `extends:` above (issue #169).
 
 reviewer_extraction:
   # Two independent sources, cross-checked against each other (ARCHITECTURE.md §3.1).

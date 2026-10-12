@@ -4,6 +4,10 @@
 # Live-verified 2026-10-12 (gh api repos/apache/cassandra-cpp-driver,
 # .../tags?per_page=30): default_branch=trunk, newest tags 2.17.1/2.17.0/...
 # -- NO prefix before the version number.
+#
+# Identity/bot settings are PMC-wide -- inherited from projects/_identity.yaml
+# via `extends:` (issue #169 fixup round 1).
+extends: _identity.yaml
 
 project:
   id: cpp-driver
@@ -19,9 +23,16 @@ issue_tracker:
   base_url: https://issues.apache.org/jira
   project_key: CASSCPP
 
+pull_requests:
+  type: github
+  repos: [apache/cassandra-cpp-driver]
+
 releases:
   type: git_tags_cross_checked_archive
   tag_prefix: ""        # verified live: tags are bare `2.17.1`, no prefix
-  archive_url: null     # no archive.apache.org/dist distribution for this repo
+  # Verified live 2026-10-12: https://archive.apache.org/dist/cassandra/cassandra-cpp-driver/
+  # returns HTTP 404 -- unlike java/gocql/python/nodejs-driver, sidecar, and analytics, this
+  # repo has no archive.apache.org/dist distribution at all.
+  archive_url: null
 
 shared_sources: [asf_roster, ponymail, governance]

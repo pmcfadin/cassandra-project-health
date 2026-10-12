@@ -7,8 +7,12 @@
 #
 # Live-verified 2026-10-12 (gh api repos/apache/cassandra-accord,
 # .../tags?per_page=30): default_branch=trunk, NO tags at all -- no
-# systematic release-tag scheme, hence `releases.tag_prefix: ""` and
-# `archive_url: null`. `has_issues: false` -- no github_issues section.
+# systematic release-tag scheme, hence `releases.tag_prefix: ""`.
+# `has_issues: false` -- no github_issues section.
+#
+# Identity/bot settings are PMC-wide -- inherited from projects/_identity.yaml
+# via `extends:` (issue #169 fixup round 1).
+extends: _identity.yaml
 
 project:
   id: accord
@@ -25,9 +29,17 @@ issue_tracker:
   project_key: CASSANDRA
   jql_filter: 'component = Accord'
 
+pull_requests:
+  type: github
+  repos: [apache/cassandra-accord]
+
 releases:
   type: git_tags_cross_checked_archive
   tag_prefix: ""        # verified live: no tags at all, no systematic scheme
-  archive_url: null     # no archive.apache.org/dist distribution for this repo
+  # Verified live 2026-10-12: https://archive.apache.org/dist/cassandra/cassandra-accord/
+  # and https://archive.apache.org/dist/cassandra/accord/ both return HTTP 404 -- no
+  # archive.apache.org/dist distribution for this repo (consistent with it having no GA
+  # tags at all).
+  archive_url: null
 
 shared_sources: [asf_roster, ponymail, governance]

@@ -2060,6 +2060,37 @@ def _render_pages(
         last_completed_month,
         manifest,
     )
+    # issue #171 fixup round 2 (orchestrator review of PR #178): the
+    # "Leadership" section's one metric, `pmc_joins_quarterly`, reads the
+    # ASF roster only (`metrics_meta.py`'s own comment: "no git/jira join
+    # at all") -- the same PMC-wide `asf_roster` source
+    # `current_project.governance_shared` already gates the Governance tab
+    # on. A subproject never has its own roster number to show here, so
+    # this section gets the same shared-notice treatment as Conversation
+    # patterns below instead of an "insufficient data" card.
+    if current_project is not None and current_project.governance_shared:
+        for section in community_sections:
+            if section["id"] == "leadership":
+                section["dimensions"] = []
+                section["shared_notice"] = {
+                    "text": (
+                        "PMC membership is tracked once for the whole Apache Cassandra "
+                        "project via the shared ASF roster, not per subproject."
+                    ),
+                    "link_label": "See Apache Cassandra's Community page",
+                    "href": (
+                        f"{_project_extras(SUBPAGE_BASE_PREFIX, 'community')['site_root_prefix']}"
+                        "community/"
+                    ),
+                }
+                # The collapsed summary row (`_sections.html::section()`)
+                # renders its own headline items independently of
+                # `dimensions` above -- without this, collapsing the
+                # section would still show "PMC Joins per Quarter:
+                # insufficient data" rather than the shared-source fact.
+                for item in section["summary_items"]:
+                    item["value_display"] = None
+                    item["empty_label"] = "shared — see Apache Cassandra"
     # Contributor leaderboard (D19, issue #56) — a ranked top-N table, kept
     # entirely out of the `metric_value`/M0 machinery above; see
     # `leaderboard_page.py`'s module docstring for why this stays a small,

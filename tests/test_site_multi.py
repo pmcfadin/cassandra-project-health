@@ -546,9 +546,29 @@ def test_realistic_subproject_community_shared_sections_use_notice_not_empty_cha
     for snippet in leaks:
         assert "classified from the dev@ mailing list, shared across" in snippet, snippet
 
-    # Peers/thread-explorer stay Cassandra-only (unchanged from issue #171).
-    assert "peer-context-summary" in community_html  # section always present
+    # Peers/thread-explorer stay Cassandra-only (unchanged from issue #171)
+    # -- orchestrator review round 2 of PR #178: the Peer context section
+    # is omitted entirely off Cassandra, not left as an empty-state
+    # placeholder that wrongly implies it's just not published yet.
+    assert "peer-context-summary" not in community_html
+    assert "Peer context isn't published yet" not in community_html
     assert 'href="../peers/"' not in community_html
+
+    # "Leadership" (PMC Joins per Quarter) reads the shared ASF roster only
+    # -- same shared-notice treatment as Conversation patterns, both in the
+    # section's own body and its collapsed summary row (orchestrator review
+    # round 2 of PR #178).
+    leadership_match = re.search(
+        r'<details class="page-section[^"]*" id="leadership".*?</details>', community_html,
+        re.DOTALL,
+    )
+    assert leadership_match, "leadership section missing"
+    leadership_section = leadership_match.group(0)
+    assert "data-vega-spec" not in leadership_section
+    assert "PMC membership is tracked once for the whole Apache Cassandra" in leadership_section
+    assert 'href="../../../community/"' in leadership_section
+    assert "insufficient data" not in leadership_section
+    assert "shared" in leadership_section  # the collapsed summary row's own empty_label
 
 
 def test_link_checker_passes_on_realistic_subproject_fixture(tmp_path):

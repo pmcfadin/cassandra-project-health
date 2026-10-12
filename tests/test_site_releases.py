@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import pyarrow as pa
@@ -65,23 +65,52 @@ def _write_manifest(data_dir: Path) -> None:
 def _jira_version_rows() -> list[dict]:
     collected_at = BUILD_TIME
     rows = []
-    for name, description, major_minor in [
-        ("6.0-alpha", "Placeholder for blockers to 6.0-beta1 (unresolved tickets only)", "6.0"),
-        ("6.0-beta", "Placeholder for blockers to 6.0-rc1 (unresolved tickets only)", "6.0"),
-        ("6.0-rc", "Placeholder for blockers to 6.0.0 (GA) (unresolved tickets only)", "6.0"),
-        ("6.0.x", None, "6.0"),
-        ("6.0", None, "6.0"),
-        ("6.0-alpha3", None, "6.0"),
-        ("5.0.x", "Placeholder for a 5.0.x series change (unresolved tickets only)", "5.0"),
-        ("5.0.10", None, "5.0"),
+    for name, description, major_minor, released, release_date in [
+        (
+            "6.0-alpha",
+            "Placeholder for blockers to 6.0-beta1 (unresolved tickets only)",
+            "6.0",
+            False,
+            None,
+        ),
+        (
+            "6.0-beta",
+            "Placeholder for blockers to 6.0-rc1 (unresolved tickets only)",
+            "6.0",
+            False,
+            None,
+        ),
+        (
+            "6.0-rc",
+            "Placeholder for blockers to 6.0.0 (GA) (unresolved tickets only)",
+            "6.0",
+            False,
+            None,
+        ),
+        ("6.0.x", None, "6.0", False, None),
+        ("6.0", None, "6.0", False, None),
+        ("6.0-alpha3", None, "6.0", False, None),
+        # issue #166 orchestrator review of PR #167: released pre-release
+        # versions -- 6.0 has no GA yet, so these are its ONLY release
+        # history (no row in the git-tag `release` table at all).
+        ("6.0-alpha1", None, "6.0", True, date(2026, 3, 21)),
+        ("6.0-alpha2", None, "6.0", True, date(2026, 8, 7)),
+        (
+            "5.0.x",
+            "Placeholder for a 5.0.x series change (unresolved tickets only)",
+            "5.0",
+            False,
+            None,
+        ),
+        ("5.0.10", None, "5.0", False, None),
     ]:
         rows.append(
             {
                 "version_id": f"id-{name}",
                 "name": name,
                 "description": description,
-                "released": False,
-                "release_date": None,
+                "released": released,
+                "release_date": release_date,
                 "major_minor": major_minor,
                 "source_snapshot_id": f"{RUN_ID}:release_lines",
                 "collected_at": collected_at,
@@ -139,10 +168,21 @@ def _blocker_issue_rows() -> list[dict]:
 def _ci_job_rows() -> list[dict]:
     collected_at = BUILD_TIME
     rows = []
-    for job_name, branch_line, color, number, result in [
-        ("Cassandra-6.0", "6.0", "red", 20, "FAILURE"),
-        ("Cassandra-5.0", "5.0", "yellow", 678, "UNSTABLE"),
-        ("Cassandra-trunk", "trunk", "red", 2635, "FAILURE"),
+    # issue #166 orchestrator review of PR #167: a real, non-midnight
+    # timestamp with microseconds (matching the real live shape, e.g.
+    # "2026-10-10T16:06:25.994000+00:00") -- the page must render only the
+    # calendar date, never the full timestamp.
+    for job_name, branch_line, color, number, result, timestamp in [
+        (
+            "Cassandra-6.0",
+            "6.0",
+            "red",
+            20,
+            "FAILURE",
+            datetime(2026, 10, 10, 16, 6, 25, 994000, tzinfo=UTC),
+        ),
+        ("Cassandra-5.0", "5.0", "yellow", 678, "UNSTABLE", datetime(2026, 10, 10, tzinfo=UTC)),
+        ("Cassandra-trunk", "trunk", "red", 2635, "FAILURE", datetime(2026, 10, 10, tzinfo=UTC)),
     ]:
         rows.append(
             {
@@ -151,7 +191,7 @@ def _ci_job_rows() -> list[dict]:
                 "color": color,
                 "last_build_number": number,
                 "last_build_result": result,
-                "last_build_timestamp": datetime(2026, 10, 10, tzinfo=UTC),
+                "last_build_timestamp": timestamp,
                 "source_snapshot_id": f"{RUN_ID}:release_lines",
                 "collected_at": collected_at,
             }
@@ -162,18 +202,23 @@ def _ci_job_rows() -> list[dict]:
 def _ci_trend_rows() -> list[dict]:
     collected_at = BUILD_TIME
     rows = []
-    for workflow, branch_line, label, failures in [
-        ("Cassandra-6.0", "6.0", "#19", 30),
-        ("Cassandra-6.0", "6.0", "#20", 33),
-        ("Cassandra-5.0", "5.0", "#678", 3),
-        ("Cassandra-trunk", "trunk", "#2635", 33),
+    # issue #166 orchestrator review of PR #167: "#19"/"#1" are > 7 days
+    # apart from the next build in their own line -- the chart must break
+    # the line there rather than drawing a straight connector across a gap
+    # with no builds.
+    for workflow, branch_line, label, timestamp, failures in [
+        ("Cassandra-6.0", "6.0", "#19", datetime(2026, 8, 5, tzinfo=UTC), 20),
+        ("Cassandra-6.0", "6.0", "#20", datetime(2026, 10, 10, tzinfo=UTC), 33),
+        ("Cassandra-5.0", "5.0", "#678", datetime(2026, 10, 8, tzinfo=UTC), 3),
+        ("Cassandra-trunk", "trunk", "#1", datetime(2026, 7, 1, tzinfo=UTC), 10),
+        ("Cassandra-trunk", "trunk", "#2635", datetime(2026, 10, 10, tzinfo=UTC), 33),
     ]:
         rows.append(
             {
                 "workflow": workflow,
                 "branch_line": branch_line,
                 "build_label": label,
-                "build_timestamp": datetime(2026, 10, 10, tzinfo=UTC),
+                "build_timestamp": timestamp,
                 "test_failures": failures,
                 "test_runs": 300000,
                 "duration_minutes": 400.0,
@@ -234,6 +279,15 @@ def _visible_text(html: str) -> str:
     text = re.sub(r"<script.*?</script>", " ", html, flags=re.DOTALL)
     text = re.sub(r"<[^>]+>", " ", text)
     return re.sub(r"\s+", " ", text)
+
+
+def _chart_spec(html: str, chart_id: str) -> dict:
+    """The parsed `data-vega-spec` JSON for the chart with `data-chart-id`
+    == `chart_id` on a rendered /releases/ page."""
+    pattern = rf"data-vega-spec='([^']*)'[^>]*data-chart-id=\"{re.escape(chart_id)}\""
+    match = re.search(pattern, html)
+    assert match is not None, f"no chart found with data-chart-id={chart_id!r}"
+    return json.loads(match.group(1).replace("&#34;", '"').replace("&#39;", "'"))
 
 
 class TestNoDataNoPage:
@@ -335,6 +389,198 @@ class TestReleasesPageRendering:
 
         assert "6.0-alpha3" in home_html
         assert "5.0.10" in home_html
+
+
+class TestOrchestratorReviewFixesPR167:
+    """Orchestrator review of PR #167 (five fixes, 2026-10-12)."""
+
+    def test_pre_release_history_appears_in_6_0_timeline_and_latest_release(self, tmp_path):
+        """Fix 1: 6.0 has no GA tag yet, so its own alpha1/alpha2 releases
+        (JIRA's own released_versions) must still show up -- both in the
+        per-line Timeline list and as the summary table's Latest release."""
+        data_dir = tmp_path / "data"
+        out_dir = tmp_path / "out"
+        _write_main_snapshot(data_dir)
+        _write_manifest(data_dir)
+        _write_release_lines_partitions(data_dir)
+
+        generate(data_dir, RUN_ID, out_dir, now=BUILD_TIME)
+        releases_html = (out_dir / "releases" / "index.html").read_text()
+
+        assert "6.0-alpha1" in releases_html
+        assert "6.0-alpha2" in releases_html
+        # Scoped to 6.0's own Timeline section -- 5.0's timeline is
+        # legitimately empty in this fixture (no "release" git-tag table
+        # written at all here), which is a different, true fact, not this
+        # test's concern.
+        six_section = re.search(r'<details[^>]*id="6-0">(.*?)</details>', releases_html, re.DOTALL)
+        assert six_section is not None
+        assert "No released versions recorded for this line yet" not in six_section.group(1)
+        # Summary table's "Latest release" column for 6.0 -- the later of
+        # the two pre-releases, 2026-08-07.
+        assert "6.0-alpha2 (2026-08-07)" in releases_html
+
+    def test_blocker_summary_excludes_ga_target_tickets(self, tmp_path):
+        """Fix 2: the summary's "Blockers to next milestone" column must
+        come from the ladder's own (target_label, open_count) pairs only
+        -- never summed with tickets merely targeted at the bare GA
+        version. 6.0-alpha has 2 open (-> "beta1: 2"), 6.0-beta/rc have 0;
+        the 3 GA-targeted tickets never enter this column."""
+        data_dir = tmp_path / "data"
+        out_dir = tmp_path / "out"
+        _write_main_snapshot(data_dir)
+        _write_manifest(data_dir)
+        _write_release_lines_partitions(data_dir)
+
+        generate(data_dir, RUN_ID, out_dir, now=BUILD_TIME)
+        releases_html = (out_dir / "releases" / "index.html").read_text()
+
+        assert "beta1: 2" in releases_html
+        assert "rc1: 0" in releases_html
+        assert "GA: 0" in releases_html
+        # Next release column: 6.0-alpha3, 0 open (no issues fixtured for it).
+        assert "6.0-alpha3" in releases_html
+        # The GA-targeted tickets are shown separately, under their own
+        # "Targeted at 6.0" heading, not folded into "blocks" language.
+        assert "Targeted at 6.0" in releases_html
+
+    def test_trunk_summary_row_cells_align_with_header(self, tmp_path):
+        """Fix 3: trunk's row must have exactly as many `<td>` cells as
+        there are non-"Line" headers (5), with CI landing in the CI
+        column, not the Blockers column."""
+        data_dir = tmp_path / "data"
+        out_dir = tmp_path / "out"
+        _write_main_snapshot(data_dir)
+        _write_manifest(data_dir)
+        _write_release_lines_partitions(data_dir)
+
+        generate(data_dir, RUN_ID, out_dir, now=BUILD_TIME)
+        releases_html = (out_dir / "releases" / "index.html").read_text()
+
+        header_count = len(re.findall(r"<th scope=\"col\">", releases_html))
+        trunk_row_match = re.search(
+            r'<th scope="row">trunk \(CI only\)</th>(.*?)</tr>', releases_html, re.DOTALL
+        )
+        assert trunk_row_match is not None
+        trunk_cells = re.findall(r"<td>(.*?)</td>", trunk_row_match.group(1), re.DOTALL)
+        assert len(trunk_cells) == header_count - 1  # every column except "Line"
+        # CI result text lands in a cell, not swallowed into the blockers "—".
+        ci_cell_text = " ".join(trunk_cells)
+        assert "FAILURE" in ci_cell_text
+
+    def test_ci_trend_chart_breaks_across_a_build_gap(self, tmp_path):
+        """Fix 4a: a >7-day gap between builds must not be drawn as one
+        continuous line -- each point gets its own `segment`, and a gap
+        increments it."""
+        data_dir = tmp_path / "data"
+        out_dir = tmp_path / "out"
+        _write_main_snapshot(data_dir)
+        _write_manifest(data_dir)
+        _write_release_lines_partitions(data_dir)
+
+        generate(data_dir, RUN_ID, out_dir, now=BUILD_TIME)
+        releases_html = (out_dir / "releases" / "index.html").read_text()
+
+        spec = _chart_spec(releases_html, "releases-ci-6-0")
+        values = spec["data"]["values"]
+        segments = {v["build_label"]: v["segment"] for v in values}
+        # "#19" (2026-08-05) is more than 7 days before "#20" (2026-10-10)
+        # -- different segments. The chart's `detail` encoding must be
+        # wired to the `segment` field so Vega-Lite actually breaks there.
+        assert segments["#19"] != segments["#20"]
+        assert spec["encoding"]["detail"]["field"] == "segment"
+
+    def test_ci_trend_chart_autosizes_to_container(self, tmp_path):
+        """Fix 4b: the chart must fit its container (not get clipped at
+        the right edge), matching every other chart on the site."""
+        data_dir = tmp_path / "data"
+        out_dir = tmp_path / "out"
+        _write_main_snapshot(data_dir)
+        _write_manifest(data_dir)
+        _write_release_lines_partitions(data_dir)
+
+        generate(data_dir, RUN_ID, out_dir, now=BUILD_TIME)
+        releases_html = (out_dir / "releases" / "index.html").read_text()
+
+        spec = _chart_spec(releases_html, "releases-ci-6-0")
+        assert spec["autosize"] == {"type": "fit-x", "contains": "padding"}
+        assert spec["width"] == "container"
+
+    def test_ci_trend_tooltip_has_build_date_failures_tests(self, tmp_path):
+        data_dir = tmp_path / "data"
+        out_dir = tmp_path / "out"
+        _write_main_snapshot(data_dir)
+        _write_manifest(data_dir)
+        _write_release_lines_partitions(data_dir)
+
+        generate(data_dir, RUN_ID, out_dir, now=BUILD_TIME)
+        releases_html = (out_dir / "releases" / "index.html").read_text()
+
+        spec = _chart_spec(releases_html, "releases-ci-6-0")
+        tooltip_fields = {t["field"] for t in spec["encoding"]["tooltip"]}
+        assert tooltip_fields == {"build_label", "build_timestamp", "test_failures", "test_runs"}
+        date_tooltip = next(
+            t for t in spec["encoding"]["tooltip"] if t["field"] == "build_timestamp"
+        )
+        assert date_tooltip.get("format") == "%Y-%m-%d"
+
+    def test_last_build_timestamp_renders_as_plain_date(self, tmp_path):
+        """Fix 5: "2026-10-10", never the full
+        "2026-10-10T16:06:25.994000+00:00"."""
+        data_dir = tmp_path / "data"
+        out_dir = tmp_path / "out"
+        _write_main_snapshot(data_dir)
+        _write_manifest(data_dir)
+        _write_release_lines_partitions(data_dir)
+
+        generate(data_dir, RUN_ID, out_dir, now=BUILD_TIME)
+        releases_html = (out_dir / "releases" / "index.html").read_text()
+
+        assert "build #20, 2026-10-10)" in releases_html
+        assert "16:06:25" not in releases_html
+        assert "994000" not in releases_html
+
+    def test_5_0_and_other_already_ga_lines_are_unaffected(self, tmp_path):
+        """Fix 6: the same pre-release + next-release logic must not
+        regress an already-GA'd line like 5.0 -- it keeps showing its next
+        patch target and isn't forced into the 6.0-only pre-release path."""
+        data_dir = tmp_path / "data"
+        out_dir = tmp_path / "out"
+        _write_main_snapshot(data_dir)
+        _write_manifest(data_dir)
+        _write_release_lines_partitions(data_dir)
+
+        generate(data_dir, RUN_ID, out_dir, now=BUILD_TIME)
+        releases_html = (out_dir / "releases" / "index.html").read_text()
+        assert "5.0.10" in releases_html
+
+    def test_unreleased_line_with_no_placeholders_renders_gracefully(self, tmp_path):
+        """Fix 6: a hypothetical active line with zero tracked JIRA
+        versions at all (e.g. a future "7.0" before any placeholder
+        exists) must not crash the page builder -- it just renders an
+        empty-state line. Calls `build_releases_context` directly with an
+        extra "7.0" line (it takes `active_lines` as its own parameter),
+        rather than through the full `generate()` pipeline, since nothing
+        else about site generation needs exercising for this check."""
+        data_dir = tmp_path / "data"
+        _write_release_lines_partitions(data_dir)
+
+        from project_health.site.release_lines_page import (
+            DEFAULT_ACTIVE_LINES,
+            build_releases_context,
+        )
+
+        ctx = build_releases_context(
+            data_dir, RUN_ID, active_lines=(*DEFAULT_ACTIVE_LINES, "7.0")
+        )
+        seven = next(line for line in ctx["lines"] if line["line"] == "7.0")
+        assert seven["id"] == "7-0"
+        assert seven["ladder"] == []
+        assert seven["series"] is None
+        assert seven["ga_target"] is None
+        assert seven["next_release"] is None
+        assert seven["timeline"] == []
+        assert seven["latest_release"] is None
 
 
 class TestIndependentSourceDegradation:

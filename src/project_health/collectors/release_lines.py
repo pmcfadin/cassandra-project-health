@@ -91,6 +91,14 @@ class LadderStep:
     version: JiraVersionInfo
     stage: str | None  # the stage word this placeholder's OWN name carries (e.g. "alpha"), if any
     points_to_stage: str | None  # the stage word its description's target names, or None (-> GA)
+    # issue #166 orchestrator review of PR #167: a short, human label for
+    # what this step's own open issues block -- e.g. "beta1", "rc1", "GA"
+    # -- read straight out of the placeholder's own description (its
+    # `_BLOCKER_PLACEHOLDER_RE` `target` group), never hard-coded. A target
+    # with a `<line>-<stage><digits>` shape (e.g. "6.0-beta1") keeps just
+    # the `<stage><digits>` suffix; any other shape (e.g. "6.0.0", "6.0.0
+    # (GA)", "4.1.0") -- i.e. a bare/GA-style version -- becomes "GA".
+    target_label: str
 
 
 def classify_versions(
@@ -114,15 +122,29 @@ def classify_versions(
         verbatim on the site, never fabricated when absent.
       - "ga_target": the bare `<line>` version itself (no description, name
         exactly equals `line`), or None.
-      - "next_versions": unreleased, undescribed versions under `line` whose
-        name carries a digit after the line prefix (e.g. "6.0-alpha3",
-        "5.0.10") -- i.e. a concrete numbered pre-release or patch target,
-        distinct from the bare GA target and from either placeholder shape.
+      - "next_versions": UNRELEASED, undescribed versions under `line`
+        whose name carries a digit after the line prefix (e.g.
+        "6.0-alpha3", "5.0.10") -- i.e. a concrete numbered pre-release or
+        patch target, distinct from the bare GA target and from either
+        placeholder shape.
+      - "released_versions": the same name shape as `next_versions`, but
+        RELEASED (`released=True`) -- e.g. "6.0-alpha1", "6.0-alpha2".
+        Orchestrator review of PR #167: a line that hasn't reached GA yet
+        has no row at all in the git-tag-derived `release` table
+        (`collectors/release.py` deliberately excludes alpha/beta/rc tags,
+        issue #135), so its own pre-GA release history would otherwise be
+        invisible to the /releases/ page's timeline -- this key is JIRA's
+        own record of exactly that history, filling the gap without
+        touching `release`/`collectors/release.py` at all (`release_lines_
+        page.py` unions this with `release`'s rows, disjoint by
+        construction since one is pre-release-only and the other GA-only).
+        Sorted oldest-first by `release_date`.
     """
     ladder_placeholders: list[JiraVersionInfo] = []
     series_placeholder: JiraVersionInfo | None = None
     ga_target: JiraVersionInfo | None = None
     next_versions: list[JiraVersionInfo] = []
+    released_versions: list[JiraVersionInfo] = []
 
     for v in versions:
         if not v.name.startswith(line):
@@ -144,14 +166,29 @@ def classify_versions(
         if remainder == "":
             ga_target = v
             continue
-        if not v.released and any(c.isdigit() for c in remainder):
+        if not any(c.isdigit() for c in remainder):
+            continue
+        if not v.released:
             next_versions.append(v)
+        elif remainder.startswith("-"):
+            # Pre-release-shaped (e.g. "6.0-alpha1", "4.1-beta1") -- the
+            # line's own GA history (e.g. "4.0.21") is already tracked,
+            # with its authoritative git-tag date, by `collectors/
+            # release.py`'s `release` table; only the pre-release shape is
+            # tracked here, so `released_versions` never duplicates that
+            # table's rows (structurally disjoint: "-" vs "." after the
+            # line prefix) while still filling the pre-GA gap git tags
+            # can't see (module docstring).
+            released_versions.append(v)
 
     return {
         "ladder_placeholders": ladder_placeholders,
         "series_placeholder": series_placeholder,
         "ga_target": ga_target,
         "next_versions": sorted(next_versions, key=lambda v: v.name),
+        "released_versions": sorted(
+            released_versions, key=lambda v: (v.release_date or "", v.name)
+        ),
     }
 
 
@@ -180,11 +217,18 @@ def order_ladder(placeholders: list[JiraVersionInfo]) -> list[LadderStep]:
         stage = m.group("stage") if m else None
         target_match = _BLOCKER_PLACEHOLDER_RE.match((v.description or "").strip())
         points_to_stage = None
+        target_label = "GA"
         if target_match:
-            tm = _TARGET_STAGE_RE.match(target_match.group("target"))
+            target = target_match.group("target")
+            tm = _TARGET_STAGE_RE.match(target)
             if tm:
                 points_to_stage = tm.group("stage")  # None means the target is bare -> GA
-        steps[v.name] = LadderStep(version=v, stage=stage, points_to_stage=points_to_stage)
+                if tm.group("stage"):
+                    # Keep just the "<stage><digits>" suffix, e.g. "6.0-beta1" -> "beta1".
+                    target_label = target[len(tm.group("line")) + 1 :]
+        steps[v.name] = LadderStep(
+            version=v, stage=stage, points_to_stage=points_to_stage, target_label=target_label
+        )
         if stage:
             stage_of[stage] = v.name
 
@@ -409,12 +453,16 @@ class ReleaseLinesCollector:
     def tracked_versions_for_line(
         self, versions: list[JiraVersionInfo], line: str
     ) -> list[tuple[JiraVersionInfo, str]]:
-        """`[(version, ladder_stage_label)]` for every version under `line`
-        whose open issues the ladder/backlog needs: every ladder placeholder
-        (labelled by its chain position, `order_ladder`), the series
-        backlog placeholder (labelled "series"), the bare GA target
-        (labelled "ga_target"), and every unreleased next-version candidate
-        (labelled "next")."""
+        """`[(version, label)]` for every version under `line` this
+        collector tracks: every ladder placeholder (labelled by its chain
+        position, `order_ladder`), the series backlog placeholder
+        (labelled "series"), the bare GA target (labelled "ga_target"),
+        every unreleased next-version candidate (labelled "next"), and
+        every released pre-release version (labelled "released", issue
+        #166 orchestrator review of PR #167 -- see `classify_versions`'
+        `released_versions` docstring). `collect()` fetches open issues
+        for every label except "released" (historical, no open-issue
+        count needed -- see its own comment)."""
         classified = classify_versions(versions, line)
         tracked: list[tuple[JiraVersionInfo, str]] = []
         ladder = order_ladder(classified["ladder_placeholders"])  # type: ignore[arg-type]
@@ -426,6 +474,8 @@ class ReleaseLinesCollector:
             tracked.append((classified["ga_target"], "ga_target"))  # type: ignore[arg-type]
         for v in classified["next_versions"]:  # type: ignore[union-attr]
             tracked.append((v, "next"))
+        for v in classified["released_versions"]:  # type: ignore[union-attr]
+            tracked.append((v, "released"))
         return tracked
 
     # --- Butler -----------------------------------------------------------
@@ -458,10 +508,20 @@ class ReleaseLinesCollector:
             all_versions = self.fetch_jira_versions()
             tracked_names: set[str] = set()
             lines_for_version: dict[str, str] = {}
+            # issue #166 orchestrator review of PR #167: a "released"-
+            # labelled version (historical pre-release, `classify_versions`'
+            # `released_versions`) is tracked for its `jira_version` row
+            # (the /releases/ timeline) only -- it has already shipped, so
+            # there is no reason to spend an API call checking it for open
+            # issues the way a still-open ladder/series/next version needs.
+            needs_issues: dict[str, bool] = {}
             for line in self._active_lines:
-                for version, _label in self.tracked_versions_for_line(all_versions, line):
+                for version, label in self.tracked_versions_for_line(all_versions, line):
                     tracked_names.add(version.name)
                     lines_for_version[version.name] = line
+                    needs_issues[version.name] = needs_issues.get(
+                        version.name, False
+                    ) or label != "released"
 
             for v in all_versions:
                 if v.name not in tracked_names:
@@ -478,6 +538,8 @@ class ReleaseLinesCollector:
                         "collected_at": collected_at,
                     }
                 )
+                if not needs_issues.get(v.name, True):
+                    continue
                 for raw_issue in self.fetch_unresolved_issues(v.name):
                     fields = raw_issue["fields"]
                     status = fields.get("status") or {}

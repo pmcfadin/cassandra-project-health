@@ -14,7 +14,7 @@ here computes or renders a ready/not-ready verdict.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime
 
 # Lines with a published branch CI workflow but no JIRA-tracked release
 # line of their own (module docstring, issue #166: "+ trunk (CI only)").
@@ -43,6 +43,12 @@ class LadderStepView:
     version_name: str
     description: str | None
     stage_label: str | None  # e.g. "alpha", "beta", "rc", None for series/GA
+    # Issue #166 orchestrator review of PR #167: a short label for what
+    # this step's own open issues block (e.g. "beta1", "rc1", "GA"),
+    # carried straight from `collectors.release_lines.LadderStep.
+    # target_label` -- `None` for the series backlog / GA target / next-
+    # release steps, which don't have a "points to" target of their own.
+    target_label: str | None = None
     issues: tuple[BlockerIssueView, ...] = ()
 
     @property
@@ -115,6 +121,13 @@ class ReleaseLineView:
     # callers (the /releases/ page) that want to show every one, not just
     # the first.
     next_versions: tuple[str, ...] = ()
+    # issue #166 orchestrator review of PR #167: the next-release version's
+    # own name + open-issue count, same shape as a ladder step, for the
+    # summary table's "Next release" column and the section's own listing
+    # of its open tickets. `None` when there's no unreleased next version
+    # tracked for this line. (`next_target`/`next_versions` above are kept
+    # unchanged for any other caller that just wants the name(s).)
+    next_target_step: LadderStepView | None = None
     ladder: tuple[LadderStepView, ...] = ()
     series: LadderStepView | None = None
     ga_target: LadderStepView | None = None
@@ -124,10 +137,15 @@ class ReleaseLineView:
 
     @property
     def total_open_blockers(self) -> int:
-        total = sum(step.open_count for step in self.ladder)
-        if self.ga_target:
-            total += self.ga_target.open_count
-        return total
+        """Sum of the ladder's own open-issue counts only (issue #166
+        orchestrator review of PR #167): only a ladder placeholder's
+        tickets are "blockers" in the project's own sense (its description
+        literally says "Placeholder for blockers to <X>") -- a ticket
+        merely targeted at the bare GA version (`ga_target`) is a planned
+        change for that release, not something blocking reaching it, and
+        is kept out of this count (shown separately, as "Targeted at
+        <line>")."""
+        return sum(step.open_count for step in self.ladder)
 
 
 def _group_blocker_issues(
@@ -216,27 +234,52 @@ def build_release_line_model(
     for row in release_rows:
         releases_by_line.setdefault(row["major_minor"], []).append(row)
 
-    def _timeline(line: str) -> tuple[ReleasedVersionView, ...]:
-        rows = sorted(releases_by_line.get(line, []), key=lambda r: r["release_date"])
-        return tuple(
+    def _timeline(line: str, released_prereleases: list) -> tuple[ReleasedVersionView, ...]:
+        """GA history (`release`, git tags) unioned with pre-GA release
+        history (`released_prereleases`, JIRA's own "released_versions" --
+        issue #166 orchestrator review of PR #167: a line that hasn't
+        reached GA yet has no git-tag row at all). The two are disjoint by
+        construction (`classify_versions`' own docstring), so no dedup is
+        needed beyond dropping a row with no date at all (can't be placed
+        on the timeline -- omitted rather than fabricated, same "collect
+        imperfectly but honestly" rule `collectors/release.py` documents
+        for its own archive cross-check)."""
+        rows = [
             ReleasedVersionView(version=r["version"], release_date=r["release_date"])
-            for r in rows
-        )
+            for r in releases_by_line.get(line, [])
+        ]
+        rows += [
+            # `v.release_date` is JIRA's own ISO date *string*; the
+            # `release` rows above carry a `datetime.date` (from the
+            # table's `pa.date32()` column) -- normalize to `date` here so
+            # the two are comparable in the single `sort()` below.
+            ReleasedVersionView(version=v.name, release_date=date.fromisoformat(v.release_date))
+            for v in released_prereleases
+            if v.release_date
+        ]
+        rows.sort(key=lambda r: r.release_date)
+        return tuple(rows)
+
+    empty_classified = {
+        "ladder_placeholders": [],
+        "series_placeholder": None,
+        "ga_target": None,
+        "next_versions": [],
+        "released_versions": [],
+    }
 
     views: list[ReleaseLineView] = []
     for line in active_lines:
-        classified = classify_versions(all_version_infos, line) if jira_available else {
-            "ladder_placeholders": [],
-            "series_placeholder": None,
-            "ga_target": None,
-            "next_versions": [],
-        }
+        classified = classify_versions(all_version_infos, line) if jira_available else dict(
+            empty_classified
+        )
         ladder_steps = order_ladder(classified["ladder_placeholders"])  # type: ignore[arg-type]
         ladder_views = tuple(
             LadderStepView(
                 version_name=step.version.name,
                 description=step.version.description,
                 stage_label=step.stage,
+                target_label=step.target_label,
                 issues=_group_blocker_issues(blocker_issue_rows, step.version.name),
             )
             for step in ladder_steps
@@ -261,8 +304,17 @@ def build_release_line_model(
             )
         next_version_infos = classified["next_versions"]  # type: ignore[assignment]
         next_target = next_version_infos[0].name if next_version_infos else None
+        next_target_step = None
+        if next_version_infos:
+            nv = next_version_infos[0]
+            next_target_step = LadderStepView(
+                version_name=nv.name,
+                description=nv.description,
+                stage_label="next",
+                issues=_group_blocker_issues(blocker_issue_rows, nv.name),
+            )
 
-        timeline = _timeline(line)
+        timeline = _timeline(line, classified["released_versions"])  # type: ignore[arg-type]
         latest_release = timeline[-1] if timeline else None
 
         views.append(
@@ -271,6 +323,7 @@ def build_release_line_model(
                 latest_release=latest_release,
                 next_target=next_target,
                 next_versions=tuple(v.name for v in next_version_infos),
+                next_target_step=next_target_step,
                 ladder=ladder_views,
                 series=series_view,
                 ga_target=ga_view,

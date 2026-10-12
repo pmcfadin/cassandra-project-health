@@ -95,30 +95,59 @@ def _table_fresh(data_dir: Path, source: str, table: str, run_id: str | None) ->
     return any(table_dir.glob(f"date=*/part-{run_id}.parquet"))
 
 
+# issue #166 orchestrator review of PR #167: a build gap wider than this
+# (Butler's own build cadence is irregular -- idle lines can go weeks
+# between builds) must not be drawn as a straight connecting line implying
+# continuous data that was never collected.
+_CI_TREND_GAP_DAYS = 7
+
+
 def _ci_trend_spec(points) -> str | None:
     if not points:
         return None
-    values = [
-        {
-            "build_timestamp": p.build_timestamp.isoformat(),
-            "build_label": p.build_label,
-            "test_failures": p.test_failures,
-            "test_runs": p.test_runs,
-        }
-        for p in points
-    ]
+    # Break the line wherever two consecutive builds are more than
+    # `_CI_TREND_GAP_DAYS` apart: each such gap starts a new `segment`:
+    # `detail` encoding draws each segment as its own connected line (and,
+    # since `point: true` lives on the same mark, every point --
+    # including a segment of just one -- still renders), so a real gap in
+    # Butler's own build history reads as a gap on the chart, not a
+    # fabricated trend across it.
+    values = []
+    segment = 0
+    prev_ts = None
+    for p in points:
+        if prev_ts is not None and (p.build_timestamp - prev_ts).days > _CI_TREND_GAP_DAYS:
+            segment += 1
+        prev_ts = p.build_timestamp
+        values.append(
+            {
+                "build_timestamp": p.build_timestamp.isoformat(),
+                "build_label": p.build_label,
+                "test_failures": p.test_failures,
+                "test_runs": p.test_runs,
+                "segment": segment,
+            }
+        )
     spec = {
         "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
         "width": "container",
         "height": 160,
+        "autosize": {"type": "fit-x", "contains": "padding"},
+        "background": None,
         "data": {"values": values},
-        "mark": {"type": "line", "point": True},
+        "mark": {"type": "line", "point": True, "clip": True},
         "encoding": {
             "x": {"field": "build_timestamp", "type": "temporal", "title": None},
             "y": {"field": "test_failures", "type": "quantitative", "title": "Test failures"},
+            "detail": {"field": "segment", "type": "nominal"},
             "tooltip": [
                 {"field": "build_label", "type": "nominal", "title": "Build"},
-                {"field": "build_timestamp", "type": "temporal", "title": "Date"},
+                {
+                    "field": "build_timestamp",
+                    "type": "temporal",
+                    "title": "Date",
+                    "format": "%Y-%m-%d",
+                },
                 {"field": "test_failures", "type": "quantitative", "title": "Failures"},
                 {"field": "test_runs", "type": "quantitative", "title": "Tests run"},
             ],
@@ -135,8 +164,12 @@ def _ci_dict(ci: CiView, chart_id: str, line_label: str) -> dict[str, Any]:
         "color": ci.color,
         "last_build_number": ci.last_build_number,
         "last_build_result": ci.last_build_result,
+        # issue #166 orchestrator review of PR #167: plain calendar date
+        # ("2026-10-10"), not the full ISO timestamp with microseconds/
+        # offset -- nothing on this page needs sub-day precision for a
+        # build's own date.
         "last_build_timestamp": (
-            ci.last_build_timestamp.isoformat() if ci.last_build_timestamp else None
+            ci.last_build_timestamp.date().isoformat() if ci.last_build_timestamp else None
         ),
         "latest_test_failures": latest.test_failures if latest else None,
         "latest_test_runs": latest.test_runs if latest else None,
@@ -161,10 +194,22 @@ def _step_dict(step: LadderStepView) -> dict[str, Any]:
         "name": step.version_name,
         "description": step.description,
         "stage": step.stage_label,
+        "target_label": step.target_label,
         "issues": step.issues,
         "open_count": step.open_count,
         "unassigned_count": step.unassigned_count,
     }
+
+
+def _blockers_to_next_milestone_display(ladder: list[LadderStepView]) -> str | None:
+    """"beta1: 2 · rc1: 0 · GA: 0" (issue #166 orchestrator review of PR
+    #167) -- each ladder step's own `target_label`/`open_count`, in the
+    ladder's own chain order. `None` (rendered as "—") when this line has
+    no ladder at all (e.g. an already-GA'd line with no open pre-release
+    placeholders tracked, or a future line before any placeholder exists)."""
+    if not ladder:
+        return None
+    return " · ".join(f"{s.target_label or '?'}: {s.open_count}" for s in ladder)
 
 
 def _line_dict(view: ReleaseLineView) -> dict[str, Any]:
@@ -176,7 +221,9 @@ def _line_dict(view: ReleaseLineView) -> dict[str, Any]:
         "series": _step_dict(view.series) if view.series else None,
         "ga_target": _step_dict(view.ga_target) if view.ga_target else None,
         "next_versions": [{"name": n} for n in view.next_versions],
+        "next_release": _step_dict(view.next_target_step) if view.next_target_step else None,
         "total_open_blockers": view.total_open_blockers,
+        "blockers_to_next_milestone": _blockers_to_next_milestone_display(view.ladder),
         "latest_release": (
             {
                 "version": view.latest_release.version,

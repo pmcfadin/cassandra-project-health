@@ -38,8 +38,8 @@
       <tr>
         <th scope="col">Line</th>
         <th scope="col">Latest release</th>
-        <th scope="col">Next targeted version</th>
-        <th scope="col">Open blockers</th>
+        <th scope="col">Next release</th>
+        <th scope="col">Blockers to next milestone</th>
         <th scope="col">CI</th>
         <th scope="col">Last build</th>
       </tr>
@@ -50,19 +50,20 @@
         <th scope="row"><a href="#{{ line.id }}">{{ line.line }}</a></th>
         <td>{% if line.latest_release %}{{ line.latest_release.version }} ({{ line.latest_release.release_date }}){% else %}—{% endif %}</td>
         <td>
-          {% if line.next_versions %}
-            {{ line.next_versions | map(attribute="name") | join(", ") }}
+          {% if line.next_release %}
+            {{ line.next_release.name }} &middot; {{ line.next_release.open_count }} open
           {% else %}
             —
           {% endif %}
         </td>
-        <td>{{ line.total_open_blockers }}</td>
+        <td>{{ line.blockers_to_next_milestone if line.blockers_to_next_milestone else "—" }}</td>
         <td>{{ line.ci.last_build_result if line.ci.last_build_result else "unavailable" }}{% if line.ci.latest_test_failures is not none %} ({{ line.ci.latest_test_failures }} failures){% endif %}</td>
         <td>{% if line.ci.last_build_number %}#{{ line.ci.last_build_number }}{% else %}—{% endif %}</td>
       </tr>
       {% endfor %}
       <tr>
         <th scope="row">trunk (CI only)</th>
+        <td>—</td>
         <td>—</td>
         <td>—</td>
         <td>{{ trunk_ci.last_build_result if trunk_ci.last_build_result else "unavailable" }}{% if trunk_ci.latest_test_failures is not none %} ({{ trunk_ci.latest_test_failures }} failures){% endif %}</td>
@@ -95,7 +96,7 @@
     <ol class="releases-ladder-list">
       {% for step in line.ladder %}
       <li class="releases-ladder-step">
-        <p><strong>{{ step.name }}</strong>{% if step.description %} — &ldquo;{{ step.description }}&rdquo;{% endif %} ({{ step.open_count }} open)</p>
+        <p><strong>{{ step.name }}</strong>{% if step.target_label %} — blocks {{ step.target_label }}{% endif %}{% if step.description %} — &ldquo;{{ step.description }}&rdquo;{% endif %} ({{ step.open_count }} open)</p>
         {% if step.issues %}
         <ul class="releases-issue-list">
           {% for issue in step.issues %}
@@ -113,9 +114,30 @@
     {% else %}
     <p class="card-empty-state">No blocker-ladder placeholders tracked for this line.</p>
     {% endif %}
+  </section>
 
-    {% if line.ga_target %}
-    <p><strong>{{ line.ga_target.name }}</strong> (GA target, {{ line.ga_target.open_count }} open)</p>
+  {% if line.next_release %}
+  <section class="releases-next" aria-labelledby="next-{{ line.id }}-heading">
+    <h4 id="next-{{ line.id }}-heading">Next release</h4>
+    <p><strong>{{ line.next_release.name }}</strong> — {{ line.next_release.open_count }} open</p>
+    {% if line.next_release.issues %}
+    <ul class="releases-issue-list">
+      {% for issue in line.next_release.issues %}
+      <li>
+        <a href="https://issues.apache.org/jira/browse/{{ issue.issue_key }}">{{ issue.issue_key }}</a>
+        {{ issue.summary }} — {{ issue.status }}{% if issue.priority %}, {{ issue.priority }}{% endif %},
+        {{ issue.assignee_raw if issue.assignee_raw else "unassigned" }}
+      </li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+  </section>
+  {% endif %}
+
+  {% if line.ga_target %}
+  <section class="releases-ga-target" aria-labelledby="ga-target-{{ line.id }}-heading">
+    <h4 id="ga-target-{{ line.id }}-heading">Targeted at {{ line.line }}</h4>
+    <p>{{ line.ga_target.open_count }} open — not counted as blockers; these are changes merely targeted at this version, not tickets the project's own placeholder names as blocking it.</p>
     {% if line.ga_target.issues %}
     <ul class="releases-issue-list">
       {% for issue in line.ga_target.issues %}
@@ -127,12 +149,8 @@
       {% endfor %}
     </ul>
     {% endif %}
-    {% endif %}
-
-    {% if line.next_versions %}
-    <p>Next targeted version(s): {{ line.next_versions | map(attribute="name") | join(", ") }}</p>
-    {% endif %}
   </section>
+  {% endif %}
 
   <section class="releases-ci" aria-labelledby="ci-{{ line.id }}-heading">
     <h4 id="ci-{{ line.id }}-heading">CI</h4>

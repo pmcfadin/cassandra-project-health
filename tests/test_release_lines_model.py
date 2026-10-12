@@ -233,7 +233,7 @@ def test_line_with_no_ladder_but_a_series_and_next_version():
     assert three.total_open_blockers == 0
 
 
-def test_total_open_blockers_sums_ladder_and_ga_target_not_series():
+def test_total_open_blockers_sums_only_the_ladder_not_ga_target_or_series():
     jira_version_rows = [
         {
             "version_id": "1",
@@ -302,5 +302,190 @@ def test_total_open_blockers_sums_ladder_and_ga_target_not_series():
         jira_available=True,
     )
     six = views[0]
-    # 1 (ladder: 6.0-alpha) + 1 (ga_target: 6.0) = 2; series's 1 is excluded.
-    assert six.total_open_blockers == 2
+    # Only the ladder's own 1 (6.0-alpha) counts as a "blocker" (issue #166
+    # orchestrator review of PR #167): the ga_target's 1 ticket is merely
+    # targeted at 6.0, not blocking anything, and series's 1 is excluded
+    # the same way it always was.
+    assert six.total_open_blockers == 1
+    assert six.ga_target.open_count == 1
+
+
+def test_pre_release_timeline_from_jira_when_line_has_no_ga_tag_yet():
+    """Orchestrator review of PR #167: a line with no GA release yet (6.0)
+    still has a real release history -- its own alpha/beta/rc releases,
+    which `collectors/release.py`'s git-tag table never sees (it excludes
+    pre-release tags). The model must pull these from JIRA's own
+    `released_versions` instead, with `release_rows` (git tags) empty."""
+    jira_version_rows = [
+        {
+            "version_id": "1",
+            "name": "6.0-alpha1",
+            "description": None,
+            "released": True,
+            "release_date": date(2026, 3, 21),
+            "major_minor": "6.0",
+        },
+        {
+            "version_id": "2",
+            "name": "6.0-alpha2",
+            "description": None,
+            "released": True,
+            "release_date": date(2026, 8, 7),
+            "major_minor": "6.0",
+        },
+    ]
+    views = build_release_line_model(
+        active_lines=["6.0"],
+        jira_version_rows=jira_version_rows,
+        blocker_issue_rows=[],
+        ci_job_rows=[],
+        ci_trend_rows=[],
+        release_rows=[],  # no GA tag yet -- empty, same as production today
+        jira_available=True,
+    )
+    six = views[0]
+    assert [t.version for t in six.timeline] == ["6.0-alpha1", "6.0-alpha2"]
+    assert six.latest_release.version == "6.0-alpha2"
+    assert six.latest_release.release_date == date(2026, 8, 7)
+
+
+def test_pre_release_timeline_never_duplicates_ga_tag_rows():
+    """A line with both GA history (git tags) and its own earlier pre-
+    release history (JIRA) gets both, merged by date, with no duplicate
+    rows -- the two sources are structurally disjoint (dash- vs dot-shaped
+    names), never double-counted."""
+    jira_version_rows = [
+        {
+            "version_id": "1",
+            "name": "5.0-alpha2",
+            "description": None,
+            "released": True,
+            "release_date": date(2023, 10, 30),
+            "major_minor": "5.0",
+        },
+    ]
+    release_rows = [
+        {"major_minor": "5.0", "version": "5.0.9", "release_date": date(2026, 8, 7)},
+        {"major_minor": "5.0", "version": "5.0.8", "release_date": date(2026, 4, 16)},
+    ]
+    views = build_release_line_model(
+        active_lines=["5.0"],
+        jira_version_rows=jira_version_rows,
+        blocker_issue_rows=[],
+        ci_job_rows=[],
+        ci_trend_rows=[],
+        release_rows=release_rows,
+        jira_available=True,
+    )
+    five = views[0]
+    assert [t.version for t in five.timeline] == ["5.0-alpha2", "5.0.8", "5.0.9"]
+    assert five.latest_release.version == "5.0.9"
+
+
+def test_ladder_target_label_carried_through_to_the_view():
+    """Issue #166 orchestrator review of PR #167: the summary table's
+    "Blockers to next milestone" column reads each ladder step's own
+    `target_label` (e.g. "beta1", "rc1", "GA") -- the view must carry it
+    through from `collectors.release_lines.LadderStep`."""
+    jira_version_rows = [
+        {
+            "version_id": "1",
+            "name": "6.0-alpha",
+            "description": "Placeholder for blockers to 6.0-beta1 (unresolved tickets only)",
+            "released": False,
+            "release_date": None,
+            "major_minor": "6.0",
+        },
+        {
+            "version_id": "2",
+            "name": "6.0-rc",
+            "description": "Placeholder for blockers to 6.0.0 (GA) (unresolved tickets only)",
+            "released": False,
+            "release_date": None,
+            "major_minor": "6.0",
+        },
+    ]
+    views = build_release_line_model(
+        active_lines=["6.0"],
+        jira_version_rows=jira_version_rows,
+        blocker_issue_rows=[],
+        ci_job_rows=[],
+        ci_trend_rows=[],
+        release_rows=[],
+        jira_available=True,
+    )
+    six = views[0]
+    labels = {s.version_name: s.target_label for s in six.ladder}
+    assert labels == {"6.0-alpha": "beta1", "6.0-rc": "GA"}
+
+
+def test_next_target_step_carries_its_own_open_issues():
+    jira_version_rows = [
+        {
+            "version_id": "1",
+            "name": "6.0-alpha3",
+            "description": None,
+            "released": False,
+            "release_date": None,
+            "major_minor": "6.0",
+        },
+    ]
+    blocker_issue_rows = [
+        {
+            "version_name": "6.0-alpha3",
+            "issue_key": "CASSANDRA-99",
+            "summary": "x",
+            "status": "Open",
+            "priority": "Normal",
+            "assignee_raw": None,
+            "created_at": None,
+            "updated_at": None,
+        },
+        {
+            "version_name": "6.0-alpha3",
+            "issue_key": "CASSANDRA-100",
+            "summary": "y",
+            "status": "Open",
+            "priority": "Normal",
+            "assignee_raw": "mck",
+            "created_at": None,
+            "updated_at": None,
+        },
+    ]
+    views = build_release_line_model(
+        active_lines=["6.0"],
+        jira_version_rows=jira_version_rows,
+        blocker_issue_rows=blocker_issue_rows,
+        ci_job_rows=[],
+        ci_trend_rows=[],
+        release_rows=[],
+        jira_available=True,
+    )
+    six = views[0]
+    assert six.next_target == "6.0-alpha3"
+    assert six.next_target_step.version_name == "6.0-alpha3"
+    assert six.next_target_step.open_count == 2
+
+
+def test_unreleased_line_with_no_placeholders_yet_is_handled_gracefully():
+    """A hypothetical 7.0 line with no ladder/series/next/released
+    versions tracked at all yet must still produce a valid, empty view --
+    never crash."""
+    views = build_release_line_model(
+        active_lines=["7.0"],
+        jira_version_rows=[],
+        blocker_issue_rows=[],
+        ci_job_rows=[],
+        ci_trend_rows=[],
+        release_rows=[],
+        jira_available=True,
+    )
+    seven = views[0]
+    assert seven.line == "7.0"
+    assert seven.ladder == ()
+    assert seven.series is None
+    assert seven.ga_target is None
+    assert seven.next_target_step is None
+    assert seven.timeline == ()
+    assert seven.latest_release is None
+    assert seven.total_open_blockers == 0

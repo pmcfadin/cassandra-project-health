@@ -104,6 +104,75 @@ class TestConfigWiring:
         assert collector._jenkins_url == "https://ci-cassandra.apache.org/api/json"
         assert collector._active_lines == ["6.0", "5.0", "4.1", "4.0", "3.11", "3.0"]
 
+    def test_jql_filter_is_none_for_cassandra(self, config):
+        """Cassandra's own config has no `issue_tracker.jql_filter` --
+        unchanged from before issue #181."""
+        collector = _offline_collector(config, _smart_transport())
+        assert collector._jql_filter is None
+
+
+class TestFetchUnresolvedIssuesJqlFilter:
+    """issue #181: `fetch_unresolved_issues`'s fixVersion search was never
+    ANDing `config.issue_tracker.jql_filter` -- a subproject sharing
+    another's `project_key` (accord, ccm) would have this search span the
+    WHOLE shared project's fixVersion backlog, same bug class as the
+    Patch-Available backfill in `collectors/jira.py`. This collector isn't
+    wired into the pipeline for accord/ccm today (no `release_lines:`
+    section configured for either), but the filter must still be correct
+    and tested for when it is.
+    """
+
+    def _accord_config(self, tmp_path):
+        import yaml
+
+        config_path = tmp_path / "accord.yaml"
+        config_path.write_text(
+            yaml.safe_dump(
+                {
+                    "project": {"id": "accord", "display_name": "Accord"},
+                    "issue_tracker": {
+                        "type": "jira",
+                        "base_url": "https://issues.apache.org/jira",
+                        "project_key": "CASSANDRA",
+                        "jql_filter": "component = Accord",
+                    },
+                }
+            )
+        )
+        return load_project(config_path)
+
+    def test_filter_is_anded_into_fixversion_search(self, tmp_path):
+        accord_config = self._accord_config(tmp_path)
+        seen_jql: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen_jql.append(request.url.params.get("jql", ""))
+            return httpx.Response(200, json={"issues": [], "total": 0})
+
+        collector = _offline_collector(accord_config, httpx.MockTransport(handler))
+        collector.fetch_unresolved_issues("6.0")
+
+        assert len(seen_jql) == 1
+        assert seen_jql[0] == (
+            'project=CASSANDRA AND fixVersion="6.0" AND component = Accord '
+            "AND resolution=Unresolved ORDER BY key ASC"
+        )
+
+    def test_filter_omitted_for_cassandra_unchanged(self, config):
+        seen_jql: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen_jql.append(request.url.params.get("jql", ""))
+            return httpx.Response(200, json={"issues": [], "total": 0})
+
+        collector = _offline_collector(config, httpx.MockTransport(handler))
+        collector.fetch_unresolved_issues("6.0")
+
+        assert len(seen_jql) == 1
+        assert seen_jql[0] == (
+            'project=CASSANDRA AND fixVersion="6.0" AND resolution=Unresolved ORDER BY key ASC'
+        )
+
 
 class TestClassifyVersions:
     def test_6_0_line_real_data(self):

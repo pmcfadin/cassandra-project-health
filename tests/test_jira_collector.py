@@ -21,6 +21,7 @@ from project_health.collectors.jira import (
     CollectionError,
     JiraCollector,
     build_jql,
+    build_patch_available_backfill_jql,
 )
 from project_health.config import ProjectConfig, load_project
 
@@ -431,6 +432,101 @@ class TestJqlFilterFromConfig:
 
         assert len(seen_jql) == 1
         assert seen_jql[0].startswith("project=CASSANDRA AND component = Accord")
+
+
+class TestPatchAvailableBackfillJqlFilter:
+    """issue #181: `build_patch_available_backfill_jql` (used by the
+    Patch-Available changelog backfill) was ANDing the bare
+    `project=<key>` query only, never `config.issue_tracker.jql_filter` --
+    unlike `build_jql`, which already applied it correctly. A real run
+    against accord's config (component = Accord) walked the WHOLE shared
+    CASSANDRA project's Patch-Available backlog through this path (11,759
+    issues) instead of accord's own ~429. Same "`None` omits the clause
+    entirely, every other project unaffected" contract as `build_jql`'s own
+    `TestJqlFilterFromConfig` above.
+    """
+
+    def test_jql_adds_and_clause_when_filter_set(self):
+        jql = build_patch_available_backfill_jql(
+            "CASSANDRA", None, jql_filter="component = Accord"
+        )
+        assert jql == (
+            'project=CASSANDRA AND component = Accord AND status WAS "Patch Available" '
+            "ORDER BY key ASC"
+        )
+
+    def test_jql_omits_clause_when_filter_unset(self):
+        jql = build_patch_available_backfill_jql("CASSANDRA", None, jql_filter=None)
+        assert jql == 'project=CASSANDRA AND status WAS "Patch Available" ORDER BY key ASC'
+
+    def test_jql_unfiltered_default_matches_pre_issue_171_shape(self):
+        """Cassandra (no `jql_filter` configured) must see byte-identical
+        JQL to before this fix -- positional-only call, same as every
+        pre-existing caller before `jql_filter` was added."""
+        jql = build_patch_available_backfill_jql("CASSANDRA", None)
+        assert jql == 'project=CASSANDRA AND status WAS "Patch Available" ORDER BY key ASC'
+
+    def test_jql_combines_filter_and_cursor(self):
+        jql = build_patch_available_backfill_jql(
+            "CASSANDRA", "CASSANDRA-100", jql_filter='component = "Tool/CCM"'
+        )
+        assert jql == (
+            'project=CASSANDRA AND component = "Tool/CCM" AND status WAS "Patch Available" '
+            'AND key > "CASSANDRA-100" ORDER BY key ASC'
+        )
+
+    def test_collector_sends_filter_on_backfill_page_fetch(self, tmp_path):
+        """`JiraCollector.fetch_patch_available_backfill_page` must send the
+        same `config.issue_tracker.jql_filter` the incremental
+        `fetch_issues` path already sends -- this is the exact bug: the
+        backfill page fetch ignored `self._jql_filter` entirely."""
+        import yaml
+
+        config_path = tmp_path / "accord.yaml"
+        config_path.write_text(
+            yaml.safe_dump(
+                {
+                    "project": {"id": "accord", "display_name": "Accord"},
+                    "issue_tracker": {
+                        "type": "jira",
+                        "base_url": "https://issues.apache.org/jira",
+                        "project_key": "CASSANDRA",
+                        "jql_filter": "component = Accord",
+                    },
+                }
+            )
+        )
+        accord_config = load_project(config_path)
+
+        seen_jql: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            query = parse_qs(request.url.query.decode())
+            seen_jql.append(query["jql"][0])
+            return httpx.Response(200, json=EMPTY_PAGE)
+
+        collector = _offline_collector(accord_config, httpx.MockTransport(handler))
+        collector.fetch_patch_available_backfill_page(cursor=None, start_at=0)
+
+        assert len(seen_jql) == 1
+        assert "component = Accord" in seen_jql[0]
+        assert seen_jql[0].startswith("project=CASSANDRA AND component = Accord")
+
+    def test_collector_omits_filter_on_backfill_page_fetch_for_cassandra(self, config):
+        """Cassandra's own config has no `jql_filter` -- the backfill page
+        fetch must stay byte-identical to before this fix."""
+        seen_jql: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            query = parse_qs(request.url.query.decode())
+            seen_jql.append(query["jql"][0])
+            return httpx.Response(200, json=EMPTY_PAGE)
+
+        collector = _offline_collector(config, httpx.MockTransport(handler))
+        collector.fetch_patch_available_backfill_page(cursor=None, start_at=0)
+
+        assert len(seen_jql) == 1
+        assert seen_jql[0] == 'project=CASSANDRA AND status WAS "Patch Available" ORDER BY key ASC'
 
 
 class TestFieldIdsFromConfig:

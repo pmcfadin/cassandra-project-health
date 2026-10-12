@@ -343,6 +343,13 @@ class ReleaseLinesCollector:
             )
         self._base_url = base_url.rstrip("/")
         self._project_key = project_key
+        # issue #181: same `config.issue_tracker.jql_filter` AND-clause
+        # `collectors/jira.py`'s `JiraCollector` applies -- a subproject
+        # sharing another's `project_key` (accord, ccm) must never have
+        # `fetch_unresolved_issues`'s fixVersion search span the WHOLE
+        # shared project. `None` (every project verified so far except
+        # accord/ccm) omits the clause entirely, unchanged from before.
+        self._jql_filter = getattr(issue_tracker, "jql_filter", None)
 
         release_lines_cfg = getattr(config, "release_lines", None)
         self._active_lines: list[str] = list(
@@ -429,10 +436,10 @@ class ReleaseLinesCollector:
 
     def fetch_unresolved_issues(self, version_name: str) -> list[dict]:
         url = f"{self._base_url}/rest/api/2/search"
-        jql = (
-            f'project={self._project_key} AND fixVersion="{version_name}" '
-            "AND resolution=Unresolved ORDER BY key ASC"
-        )
+        jql = f'project={self._project_key} AND fixVersion="{version_name}"'
+        if self._jql_filter:
+            jql += f" AND {self._jql_filter}"
+        jql += " AND resolution=Unresolved ORDER BY key ASC"
         start_at = 0
         issues: list[dict] = []
         while True:

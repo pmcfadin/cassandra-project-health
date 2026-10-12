@@ -4008,6 +4008,27 @@ repos:
         reason = _not_applicable_reason("ponymail", java_driver_config)
         assert "shared_sources" in reason
 
+    @pytest.mark.parametrize("project_id", ["accord", "ccm"])
+    def test_accord_and_ccm_have_no_releases_section_release_not_applicable(self, project_id):
+        """issue #171: accord/ccm have no GA release tags at all (verified
+        live) -- their configs omit `releases:` entirely so `release`
+        (and the already-absent `release_lines`) are `not_applicable`
+        rather than a real, always-empty collection that leaves
+        release_frequency/release_regularity/time_since_last_release/
+        days_between_releases in `metrics_missing` (degrading the run) on
+        every single run forever."""
+        config = load_project(f"projects/{project_id}.yaml")
+        assert config.releases is None
+        assert config.release_lines is None
+        applicable = applicable_sources(config)
+        assert "release" not in applicable
+        assert "release_lines" not in applicable
+        # jira stays applicable -- only release cadence is affected.
+        assert "jira" in applicable
+
+        reason = _not_applicable_reason("release", config)
+        assert "releases" in reason
+
 
 def _minimal_subproject_config(tmp_path: Path, repo_owner: str, repo_name: str) -> Path:
     """issue #170 acceptance: a fixture subproject config with git + GitHub

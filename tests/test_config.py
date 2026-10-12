@@ -284,12 +284,21 @@ class TestProjectIndex:
             config = load_project(config_path)
             assert config.project.id == entry.id
 
+    # issue #181: accord/ccm have zero GA release tags at all (verified
+    # live), so their configs omit `releases:` entirely -- `release`
+    # becomes `not_applicable` (pipeline.applicable_sources) rather than a
+    # real, permanently-empty collection that degrades every run. Every
+    # OTHER subproject still configures `releases:` with an explicit
+    # `tag_prefix`.
+    _NO_RELEASES_SUBPROJECTS = frozenset({"accord", "ccm"})
+
     def test_disabled_subproject_entries_have_tag_prefix_or_github_issues(self):
-        """Live-verified placeholder data (issue #169): every subproject
-        either resolves a non-default `releases.tag_prefix` or has no
-        `releases` section loaded at all because it's a GitHub-issues-only
-        project -- i.e. none of the 10 new entries are unconfigured
-        boilerplate that happened to pass validation by accident."""
+        """Live-verified placeholder data (issue #169, #181): every
+        subproject either resolves a non-default `releases.tag_prefix`, or
+        has no `releases` section loaded at all because it genuinely has no
+        GA release tags (`_NO_RELEASES_SUBPROJECTS`) -- i.e. none of the 10
+        new entries are unconfigured boilerplate that happened to pass
+        validation by accident."""
         entries = load_project_index("projects/index.yaml")
         subprojects = [e for e in entries if e.id != "cassandra"]
         assert len(subprojects) == 10
@@ -297,7 +306,10 @@ class TestProjectIndex:
         for entry in subprojects:
             config_path = resolve_index_config_path("projects/index.yaml", entry)
             config = load_project(config_path)
-            assert config.releases is not None
+            if entry.id in self._NO_RELEASES_SUBPROJECTS:
+                assert config.releases is None, f"{entry.id}: expected no releases: section"
+                continue
+            assert config.releases is not None, f"{entry.id}: expected a releases: section"
             assert config.releases.tag_prefix is not None  # every subproject sets one explicitly
 
 

@@ -189,7 +189,9 @@ BACKFILL_FIELDS = "comment,assignee,created,resolution,resolutiondate,status,upd
 BACKFILL_PAGE_SIZE = 100
 
 
-def build_patch_available_backfill_jql(project_key: str, cursor: str | None) -> str:
+def build_patch_available_backfill_jql(
+    project_key: str, cursor: str | None, jql_filter: str | None = None
+) -> str:
     """JQL for the budgeted, resumable Patch-Available changelog backfill
     (issue #102): every issue that ever entered `Patch Available`, walked in
     ascending `key` order so a page-cursor (the last issue key processed)
@@ -198,8 +200,18 @@ def build_patch_available_backfill_jql(project_key: str, cursor: str | None) -> 
     `cursor` is `None` on the very first run (no `key >` clause -- start from
     the beginning of the project); otherwise a prior run's last-processed
     issue key.
+
+    `jql_filter` (issue #181: this backfill was AND-ing the bare
+    `project=<key>` query only -- a subproject sharing another's
+    `project_key` via `config.issue_tracker.jql_filter` (accord, ccm) got
+    the WHOLE shared project's Patch-Available backlog here even though
+    `build_jql`'s own incremental query was already scoped correctly. Same
+    "`None` omits the clause entirely" contract as `build_jql`.
     """
-    jql = f'project={project_key} AND status WAS "Patch Available"'
+    jql = f"project={project_key}"
+    if jql_filter:
+        jql += f" AND {jql_filter}"
+    jql += ' AND status WAS "Patch Available"'
     if cursor:
         jql += f' AND key > "{cursor}"'
     jql += " ORDER BY key ASC"
@@ -644,8 +656,16 @@ class JiraCollector:
         (`issues`, `total`) so the caller (`pipeline._collect_jira_patch_
         available_backfill`) can drive its own page-budget loop and persist
         the resulting cursor.
+
+        Issue #171: `self._jql_filter` (the same `config.issue_tracker.
+        jql_filter` `fetch_issues`/`build_jql` already apply) is threaded
+        through here too, so a subproject sharing another's `project_key`
+        (accord, ccm) never backfills the whole shared project's
+        Patch-Available backlog.
         """
-        jql = build_patch_available_backfill_jql(self._project_key, cursor)
+        jql = build_patch_available_backfill_jql(
+            self._project_key, cursor, jql_filter=self._jql_filter
+        )
         params = {
             "jql": jql,
             "startAt": start_at,

@@ -12,6 +12,14 @@
 # pipeline/site yet -- each gets its own follow-up issue in epic #168's
 # order (1 -> 2 -> 3 -> 4 -> 5; 6a/6b after 4; 7 last).
 #
+# Issue #172 (epic #168's multi-project nightly, step 4): java-driver and
+# sidecar are enabled first, as the issue's own plan calls for -- the
+# nightly run now loops `list-projects`' enabled, non-cassandra entries
+# through their own `project-health run`, so each newly-`enabled: true`
+# entry here starts consuming real, shared GITHUB_TOKEN/JIRA budget on the
+# very next nightly run. The rest stay `enabled: false` until this first
+# dispatch is verified green (issue #172's own acceptance criterion).
+#
 # projects/peers.yaml is a separate, pre-existing config (the Peers tab's
 # cross-project comparison set) and intentionally NOT an entry here.
 
@@ -20,7 +28,7 @@
   enabled: true
 - id: java-driver
   config: java-driver.yaml
-  enabled: false
+  enabled: true
 - id: gocql-driver
   config: gocql-driver.yaml
   enabled: false
@@ -35,7 +43,7 @@
   enabled: false
 - id: sidecar
   config: sidecar.yaml
-  enabled: false
+  enabled: true
 - id: analytics
   config: analytics.yaml
   enabled: false

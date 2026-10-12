@@ -68,6 +68,7 @@ from project_health.pilot.report import (
 from project_health.peers.config import load_peers
 from project_health.peers.pipeline import run_peers_collection
 from project_health.pipeline import ALL_SOURCES, run_pipeline
+from project_health.seed_subproject import seed_subproject
 from project_health.site.generate import generate_all_projects
 from project_health.private_run.quarters import parse_quarters_arg
 from project_health.private_run.runner import DEFAULT_MONTHLY_CAP_USD as PRIVATE_RUN_DEFAULT_CAP
@@ -459,6 +460,31 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Root of the data branch checkout (each project's own data dir resolves under it)",
     )
     site_parser.add_argument("--out", required=True, help="Output directory for the rendered site")
+
+    seed_subproject_parser = subparsers.add_parser(
+        "seed-subproject",
+        help=(
+            "Issue #172: one-off, idempotent copy of a subproject's GitHub PR/review/"
+            "comment rows (plus the matching per-repo GraphQL cursor) out of a root "
+            "project's already-collected `raw/github` tables -- Cassandra's own "
+            "`pull_requests.repos` already covers several subprojects' repos, so this "
+            "spares a newly-enabled subproject's first real run from re-fetching (and "
+            "re-spending shared GITHUB_TOKEN budget on) PR history the root project "
+            "already paid for. A no-op if --data-dir already has a `github` watermark."
+        ),
+    )
+    seed_subproject_parser.add_argument(
+        "--from",
+        dest="from_data_dir",
+        required=True,
+        help="Root data dir to copy rows from (e.g. a data-branch checkout's root)",
+    )
+    seed_subproject_parser.add_argument(
+        "--project", required=True, help="Path to the destination subproject's projects/<id>.yaml"
+    )
+    seed_subproject_parser.add_argument(
+        "--data-dir", required=True, help="Destination data dir (this subproject's own data root)"
+    )
 
     verify_policy_sources_parser = subparsers.add_parser(
         "verify-policy-sources",
@@ -1040,6 +1066,13 @@ def _cmd_list_projects(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_seed_subproject(args: argparse.Namespace) -> int:
+    config = load_project(args.project)
+    report = seed_subproject(args.from_data_dir, config, args.data_dir)
+    print(json.dumps(report.to_json_dict(), indent=2, sort_keys=True))
+    return 0
+
+
 def _cmd_site(args: argparse.Namespace) -> int:
     rendered = generate_all_projects(args.index, args.data_dir, args.out)
     if not rendered:
@@ -1072,6 +1105,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_list_projects(args)
     if args.command == "site":
         return _cmd_site(args)
+    if args.command == "seed-subproject":
+        return _cmd_seed_subproject(args)
     if args.command == "verify-policy-sources":
         return _cmd_verify_policy_sources(args)
     if args.command == "private-run":

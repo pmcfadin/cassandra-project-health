@@ -63,15 +63,20 @@ def test_preserves_index_order(tmp_path, capsys):
     assert [line.split("\t")[0] for line in lines] == ["first", "second"]
 
 
-def test_default_index_path_lists_only_cassandra(capsys):
+def test_default_index_path_lists_the_enabled_entries(capsys):
     """Run from the repo root (pytest's default cwd) against the real
-    `projects/index.yaml` -- every subproject entry is `enabled: false`
-    (issue #169), so only `cassandra` should print."""
+    `projects/index.yaml` -- issue #172 enables `java-driver` and `sidecar`
+    alongside `cassandra`; every other subproject entry stays
+    `enabled: false` until its own follow-up issue in epic #168's order."""
     exit_code = cli.main(["list-projects"])
 
     assert exit_code == 0
     lines = capsys.readouterr().out.strip().splitlines()
-    assert lines == [f"cassandra\t{Path('projects/cassandra.yaml')}"]
+    assert lines == [
+        f"cassandra\t{Path('projects/cassandra.yaml')}",
+        f"java-driver\t{Path('projects/java-driver.yaml')}",
+        f"sidecar\t{Path('projects/sidecar.yaml')}",
+    ]
 
 
 def test_missing_index_file_raises(tmp_path):

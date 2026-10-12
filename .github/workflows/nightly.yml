@@ -185,6 +185,16 @@ jobs:
       # data-branch commit + site build below run) rather than failing the
       # whole nightly job -- a subproject that doesn't finish its backfill
       # tonight simply resumes from its own watermark tomorrow night.
+      #
+      # Before each subproject's own run: `seed-subproject` (idempotent,
+      # see src/project_health/seed_subproject.py) copies that subproject's
+      # GitHub PR/review/comment rows + cursor out of Cassandra's own
+      # already-collected `raw/github` tables, if Cassandra's
+      # `pull_requests.repos` happens to cover that subproject's repo --
+      # sparing a newly-enabled subproject's first run from re-fetching PR
+      # history on this same shared token budget. A no-op (same `::warning::`
+      # + continue treatment) once a subproject has its own watermark, or
+      # for a subproject whose repo Cassandra's config doesn't cover.
       - name: Run subproject pipelines
         id: subprojects
         working-directory: main
@@ -201,6 +211,12 @@ jobs:
               continue
             fi
             echo "::group::${project_id}"
+            if ! project-health seed-subproject \
+              --from ../data \
+              --project "$config_path" \
+              --data-dir "../data/projects/${project_id}"; then
+              echo "::warning::seed-subproject failed for project '${project_id}'; continuing without seeding"
+            fi
             if timeout 15m project-health run \
               --project "$config_path" \
               --data-dir "../data/projects/${project_id}" \

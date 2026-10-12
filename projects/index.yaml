@@ -31,28 +31,28 @@
   enabled: true
 - id: gocql-driver
   config: gocql-driver.yaml
-  enabled: false
+  enabled: true
 - id: python-driver
   config: python-driver.yaml
-  enabled: false
+  enabled: true
 - id: cpp-driver
   config: cpp-driver.yaml
-  enabled: false
+  enabled: true
 - id: nodejs-driver
   config: nodejs-driver.yaml
-  enabled: false
+  enabled: true
 - id: sidecar
   config: sidecar.yaml
   enabled: true
 - id: analytics
   config: analytics.yaml
-  enabled: false
+  enabled: true
 - id: accord
   config: accord.yaml
-  enabled: false
+  enabled: true
 - id: easy-stress
   config: easy-stress.yaml
-  enabled: false
+  enabled: true
 - id: ccm
   config: ccm.yaml
-  enabled: false
+  enabled: true

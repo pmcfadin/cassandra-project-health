@@ -48,6 +48,7 @@ def build_manifest(
     status: str,
     error: str | None = None,
     metrics_missing: list[str] | None = None,
+    metrics_not_applicable: list[str] | None = None,
 ) -> dict[str, Any]:
     """Build the run-manifest dict (ARCHITECTURE.md §5).
 
@@ -69,6 +70,16 @@ def build_manifest(
     is non-empty; this function doesn't compute `status` itself, only
     defaults `metrics_missing` to `[]` and writes whatever `status` it's
     given.
+
+    `metrics_not_applicable` (issue #170 fixup) lists every zero-row
+    registered metric whose EVERY declared source
+    (`site.metrics_meta.M0_METRICS[metric_id].sources`) is not applicable to
+    this project's config at all (`pipeline.applicable_sources`) -- e.g.
+    every `jira`-sourced metric for a project with no `issue_tracker:`
+    configured. Distinct from `metrics_missing`: this project genuinely
+    cannot ever produce that metric, which is not the same failure mode as
+    a contract mismatch or a collector outage, so it's excluded from
+    `metrics_missing` and never marks `status` `'degraded'`.
 
     Every M0 metric emits one row per window even when that window is below
     its sample floor (`flag='insufficient_data'`, METRICS.md §0.6) — a
@@ -97,6 +108,7 @@ def build_manifest(
         "metrics_computed": metrics_computed,
         "metrics_skipped_insufficient_data": [],
         "metrics_missing": list(metrics_missing) if metrics_missing else [],
+        "metrics_not_applicable": list(metrics_not_applicable) if metrics_not_applicable else [],
         "data_branch_commit": data_branch_commit,
         "site_deploy_status": site_deploy_status,
         "status": status,

@@ -33,6 +33,7 @@ from project_health.collectors.release_lines import ReleaseLinesCollector
 from project_health.collectors.security import SecurityCollector
 from project_health.config import FlexibleSection, load_project
 from project_health.pipeline import (
+    ALL_SOURCES,
     _collect_github_pr_issue_link_backfill,
     _dedupe_commit_trailer_review_events,
     _dedupe_governance_commit_records,
@@ -46,6 +47,8 @@ from project_health.pipeline import (
     _dedupe_roster_entries,
     _dedupe_security_advisories,
     _github_pr_issue_link_backfill_budget,
+    _not_applicable_reason,
+    applicable_sources,
     run_pipeline,
 )
 from project_health.schema import get_schema, validate
@@ -3942,3 +3945,301 @@ class TestReleaseLinesIntegration:
         assert result.manifest["sources"]["release_lines"]["status"] == "degraded"
         for block in ("jira_status", "butler_status", "jenkins_status"):
             assert result.manifest["sources"]["release_lines"][block] == "failed"
+
+
+# --- issue #170: per-project source applicability ---------------------------
+
+
+class TestApplicableSources:
+    """`applicable_sources` (issue #170): which of `ALL_SOURCES` make sense
+    for a given project's config -- a source with no matching config
+    section, or one this project marks `shared_sources:`, is excluded."""
+
+    def test_cassandra_config_is_unchanged_every_source_applicable(self, config):
+        """Cassandra's own config configures every section and sets no
+        `shared_sources:` -- this must stay a behavior-preserving no-op."""
+        assert applicable_sources(config) == ALL_SOURCES
+
+    def test_java_driver_config_excludes_shared_sources(self):
+        """projects/java-driver.yaml sets `shared_sources: [asf_roster,
+        ponymail, governance]` -- those three are excluded regardless of
+        whether their config sections happen to be present."""
+        java_driver_config = load_project("projects/java-driver.yaml")
+        applicable = applicable_sources(java_driver_config)
+        assert "asf_roster" not in applicable
+        assert "ponymail" not in applicable
+        assert "governance" not in applicable
+        # java-driver DOES configure its own issue_tracker/releases/
+        # pull_requests -- those stay applicable.
+        assert "jira" in applicable
+        assert "release" in applicable
+        assert "github" in applicable
+
+    def test_easy_stress_config_excludes_jira_no_issue_tracker(self):
+        """easy-stress has no `issue_tracker:` section at all (GitHub
+        Issues only) -- jira must never be attempted for it."""
+        easy_stress_config = load_project("projects/easy-stress.yaml")
+        assert "jira" not in applicable_sources(easy_stress_config)
+
+    def test_fixture_config_with_no_optional_sections_excludes_them_all(self, tmp_path):
+        config_path = tmp_path / "minimal.yaml"
+        config_path.write_text(
+            """
+project:
+  id: minimal
+  display_name: Minimal Fixture Project
+repos:
+  - owner: apache
+    name: cassandra-minimal-fixture
+    default_branch: trunk
+"""
+        )
+        minimal_config = load_project(config_path)
+        applicable = applicable_sources(minimal_config)
+        assert applicable == ("git", "security", "github_commit_authors", "github_profile")
+
+    def test_not_applicable_reason_for_missing_config_section(self):
+        easy_stress_config = load_project("projects/easy-stress.yaml")
+        reason = _not_applicable_reason("jira", easy_stress_config)
+        assert "issue_tracker" in reason
+
+    def test_not_applicable_reason_for_shared_source(self):
+        java_driver_config = load_project("projects/java-driver.yaml")
+        reason = _not_applicable_reason("ponymail", java_driver_config)
+        assert "shared_sources" in reason
+
+
+def _minimal_subproject_config(tmp_path: Path, repo_owner: str, repo_name: str) -> Path:
+    """issue #170 acceptance: a fixture subproject config with git + GitHub
+    only -- no `issue_tracker`/`mailing_lists`/`roster`/`releases`/
+    `release_lines`/`reviewer_extraction` at all -- so `applicable_sources`
+    must exclude jira/ponymail/asf_roster/release/release_lines/governance
+    for it, and the run must complete without crashing on any of them."""
+    config_path = tmp_path / "fixture-subproject.yaml"
+    config_path.write_text(
+        f"""
+project:
+  id: fixture-subproject
+  display_name: Fixture Subproject
+repos:
+  - owner: {repo_owner}
+    name: {repo_name}
+    default_branch: trunk
+pull_requests:
+  type: github
+  repos: ["{repo_owner}/{repo_name}"]
+"""
+    )
+    return config_path
+
+
+class TestSubprojectFixturePipeline:
+    """issue #170 acceptance: a git+GitHub-only subproject config completes
+    a full `run_pipeline` call without crashing, with every source this
+    config doesn't support recorded `not_applicable` (not `failed`), and
+    the registered metrics that depend ENTIRELY on those sources recorded
+    `metrics_not_applicable` (not `metrics_missing`) -- a `'degraded'`
+    status/non-zero exit code is reserved for a genuine gap, never for
+    "this project doesn't have this kind of data at all" (issue #170 PR
+    review fixup: every subproject marks `ponymail` `shared_sources`, and
+    several have no JIRA at all, so without this fix EVERY subproject run
+    would have been permanently `'degraded'`)."""
+
+    def test_completes_and_marks_unconfigured_sources_not_applicable(
+        self, tmp_path, git_workdir
+    ):
+        config_path = _minimal_subproject_config(tmp_path, "apache", "cassandra-fixture")
+        fixture_config = load_project(config_path)
+        data_dir = tmp_path / "data"
+
+        result = run_pipeline(
+            config=fixture_config,
+            data_dir=data_dir,
+            workdir=git_workdir,
+            now=NOW,
+            code_sha="abc1234",
+            security_collector_factory=_security_factory(),
+            github_collector_factory=_github_factory(),
+            github_commit_author_collector_factory=_github_commit_author_factory(),
+            github_profile_collector_factory=_github_profile_factory(),
+        )
+
+        # Completed without raising, produced a metrics snapshot, and is a
+        # full success -- not merely "didn't crash."
+        assert result.manifest["status"] == "ok"
+        assert result.exit_code == 0
+        assert (data_dir / "snapshots" / result.run_id / "metrics.parquet").is_file()
+
+        for source in ("jira", "ponymail", "asf_roster", "release", "release_lines"):
+            assert result.manifest["sources"][source]["status"] == "not_applicable"
+            assert "reason" in result.manifest["sources"][source]
+
+        # git/github/security/github_commit_authors/github_profile were
+        # applicable and actually attempted.
+        assert result.manifest["sources"]["git"]["status"] == "ok"
+        assert result.manifest["sources"]["github"]["status"] == "ok"
+
+        # No stray `manifest["governance"]` top-level key either -- the
+        # compliance engine was never attempted for this config (no
+        # `reviewer_extraction:`), only recorded `not_applicable` under
+        # `sources.governance`, mirroring every other excluded source.
+        assert "governance" not in result.manifest
+        assert result.manifest["sources"]["governance"]["status"] == "not_applicable"
+
+    def test_jira_and_release_dependent_metrics_are_not_applicable_not_missing(
+        self, tmp_path, git_workdir
+    ):
+        """A registered metric whose EVERY declared source
+        (`site.metrics_meta.M0_METRICS[metric_id].sources`) is not
+        applicable to this config at all -- every jira-sourced metric
+        (no `issue_tracker:`), every release-sourced metric (no
+        `releases:`), `pmc_joins_quarterly` (no `roster:`) -- must land in
+        `metrics_not_applicable`, never `metrics_missing`, and must never
+        mark the run `'degraded'`."""
+        config_path = _minimal_subproject_config(tmp_path, "apache", "cassandra-fixture")
+        fixture_config = load_project(config_path)
+        data_dir = tmp_path / "data"
+
+        result = run_pipeline(
+            config=fixture_config,
+            data_dir=data_dir,
+            workdir=git_workdir,
+            now=NOW,
+            code_sha="abc1234",
+            security_collector_factory=_security_factory(),
+            github_collector_factory=_github_factory(),
+            github_commit_author_collector_factory=_github_commit_author_factory(),
+            github_profile_collector_factory=_github_profile_factory(),
+        )
+
+        assert result.manifest["status"] == "ok"
+        assert result.exit_code == 0
+        assert result.manifest["metrics_missing"] == []
+        for metric_id in (
+            "median_resolution_latency_jira",
+            "median_resolution_latency_jira_cohort_12m",
+            "time_to_first_response_jira",
+            "change_request_closure_ratio_jira_patch",
+            "release_frequency",
+            "release_regularity",
+            "time_since_last_release",
+            "days_between_releases",
+            "pmc_joins_quarterly",
+        ):
+            assert metric_id in result.manifest["metrics_not_applicable"], metric_id
+
+        # `stale_jira_rate` is dense over months regardless of whether any
+        # jira issue exists, so it's still fully `computed` (with an
+        # `insufficient_data`-flagged row, not absent) -- neither
+        # `metrics_missing` nor `metrics_not_applicable`.
+        assert "stale_jira_rate@1.0" in result.manifest["metrics_computed"]
+
+        metrics_table = validate(
+            "metric_value",
+            pq.read_table(data_dir / "snapshots" / result.run_id / "metrics.parquet"),
+        )
+        # Every OTHER, non-jira/release/roster-backed metric still computed
+        # cleanly from this config's real git/github data.
+        computed_ids = {row["metric_id"] for row in metrics_table.to_pylist()}
+        assert "active_contributors_monthly" in computed_ids
+
+    def test_explicitly_requesting_a_non_applicable_source_is_still_not_applicable(
+        self, tmp_path, git_workdir
+    ):
+        """An explicit `sources=` request for a source this config doesn't
+        support is recorded `not_applicable`, same as the default
+        (`sources=None`) case -- never attempted, never `'failed'`."""
+        config_path = _minimal_subproject_config(tmp_path, "apache", "cassandra-fixture")
+        fixture_config = load_project(config_path)
+        data_dir = tmp_path / "data"
+
+        result = run_pipeline(
+            config=fixture_config,
+            data_dir=data_dir,
+            workdir=git_workdir,
+            sources=["git", "jira"],
+            now=NOW,
+            code_sha="abc1234",
+        )
+        assert result.manifest["sources"]["git"]["status"] == "ok"
+        assert result.manifest["sources"]["jira"]["status"] == "not_applicable"
+
+
+class TestLatestRunPointer:
+    """issue #170: `state/latest_run.json` under the project's own data
+    dir, written only on a successful metrics computation."""
+
+    def test_written_under_project_data_dir_for_a_subproject(self, tmp_path, git_workdir):
+        config_path = _minimal_subproject_config(tmp_path, "apache", "cassandra-fixture")
+        fixture_config = load_project(config_path)
+        data_dir = tmp_path / "data"
+
+        result = run_pipeline(
+            config=fixture_config,
+            data_dir=data_dir,
+            workdir=git_workdir,
+            now=NOW,
+            code_sha="abc1234",
+            security_collector_factory=_security_factory(),
+            github_collector_factory=_github_factory(),
+            github_commit_author_collector_factory=_github_commit_author_factory(),
+            github_profile_collector_factory=_github_profile_factory(),
+        )
+
+        pointer_path = data_dir / "projects" / "fixture-subproject" / "state" / "latest_run.json"
+        assert pointer_path.is_file()
+        pointer = json.loads(pointer_path.read_text())
+        assert pointer["run_id"] == result.run_id
+        assert pointer["project_id"] == "fixture-subproject"
+        assert pointer["display_name"] == "Fixture Subproject"
+        assert pointer["finished_at"]
+
+        # Cassandra (the root project) must NOT get a `projects/cassandra/`
+        # subdirectory -- data_layout.project_data_dir's own contract.
+        assert not (data_dir / "projects" / "cassandra").exists()
+
+    def test_written_at_data_dir_root_for_cassandra(self, tmp_path, config, git_workdir):
+        transport = _paginated_transport({0: PAGE_1, 5: PAGE_2, 10: EMPTY_PAGE})
+        data_dir = tmp_path / "data"
+
+        result = run_pipeline(
+            config=config,
+            data_dir=data_dir,
+            workdir=git_workdir,
+            sources=["git", "jira", "asf_roster", "ponymail", "release", "github"],
+            now=NOW,
+            code_sha="abc1234",
+            jira_collector_factory=_jira_factory(transport),
+            asf_roster_collector_factory=_roster_factory(),
+            ponymail_collector_factory=_ponymail_factory(),
+            github_commit_author_collector_factory=_github_commit_author_factory(),
+            github_profile_collector_factory=_github_profile_factory(),
+            github_collector_factory=_github_factory(),
+            release_collector_factory=_release_factory(),
+        )
+
+        pointer_path = data_dir / "state" / "latest_run.json"
+        assert pointer_path.is_file()
+        pointer = json.loads(pointer_path.read_text())
+        assert pointer["run_id"] == result.run_id
+        assert pointer["project_id"] == "cassandra"
+
+    def test_not_written_when_metrics_fail(self, tmp_path, config, git_workdir, monkeypatch):
+        import project_health.pipeline as pipeline_module
+
+        def _boom(*args, **kwargs):
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(pipeline_module, "compute_all", _boom)
+        data_dir = tmp_path / "data"
+
+        result = run_pipeline(
+            config=config,
+            data_dir=data_dir,
+            workdir=git_workdir,
+            sources=["git"],
+            now=NOW,
+            code_sha="abc1234",
+        )
+        assert result.manifest["status"] == "failed"
+        assert not (data_dir / "state" / "latest_run.json").exists()

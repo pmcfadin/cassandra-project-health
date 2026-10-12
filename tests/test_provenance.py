@@ -42,6 +42,28 @@ def test_metrics_missing_is_written_verbatim_alongside_degraded_status():
     assert manifest["metrics_missing"] == ["active_contributors_monthly"]
 
 
+def test_metrics_not_applicable_defaults_to_empty_list():
+    manifest = build_manifest(**_base_kwargs())
+    assert manifest["metrics_not_applicable"] == []
+
+
+def test_metrics_not_applicable_is_written_verbatim_alongside_ok_status():
+    """issue #170 fixup: a metric none of whose sources are applicable to
+    this project goes in `metrics_not_applicable`, not `metrics_missing` --
+    `status` stays `'ok'` (the caller decides `status`; this function just
+    writes whatever it's given)."""
+    manifest = build_manifest(
+        **_base_kwargs(
+            status="ok",
+            metrics_missing=[],
+            metrics_not_applicable=["median_resolution_latency_jira"],
+        )
+    )
+    assert manifest["status"] == "ok"
+    assert manifest["metrics_missing"] == []
+    assert manifest["metrics_not_applicable"] == ["median_resolution_latency_jira"]
+
+
 def test_metrics_skipped_insufficient_data_is_unaffected_by_metrics_missing():
     """`metrics_skipped_insufficient_data` (a below-floor metric that still
     emits a row) and `metrics_missing` (a metric that emitted zero rows) are

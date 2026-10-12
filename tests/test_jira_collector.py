@@ -366,6 +366,73 @@ class TestWatermark:
         assert 'updated >= "2026-09-23 23:58"' in seen_jql[0]
 
 
+class TestJqlFilterFromConfig:
+    """issue #170: `config.issue_tracker.jql_filter` (a subproject sharing
+    another's `project_key`, e.g. accord's `component = Accord`) is
+    AND-ed into the JQL `build_jql` sends, and omitted entirely when unset
+    (Cassandra's own config, and every other project's) -- same
+    "write a minimal alt config to tmp_path" pattern as
+    `TestFieldIdsFromConfig` below.
+    """
+
+    def test_build_jql_adds_and_clause_when_filter_set(self):
+        jql = build_jql("CASSANDRA", None, jql_filter="component = Accord")
+        assert jql == "project=CASSANDRA AND component = Accord ORDER BY updated ASC"
+
+    def test_build_jql_omits_clause_when_filter_unset(self):
+        jql = build_jql("CASSANDRA", None, jql_filter=None)
+        assert jql == "project=CASSANDRA ORDER BY updated ASC"
+
+    def test_build_jql_combines_filter_and_watermark(self):
+        jql = build_jql(
+            "CASSANDRA", "2026-09-25T21:38:41+00:00", jql_filter='component = "Tool/CCM"'
+        )
+        assert jql == (
+            'project=CASSANDRA AND component = "Tool/CCM" '
+            'AND updated >= "2026-09-25 21:36" ORDER BY updated ASC'
+        )
+
+    def test_collector_reads_jql_filter_from_config_and_sends_it(self, tmp_path):
+        import yaml
+
+        config_path = tmp_path / "accord.yaml"
+        config_path.write_text(
+            yaml.safe_dump(
+                {
+                    "project": {"id": "accord", "display_name": "Accord"},
+                    "issue_tracker": {
+                        "type": "jira",
+                        "base_url": "https://issues.apache.org/jira",
+                        "project_key": "CASSANDRA",
+                        "jql_filter": "component = Accord",
+                    },
+                    "reviewer_extraction": {
+                        "commit_trailer": {"type": "commit_message_regex", "pattern": ".*"},
+                        "jira_fields": {
+                            "type": "jira_custom_field",
+                            "reviewers_field": "customfield_12313420",
+                            "reviewer_field": "customfield_10022",
+                        },
+                    },
+                }
+            )
+        )
+        accord_config = load_project(config_path)
+
+        seen_jql: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            query = parse_qs(request.url.query.decode())
+            seen_jql.append(query["jql"][0])
+            return httpx.Response(200, json=EMPTY_PAGE)
+
+        collector = _offline_collector(accord_config, httpx.MockTransport(handler))
+        collector.collect()
+
+        assert len(seen_jql) == 1
+        assert seen_jql[0].startswith("project=CASSANDRA AND component = Accord")
+
+
 class TestFieldIdsFromConfig:
     def test_alternate_field_ids_are_read_from_config(self, tmp_path):
         import yaml
@@ -428,6 +495,38 @@ class TestFieldIdsFromConfig:
         assert "customfield_88888" in seen_fields_params[0]
         assert result.review_event_count == 1
         assert result.review_events.to_pylist()[0]["reviewer_raw_value"] == "maedhroz"
+
+
+class TestNoReviewerExtractionConfigured:
+    """issue #170: `reviewer_extraction:` is optional (issue #169) -- a
+    subproject with `issue_tracker:` set but no verified commit-trailer/
+    JIRA-custom-field convention yet (e.g. `projects/java-driver.yaml`,
+    which extends only `_identity.yaml`, not `_shared.yaml`) must still be
+    able to construct a `JiraCollector` and collect issues -- just with no
+    `review_event` rows from JIRA custom fields, since there's no field id
+    configured to read them from."""
+
+    def test_java_driver_config_constructs_without_reviewer_extraction(self):
+        java_driver_config = load_project("projects/java-driver.yaml")
+        assert java_driver_config.reviewer_extraction is None
+        collector = JiraCollector(java_driver_config)
+        assert collector._reviewers_field is None
+        assert collector._reviewer_field is None
+
+    def test_collect_still_returns_issues_with_zero_review_events(self):
+        java_driver_config = load_project("projects/java-driver.yaml")
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json=EMPTY_PAGE)
+
+        collector = JiraCollector(
+            java_driver_config,
+            transport=httpx.MockTransport(handler),
+            min_request_interval=0,
+            sleep_fn=lambda s: None,
+        )
+        result = collector.collect()
+        assert result.review_event_count == 0
 
 
 class TestNoNetworkAccess:

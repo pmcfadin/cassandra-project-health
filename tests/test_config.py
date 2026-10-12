@@ -380,7 +380,10 @@ class TestCassandraConfigBeforeAfterEquality:
         after = config.model_dump(
             exclude={
                 "issue_tracker": {"jql_filter"},
-                "releases": {"tag_prefix", "ga_major_only"},
+                # `ga_require_patch` (issue #170 PR #179 review fixup) is
+                # the same kind of new, inert-by-default `releases:` field
+                # as `tag_prefix`/`ga_major_only` above.
+                "releases": {"tag_prefix", "ga_major_only", "ga_require_patch"},
                 "github_issues": True,
                 "shared_sources": True,
             }
@@ -397,5 +400,6 @@ class TestCassandraConfigBeforeAfterEquality:
         assert config.issue_tracker.jql_filter is None
         assert config.releases.tag_prefix is None
         assert config.releases.ga_major_only is False
+        assert config.releases.ga_require_patch is False
         assert config.github_issues is None
         assert config.shared_sources == []

@@ -1566,12 +1566,12 @@ def _collect_github_pr_issue_link_backfill(
                     done_flags[repo_label] = True
                     repo_status = "done"
                     break
-                if remaining is not None and remaining <= collector.rate_limit_floor:
+                if collector.floor_reached(rate_limit):
                     _log(
                         "github_pr_issue_link_backfill_rate_limited",
                         repo=repo_label,
                         remaining=remaining,
-                        floor=collector.rate_limit_floor,
+                        floor=collector.effective_floor(rate_limit),
                     )
                     budget_exhausted = True
                     break

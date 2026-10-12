@@ -656,3 +656,35 @@ class TestRateLimitFloorProperty:
         transport = httpx.MockTransport(lambda r: httpx.Response(200, json=EMPTY_PAGE))
         collector = _offline_collector(single_repo_config, transport, rate_limit_floor=777)
         assert collector.rate_limit_floor == 777
+
+
+class TestRelativeRateLimitFloor:
+    """Live stall 2026-10-11: the Actions GITHUB_TOKEN has ~1,000 GraphQL
+    points/hour, so a fixed 2,500 floor stopped every peers run at once."""
+
+    def _collector(self, floor, fraction):
+        from project_health.collectors.github import GitHubCollector
+        from project_health.config import load_project
+
+        return GitHubCollector(
+            load_project("projects/cassandra.yaml"),
+            token="t",
+            rate_limit_floor=floor,
+            rate_limit_floor_fraction=fraction,
+        )
+
+    def test_fraction_caps_floor_to_share_of_token_limit(self):
+        c = self._collector(2500, 0.5)
+        assert c.effective_floor({"limit": 1000, "remaining": 900}) == 500
+        assert not c.floor_reached({"limit": 1000, "remaining": 501})
+        assert c.floor_reached({"limit": 1000, "remaining": 500})
+
+    def test_fixed_floor_kept_when_token_limit_is_large(self):
+        c = self._collector(2500, 0.5)
+        assert c.effective_floor({"limit": 5000, "remaining": 4000}) == 2500
+        assert c.floor_reached({"limit": 5000, "remaining": 2500})
+
+    def test_no_fraction_or_no_limit_uses_fixed_floor(self):
+        assert self._collector(500, None).effective_floor({"limit": 1000}) == 500
+        assert self._collector(2500, 0.5).effective_floor({"remaining": 10}) == 2500
+        assert not self._collector(500, None).floor_reached({})

@@ -315,7 +315,9 @@ class _FakeCollector:
     ran release-verification's REST calls unauthenticated) is observable
     from outside `peer_collect`."""
 
-    def __init__(self, config, token=None, rate_limit_floor=500, transport=None):
+    def __init__(
+        self, config, token=None, rate_limit_floor=500, transport=None, **_kwargs
+    ):
         self.seen_tokens.append(token)
 
     def __enter__(self):

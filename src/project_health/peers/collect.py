@@ -274,6 +274,7 @@ def collect_and_write_github(
         config,
         token=token,
         rate_limit_floor=peers_config.collection.github_rate_limit_floor,
+        rate_limit_floor_fraction=peers_config.collection.github_rate_limit_floor_fraction,
         transport=transport,
     ) as collector:
         for peer in ordered_peers:

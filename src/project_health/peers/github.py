@@ -299,7 +299,6 @@ def run_created_desc_pass(
 
         pages += 1
         rate_limit = data.get("rateLimit") or {}
-        remaining = rate_limit.get("remaining")
         connection = data["repository"]["pullRequests"]
 
         kept_nodes = []
@@ -328,7 +327,7 @@ def run_created_desc_pass(
         if reached_stop or not page_info["hasNextPage"]:
             status = "completed"
             break
-        if remaining is not None and remaining <= collector.rate_limit_floor:
+        if collector.floor_reached(rate_limit):
             status = "partial"
             break
         if max_pages is not None and pages >= max_pages:
@@ -405,7 +404,6 @@ def run_open_prs_pass(
 
         pages += 1
         rate_limit = data.get("rateLimit") or {}
-        remaining = rate_limit.get("remaining")
         connection = data["repository"]["pullRequests"]
 
         p_rows, r_rows, c_rows, bp, br, bc = _normalize_page_nodes(
@@ -424,7 +422,7 @@ def run_open_prs_pass(
         if not page_info["hasNextPage"]:
             status = "completed"
             break
-        if remaining is not None and remaining <= collector.rate_limit_floor:
+        if collector.floor_reached(rate_limit):
             status = "partial"
             break
         if max_pages is not None and pages >= max_pages:
@@ -484,7 +482,6 @@ def run_closed_search_pass(
 
         pages += 1
         rate_limit = data.get("rateLimit") or {}
-        remaining = rate_limit.get("remaining")
         connection = data["search"]
         issue_count = connection.get("issueCount")
 
@@ -504,7 +501,7 @@ def run_closed_search_pass(
         if not page_info["hasNextPage"]:
             status = "completed"
             break
-        if remaining is not None and remaining <= collector.rate_limit_floor:
+        if collector.floor_reached(rate_limit):
             status = "partial"
             break
         if max_pages is not None and pages >= max_pages:

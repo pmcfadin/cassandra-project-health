@@ -155,6 +155,10 @@ class CollectionConfig(BaseModel):
 
     commit_lookback_months: int = DEFAULT_COMMIT_LOOKBACK_MONTHS
     github_rate_limit_floor: int = DEFAULT_GITHUB_RATE_LIMIT_FLOOR
+    # The effective reserve is min(floor, fraction x the token's hourly
+    # GraphQL limit), so the Actions GITHUB_TOKEN's ~1,000-point allowance is
+    # not swallowed whole by a 2,500-point floor (live stall, 2026-10-11).
+    github_rate_limit_floor_fraction: float | None = 0.5
     max_pages_per_pass: int = DEFAULT_MAX_PAGES_PER_PASS
     # Issue #148: this run's total shared page budget, split fairly across
     # whichever peers aren't already "done" this run (see

@@ -44,7 +44,7 @@ from project_health.classify.subsample import (
     DEFAULT_SUBSAMPLE_SIZE,
     run_pilot_subsample,
 )
-from project_health.config import load_project
+from project_health.config import load_project, load_project_index, resolve_index_config_path
 from project_health.governance.policy import DEFAULT_POLICY_PATH
 from project_health.governance.verify_sources import verify_policy_sources
 from project_health.label.label_set import LabelSetError
@@ -422,6 +422,19 @@ def _build_parser() -> argparse.ArgumentParser:
         "--dotenv",
         default=None,
         help="If set, load TYPESAFE_API_KEY from this .env file's jev_key= entry before running",
+    )
+
+    list_projects_parser = subparsers.add_parser(
+        "list-projects",
+        help=(
+            "Issue #169: print `id<TAB>config_path` for every `enabled: true` entry in "
+            "projects/index.yaml, in index order."
+        ),
+    )
+    list_projects_parser.add_argument(
+        "--index",
+        default="projects/index.yaml",
+        help="Path to the project registry (default: projects/index.yaml)",
     )
 
     verify_policy_sources_parser = subparsers.add_parser(
@@ -994,6 +1007,16 @@ def _cmd_verify_policy_sources(args: argparse.Namespace) -> int:
     return 1 if failed else 0
 
 
+def _cmd_list_projects(args: argparse.Namespace) -> int:
+    entries = load_project_index(args.index)
+    for entry in entries:
+        if not entry.enabled:
+            continue
+        config_path = resolve_index_config_path(args.index, entry)
+        print(f"{entry.id}\t{config_path}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
@@ -1013,6 +1036,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_pilot_evaluate(args)
     if args.command == "benchmark-public":
         return _cmd_benchmark_public(args)
+    if args.command == "list-projects":
+        return _cmd_list_projects(args)
     if args.command == "verify-policy-sources":
         return _cmd_verify_policy_sources(args)
     if args.command == "private-run":

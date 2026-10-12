@@ -1,0 +1,41 @@
+# Apache Cassandra Analytics — placeholder config (issue #169, epic #168).
+# `enabled: false` in projects/index.yaml -- not yet wired into site/pipeline.
+#
+# Live-verified 2026-10-12 (gh api repos/apache/cassandra-analytics,
+# .../tags?per_page=30): default_branch=trunk, newest tags
+# cassandra-analytics-0.4.0/0.3.0/... -- `cassandra-analytics-` prefix.
+#
+# Identity/bot settings are PMC-wide -- inherited from projects/_identity.yaml
+# via `extends:` (issue #169 fixup round 1).
+extends: _identity.yaml
+
+project:
+  id: analytics
+  display_name: Apache Cassandra Analytics
+
+repos:
+  - owner: apache
+    name: cassandra-analytics
+    default_branch: trunk
+
+issue_tracker:
+  type: jira
+  base_url: https://issues.apache.org/jira
+  project_key: CASSANALYTICS
+
+pull_requests:
+  type: github
+  repos: [apache/cassandra-analytics]
+
+releases:
+  type: git_tags_cross_checked_archive
+  tag_prefix: "cassandra-analytics-"   # verified live: tags are `cassandra-analytics-0.4.0`
+  # Verified live 2026-10-12: archive.apache.org/dist/cassandra/cassandra-analytics/ exists
+  # and lists bare-version directories (e.g. `0.2.0/`, mtime 2026-05-01 -- note: bare
+  # version, NOT the `cassandra-analytics-` git-tag prefix; the very first release, 0.1.0,
+  # is a loose tarball rather than a directory and so isn't picked up by
+  # collectors/release.py's `_parse_archive_listing`, a pre-existing parser gap this issue
+  # doesn't change) in the same autoindex format that parser already handles for the rest.
+  archive_url: https://archive.apache.org/dist/cassandra/cassandra-analytics/
+
+shared_sources: [asf_roster, ponymail, governance]

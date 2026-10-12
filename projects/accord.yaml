@@ -1,0 +1,45 @@
+# Apache Cassandra Accord — placeholder config (issue #169, epic #168).
+# `enabled: false` in projects/index.yaml -- not yet wired into site/pipeline.
+#
+# Accord has no JIRA project of its own; its issues are filed in CASSANDRA
+# with `component = Accord`, hence `issue_tracker.jql_filter` below rather
+# than a distinct `project_key`.
+#
+# Live-verified 2026-10-12 (gh api repos/apache/cassandra-accord,
+# .../tags?per_page=30): default_branch=trunk, NO tags at all -- no
+# systematic release-tag scheme, hence `releases.tag_prefix: ""`.
+# `has_issues: false` -- no github_issues section.
+#
+# Identity/bot settings are PMC-wide -- inherited from projects/_identity.yaml
+# via `extends:` (issue #169 fixup round 1).
+extends: _identity.yaml
+
+project:
+  id: accord
+  display_name: Apache Cassandra Accord
+
+repos:
+  - owner: apache
+    name: cassandra-accord
+    default_branch: trunk
+
+issue_tracker:
+  type: jira
+  base_url: https://issues.apache.org/jira
+  project_key: CASSANDRA
+  jql_filter: 'component = Accord'
+
+pull_requests:
+  type: github
+  repos: [apache/cassandra-accord]
+
+releases:
+  type: git_tags_cross_checked_archive
+  tag_prefix: ""        # verified live: no tags at all, no systematic scheme
+  # Verified live 2026-10-12: https://archive.apache.org/dist/cassandra/cassandra-accord/
+  # and https://archive.apache.org/dist/cassandra/accord/ both return HTTP 404 -- no
+  # archive.apache.org/dist distribution for this repo (consistent with it having no GA
+  # tags at all).
+  archive_url: null
+
+shared_sources: [asf_roster, ponymail, governance]

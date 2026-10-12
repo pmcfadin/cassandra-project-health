@@ -1,0 +1,50 @@
+# Project registry (issue #169, epic #168). Ordered list; `cassandra` is
+# the default project and stays at the site root (epic #168's header
+# switcher wiring is a later issue -- `load_project`/`project-health
+# list-projects` don't themselves decide site routing, they just make every
+# entry's config loadable and the enabled set listable).
+#
+# `config` is a filename resolved relative to this file's own directory
+# (config.resolve_index_config_path), not a full path. `enabled: false`
+# subprojects below have a real, loadable `projects/<id>.yaml` (verified
+# live against the real GitHub/JIRA endpoints, see each file's own header
+# comment) but aren't surfaced by `list-projects` or wired into the
+# pipeline/site yet -- each gets its own follow-up issue in epic #168's
+# order (1 -> 2 -> 3 -> 4 -> 5; 6a/6b after 4; 7 last).
+#
+# projects/peers.yaml is a separate, pre-existing config (the Peers tab's
+# cross-project comparison set) and intentionally NOT an entry here.
+
+- id: cassandra
+  config: cassandra.yaml
+  enabled: true
+- id: java-driver
+  config: java-driver.yaml
+  enabled: false
+- id: gocql-driver
+  config: gocql-driver.yaml
+  enabled: false
+- id: python-driver
+  config: python-driver.yaml
+  enabled: false
+- id: cpp-driver
+  config: cpp-driver.yaml
+  enabled: false
+- id: nodejs-driver
+  config: nodejs-driver.yaml
+  enabled: false
+- id: sidecar
+  config: sidecar.yaml
+  enabled: false
+- id: analytics
+  config: analytics.yaml
+  enabled: false
+- id: accord
+  config: accord.yaml
+  enabled: false
+- id: easy-stress
+  config: easy-stress.yaml
+  enabled: false
+- id: ccm
+  config: ccm.yaml
+  enabled: false

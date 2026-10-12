@@ -1,0 +1,80 @@
+# PMC-wide shared config (issue #169, epic #168).
+#
+# Sections here are the ASF dev@/user@ mailing lists, the PMC/committer
+# roster, and the ASF JIRA instance's global custom-field IDs
+# (`reviewer_extraction.jira_fields`) -- genuinely PMC-wide facts, but
+# (unlike `projects/_identity.yaml`'s bot/affiliation settings) only
+# verified/meaningful for the main `apache/cassandra` repo today: no
+# subproject's own dev@-equivalent list, roster scope, or JIRA
+# reviewer-field usage has been confirmed yet, so only `cassandra.yaml`
+# extends this file (fixup round 1 -- see `_identity.yaml`'s header for why
+# the two are split: a subproject gets identity/bot settings without also
+# inheriting a `reviewer_extraction.jira_fields` it hasn't verified applies
+# to it). `cassandra.yaml` pulls this in (alongside `_identity.yaml`) with
+# `extends: [_identity.yaml, _shared.yaml]` (`load_project`'s deep merge,
+# `config.py::_deep_merge` -- the project's own file always wins on a key
+# any extended file also defines).
+#
+# Moved verbatim out of `projects/cassandra.yaml` (issue #169) -- values are
+# unchanged; see that file's git history before this change for the
+# per-field provenance comments that used to live inline here (dev@/user@
+# automated-sender list verified against a live pull 2009-01-28 through
+# 2026-09-25, etc.) -- this split is a pure reorg, no values changed
+# (tests/test_config.py's before/after equality test enforces Cassandra's
+# own resolved config is byte-identical to before this file existed).
+
+mailing_lists:
+  type: ponymail                   # selects collectors/ponymail.py
+  domain: cassandra.apache.org
+  lists: [dev, user]               # not commits@ -- auto-generated commit-notification traffic, not discussion (issue #33)
+  metadata_only: true              # Phase 1 (D1): sender, timestamp, thread structure -- no body
+  max_months_per_run: 36           # nightly time budget (issue #33 fixup): ~5 min/list at the <=2 req/s pacing
+                                    # cap; backfills oldest-first across runs until each list is caught up
+  automated_senders:
+    - '(?i)^jenkins@builds\.apache\.org$'
+    - '(?i)^hudson@hudson\.apache\.org$'
+    - '(?i)^hudson@hudson\.zones\.apache\.org$'
+    - '(?i)^git@git\.apache\.org$'
+    - '(?i)^no-reply@apache\.org$'
+
+roster:
+  type: asf_whimsy                 # selects core/adapters/asf_roster.py
+  committee_info_url: https://whimsy.apache.org/public/committee-info.json
+  public_ldap_projects_url: https://whimsy.apache.org/public/public_ldap_projects.json
+  podling: false
+
+# affiliations_file/org_domains_file/org_aliases_file/github_company_lookback_months
+# and bot_patterns live in projects/_identity.yaml (fixup round 1) --
+# extended alongside this file by cassandra.yaml's
+# `extends: [_identity.yaml, _shared.yaml]`.
+
+# Phase 2a text pipeline (issue #43, D18): automated senders whose messages
+# are dropped before fetch/preprocess. Distinct from `bot_patterns` above
+# (identity exclusion vs. per-message sender exclusion) -- see
+# `config.AutomatedSenderPattern`'s docstring.
+automated_senders:
+  - regex: '(?i)^jira@|@jira\.apache\.org$'
+    note: "ASF JIRA's own notification/integration address"
+  - regex: '(?i)^git@|^commits?@'
+    note: "commit-notification mail, not discussion (issue #33 excludes commits@ from mailing_lists.lists for the same reason)"
+  - regex: '(?i)noreply@github\.com$|^notifications@github\.com$'
+    note: "GitHub notification mail"
+  - regex: '(?i)\[bot\]|-bot$|^dependabot'
+    note: "GitHub App / dependabot-style bot accounts, mirrors bot_patterns.github_login"
+  - regex: '(?i)^hudson@|^jenkins@|^ci@|^builds?@'
+    note: "CI system notification senders"
+  - regex: '(?i)^svn-role$|^git-role$'
+    note: "ASF infra service accounts (JIRA username form), mirrors bot_patterns.jira_username"
+
+# ASF JIRA's own custom-field IDs for the "Reviewers"/"Reviewer" fields are
+# global to the whole JIRA instance (issues.apache.org/jira), not scoped to
+# the CASSANDRA project -- shared across every ASF Cassandra PMC subproject
+# that files issues in the same JIRA instance. A project's own
+# `reviewer_extraction.commit_trailer` (its commit-message convention) is
+# NOT shared -- it stays in that project's own YAML, deep-merged alongside
+# this inherited `jira_fields`.
+reviewer_extraction:
+  jira_fields:
+    type: jira_custom_field
+    reviewers_field: customfield_12313420   # "Reviewers", multi-user (11,125 CASSANDRA issues populated)
+    reviewer_field: customfield_10022        # "Reviewer", single-user, older/legacy (7,104 issues populated)

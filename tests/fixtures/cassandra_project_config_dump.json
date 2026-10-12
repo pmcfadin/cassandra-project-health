@@ -1,0 +1,167 @@
+{
+  "affiliations_file": "affiliations.yaml",
+  "automated_senders": [
+    {
+      "note": "ASF JIRA's own notification/integration address",
+      "regex": "(?i)^jira@|@jira\\.apache\\.org$"
+    },
+    {
+      "note": "commit-notification mail, not discussion (issue #33 excludes commits@ from mailing_lists.lists for the same reason)",
+      "regex": "(?i)^git@|^commits?@"
+    },
+    {
+      "note": "GitHub notification mail",
+      "regex": "(?i)noreply@github\\.com$|^notifications@github\\.com$"
+    },
+    {
+      "note": "GitHub App / dependabot-style bot accounts, mirrors bot_patterns.github_login",
+      "regex": "(?i)\\[bot\\]|-bot$|^dependabot"
+    },
+    {
+      "note": "CI system notification senders",
+      "regex": "(?i)^hudson@|^jenkins@|^ci@|^builds?@"
+    },
+    {
+      "note": "ASF infra service accounts (JIRA username form), mirrors bot_patterns.jira_username",
+      "regex": "(?i)^svn-role$|^git-role$"
+    }
+  ],
+  "baseline_window": {
+    "min_completed_months": 12,
+    "trailing_months": 24
+  },
+  "bot_patterns": [
+    {
+      "field": "git_author_email",
+      "regex": "(?i)noreply@github\\.com$|\\[bot\\]"
+    },
+    {
+      "field": "github_login",
+      "regex": "(?i)-bot$|^dependabot"
+    },
+    {
+      "field": "github_login",
+      "regex": "(?i)^copilot-pull-request-reviewer(\\[bot\\])?$"
+    },
+    {
+      "field": "jira_username",
+      "regex": "(?i)^svn-role$|^git-role$"
+    }
+  ],
+  "github_company_lookback_months": 24,
+  "governance": {
+    "max_github_calls_per_run": 500,
+    "max_jira_calls_per_run": 300
+  },
+  "issue_tracker": {
+    "base_url": "https://issues.apache.org/jira",
+    "project_key": "CASSANDRA",
+    "type": "jira"
+  },
+  "jira_comment_backfill": {
+    "max_issues_per_run": 1000
+  },
+  "jira_patch_available_backfill": {
+    "max_pages_per_run": 40
+  },
+  "mailing_lists": {
+    "automated_senders": [
+      "(?i)^jenkins@builds\\.apache\\.org$",
+      "(?i)^hudson@hudson\\.apache\\.org$",
+      "(?i)^hudson@hudson\\.zones\\.apache\\.org$",
+      "(?i)^git@git\\.apache\\.org$",
+      "(?i)^no-reply@apache\\.org$"
+    ],
+    "domain": "cassandra.apache.org",
+    "lists": [
+      "dev",
+      "user"
+    ],
+    "max_months_per_run": 36,
+    "metadata_only": true,
+    "type": "ponymail"
+  },
+  "org_aliases_file": "org_aliases.yaml",
+  "org_domains_file": "org_domains.yaml",
+  "pr_issue_link_backfill": {
+    "max_pages_per_run": 20
+  },
+  "project": {
+    "display_name": "Apache Cassandra",
+    "homepage": "https://cassandra.apache.org",
+    "id": "cassandra"
+  },
+  "pull_requests": {
+    "repos": [
+      "apache/cassandra",
+      "apache/cassandra-dtest",
+      "apache/cassandra-java-driver",
+      "apache/cassandra-website",
+      "apache/cassandra-sidecar",
+      "apache/cassandra-analytics",
+      "apache/cassandra-accord"
+    ],
+    "type": "github"
+  },
+  "release_lines": {
+    "active_lines": [
+      "6.0",
+      "5.0",
+      "4.1",
+      "4.0",
+      "3.11",
+      "3.0"
+    ],
+    "butler_trends_url": "https://butler.cassandra.apache.org/api/upstream/trends",
+    "jenkins_api_url": "https://ci-cassandra.apache.org/api/json",
+    "type": "jira_versions_butler_jenkins"
+  },
+  "releases": {
+    "archive_url": "https://archive.apache.org/dist/cassandra/",
+    "type": "git_tags_cross_checked_archive"
+  },
+  "repos": [
+    {
+      "default_branch": "trunk",
+      "name": "cassandra",
+      "owner": "apache"
+    }
+  ],
+  "reviewer_extraction": {
+    "commit_trailer": {
+      "exclude_merge_commits": true,
+      "pattern": "(?i)patch\\s+by\\s+(?P<patch_by>.+?)\\s*;\\s*reviewed\\s+by\\s+(?P<reviewed_by>.+?)\\s+for\\s+(?P<issue_key>CASSANDRA-\\d+)",
+      "type": "commit_message_regex"
+    },
+    "jira_fields": {
+      "reviewer_field": "customfield_10022",
+      "reviewers_field": "customfield_12313420",
+      "type": "jira_custom_field"
+    },
+    "reliable_from": "2017-01-01"
+  },
+  "roster": {
+    "committee_info_url": "https://whimsy.apache.org/public/committee-info.json",
+    "podling": false,
+    "public_ldap_projects_url": "https://whimsy.apache.org/public/public_ldap_projects.json",
+    "type": "asf_whimsy"
+  },
+  "security": {
+    "cpe_match_string": "cpe:2.3:a:apache:cassandra:*:*:*:*:*:*:*:*",
+    "nvd_cve_url": "https://services.nvd.nist.gov/rest/json/cves/2.0",
+    "scorecard_url": "https://api.securityscorecards.dev/projects/github.com/apache/cassandra",
+    "type": "openssf_scorecard_and_nvd"
+  },
+  "slack": {
+    "channels": [],
+    "enabled": false,
+    "workspace": null
+  },
+  "truck_factor": {
+    "excluded_path_globs": [
+      "*/generated-sources/*",
+      "*.g4",
+      "*/antlr/*"
+    ]
+  }
+}

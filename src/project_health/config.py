@@ -260,23 +260,39 @@ class ReleasesConfig(FlexibleSection):
       (java/gocql/python/nodejs-driver, sidecar, analytics) and get that
       URL here; cpp-driver/accord/easy-stress/ccm have no such directory at
       all (confirmed with a live `404` on each guessed path) and get
-      `None`. NOTE: `None` here does NOT yet make `collectors/release.py`
-      skip its archive cross-check -- `ReleaseCollector.__init__` currently
-      reads `archive_url or DEFAULT_ARCHIVE_URL`, so a `None` value falls
-      back to *Cassandra's own* archive listing, not "no cross-check."
-      Wiring a real skip (or each subproject's own URL) into the collector
-      is collector-level work left to whichever issue builds that call for
-      a non-Cassandra project (issue #170 territory) -- this field only
+      `None`. `None` here SKIPS the archive cross-check entirely (issue
+      #170 -- `ReleaseCollector.__init__` no longer falls back to
+      `DEFAULT_ARCHIVE_URL` when this field is `None`; that fallback was
+      Cassandra's own archive listing, which is wrong for a project with no
+      archive directory of its own). This field only
       records the fact of which projects have their own archive directory
       today.
     - `ga_major_only`: a repo whose GA tags are bare major versions (e.g.
       apache/cassandra-easy-stress's `v9`/`v8`/`v7`, verified live) rather
       than full `major.minor.patch` semver.
+    - `ga_require_patch` (issue #170 PR #179 review fixup): a repo whose
+      tag history has bare `major.minor` tags that are NOT real GA
+      releases -- verified live (2026-10-12) for
+      apache/cassandra-java-driver: `1.0`/`2.0`/`2.1`/`2.2` are all four
+      created within two minutes of each other on 2023-11-28 (donation-time
+      branch-archive tags, not releases -- the real `1.0.0`/`2.0.0`
+      releases are tagged 2013/2014 respectively, and `2.2` never shipped a
+      GA release at all, going straight from `2.1.x` to `3.0.x`). `True`
+      requires a tag's suffix to carry all three of `major.minor.patch`
+      (`_GA_SUFFIX_REQUIRE_PATCH_RE` in `collectors/release.py`) --
+      stricter than (and never combined with) `_GA_SUFFIX_RE`'s normal
+      "`.patch` optional." Every OTHER subproject's live tag list was
+      audited the same way (`gh api --paginate repos/apache/<repo>/tags`)
+      and found clean -- no other repo has this artifact, so this flag is
+      `False` (the default) everywhere except `projects/java-driver.yaml`.
+      Mutually exclusive with `ga_major_only` in practice (no project needs
+      both); if a config somehow sets both, `ga_major_only` wins.
     """
 
     tag_prefix: str | None = None
     archive_url: str | None = None
     ga_major_only: bool = False
+    ga_require_patch: bool = False
 
     def effective_tag_prefix(self, repo_name: str) -> str:
         """Resolve the tag prefix to cross-check this repo's GA tags

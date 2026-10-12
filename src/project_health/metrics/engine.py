@@ -2345,6 +2345,13 @@ def _stale_threshold_days(config: ProjectConfig) -> int:
 
 
 def _reliable_from(config: ProjectConfig) -> date | None:
+    # issue #170: `reviewer_extraction:` is optional (config.py's own
+    # docstring, issue #169) -- a subproject config with no commit-trailer/
+    # JIRA-field convention verified yet has `config.reviewer_extraction is
+    # None`, which must resolve to "no reliable_from date" here, not crash
+    # `compute_all` for every project that hasn't configured this section.
+    if config.reviewer_extraction is None:
+        return None
     raw = config.reviewer_extraction.reliable_from
     return date.fromisoformat(raw) if raw else None
 

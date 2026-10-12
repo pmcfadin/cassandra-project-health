@@ -52,11 +52,28 @@ def source_staleness_badge(source: str, manifest: RunManifest) -> dict[str, Any]
     which already has its own "backfill pending" badge -- this one is
     specifically for a source whose collection *failed* and fell back to
     reusing a stale snapshot (ARCHITECTURE.md §7.3).
+
+    `'not_applicable'` (issue #170 -- `pipeline.applicable_sources`: a
+    source this project's config doesn't support, or that it deliberately
+    marks `shared_sources:`) renders its own plain "n/a" badge instead --
+    distinct from both "fresh" (no badge at all) and "stale"/"failed" (the
+    refreshed-on/failed-on badge below), since there is no refresh date or
+    failure to report at all.
     """
     status = manifest.sources.get(source)
-    if status is None or status.status not in ("failed", "stale"):
+    if status is None:
         return None
     label = SOURCE_LABELS.get(source, source)
+    if status.status == "not_applicable":
+        return {
+            "source": source,
+            "label": label,
+            "status": status.status,
+            "last_good_snapshot": None,
+            "text": "n/a",
+        }
+    if status.status not in ("failed", "stale"):
+        return None
     last_refreshed = run_id_date(status.last_good_snapshot)
     failed_on = run_id_date(manifest.run_id) or (
         manifest.completed_at.date().isoformat() if manifest.completed_at else None
@@ -80,9 +97,9 @@ def source_staleness_badges(
     sources: tuple[str, ...], manifest: RunManifest
 ) -> list[dict[str, Any]]:
     """A badge for every source in `sources` whose manifest status is
-    `'failed'`/`'stale'`, in `sources`' own order and de-duplicated (a
-    card/section naming the same source twice never renders two identical
-    badges)."""
+    `'failed'`/`'stale'`/`'not_applicable'` (issue #170), in `sources`' own
+    order and de-duplicated (a card/section naming the same source twice
+    never renders two identical badges)."""
     badges = []
     seen: set[str] = set()
     for source in sources:

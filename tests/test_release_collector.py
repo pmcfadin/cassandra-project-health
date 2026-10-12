@@ -108,6 +108,63 @@ def tagged_repo(tmp_path):
     return repo
 
 
+@pytest.fixture
+def major_only_tagged_repo(tmp_path):
+    """A repo whose GA tags are bare major versions only (issue #170,
+    verified live for apache/cassandra-easy-stress -- `v9`/`v8`/`v7`), plus
+    one pre-release tag that must still be excluded."""
+    repo = tmp_path / "easy-stress-repo"
+    _init_repo(repo)
+    _tag(repo, "v7", "2023-01-10T00:00:00")
+    _tag(repo, "v8", "2024-06-01T00:00:00")
+    _tag(repo, "v9", "2025-03-20T00:00:00")
+    _tag(repo, "v10-rc1", "2026-01-01T00:00:00")
+    return repo
+
+
+@pytest.fixture
+def java_driver_shaped_repo(tmp_path):
+    """Replicates apache/cassandra-java-driver's real donation-artifact
+    shape (issue #170 PR #179 review fixup, live-verified 2026-10-12): real
+    `major.minor.patch` GA tags, plus four bogus bare `major.minor` tags
+    all created within the same couple of minutes at the donation commit --
+    `1.0`/`2.0`/`2.1`/`2.2` -- that are NOT releases (no `tag_prefix`,
+    matching java-driver's own `releases.tag_prefix: ""`)."""
+    repo = tmp_path / "java-driver-repo"
+    _init_repo(repo)
+    _tag(repo, "1.0.0", "2013-05-09T00:00:00")
+    _tag(repo, "2.0.0", "2014-07-29T00:00:00")
+    _tag(repo, "2.1.0", "2014-09-05T00:00:00")
+    # The four bogus donation-artifact tags -- all within ~2 minutes.
+    _tag(repo, "1.0", "2023-11-28T19:31:16")
+    _tag(repo, "2.0", "2023-11-28T19:31:46")
+    _tag(repo, "2.1", "2023-11-28T19:33:01")
+    _tag(repo, "2.2", "2023-11-28T19:33:20")
+    return repo
+
+
+class TestListGaTagsRequirePatch:
+    """issue #170 PR #179 review fixup: `ga_require_patch=True` excludes
+    the four bogus bare `major.minor` tags without excluding any real
+    `major.minor.patch` release."""
+
+    def test_excludes_bogus_bare_major_minor_tags(self, java_driver_shaped_repo):
+        tags = list_ga_tags(java_driver_shaped_repo, "", ga_require_patch=True)
+        names = {t.tag_name for t in tags}
+        assert names == {"1.0.0", "2.0.0", "2.1.0"}
+        assert "1.0" not in names
+        assert "2.0" not in names
+        assert "2.1" not in names
+        assert "2.2" not in names
+
+    def test_without_the_flag_the_bogus_tags_are_included(self, java_driver_shaped_repo):
+        # Confirms `ga_require_patch` isn't a no-op -- without it, the
+        # ordinary `major.minor[.patch]` pattern matches the bogus tags too.
+        tags = list_ga_tags(java_driver_shaped_repo, "", ga_require_patch=False)
+        names = {t.tag_name for t in tags}
+        assert {"1.0", "2.0", "2.1", "2.2"}.issubset(names)
+
+
 class TestGaVersionRegex:
     @pytest.mark.parametrize(
         ("tag_name", "expected"),
@@ -127,6 +184,41 @@ class TestGaVersionRegex:
     )
     def test_ga_version(self, tag_name, expected):
         assert _ga_version(tag_name, "cassandra-") == expected
+
+    @pytest.mark.parametrize(
+        ("tag_name", "expected"),
+        [
+            # issue #170: apache/cassandra-easy-stress's own GA tags are
+            # bare major versions (verified live, `config.ReleasesConfig.
+            # ga_major_only`'s docstring) -- no minor/patch component.
+            ("v9", "9"),
+            ("v8", "8"),
+            ("v10-rc1", None),  # pre-release suffix still excluded
+            ("v9.1", None),  # a dotted version is NOT a bare major
+            ("other-9", None),  # wrong prefix
+        ],
+    )
+    def test_ga_version_major_only(self, tag_name, expected):
+        assert _ga_version(tag_name, "v", ga_major_only=True) == expected
+
+    @pytest.mark.parametrize(
+        ("tag_name", "expected"),
+        [
+            # issue #170 PR #179 review fixup: apache/cassandra-java-driver
+            # has four bogus bare `major.minor` donation-artifact tags
+            # (`1.0`/`2.0`/`2.1`/`2.2`, verified live) that are NOT real
+            # releases -- `ga_require_patch=True` excludes them without
+            # excluding any real `major.minor.patch` release.
+            ("1.0.0", "1.0.0"),
+            ("2.1.4", "2.1.4"),
+            ("1.0", None),  # bogus bare major.minor -- excluded
+            ("2.2", None),  # bogus bare major.minor -- excluded
+            ("1.0.0-final", "1.0.0"),  # -final suffix still stripped
+            ("1.0.0-rc1", None),  # pre-release still excluded
+        ],
+    )
+    def test_ga_version_require_patch(self, tag_name, expected):
+        assert _ga_version(tag_name, "", ga_require_patch=True) == expected
 
 
 class TestListGaTags:
@@ -158,6 +250,29 @@ class TestListGaTags:
         tags = list_ga_tags(tagged_repo, "cassandra-")
         dates = [t.release_date for t in tags]
         assert dates == sorted(dates)
+
+
+class TestListGaTagsMajorOnly:
+    """issue #170: `ga_major_only=True` threads through `list_ga_tags` to
+    `_ga_version`, matching apache/cassandra-easy-stress's real tag shape."""
+
+    def test_matches_bare_major_tags_and_excludes_prerelease(self, major_only_tagged_repo):
+        tags = list_ga_tags(major_only_tagged_repo, "v", ga_major_only=True)
+        names = {t.tag_name for t in tags}
+        assert names == {"v7", "v8", "v9"}
+
+    def test_version_and_major_minor_are_the_bare_integer(self, major_only_tagged_repo):
+        tags = {
+            t.tag_name: t
+            for t in list_ga_tags(major_only_tagged_repo, "v", ga_major_only=True)
+        }
+        assert tags["v9"].version == "9"
+        assert tags["v9"].major_minor == "9"
+
+    def test_without_the_flag_no_tags_match_at_all(self, major_only_tagged_repo):
+        # The ordinary `major.minor[.patch]` pattern never matches a bare
+        # integer suffix -- confirms `ga_major_only` isn't a no-op.
+        assert list_ga_tags(major_only_tagged_repo, "v", ga_major_only=False) == []
 
 
 class TestArchiveListingParser:
@@ -274,6 +389,52 @@ class TestConfigWiring:
     def test_archive_url_comes_from_project_config(self, config):
         collector = _offline_collector(config, _archive_transport(ARCHIVE_HTML))
         assert collector._archive_url == "https://archive.apache.org/dist/cassandra/"
+
+    def test_archive_url_none_resolves_to_none_not_cassandra_default(self):
+        """issue #170: a project with `releases.archive_url: null` (e.g.
+        projects/easy-stress.yaml, verified live to have no
+        archive.apache.org/dist directory of its own) must never fall back
+        to `DEFAULT_ARCHIVE_URL` -- Cassandra's own archive listing."""
+        easy_stress_config = load_project("projects/easy-stress.yaml")
+        collector = _offline_collector(easy_stress_config, _archive_transport(ARCHIVE_HTML))
+        assert collector._archive_url is None
+
+
+class TestArchiveUrlNoneSkipsCrossCheck:
+    """issue #170: `archive_url: null` must SKIP the archive cross-check
+    entirely -- never attempt a request at all, let alone fall back to
+    Cassandra's own archive listing."""
+
+    def test_fetch_archive_versions_returns_none_without_a_network_call(self):
+        easy_stress_config = load_project("projects/easy-stress.yaml")
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            raise AssertionError("no request should be made when archive_url is None")
+
+        collector = _offline_collector(easy_stress_config, httpx.MockTransport(handler))
+        assert collector.fetch_archive_versions() is None
+
+    def test_collect_reports_archive_checked_false_and_every_row_unverified(
+        self, major_only_tagged_repo
+    ):
+        easy_stress_config = load_project("projects/easy-stress.yaml")
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            raise AssertionError("no request should be made when archive_url is None")
+
+        collector = _offline_collector(easy_stress_config, httpx.MockTransport(handler))
+        result = collector.collect(
+            repo_path=major_only_tagged_repo,
+            repo_label="apache/cassandra-easy-stress",
+            tag_prefix="v",
+            snapshot_id="snap-1",
+            ga_major_only=True,
+        )
+        assert result.release_count == 3  # v7, v8, v9 -- v10-rc1 excluded
+        assert result.archive_checked is False
+        for row in result.release.to_pylist():
+            assert row["archive_verified"] is None
+            assert row["archive_date"] is None
 
 
 class TestRetryAndErrors:

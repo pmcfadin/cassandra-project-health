@@ -1,7 +1,7 @@
 {
   "peers/datafusion/git": "2c568b478b3aff18de52609c7237f1c3f494d5b1",
   "peers/datafusion/github:pr_pass_closed_search": "{\"cursor\": null, \"high_watermark\": null, \"newest_seen\": null}",
-  "peers/datafusion/github:pr_pass_created_desc": "{\"cursor\": \"Y3Vyc29yOnYyOpK0MjAyNS0xMi0xOFQxOTo0Njo1MlrOuavxHA==\", \"high_watermark\": null, \"newest_seen\": \"2026-10-10T03:39:59+00:00\"}",
+  "peers/datafusion/github:pr_pass_created_desc": "{\"cursor\": \"Y3Vyc29yOnYyOpK0MjAyNS0xMC0wNlQwODo0NzozNFrOrDdoTA==\", \"high_watermark\": null, \"newest_seen\": \"2026-10-10T03:39:59+00:00\"}",
   "peers/datafusion/github:pr_pass_open_prs": "{\"cursor\": null, \"high_watermark\": null, \"newest_seen\": null}",
   "peers/flink/git": "87bb3057bbe95951580d55633c4ce979b484775a",
   "peers/flink/github:pr_pass_closed_search": "{\"cursor\": null, \"high_watermark\": null, \"newest_seen\": null}",
@@ -9,14 +9,14 @@
   "peers/flink/github:pr_pass_open_prs": "{\"cursor\": null, \"high_watermark\": null, \"newest_seen\": null}",
   "peers/kafka/git": "3a2eecc5c483ac7b0f8365cd891a597a9a52012b",
   "peers/kafka/github:pr_pass_closed_search": "{\"cursor\": null, \"high_watermark\": null, \"newest_seen\": null}",
-  "peers/kafka/github:pr_pass_created_desc": "{\"cursor\": \"Y3Vyc29yOnYyOpK0MjAyNC0wNC0wNVQwNDoyMzoyN1rOa8nbcw==\", \"high_watermark\": null, \"newest_seen\": \"2026-10-10T02:14:45+00:00\"}",
-  "peers/kafka/github:pr_pass_open_prs": "{\"cursor\": \"Y3Vyc29yOnYyOpK0MjAyNi0wNy0wOVQwNzoxMzo1N1rO752JCA==\", \"high_watermark\": null, \"newest_seen\": null}",
+  "peers/kafka/github:pr_pass_created_desc": "{\"cursor\": \"Y3Vyc29yOnYyOpK0MjAyMy0xMi0wN1QxNzowODo0OFrOYXH_Ug==\", \"high_watermark\": null, \"newest_seen\": \"2026-10-10T02:14:45+00:00\"}",
+  "peers/kafka/github:pr_pass_open_prs": "{\"cursor\": null, \"high_watermark\": null, \"newest_seen\": null}",
   "peers/pulsar/git": "0be9e38b8e0a7531885957213174b803bf552c85",
   "peers/pulsar/github:pr_pass_closed_search": "{\"cursor\": null, \"high_watermark\": null, \"newest_seen\": null}",
   "peers/pulsar/github:pr_pass_created_desc": "{\"cursor\": \"Y3Vyc29yOnYyOpK0MjAyNC0wMy0yNlQxNDoyNjozOFrOasziaw==\", \"high_watermark\": null, \"newest_seen\": \"2026-10-10T02:08:44+00:00\"}",
   "peers/pulsar/github:pr_pass_open_prs": "{\"cursor\": null, \"high_watermark\": null, \"newest_seen\": null}",
-  "peers/spark/git": "5db601a7b996a0b00df2c077b3d9a65b3aefb977",
+  "peers/spark/git": "4c53b2a457b0dc9ed7a174a19060fd8375ca930f",
   "peers/spark/github:pr_pass_closed_search": "{\"cursor\": null, \"high_watermark\": null, \"newest_seen\": null}",
-  "peers/spark/github:pr_pass_created_desc": "{\"cursor\": \"Y3Vyc29yOnYyOpK0MjAyNS0wNy0yMVQxOToxMTozMVrOn-nbmQ==\", \"high_watermark\": null, \"newest_seen\": \"2026-10-10T02:41:04+00:00\"}",
+  "peers/spark/github:pr_pass_created_desc": "{\"cursor\": \"Y3Vyc29yOnYyOpK0MjAyNS0wNy0wMlQxNjo1NDozM1rOnR6mig==\", \"high_watermark\": null, \"newest_seen\": \"2026-10-10T02:41:04+00:00\"}",
   "peers/spark/github:pr_pass_open_prs": "{\"cursor\": null, \"high_watermark\": null, \"newest_seen\": null}"
 }

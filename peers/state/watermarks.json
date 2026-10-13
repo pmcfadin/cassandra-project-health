@@ -1,0 +1,20 @@
+{
+  "peers/datafusion/git": "9551051f13ee321eb0d41bf437f3718a138e12a2",
+  "peers/datafusion/github:pr_pass_closed_search": "{\"cursor\": null, \"high_watermark\": null, \"newest_seen\": null}",
+  "peers/datafusion/github:pr_pass_created_desc": "{\"cursor\": \"Y3Vyc29yOnYyOpK0MjAyNi0wOC0yNVQxODo1OTowOFrPAAAAAQPr4Zs=\", \"high_watermark\": null, \"newest_seen\": \"2026-10-10T03:39:59+00:00\"}",
+  "peers/datafusion/github:pr_pass_open_prs": "{\"cursor\": null, \"high_watermark\": null, \"newest_seen\": null}",
+  "peers/flink/git": "ea2bf30cd7d9f73450f2ab69a1f73853dfc228e6",
+  "peers/flink/github:pr_pass_closed_search": "{\"cursor\": \"Y3Vyc29yOjM2MA==\", \"high_watermark\": null, \"newest_seen\": null}",
+  "peers/flink/github:pr_pass_created_desc": "{\"cursor\": \"Y3Vyc29yOnYyOpK0MjAyNi0wMi0yM1QyMDoyMDo1MlrOxb3Pxw==\", \"high_watermark\": null, \"newest_seen\": \"2026-10-10T04:10:37+00:00\"}",
+  "peers/flink/github:pr_pass_open_prs": "{\"cursor\": null, \"high_watermark\": null, \"newest_seen\": null}",
+  "peers/kafka/git": "e4e8654b37d9e1ba6231852a4e192ed101561152",
+  "peers/kafka/github:pr_pass_closed_search": "{\"cursor\": null, \"high_watermark\": null, \"newest_seen\": null}",
+  "peers/kafka/github:pr_pass_created_desc": "{\"cursor\": \"Y3Vyc29yOnYyOpK0MjAyNS0wMS0zMVQxMDoyMzowN1rOiZzG2Q==\", \"high_watermark\": null, \"newest_seen\": \"2026-10-10T02:14:45+00:00\"}",
+  "peers/kafka/github:pr_pass_open_prs": "{\"cursor\": null, \"high_watermark\": null, \"newest_seen\": null}",
+  "peers/pulsar/git": "9f8e1c7637d19a13258e85f86bc8283db26e2209",
+  "peers/pulsar/github:pr_pass_created_desc": "{\"cursor\": \"Y3Vyc29yOnYyOpK0MjAyNi0wOS0yOFQyMDo0OTozN1rPAAAAARZNdag=\", \"high_watermark\": null, \"newest_seen\": \"2026-10-10T02:08:44+00:00\"}",
+  "peers/spark/git": "f19cad23c2a9b043cec660b744ed52812055d0d6",
+  "peers/spark/github:pr_pass_closed_search": "{\"cursor\": null, \"high_watermark\": null, \"newest_seen\": null}",
+  "peers/spark/github:pr_pass_created_desc": "{\"cursor\": \"Y3Vyc29yOnYyOpK0MjAyNi0wMy0xMFQwOToyMzoyNFrOyVKaqA==\", \"high_watermark\": null, \"newest_seen\": \"2026-10-10T02:41:04+00:00\"}",
+  "peers/spark/github:pr_pass_open_prs": "{\"cursor\": null, \"high_watermark\": null, \"newest_seen\": null}"
+}

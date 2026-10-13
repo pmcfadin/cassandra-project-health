@@ -15,6 +15,9 @@ Three independent facts, same "available" vs. "has data right now" split
 every other page-context builder in this project uses:
 - GA release history: read straight from the EXISTING `release` table
   (git tags, issue #135) -- grouped by major.minor line, latest first.
+  Only the `GA_LINES_VISIBLE` most recent lines render inline; the rest
+  go under an "Older release lines (N)" `<details>` (issue #175 review,
+  PR #185 round 1: java-driver alone has 37 lines).
 - Unreleased JIRA fixVersions with open/total ticket counts: `source=
   "subproject_releases"`'s own `subproject_release_version` table.
   `has_jira=False` (this project has no `issue_tracker:` section at all,
@@ -23,11 +26,21 @@ every other page-context builder in this project uses:
   itself reads only raw tables, never project config, ARCHITECTURE.md
   §2.2) -- distinct from "has JIRA but zero currently-ticketed unreleased
   versions," which renders its own honest empty state instead of "no JIRA
-  tracker."
+  tracker." Each one is cross-referenced against the SAME `release` table
+  above by exact version-string match: a JIRA version JIRA itself still
+  calls unreleased, but whose own git tag has already shipped (issue #175
+  review, PR #185 round 1 -- verified live for java-driver's
+  3.13.0/4.18.0/4.19.4 and nodejs-driver's 4.10.0), shows that tag instead
+  of reading as a contradiction next to the GA table.
 - CI: the latest GitHub Actions run per workflow, same source's
-  `ci_workflow_run` table. An empty table is itself the real "not
-  tracked" fact for a repo verified to have no real CI (module docstring,
-  `collectors/subproject_releases.py`) -- no separate flag needed.
+  `ci_workflow_run` table. An empty table means no run of any of this
+  repo's OWN workflows (`.github/workflows/...`) was found on the default
+  branch -- not necessarily that no such workflow file exists at all
+  (issue #175 review, PR #185 round 1: java-driver's own
+  `publish-docs-gh-pages` workflow exists but has 0 runs, ever, on any
+  branch -- verified live) -- the template's copy says exactly that, not
+  "no workflow of its own," and never guesses this project's CI runs
+  nowhere; it may simply run elsewhere (e.g. ASF Jenkins), untracked here.
 
 D25: plain facts only, no ready/not-ready verdict.
 """
@@ -41,13 +54,26 @@ from project_health import storage
 
 SOURCE = "subproject_releases"
 
+# issue #175 review (PR #185, round 1): a repo's GA line history can run
+# long (java-driver: 37 lines) -- the template shows only the most recent
+# `GA_LINES_VISIBLE` lines inline, with the rest behind a `<details>`
+# "Older release lines (N)" (same plain, unstyled `<details>`/`<summary>`
+# pattern `templates/releases.html`'s own "Patch backlog" section already
+# uses -- not the big `.page-section` accordion box).
+GA_LINES_VISIBLE = 8
+
 SOURCES_AND_LIMITS = (
     "GA release dates come from this repository's own git tags. Unreleased JIRA versions "
     "show the open/total ticket count JIRA itself reports for that fixVersion; click through "
-    "to JIRA for the ticket list. Continuous integration shows the most recent GitHub Actions "
-    "run per workflow on the repository's default branch, or \"not tracked\" when this "
-    "repository has no workflow of its own running there. This page states what the public "
-    "record shows; it never judges whether a release is ready."
+    "to JIRA for the ticket list. A version already covered by a git tag shows that tag "
+    "instead, sorted after the versions with no tag -- JIRA's own \"released\" flag simply "
+    "wasn't set on it. Continuous integration shows the most recent run of each GitHub Actions "
+    "workflow defined in this repository's own .github/workflows/ directory, on the default "
+    "branch; GitHub's own auto-generated workflows (Dependabot updates, Copilot code review) "
+    "are never counted as this project's CI. \"No GitHub Actions CI run found\" means none of "
+    "this repository's own workflows has a recorded run there -- this project's real CI may "
+    "run elsewhere (e.g. ASF Jenkins), which this page does not track. This page states what "
+    "the public record shows; it never judges whether a release is ready."
 )
 
 
@@ -122,6 +148,19 @@ def build_subproject_releases_context(
             }
         )
     ga_available = bool(release_rows)
+    # issue #175 review (PR #185, round 1): verified live 2026-10-12 --
+    # java-driver's "3.13.0"/"4.18.0"/"4.19.4" and nodejs-driver's "4.10.0"
+    # are all JIRA fixVersions JIRA itself still lists as unreleased even
+    # though each one's own git tag has already shipped (JIRA's own
+    # "released" flag just was never flipped) -- showing them as plain
+    # "unreleased" next to the GA table directly above reads as
+    # contradictory. `tag_by_version` cross-references every unreleased
+    # JIRA version's own `name` against this SAME `release` table's
+    # `version` column (exact string match -- both are the repo's own
+    # normalized version string, e.g. "4.19.4") so the JIRA table can show
+    # the real git tag fact instead of silently repeating the
+    # contradiction.
+    tag_by_version = {row["version"]: row for row in release_rows}
 
     jira_versions: list[dict[str, Any]] = []
     if has_jira:
@@ -138,9 +177,21 @@ def build_subproject_releases_context(
                 "open_count": row["open_count"],
                 "total_count": row["total_count"],
                 "issues_url": row["issues_url"],
+                "git_tag": (
+                    {
+                        "version": tag_by_version[row["name"]]["version"],
+                        "release_date": tag_by_version[row["name"]]["release_date"],
+                    }
+                    if row["name"] in tag_by_version
+                    else None
+                ),
             }
-            for row in sorted(jira_rows, key=lambda r: r["name"])
+            for row in jira_rows
         ]
+        # Versions with no git tag yet (still genuinely upcoming) sort
+        # first; the already-tagged ones (JIRA just hasn't been updated)
+        # sort after, each group alphabetically by name.
+        jira_versions.sort(key=lambda v: (v["git_tag"] is not None, v["name"]))
 
     ci_rows = _dedupe_latest(
         storage.read_table(data_dir, SOURCE, "ci_workflow_run").to_pylist(),
@@ -168,6 +219,14 @@ def build_subproject_releases_context(
         "available": available,
         "ga_available": ga_available,
         "ga_lines": ga_lines,
+        # issue #175 review (PR #185, round 1): split once here (rather
+        # than slicing in the template) so this split is itself directly
+        # testable. `ga_lines` (above, unchanged) stays the FULL set for
+        # any other caller; the template renders `ga_lines_recent` inline
+        # and `ga_lines_older` inside the "Older release lines (N)"
+        # `<details>`, only when there is at least one.
+        "ga_lines_recent": ga_lines[:GA_LINES_VISIBLE],
+        "ga_lines_older": ga_lines[GA_LINES_VISIBLE:],
         "has_jira": has_jira,
         "jira_versions": jira_versions,
         "ci_tracked": ci_tracked,

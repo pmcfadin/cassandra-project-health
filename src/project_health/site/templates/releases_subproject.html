@@ -7,9 +7,9 @@
 {% if available %}
 <p class="page-intro">
   GA release history from this repository's own git tags, unreleased JIRA versions with
-  their open/total ticket counts (where this project has its own JIRA), and the latest
-  GitHub Actions run per workflow on the default branch. This page states plain facts
-  only — it never judges whether a release is ready.
+  their open/total ticket counts (where this project has its own JIRA), and the latest run
+  of each GitHub Actions workflow this repository defines, on the default branch. This page
+  states plain facts only — it never judges whether a release is ready.
 </p>
 
 <section class="releases-ga" aria-labelledby="releases-ga-heading">
@@ -25,7 +25,7 @@
       </tr>
     </thead>
     <tbody>
-      {% for line in ga_lines %}
+      {% for line in ga_lines_recent %}
       <tr>
         <th scope="row">{{ line.line }}</th>
         <td>{{ line.latest.version }} ({{ line.latest.release_date }})</td>
@@ -41,6 +41,37 @@
     </tbody>
   </table>
   </div>
+  {% if ga_lines_older %}
+  <details>
+    <summary>Older release lines ({{ ga_lines_older | length }})</summary>
+    <div class="gov-table-wrap">
+    <table class="security-table releases-summary-table">
+      <thead>
+        <tr>
+          <th scope="col">Line</th>
+          <th scope="col">Latest release</th>
+          <th scope="col">Earlier releases on this line</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for line in ga_lines_older %}
+        <tr>
+          <th scope="row">{{ line.line }}</th>
+          <td>{{ line.latest.version }} ({{ line.latest.release_date }})</td>
+          <td>
+            {% if line.history | length > 1 %}
+            {{ line.history[1:] | map(attribute="version") | join(", ") }}
+            {% else %}
+            —
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    </div>
+  </details>
+  {% endif %}
   {% else %}
   <p class="card-empty-state">No GA release history recorded for this repository yet.</p>
   {% endif %}
@@ -58,6 +89,7 @@
         <th scope="col">Version</th>
         <th scope="col">Open tickets</th>
         <th scope="col">Total tickets</th>
+        <th scope="col">Git tag</th>
         <th scope="col">Description</th>
       </tr>
     </thead>
@@ -67,6 +99,13 @@
         <th scope="row"><a href="{{ v.issues_url }}">{{ v.name }}</a></th>
         <td>{{ v.open_count }}</td>
         <td>{{ v.total_count }}</td>
+        <td>
+          {% if v.git_tag %}
+          Git tag: {{ v.git_tag.version }} ({{ v.git_tag.release_date }}) — JIRA version not marked released
+          {% else %}
+          —
+          {% endif %}
+        </td>
         <td>{% if v.description %}&ldquo;{{ v.description }}&rdquo;{% else %}—{% endif %}</td>
       </tr>
       {% endfor %}
@@ -102,7 +141,7 @@
   </table>
   </div>
   {% else %}
-  <p class="card-empty-state">Not tracked — this repository has no GitHub Actions workflow of its own running on its default branch.</p>
+  <p class="card-empty-state">No GitHub Actions CI run found on the default branch. CI hosted elsewhere (e.g. ASF Jenkins) is not tracked here.</p>
   {% endif %}
 </section>
 

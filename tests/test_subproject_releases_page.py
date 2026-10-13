@@ -226,6 +226,83 @@ class TestCiWorkflows:
         assert ctx["ci_workflows"][0]["run_started_at"] == BUILD_TIME.date().isoformat()
 
 
+class TestGitTagCrossReference:
+    """issue #175 review (PR #185, round 1): a JIRA fixVersion still
+    marked unreleased by JIRA, but whose own version string already has a
+    GA git tag in the `release` table, must show that tag rather than
+    reading as a contradiction next to the GA releases table above --
+    verified live for java-driver (3.13.0/4.18.0/4.19.4) and nodejs-driver
+    (4.10.0), see `collectors/subproject_releases.py`."""
+
+    def test_version_with_matching_git_tag_gets_the_tag_fact(self, tmp_path: Path):
+        _write_release_rows(tmp_path, [_ga_row("4.19.4", "4.19", date(2026, 9, 24))])
+        _write_jira_rows(tmp_path, [_jira_row("4.19.4", 0, 2)])
+        ctx = build_subproject_releases_context(tmp_path, RUN_ID, has_jira=True)
+        by_name = {v["name"]: v for v in ctx["jira_versions"]}
+        assert by_name["4.19.4"]["git_tag"] == {
+            "version": "4.19.4",
+            "release_date": date(2026, 9, 24),
+        }
+
+    def test_version_with_no_matching_tag_gets_none(self, tmp_path: Path):
+        _write_release_rows(tmp_path, [_ga_row("4.19.4", "4.19", date(2026, 9, 24))])
+        _write_jira_rows(tmp_path, [_jira_row("5.0.0", 5, 10)])
+        ctx = build_subproject_releases_context(tmp_path, RUN_ID, has_jira=True)
+        by_name = {v["name"]: v for v in ctx["jira_versions"]}
+        assert by_name["5.0.0"]["git_tag"] is None
+
+    def test_match_requires_exact_version_string(self, tmp_path: Path):
+        """sidecar's own real shape: JIRA's "0.5" never matches a tag
+        named "0.5.0" -- string equality only, no fuzzy normalization."""
+        _write_release_rows(tmp_path, [_ga_row("0.5.0", "0.5", date(2026, 1, 1))])
+        _write_jira_rows(tmp_path, [_jira_row("0.5", 5, 26)])
+        ctx = build_subproject_releases_context(tmp_path, RUN_ID, has_jira=True)
+        assert ctx["jira_versions"][0]["git_tag"] is None
+
+    def test_untagged_versions_sort_before_tagged_ones(self, tmp_path: Path):
+        _write_release_rows(tmp_path, [_ga_row("4.18.0", "4.18", date(2024, 5, 20))])
+        _write_jira_rows(
+            tmp_path,
+            [
+                _jira_row("4.18.0", 0, 1),  # has a tag
+                _jira_row("5.0.0", 5, 10),  # no tag -- genuinely upcoming
+                _jira_row("3.13.0", 0, 3),  # no tag written here -- untagged
+            ],
+        )
+        ctx = build_subproject_releases_context(tmp_path, RUN_ID, has_jira=True)
+        names_in_order = [v["name"] for v in ctx["jira_versions"]]
+        # Untagged group (alphabetical), then tagged group (alphabetical).
+        assert names_in_order == ["3.13.0", "5.0.0", "4.18.0"]
+
+
+class TestGaLinesPagination:
+    """issue #175 review (PR #185, round 1): java-driver alone has 37 GA
+    lines -- only the most recent `GA_LINES_VISIBLE` (8) render inline,
+    the rest go in `ga_lines_older` for the template's own "Older release
+    lines (N)" `<details>`."""
+
+    def test_eight_or_fewer_lines_all_recent_none_older(self, tmp_path: Path):
+        rows = [_ga_row(f"{n}.0.0", f"{n}.0", date(2020 + n, 1, 1)) for n in range(1, 9)]
+        _write_release_rows(tmp_path, rows)
+        ctx = build_subproject_releases_context(tmp_path, RUN_ID, has_jira=False)
+        assert len(ctx["ga_lines"]) == 8
+        assert len(ctx["ga_lines_recent"]) == 8
+        assert ctx["ga_lines_older"] == []
+
+    def test_more_than_eight_lines_splits_at_eight(self, tmp_path: Path):
+        rows = [_ga_row(f"{n}.0.0", f"{n}.0", date(2000 + n, 1, 1)) for n in range(1, 13)]
+        _write_release_rows(tmp_path, rows)
+        ctx = build_subproject_releases_context(tmp_path, RUN_ID, has_jira=False)
+        assert len(ctx["ga_lines"]) == 12
+        assert len(ctx["ga_lines_recent"]) == 8
+        assert len(ctx["ga_lines_older"]) == 4
+        # Still newest-first across the whole set, split exactly at 8.
+        assert ctx["ga_lines_recent"][0]["line"] == "12.0"
+        assert ctx["ga_lines_recent"][-1]["line"] == "5.0"
+        assert ctx["ga_lines_older"][0]["line"] == "4.0"
+        assert ctx["ga_lines_older"][-1]["line"] == "1.0"
+
+
 class TestAllThreeSources:
     def test_all_available_together(self, tmp_path: Path):
         _write_release_rows(tmp_path, [_ga_row("1.0.0", "1.0", date(2025, 1, 1))])

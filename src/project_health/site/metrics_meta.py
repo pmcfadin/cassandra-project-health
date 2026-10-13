@@ -267,7 +267,9 @@ class MetricMeta:
         if self.value_kind == "avg":
             return f"{value:.1f}"
         if self.value_kind == "hours":
-            return f"{value:.1f} h"
+            # Same units as the "days" cards it sits beside: 1330.7 hours
+            # reads as "55.4 days", 0.5 hours as "30 min".
+            return format_days(value / 24)
         raise ValueError(f"unknown value_kind {self.value_kind!r}")
 
     @property

@@ -5,7 +5,7 @@
   "peers/datafusion/github:pr_pass_open_prs": "{\"cursor\": null, \"high_watermark\": null, \"newest_seen\": null}",
   "peers/flink/git": "87bb3057bbe95951580d55633c4ce979b484775a",
   "peers/flink/github:pr_pass_closed_search": "{\"cursor\": null, \"high_watermark\": null, \"newest_seen\": null}",
-  "peers/flink/github:pr_pass_created_desc": "{\"cursor\": \"Y3Vyc29yOnYyOpK0MjAyNC0wOS0xOFQwOTo1ODozNFrOe-BmqA==\", \"high_watermark\": null, \"newest_seen\": \"2026-10-10T04:10:37+00:00\"}",
+  "peers/flink/github:pr_pass_created_desc": "{\"cursor\": \"Y3Vyc29yOnYyOpK0MjAyNC0wOS0xMFQwNzowNjozNlrOevAdHg==\", \"high_watermark\": null, \"newest_seen\": \"2026-10-10T04:10:37+00:00\"}",
   "peers/flink/github:pr_pass_open_prs": "{\"cursor\": null, \"high_watermark\": null, \"newest_seen\": null}",
   "peers/kafka/git": "3a2eecc5c483ac7b0f8365cd891a597a9a52012b",
   "peers/kafka/github:pr_pass_closed_search": "{\"cursor\": null, \"high_watermark\": null, \"newest_seen\": null}",

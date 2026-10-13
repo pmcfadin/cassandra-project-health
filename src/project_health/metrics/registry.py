@@ -769,8 +769,12 @@ _DESCRIPTIONS: dict[str, str] = {
     ),
     # issue #174 (epic #168 6a, metrics/github_issues.py): GitHub-native Issues tracker
     # responsiveness + closure ratio, for projects with `github_issues:` configured
-    # (easy-stress, gocql-driver, ccm) -- the GitHub-Issues-tracker analogue of
-    # time_to_first_response_jira/change_request_closure_ratio_{pr,jira_patch}.
+    # (easy-stress, gocql-driver, ccm). time_to_first_response_gh_issue is the
+    # GitHub-Issues-tracker analogue of time_to_first_response_jira/
+    # pr_time_to_first_review; issue_closure_ratio_gh is NOT an analogue of
+    # change_request_closure_ratio_{pr,jira_patch} -- a GitHub issue is never a
+    # change request (fixup, orchestrator review of PR #184) -- it's a
+    # closed/opened ratio adapted from CHAOSS's own "Issues Closed" count metric.
     "time_to_first_response_gh_issue": (
         "Median and P90 hours from a GitHub issue's creation to the first comment authored "
         "by someone other than the issue's own author, among `github_issues`-configured "
@@ -785,22 +789,29 @@ _DESCRIPTIONS: dict[str, str] = {
         "pr_time_to_first_review already hold this dimension's key slots; this is a "
         "GitHub-Issues-specific series shown alongside them on projects that have it). "
         "Direction of good: lower. Window: monthly. METRICS.md §0.6 latency floor (n=5) "
-        "applies. CHAOSS: Time to First Response, applied to a GitHub Issues tracker "
-        "instead of GitHub PRs/JIRA. METRICS.md §4."
+        "applies. CHAOSS: Issue Response Time (exact match -- verified live, 'the time taken "
+        "for an issue to receive its first response from a contributor other than the "
+        "author'); also shown on the CHAOSS Starter Project Health landing card's Time to "
+        "First Response series, since that umbrella metric explicitly covers issues too. "
+        "METRICS.md §4."
     ),
     "issue_closure_ratio_gh": (
-        "CHAOSS 'Change Request Closure Ratio' (closed/opened in the period), GitHub-Issues "
-        "series: for each completed calendar month, the count of GitHub issues closed in "
-        "that month divided by the count of GitHub issues opened (created) in that same "
-        "month, among `github_issues`-configured repos. details_json carries n_opened and "
-        "n_closed. Dense monthly. n is the opened count; a month with zero opened issues is "
-        "insufficient_data, never a false zero. The value is not bounded at 1.0 -- a ratio "
-        "above 1 can reflect a one-time backlog cleanup rather than sustained closure keeping "
-        "pace with new issues, same caveat as change_request_closure_ratio_pr. Tier: proxy. "
-        "Dimension: responsiveness. Role: supporting. Direction of good: higher. Window: "
-        "monthly. METRICS.md §0.6 rate/ratio floor (n=5) applies. CHAOSS: Change Request "
-        "Closure Ratio, applied to a GitHub Issues tracker's issues rather than pull "
-        "requests/JIRA patch submissions. DECISIONS.md D29, METRICS.md §4."
+        "Issues Closed, GitHub-Issues ratio (fixup, orchestrator review of PR #184 -- "
+        "corrects an earlier, wrong 'Change Request Closure Ratio' citation: a GitHub "
+        "issue is never a change request, so this metric never appears on that Home card, "
+        "only on the Community page): for each completed calendar month, the count of "
+        "GitHub issues closed in that month divided by the count of GitHub issues opened "
+        "(created) in that same month, among `github_issues`-configured repos. "
+        "details_json carries n_opened and n_closed. Dense monthly. n is the opened count; "
+        "a month with zero opened issues is insufficient_data, never a false zero. The "
+        "value is not bounded at 1.0 -- a ratio above 1 can reflect a one-time backlog "
+        "cleanup rather than sustained closure keeping pace with new issues, same caveat "
+        "as change_request_closure_ratio_pr. Tier: proxy. Dimension: responsiveness. "
+        "Role: supporting. Direction of good: higher. Window: monthly. METRICS.md §0.6 "
+        "rate/ratio floor (n=5) applies. CHAOSS: Issues Closed (adapted -- verified live, "
+        "that page measures a plain per-period count, 'issues that changed to state "
+        "closed during a certain period', not a closed/opened ratio; CHAOSS has no exact "
+        "'issue closure ratio' metric). METRICS.md §4."
     ),
     # issue #159 (metrics/contributor_pipeline.py): the five
     # contributor-pipeline metrics METRICS.md always named but never implemented.

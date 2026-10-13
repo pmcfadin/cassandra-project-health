@@ -20,14 +20,20 @@ own `time_to_first_response_jira`/`change_request_closure_ratio_pr`.
   typically get a first response within hours, not days, and a days-scale
   number would round away exactly the signal this metric exists to show
   (`value_kind="hours"`, `site/metrics_meta.py`).
-- `issue_closure_ratio_gh` -- CHAOSS "Change Request Closure Ratio"'s own
-  issue-tracker analogue (closed/opened in the period, METRICS.md §4 /
-  DECISIONS.md D29's `change_request_closure_ratio_{pr,jira_patch}` sets the
-  precedent for a tracker-specific closure-ratio series): count of GitHub
-  issues *closed* in a completed calendar month, divided by the count of
-  GitHub issues *opened* (created) in that same month. Dense monthly, `n`
-  is the opened count -- a month with zero opened issues is
-  `insufficient_data`, never a false zero.
+- `issue_closure_ratio_gh` -- closed/opened ratio over GitHub issues, same
+  `closed(m) / opened(m)` *shape* `change_request_closure_ratio_{pr,jira_
+  patch}` uses (METRICS.md §4 / DECISIONS.md D29), but **not** that CHAOSS
+  metric's own issue-tracker analogue (fixup, orchestrator review of PR
+  #184): CHAOSS's "Change Request Closure Ratio" is specifically about
+  change requests -- pull requests / submitted patches -- and a GitHub
+  issue is never a change request, so this metric is never shown on that
+  CHAOSS Starter Project Health Home card (only on the Community page's
+  Responsiveness section). It's cited instead as adapted from CHAOSS's own
+  "Issues Closed" metric (`metrics/registry.py`'s own description has the
+  verified citation detail). Count of GitHub issues *closed* in a completed
+  calendar month, divided by the count of GitHub issues *opened* (created)
+  in that same month. Dense monthly, `n` is the opened count -- a month
+  with zero opened issues is `insufficient_data`, never a false zero.
 
 ## Why no `bot_identifier` join is needed here
 
@@ -150,13 +156,15 @@ def _time_to_first_response_gh_issue(
 def _issue_closure_ratio_gh(
     con: duckdb.DuckDBPyConnection, as_of: date, run_id: str, computed_at: datetime
 ) -> list[dict]:
-    """CHAOSS 'Change Request Closure Ratio' (closed/opened in the period),
-    GitHub-Issues series: for each completed calendar month, the count of
-    issues *closed* in that month divided by the count of issues *opened*
-    (created) in that same month. Dense monthly; `n` is the opened count --
-    a month with zero opened issues has an undefined ratio and is reported
-    as `insufficient_data`, never a false zero. Not bounded at 1.0, same
-    "a one-time backlog cleanup can push this above 1" caveat
+    """GitHub-Issues closed/opened ratio, adapted from CHAOSS's "Issues
+    Closed" metric -- NOT "Change Request Closure Ratio" (fixup,
+    orchestrator review of PR #184: a GitHub issue is never a change
+    request, see module docstring). For each completed calendar month, the
+    count of issues *closed* in that month divided by the count of issues
+    *opened* (created) in that same month. Dense monthly; `n` is the opened
+    count -- a month with zero opened issues has an undefined ratio and is
+    reported as `insufficient_data`, never a false zero. Not bounded at
+    1.0, same "a one-time backlog cleanup can push this above 1" caveat
     `dev_metrics._change_request_closure_ratio_pr` documents for its own
     GitHub-PR series.
     """

@@ -627,11 +627,18 @@ def test_chaoss_cards_github_only_when_no_jira(tmp_path):
 
 
 def test_chaoss_cards_show_github_issues_series_when_configured(tmp_path):
-    """issue #174: a project with `github_issues:` configured (gocql-driver/
-    ccm-shaped: dev@ shared, has its own JIRA tracker, AND GitHub Issues)
-    gets a third 'GitHub issues' series on both multi-venue CHAOSS Starter
-    cards -- and a project without it (every existing fixture/test above,
-    `has_github_issues` defaulting to `False`) never shows it."""
+    """issue #174 (fixup, orchestrator review of PR #184): a project with
+    `github_issues:` configured (gocql-driver/ccm-shaped: dev@ shared, has
+    its own JIRA tracker, AND GitHub Issues) gets a third 'GitHub issues'
+    series on the Time to First Response CHAOSS Starter card -- CHAOSS's
+    'Time to First Response' explicitly covers issues. The Change Request
+    Closure Ratio card NEVER shows a GitHub-issues series, for any
+    project, with or without `has_github_issues=True` -- a GitHub issue is
+    never a change request, so `issue_closure_ratio_gh` only ever appears
+    on the Community page's Responsiveness section, not here. A project
+    without `github_issues:` configured (every existing fixture/test
+    above, `has_github_issues` defaulting to `False`) never shows the TTFR
+    series either."""
     from project_health.site.generate import _build_series, _chaoss_starter_cards
     from project_health.site.metrics_meta import M0_METRICS
     from project_health.site.manifest import RunManifest
@@ -685,13 +692,25 @@ def test_chaoss_cards_show_github_issues_series_when_configured(tmp_path):
         "to first response."
     )
 
+    # Change Request Closure Ratio never gets a GitHub-issues series, even
+    # with has_github_issues=True -- regression guard for the fixup: a
+    # GitHub issue is never a change request.
     closure_labels = {s["label"] for s in by_key["change_request_closure_ratio"]["series"]}
-    assert closure_labels == {"GitHub PR", "JIRA patch", "GitHub issues"}
-    assert "GitHub issues" in by_key["change_request_closure_ratio"]["mapping_note"]
+    assert closure_labels == {"GitHub PR", "JIRA patch"}
+    assert "GitHub issues" not in by_key["change_request_closure_ratio"]["mapping_note"]
+    assert "issue_closure_ratio_gh" not in [
+        s["chart_id"] for s in by_key["change_request_closure_ratio"]["series"]
+    ]
+    assert by_key["change_request_closure_ratio"]["mapping_note"] == (
+        "Computed for Gocql Driver from two venues, shown separately, since reviewed "
+        "changes are committed via JIRA as well as GitHub: GitHub pull requests, and "
+        "JIRA issues entering Patch Available (Gocql Driver's patch-submission "
+        "equivalent of a change request)."
+    )
 
     # Without has_github_issues=True (every other caller's default), the
-    # series/mapping_note never mention it -- regression guard that the new
-    # kwarg is opt-in, not silently always-on.
+    # TTFR series/mapping_note never mention GitHub issues either --
+    # regression guard that the kwarg is opt-in, not silently always-on.
     cards_without = _chaoss_starter_cards(
         series_by_id,
         date(2026, 6, 1),

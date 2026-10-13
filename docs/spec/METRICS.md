@@ -175,7 +175,7 @@ each `none`/debatable assignment is in that metric's own section below, not just
 | `pr_merge_lead_time` | PR Merge Lead Time (open→merge) | responsiveness | proxy | 1 | monthly | lower | supporting |
 | `pr_time_to_close` | PR Time to Close | responsiveness | proxy | 1 | monthly | lower | supporting |
 | `time_to_first_response_gh_issue` | Time to First Response — GitHub Issue | responsiveness | established | 1 | monthly | lower | supporting |
-| `issue_closure_ratio_gh` | Change Request Closure Ratio — GitHub Issues | responsiveness | proxy | 1 | monthly | higher | supporting |
+| `issue_closure_ratio_gh` | Issue Closure Ratio — GitHub Issues | responsiveness | proxy | 1 | monthly | higher | supporting |
 | `elephant_factor` | Elephant Factor | organizational diversity | experimental | 1 | trailing-12m | higher | **key** |
 | `organizational_hhi` | Organizational Concentration (HHI) | organizational diversity | established | 1 | trailing-12m | lower | **key** |
 | `effective_organizational_population` | Effective Organizational Population (1/HHI) | organizational diversity | established | 1 | trailing-12m | higher | supporting |
@@ -893,21 +893,26 @@ baseline or an improving/stable/declining status (see `SCORING.md` §6). All are
 - **CHAOSS equivalent:** [Change Request Closure Ratio](https://chaoss.community/kb/metric-change-request-closure-ratio/).
 
 ### `time_to_first_response_gh_issue` / `issue_closure_ratio_gh` (issue #174, epic #168 6a)
-- **Definition:** GitHub-native Issues tracker analogues of `time_to_first_response_jira` and
-  `change_request_closure_ratio_pr`, for projects with `github_issues:` configured
-  (`projects/<id>.yaml`'s `GitHubIssuesConfig`, issue #169) — easy-stress (its only tracker),
-  gocql-driver/ccm (alongside JIRA). `time_to_first_response_gh_issue` is the median and P90
-  **hours** (not this project's usual days — GitHub-Issues-tracked repos typically get a first
-  response within hours) from a GitHub issue's `created_at` to the first `gh_issue_comment`
-  authored by someone other than the issue's own author, for issues opened in each completed
-  calendar month (details_json.closed_in_window carries the same statistic bucketed by the
-  qualifying comment's own month instead). `issue_closure_ratio_gh` is `ClosureRatio(m) =
-  closed(m) / opened(m)` over GitHub issues (`gh_issue.closed_at` / `gh_issue.created_at`),
-  computed independently per project.
+- **Definition:** GitHub-native Issues tracker metrics, for projects with `github_issues:`
+  configured (`projects/<id>.yaml`'s `GitHubIssuesConfig`, issue #169) — easy-stress (its only
+  tracker), gocql-driver/ccm (alongside JIRA). `time_to_first_response_gh_issue` is the median
+  and P90 **hours** (not this project's usual days — GitHub-Issues-tracked repos typically get a
+  first response within hours) from a GitHub issue's `created_at` to the first
+  `gh_issue_comment` authored by someone other than the issue's own author, for issues opened in
+  each completed calendar month (details_json.closed_in_window carries the same statistic
+  bucketed by the qualifying comment's own month instead). `issue_closure_ratio_gh` is
+  `ClosureRatio(m) = closed(m) / opened(m)` over GitHub issues (`gh_issue.closed_at` /
+  `gh_issue.created_at`), computed independently per project — **not** the GitHub-Issues
+  analogue of `change_request_closure_ratio_pr` (fixup, orchestrator review of PR #184): a
+  GitHub issue is never a change request, so this metric is never shown on the CHAOSS Starter
+  Project Health landing page's Change Request Closure Ratio card, only on the Community page's
+  Responsiveness section.
 - **Direction of good:** lower (TTFR), higher (closure ratio). **Role:** supporting for both —
-  `time_to_first_response_jira`/`pr_time_to_first_review` and `change_request_closure_ratio_pr`/
-  `_jira_patch` already hold this dimension's key/established slots; these are shown alongside
-  them only for a project that actually has a GitHub Issues tracker.
+  `time_to_first_response_jira`/`pr_time_to_first_review` already hold this dimension's key/
+  established slots for responsiveness latency, and `change_request_closure_ratio_pr`/
+  `_jira_patch` hold them for change-request closure; `time_to_first_response_gh_issue` is shown
+  alongside the former (also on the landing page) only for a project with a GitHub Issues
+  tracker, and `issue_closure_ratio_gh` is Community-page-only.
 - **Population & exclusions:** §0.5, §0.6 (latency floor 5 for TTFR; rate/ratio floor 5 for the
   closure ratio, applied to the opened count). Bot authors/commenters are excluded at
   **collection time** (`collectors/github_issues.py`'s own `bot_patterns` filtering), not at
@@ -919,18 +924,27 @@ baseline or an improving/stable/declining status (see `SCORING.md` §6). All are
   (`collectors/github_issues.py`, issue #174) — metadata only (D1): no issue title, no issue
   body, no comment body is ever collected, only state/author/labels/timestamps and comment
   author/timestamp.
-- **Strengths:** Lets a GitHub-Issues-tracked project's CHAOSS Starter Project Health cards
-  (`site/metrics_meta.py::CHAOSS_STARTER_METRICS`) cite a venue it actually has, rather than
-  silently omitting Issues-tracker activity the way a JIRA-only view of responsiveness would for
-  easy-stress (no JIRA project at all).
-- **Weaknesses / gaming risk:** Same "a ratio above 1 can reflect a one-time backlog cleanup"
-  caveat as `change_request_closure_ratio_pr`. Comment pagination is single-page per issue
+- **Strengths:** Lets a GitHub-Issues-tracked project's CHAOSS Starter Project Health Time to
+  First Response card (`site/metrics_meta.py::CHAOSS_STARTER_METRICS`) cite a venue it actually
+  has, rather than silently omitting Issues-tracker activity the way a JIRA-only view of
+  responsiveness would for easy-stress (no JIRA project at all).
+- **Weaknesses / gaming risk:** `issue_closure_ratio_gh` shares the "a ratio above 1 can reflect
+  a one-time backlog cleanup" caveat `change_request_closure_ratio_pr` has, despite not being
+  that metric's analogue. Comment pagination is single-page per issue
   (`collectors/github_issues.py`'s own documented limitation) — a GitHub issue with more than
   `COMMENTS_PAGE_SIZE` comments has its overflow comments silently missing unless its
   `updatedAt` moves again later.
-- **CHAOSS equivalent:** [Time to First Response](https://www.chaoss.community/kb/metric-time-to-first-response/)
-  / [Change Request Closure Ratio](https://chaoss.community/kb/metric-change-request-closure-ratio/),
-  each applied to a GitHub Issues tracker instead of GitHub PRs/JIRA.
+- **CHAOSS equivalent:** `time_to_first_response_gh_issue` —
+  [Issue Response Time](https://chaoss.community/kb/metric-issue-response-time/) (exact match,
+  verified live: "the time taken for an issue to receive its first response from a contributor
+  other than the author"), also shown under the umbrella
+  [Time to First Response](https://www.chaoss.community/kb/metric-time-to-first-response/)
+  metric, which explicitly covers issues as well as pull requests/change requests.
+  `issue_closure_ratio_gh` — adapted from
+  [Issues Closed](https://chaoss.community/kb/metric-issues-closed/) (verified live: that page
+  measures a plain per-period count, not a closed/opened ratio — CHAOSS has no exact "issue
+  closure ratio" metric, and **not** [Change Request Closure Ratio](https://chaoss.community/kb/metric-change-request-closure-ratio/),
+  which is specifically about change requests).
 
 ### `stale_pr_rate` / `stale_jira_rate`
 - **Definition:** Share of open PRs/JIRA issues with no human activity for more than a fixed threshold (default

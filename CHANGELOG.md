@@ -22,15 +22,23 @@ re-deriving either; bot exclusion happens at collection time via `bot_patterns`,
 `time_to_first_response_jira`: median/P90 **hours** (not days -- GitHub-Issues-tracked repos
 typically get a first response within hours) from issue creation to the first non-author
 comment, for issues opened in each completed calendar month, same low-n/`insufficient_data`
-floor behavior. `issue_closure_ratio_gh` is the CHAOSS Change Request Closure Ratio's issue-
-tracker analogue (closed/opened per month), matching the precedent
-`change_request_closure_ratio_pr`/`_jira_patch` set (DECISIONS.md D29).
+floor behavior. CHAOSS equivalent: [Issue Response Time](https://chaoss.community/kb/metric-issue-response-time/)
+(exact match), also covered by the Starter Project Health model's umbrella
+[Time to First Response](https://www.chaoss.community/kb/metric-time-to-first-response/) metric.
 
-The Home CHAOSS Starter Project Health cards (Time to First Response, Change Request Closure
-Ratio) now show a "GitHub issues" series, and each card's venue-list copy mentions it, only for a
-project with `github_issues:` configured -- Cassandra itself has no GitHub Issues tracker and is
-unaffected. The Community page's Responsiveness section lists both new metrics alongside their
-JIRA/PR counterparts.
+`issue_closure_ratio_gh` is a closed/opened-per-month ratio over GitHub issues -- **not** the
+GitHub-Issues analogue of `change_request_closure_ratio_pr`/`_jira_patch` (fixup, orchestrator
+review of PR #184): a GitHub issue is never a change request, so this metric never appears on
+the landing page's Change Request Closure Ratio card. CHAOSS has no exact "issue closure ratio"
+metric; cited as adapted from [Issues Closed](https://chaoss.community/kb/metric-issues-closed/)
+(a plain per-period count in CHAOSS's own definition, not a ratio) rather than the
+Change-Request-specific metric this entry originally, incorrectly, cited.
+
+The Home CHAOSS Starter Project Health Time to First Response card now shows a "GitHub issues"
+series, with venue-list copy mentioning it, only for a project with `github_issues:` configured
+-- Cassandra itself has no GitHub Issues tracker and is unaffected. The Change Request Closure
+Ratio card never shows a GitHub-issues series, for any project. The Community page's
+Responsiveness section lists both new metrics alongside their JIRA/PR counterparts.
 
 Live-verified 2026-10-12: easy-stress collected exactly 44 issues (matching `gh api graphql`'s
 own `issues { totalCount }`); gocql-driver sampled cleanly against its real totalCount (798).

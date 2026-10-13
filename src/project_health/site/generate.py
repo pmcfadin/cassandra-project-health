@@ -1676,13 +1676,22 @@ def _summary_card_context(
 _CHAOSS_DEVLIST_METRIC_ID = "time_to_first_reply_devlist"
 _CHAOSS_JIRA_RESPONSE_METRIC_ID = "time_to_first_response_jira"
 _CHAOSS_JIRA_PATCH_METRIC_ID = "change_request_closure_ratio_jira_patch"
-# issue #174: GitHub-Issues-tracker venue series, shown only for a project
-# with `github_issues:` configured (easy-stress, gocql-driver, ccm) -- the
-# same "excluded unless the project actually has this venue" treatment the
-# three ids above already get, just inverted (Cassandra itself has no
-# `github_issues:` section, so these stay excluded by default).
+# issue #174: GitHub-Issues-tracker Time to First Response venue series,
+# shown only for a project with `github_issues:` configured (easy-stress,
+# gocql-driver, ccm) -- the same "excluded unless the project actually has
+# this venue" treatment the three ids above already get, just inverted
+# (Cassandra itself has no `github_issues:` section, so this stays
+# excluded by default).
+#
+# No analogous entry for the `change_request_closure_ratio` card (fixup,
+# orchestrator review of PR #184): CHAOSS's "Change Request Closure Ratio"
+# is specifically about change requests -- pull requests / submitted
+# patches -- not issues; a GitHub issue is never a change request, so
+# `issue_closure_ratio_gh` (an "Issues Closed"-adapted ratio, see
+# `metrics/registry.py`'s own description) never belongs on this card. It
+# still appears on the Community page's Responsiveness section
+# (`metrics_meta.COMMUNITY_METRIC_SECTION`) -- just not here.
 _CHAOSS_GH_ISSUE_TTFR_METRIC_ID = "time_to_first_response_gh_issue"
-_CHAOSS_GH_ISSUE_CLOSURE_METRIC_ID = "issue_closure_ratio_gh"
 
 
 def _join_venue_phrases(phrases: list[str]) -> str:
@@ -1723,7 +1732,10 @@ def _chaoss_starter_cards(
     # `project=None` and a Cassandra `ProjectSiteContext`) never exercises
     # the branches below -- `excluded_metric_ids`/`shared_notes` stay empty
     # and `mapping_note` stays `meta.mapping_note`, byte-identical to
-    # before this fixup.
+    # before this fixup. `has_github_issues` only ever affects the
+    # `time_to_first_response` card -- see `_CHAOSS_GH_ISSUE_TTFR_METRIC_ID`'s
+    # own comment on why `change_request_closure_ratio` never gets a
+    # GitHub-issues series.
     is_subproject = project_display_name != "Cassandra"
     cards = []
     for meta in CHAOSS_STARTER_METRICS:
@@ -1760,28 +1772,19 @@ def _chaoss_starter_cards(
                     f"Computed for {project_display_name} " + _join_venue_phrases(venues)
                 )
         elif meta.key == "change_request_closure_ratio":
+            # No `has_github_issues` branch here (fixup, orchestrator review
+            # of PR #184) -- a GitHub issue is never a change request, so
+            # `issue_closure_ratio_gh` never appears on this card regardless
+            # of whether this project has a GitHub Issues tracker. See
+            # `_CHAOSS_GH_ISSUE_TTFR_METRIC_ID`'s own comment above.
             if not has_jira:
                 excluded_metric_ids.add(_CHAOSS_JIRA_PATCH_METRIC_ID)
-            if not has_github_issues:
-                excluded_metric_ids.add(_CHAOSS_GH_ISSUE_CLOSURE_METRIC_ID)
             if is_subproject:
-                if has_jira and has_github_issues:
-                    mapping_note = (
-                        f"Computed for {project_display_name} from three venues, shown "
-                        "separately, since reviewed changes are committed via JIRA as "
-                        "well as GitHub: GitHub pull requests, JIRA issues entering "
-                        f"Patch Available ({project_display_name}'s patch-submission "
-                        "equivalent of a change request), and GitHub issues."
-                    )
-                elif has_jira:
-                    mapping_note = meta.mapping_note.replace("Cassandra", project_display_name)
-                elif has_github_issues:
-                    mapping_note = (
-                        f"Computed for {project_display_name} from two venues, shown "
-                        "separately: GitHub pull requests and GitHub issues."
-                    )
-                else:
-                    mapping_note = f"Computed for {project_display_name} from GitHub pull requests."
+                mapping_note = (
+                    meta.mapping_note.replace("Cassandra", project_display_name)
+                    if has_jira
+                    else f"Computed for {project_display_name} from GitHub pull requests."
+                )
         elif is_subproject:
             mapping_note = meta.mapping_note.replace("Cassandra", project_display_name)
 

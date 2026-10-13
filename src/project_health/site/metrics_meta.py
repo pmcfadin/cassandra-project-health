@@ -1124,7 +1124,21 @@ M0_METRICS: dict[str, MetricMeta] = {
         value_kind="hours",
         page="community",
         sources=("github_issues",),
+        # Verified live (fixup, orchestrator review of PR #184): CHAOSS's
+        # "Issue Response Time" page (kb/metric-issue-response-time/) is an
+        # exact match -- "the time taken for an issue to receive its first
+        # response from a contributor other than the author" is this
+        # metric's own definition verbatim. "Time to First Response" (the
+        # umbrella metric CHAOSS's Starter Project Health model names,
+        # D29) explicitly covers issues too ("a pull request, issue, or
+        # email ... Type of Activity, e.g., issues (see metric Issue
+        # Response Time)"), which is why this series also appears on that
+        # Home card.
         prior_art=(
+            PriorArt(
+                "CHAOSS: Issue Response Time",
+                "https://chaoss.community/kb/metric-issue-response-time/",
+            ),
             PriorArt(
                 "CHAOSS: Time to First Response",
                 "https://www.chaoss.community/kb/metric-time-to-first-response/",
@@ -1133,22 +1147,33 @@ M0_METRICS: dict[str, MetricMeta] = {
     ),
     "issue_closure_ratio_gh": MetricMeta(
         metric_id="issue_closure_ratio_gh",
-        name="Change Request Closure Ratio — GitHub Issues",
+        name="Issue Closure Ratio — GitHub Issues",
         dimension="responsiveness",
         tier="proxy",
         window="monthly",
         definition=(
-            "GitHub issues closed divided by GitHub issues opened in the month (CHAOSS "
-            "Change Request Closure Ratio, applied to a GitHub Issues tracker)."
+            "GitHub issues closed divided by GitHub issues opened in the month -- adapted "
+            "from CHAOSS's Issues Closed metric (a count), not Change Request Closure Ratio: "
+            "a GitHub issue is never a change request."
         ),
         direction_of_good="higher",
         value_kind="ratio",
         page="community",
         sources=("github_issues",),
+        # Verified live (fixup, orchestrator review of PR #184): CHAOSS has
+        # no "issue closure ratio" metric. "Change Request Closure Ratio"
+        # (kb/metric-change-request-closure-ratio/) is specifically about
+        # change requests (pull requests / submitted patches), not issues
+        # -- it was cited here before this fixup and has been corrected.
+        # "Issues Closed" (kb/metric-issues-closed/) is the closest real
+        # CHAOSS metric -- "issues that changed to state closed during a
+        # certain period" -- but it's a plain count, not a closed/opened
+        # ratio; cited as "(adapted)" per this project's own convention for
+        # a non-exact match (see PR_BACKLOG_PRIOR_ART below).
         prior_art=(
             PriorArt(
-                "CHAOSS: Change Request Closure Ratio",
-                "https://chaoss.community/kb/metric-change-request-closure-ratio/",
+                "CHAOSS: Issues Closed (adapted)",
+                "https://chaoss.community/kb/metric-issues-closed/",
             ),
         ),
     ),
@@ -2057,8 +2082,14 @@ CHAOSS_STARTER_METRICS: tuple[ChaossStarterMetric, ...] = (
             ChaossStarterSeries(
                 metric_id="change_request_closure_ratio_jira_patch", label="JIRA patch"
             ),
-            # issue #174: same has_github_issues-gated inclusion as above.
-            ChaossStarterSeries(metric_id="issue_closure_ratio_gh", label="GitHub issues"),
+            # No `issue_closure_ratio_gh` series here (fixup, orchestrator
+            # review of PR #184): CHAOSS's "Change Request Closure Ratio" is
+            # specifically about change requests (pull requests / submitted
+            # patches) -- a GitHub issue is never a change request, so this
+            # metric never belongs on this card, for any project. It's
+            # still shown on `time_to_first_response` (CHAOSS's "Time to
+            # First Response" explicitly covers issues) and on the
+            # Community page's Responsiveness section.
         ),
     ),
     ChaossStarterMetric(

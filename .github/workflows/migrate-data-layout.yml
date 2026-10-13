@@ -73,6 +73,16 @@ jobs:
           # real local `data` branch ref to push from.
           fetch-depth: 0
 
+      # The migration script itself runs `git commit` (when it actually
+      # changes anything) -- needs a configured git identity beforehand,
+      # same "config right after checkout, before anything that commits"
+      # order `nightly.yml`/`peers.yml`'s own data-branch steps use.
+      - name: Configure git identity for the data branch checkout
+        working-directory: data
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
       - name: Run the migration script
         id: migrate
         working-directory: main
@@ -84,8 +94,6 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           if ! git remote get-url origin > /dev/null 2>&1; then
             git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
           fi

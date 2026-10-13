@@ -38,4 +38,15 @@ releases:
   # doesn't change) in the same autoindex format that parser already handles for the rest.
   archive_url: https://archive.apache.org/dist/cassandra/cassandra-analytics/
 
+# `releases_tab:` (issue #175): unreleased CASSANALYTICS fixVersions with
+# ticket counts + GitHub Actions CI. Live-verified 2026-10-12: this repo's
+# default branch (`trunk`) has two real, repo-committed workflows
+# ("Publish Snapshot", "Test") with recent runs -- the site shows each
+# one's latest conclusion. (One unreleased version, "1.0", is JIRA-
+# `archived: true` with 42 tickets filed against it -- excluded from this
+# page as a no-longer-live target, `collectors/subproject_releases.py`'s
+# `fetch_unreleased_versions`.)
+releases_tab:
+  type: jira_versions_github_actions
+
 shared_sources: [asf_roster, ponymail, governance]

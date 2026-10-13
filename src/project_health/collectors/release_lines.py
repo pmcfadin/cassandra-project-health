@@ -81,6 +81,14 @@ class JiraVersionInfo:
     description: str | None
     released: bool
     release_date: str | None  # ISO date string, JIRA's own, or None
+    # issue #175: JIRA's own "archived" flag, verbatim -- a default so
+    # every pre-existing positional `JiraVersionInfo(...)` construction
+    # (this module's own `fetch_jira_versions`, every fixture/test call
+    # site) keeps working unchanged. Cassandra's own `ReleaseLinesCollector`
+    # never reads this field; `collectors/subproject_releases.py` does, to
+    # exclude an archived-but-unreleased version (JIRA's own "this one is
+    # no longer a live target" signal) from a subproject's Releases tab.
+    archived: bool = False
 
 
 @dataclass(frozen=True)
@@ -430,9 +438,30 @@ class ReleaseLinesCollector:
                     description=raw.get("description"),
                     released=bool(raw.get("released", False)),
                     release_date=raw.get("releaseDate"),
+                    archived=bool(raw.get("archived", False)),
                 )
             )
         return out
+
+    def fetch_version_issue_count(self, version_name: str, unresolved_only: bool) -> int:
+        """Just the `total` count JIRA's own search response carries
+        (`maxResults=0`, issue #175) for `version_name` -- no issue rows
+        fetched, since a subproject's Releases tab only needs the open/
+        total counts, not a stored ticket list (it links out to JIRA's own
+        search instead, `collectors/subproject_releases.py`). Same
+        `project=<key> AND fixVersion="<name>"` (+ `jql_filter`, +
+        `resolution=Unresolved` when `unresolved_only`) JQL shape
+        `fetch_unresolved_issues` already builds -- issue #181's AND-clause
+        discipline applies here identically."""
+        url = f"{self._base_url}/rest/api/2/search"
+        jql = f'project={self._project_key} AND fixVersion="{version_name}"'
+        if self._jql_filter:
+            jql += f" AND {self._jql_filter}"
+        if unresolved_only:
+            jql += " AND resolution=Unresolved"
+        params = {"jql": jql, "fields": "key", "maxResults": 0}
+        response = self._get_with_retry(url, params)
+        return int(response.json().get("total", 0))
 
     def fetch_unresolved_issues(self, version_name: str) -> list[dict]:
         url = f"{self._base_url}/rest/api/2/search"

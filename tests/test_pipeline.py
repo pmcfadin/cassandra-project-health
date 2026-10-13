@@ -4075,12 +4075,17 @@ class TestApplicableSources:
     def test_cassandra_config_is_unchanged_every_source_applicable(self, config):
         """Cassandra's own config configures every section and sets no
         `shared_sources:` -- this must stay a behavior-preserving no-op,
-        except for `github_issues` (issue #174): Cassandra itself has no
-        `github_issues:` section (it isn't a GitHub-Issues-tracked repo),
-        so that one source is correctly excluded here."""
-        assert applicable_sources(config) == tuple(
-            source for source in ALL_SOURCES if source != "github_issues"
+        except for two sources Cassandra deliberately never configures:
+        `github_issues` (issue #174, Cassandra isn't a GitHub-Issues-
+        tracked repo) and `subproject_releases` (issue #175,
+        `projects/cassandra.yaml` deliberately never gets a `releases_tab:`
+        section -- its own Releases tab keeps using `release_lines`/
+        `ReleaseLinesCollector` unchanged, byte-identical, regardless of
+        this addition)."""
+        expected = tuple(
+            s for s in ALL_SOURCES if s not in ("github_issues", "subproject_releases")
         )
+        assert applicable_sources(config) == expected
 
     def test_gocql_driver_and_easy_stress_configs_include_github_issues(self):
         """issue #174: gocql-driver/ccm (alongside JIRA) and easy-stress

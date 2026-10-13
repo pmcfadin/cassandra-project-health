@@ -91,6 +91,7 @@ from project_health.site.metrics_meta import (
 from project_health.site.pr_backlog_page import build_pr_backlog_context
 from project_health.site.peers_page import build_peers_context
 from project_health.site.release_lines_page import build_releases_context
+from project_health.site.subproject_releases_page import build_subproject_releases_context
 
 # Pinned CDN versions (cdn.jsdelivr.net) — issue #8: pinned, not `@latest`,
 # so a chart never silently changes rendering behavior underneath a
@@ -1994,7 +1995,22 @@ def _render_pages(
     # `peers_context` immediately above. `common_ctx["releases_nav_
     # available"]` gates `base.html`'s own "Releases" nav link -- same
     # "no data -> no dangling link" discipline D27/D30 already use.
-    releases_context = build_releases_context(data_dir, run_id)
+    # Issue #175: a subproject's own Releases tab is a deliberately
+    # different shape (GA tags + plain unreleased-JIRA-version counts +
+    # GitHub Actions CI, no blocker ladder/Jenkins/Butler -- see
+    # `site/subproject_releases_page.py`'s module docstring), built by its
+    # own context function and rendered by its own template
+    # (`templates/releases_subproject.html`, chosen below by
+    # `project_is_cassandra`) so Cassandra's own `build_releases_context`/
+    # `templates/releases.html` path is completely untouched by this
+    # branch -- the byte-identical guarantee the issue asks for.
+    releases_context = (
+        build_releases_context(data_dir, run_id)
+        if is_cassandra
+        else build_subproject_releases_context(
+            data_dir, run_id, has_jira=current_project.has_jira if current_project else False
+        )
+    )
     # Issue #171: every project's site emits a Releases page, data or not
     # (the template's own `{% else %}` already renders an honest "not
     # published yet" empty state) -- Cassandra keeps the pre-#171 "no data
@@ -2412,7 +2428,12 @@ def _render_pages(
     # the Home/Community pages' own links (above) could also read its
     # `available` flag.
     if releases_context.get("available") or force_releases_page:
-        releases_html = env.get_template("releases.html").render(
+        # issue #175: a subproject renders its own template -- Cassandra's
+        # `releases.html` (and the `build_releases_context` call that feeds
+        # it, above) is never reached by a subproject render, so Cassandra's
+        # own page output is byte-identical to before this issue.
+        releases_template = "releases.html" if is_cassandra else "releases_subproject.html"
+        releases_html = env.get_template(releases_template).render(
             current_page="releases",
             base_prefix=SUBPAGE_BASE_PREFIX,
             **releases_context,

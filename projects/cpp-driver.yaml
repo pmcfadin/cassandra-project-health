@@ -35,4 +35,12 @@ releases:
   # repo has no archive.apache.org/dist distribution at all.
   archive_url: null
 
+# `releases_tab:` (issue #175): unreleased CASSCPP fixVersions with ticket
+# counts + GitHub Actions CI. Live-verified 2026-10-12: this repo's default
+# branch (`trunk`) has NO real, repo-committed workflow run on it (only a
+# Copilot-review pseudo-workflow) -- the site renders "not tracked" for CI,
+# a verified fact, not a guess.
+releases_tab:
+  type: jira_versions_github_actions
+
 shared_sources: [asf_roster, ponymail, governance]

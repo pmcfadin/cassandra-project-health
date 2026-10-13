@@ -1677,6 +1677,43 @@ def _summary_card_context(
 _CHAOSS_DEVLIST_METRIC_ID = "time_to_first_reply_devlist"
 _CHAOSS_JIRA_RESPONSE_METRIC_ID = "time_to_first_response_jira"
 _CHAOSS_JIRA_PATCH_METRIC_ID = "change_request_closure_ratio_jira_patch"
+# issue #174: GitHub-Issues-tracker Time to First Response venue series,
+# shown only for a project with `github_issues:` configured (easy-stress,
+# gocql-driver, ccm) -- the same "excluded unless the project actually has
+# this venue" treatment the three ids above already get, just inverted
+# (Cassandra itself has no `github_issues:` section, so this stays
+# excluded by default).
+#
+# No analogous entry for the `change_request_closure_ratio` card (fixup,
+# orchestrator review of PR #184): CHAOSS's "Change Request Closure Ratio"
+# is specifically about change requests -- pull requests / submitted
+# patches -- not issues; a GitHub issue is never a change request, so
+# `issue_closure_ratio_gh` (an "Issues Closed"-adapted ratio, see
+# `metrics/registry.py`'s own description) never belongs on this card. It
+# still appears on the Community page's Responsiveness section
+# (`metrics_meta.COMMUNITY_METRIC_SECTION`) -- just not here.
+_CHAOSS_GH_ISSUE_TTFR_METRIC_ID = "time_to_first_response_gh_issue"
+
+
+def _join_venue_phrases(phrases: list[str]) -> str:
+    """"from <n> venue(s)[, shown separately]: A[, B[, and C]]." -- the
+    formulaic half of `time_to_first_response`'s mapping_note (issue #174
+    fixup: generalized from four hand-written venue-count branches to one
+    formula so adding a venue dimension -- GitHub issues -- doesn't require
+    doubling the branch count again). `phrases` is the ordered list of
+    venues this project actually has data for; always at least one (every
+    subproject has GitHub PRs)."""
+    n = len(phrases)
+    if n == 1:
+        return f"from one venue: {phrases[0]}."
+    if n == 2:
+        return f"from two venues, shown separately: {phrases[0]} and {phrases[1]}."
+    count_word = {3: "three", 4: "four"}.get(n, str(n))
+    return (
+        f"from {count_word} venues, shown separately: "
+        + ", ".join(phrases[:-1])
+        + f", and {phrases[-1]}."
+    )
 
 
 def _chaoss_starter_cards(
@@ -1687,14 +1724,19 @@ def _chaoss_starter_cards(
     project_display_name: str = "Cassandra",
     dev_mailing_list_shared: bool = False,
     has_jira: bool = True,
+    has_github_issues: bool = False,
     cassandra_home_href: str | None = None,
 ) -> list[dict[str, Any]]:
-    # Every one of the three new keyword args defaults to Cassandra's own
-    # values (not shared, has JIRA), so a Cassandra render (`project_
-    # display_name == "Cassandra"`, true for both `project=None` and a
-    # Cassandra `ProjectSiteContext`) never exercises the branches below --
-    # `excluded_metric_ids`/`shared_notes` stay empty and `mapping_note`
-    # stays `meta.mapping_note`, byte-identical to before this fixup.
+    # Every one of the four keyword args defaults to Cassandra's own values
+    # (not shared, has JIRA, no GitHub Issues tracker), so a Cassandra
+    # render (`project_display_name == "Cassandra"`, true for both
+    # `project=None` and a Cassandra `ProjectSiteContext`) never exercises
+    # the branches below -- `excluded_metric_ids`/`shared_notes` stay empty
+    # and `mapping_note` stays `meta.mapping_note`, byte-identical to
+    # before this fixup. `has_github_issues` only ever affects the
+    # `time_to_first_response` card -- see `_CHAOSS_GH_ISSUE_TTFR_METRIC_ID`'s
+    # own comment on why `change_request_closure_ratio` never gets a
+    # GitHub-issues series.
     is_subproject = project_display_name != "Cassandra"
     cards = []
     for meta in CHAOSS_STARTER_METRICS:
@@ -1717,27 +1759,25 @@ def _chaoss_starter_cards(
                     )
             if not has_jira:
                 excluded_metric_ids.add(_CHAOSS_JIRA_RESPONSE_METRIC_ID)
+            if not has_github_issues:
+                excluded_metric_ids.add(_CHAOSS_GH_ISSUE_TTFR_METRIC_ID)
             if is_subproject:
-                if dev_mailing_list_shared and has_jira:
-                    mapping_note = (
-                        f"Computed for {project_display_name} from two venues, shown "
-                        "separately: GitHub PR time to first review and JIRA time to "
-                        "first response."
-                    )
-                elif dev_mailing_list_shared and not has_jira:
-                    mapping_note = (
-                        f"Computed for {project_display_name} from one venue: GitHub "
-                        "PR time to first review."
-                    )
-                elif not dev_mailing_list_shared and not has_jira:
-                    mapping_note = (
-                        f"Computed for {project_display_name} from two venues, shown "
-                        "separately: GitHub PR time to first review and dev@ time to "
-                        "first reply."
-                    )
-                else:
-                    mapping_note = meta.mapping_note.replace("Cassandra", project_display_name)
+                venues = ["GitHub PR time to first review"]
+                if has_jira:
+                    venues.append("JIRA time to first response")
+                if not dev_mailing_list_shared:
+                    venues.append("dev@ time to first reply")
+                if has_github_issues:
+                    venues.append("GitHub issues time to first response")
+                mapping_note = (
+                    f"Computed for {project_display_name} " + _join_venue_phrases(venues)
+                )
         elif meta.key == "change_request_closure_ratio":
+            # No `has_github_issues` branch here (fixup, orchestrator review
+            # of PR #184) -- a GitHub issue is never a change request, so
+            # `issue_closure_ratio_gh` never appears on this card regardless
+            # of whether this project has a GitHub Issues tracker. See
+            # `_CHAOSS_GH_ISSUE_TTFR_METRIC_ID`'s own comment above.
             if not has_jira:
                 excluded_metric_ids.add(_CHAOSS_JIRA_PATCH_METRIC_ID)
             if is_subproject:
@@ -2036,6 +2076,9 @@ def _render_pages(
             current_project.conversations_shared if current_project is not None else False
         ),
         has_jira=(current_project.has_jira if current_project is not None else True),
+        has_github_issues=(
+            current_project.has_github_issues if current_project is not None else False
+        ),
         cassandra_home_href=cassandra_home_href,
     )
     home_html = env.get_template("home.html").render(

@@ -228,7 +228,7 @@ def recent_value_domain(
 # `insufficient_data`-for-counts would (which METRICS.md §0.6 also
 # forbids) -- so a count metric's points are never marked `low_n` here,
 # regardless of `n`.
-_LOW_N_ELIGIBLE_VALUE_KINDS = frozenset({"ratio", "percent", "days"})
+_LOW_N_ELIGIBLE_VALUE_KINDS = frozenset({"ratio", "percent", "days", "hours"})
 
 
 # --- Chart-expand metadata (issue #156) -------------------------------------

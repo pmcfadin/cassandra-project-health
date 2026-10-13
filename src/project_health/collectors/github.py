@@ -328,6 +328,41 @@ query($searchQuery: String!, $cursor: String, $pageSize: Int!) {
 )
 
 
+# --- Rate-limit floor helpers (issue #174: reused verbatim by
+# `collectors/github_issues.py` rather than re-derived) --------------------
+#
+# Free functions, not methods, so a second collector against the same
+# shared GraphQL budget (`collectors/github_issues.py`'s `GitHubIssuesCollector`)
+# can import and call the exact same floor arithmetic `GitHubCollector.
+# effective_floor`/`.floor_reached` use below, instead of risking the two
+# collectors' stop-cleanly behavior drifting apart over time.
+
+
+def github_rate_limit_effective_floor(
+    rate_limit: dict | None, floor: int, floor_fraction: float | None
+) -> int:
+    """The stop threshold for a page whose response carried `rate_limit`.
+
+    With `floor_fraction` set, the floor is capped at that fraction of the
+    token's own hourly `limit`, so a token with a small allowance (the
+    Actions `GITHUB_TOKEN`) still makes progress instead of stopping at once
+    because a fixed floor exceeds its whole budget.
+    """
+    limit = (rate_limit or {}).get("limit")
+    if floor_fraction is None or not limit:
+        return floor
+    return min(floor, int(limit * floor_fraction))
+
+
+def github_rate_limit_floor_reached(
+    rate_limit: dict | None, floor: int, floor_fraction: float | None
+) -> bool:
+    """True once `remaining` is at or below the effective floor."""
+    remaining = (rate_limit or {}).get("remaining")
+    effective = github_rate_limit_effective_floor(rate_limit, floor, floor_fraction)
+    return remaining is not None and remaining <= effective
+
+
 class CollectionError(Exception):
     """Raised when a GitHub GraphQL request fails after exhausting retries."""
 
@@ -629,16 +664,24 @@ class GitHubCollector:
         fraction of the token's own hourly `limit`, so a token with a small
         allowance (the Actions `GITHUB_TOKEN`) still makes progress instead of
         stopping at once because a fixed floor exceeds its whole budget.
+
+        Delegates to the module-level `github_rate_limit_effective_floor`
+        (issue #174) so `collectors/github_issues.py` can reuse the exact
+        same arithmetic without going through a `GitHubCollector` instance.
         """
-        limit = (rate_limit or {}).get("limit")
-        if self._rate_limit_floor_fraction is None or not limit:
-            return self._rate_limit_floor
-        return min(self._rate_limit_floor, int(limit * self._rate_limit_floor_fraction))
+        return github_rate_limit_effective_floor(
+            rate_limit, self._rate_limit_floor, self._rate_limit_floor_fraction
+        )
 
     def floor_reached(self, rate_limit: dict | None) -> bool:
-        """True once `remaining` is at or below `effective_floor`."""
-        remaining = (rate_limit or {}).get("remaining")
-        return remaining is not None and remaining <= self.effective_floor(rate_limit)
+        """True once `remaining` is at or below `effective_floor`.
+
+        Delegates to the module-level `github_rate_limit_floor_reached`
+        (issue #174) -- see `effective_floor`'s docstring.
+        """
+        return github_rate_limit_floor_reached(
+            rate_limit, self._rate_limit_floor, self._rate_limit_floor_fraction
+        )
 
     def close(self) -> None:
         self._client.close()

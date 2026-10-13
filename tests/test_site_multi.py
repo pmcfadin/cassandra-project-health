@@ -31,6 +31,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import yaml
 
+from project_health import storage
 from project_health.schema import get_schema, validate
 from project_health.site.generate import generate, generate_all_projects
 from project_health.site.project_site import (
@@ -577,6 +578,127 @@ def test_link_checker_passes_on_realistic_subproject_fixture(tmp_path):
 
     broken = _find_broken_links(out_dir)
     assert not broken, "broken relative link(s):\n" + "\n".join(broken)
+
+
+def _realistic_subproject_releases_table(name: str, rows: list[dict]):
+    schema = get_schema(name)
+    if not rows:
+        return schema.empty_table()
+    return validate(name, pa.Table.from_pylist(rows, schema=schema))
+
+
+def _write_realistic_subproject_releases_data(data_dir: Path, run_id: str) -> None:
+    """issue #175: a realistic subproject's own Releases-tab raw tables --
+    one GA release (`release`, git tags), one unreleased, ticketed JIRA
+    version (`subproject_releases/subproject_release_version`), and one
+    GitHub Actions workflow's latest run (`subproject_releases/
+    ci_workflow_run`) -- shaped exactly like `collectors/release.py`'s /
+    `collectors/subproject_releases.py`'s own real output."""
+    collected_at = datetime(2026, 6, 15, tzinfo=UTC)
+    partition_date = date(2026, 6, 15)
+    storage.write_partition(
+        data_dir,
+        "release",
+        "release",
+        partition_date,
+        run_id,
+        _realistic_subproject_releases_table(
+            "release",
+            [
+                {
+                    "release_id": "demo-4.19.4",
+                    "tag_name": "4.19.4",
+                    "version": "4.19.4",
+                    "major_minor": "4.19",
+                    "release_date": date(2026, 6, 1),
+                    "release_date_source": "git_tag",
+                    "archive_verified": True,
+                    "archive_date": date(2026, 6, 1),
+                    "repo": "apache/demo-driver",
+                    "source_snapshot_id": f"{run_id}:release",
+                    "collected_at": collected_at,
+                }
+            ],
+        ),
+    )
+    storage.write_partition(
+        data_dir,
+        "subproject_releases",
+        "subproject_release_version",
+        partition_date,
+        run_id,
+        _realistic_subproject_releases_table(
+            "subproject_release_version",
+            [
+                {
+                    "version_id": "12345",
+                    "name": "5.0.0",
+                    "description": None,
+                    "release_date": None,
+                    "major_minor": "5.0",
+                    "open_count": 5,
+                    "total_count": 10,
+                    "issues_url": (
+                        "https://issues.apache.org/jira/issues/"
+                        '?jql=project%3DDEMO+AND+fixVersion%3D"5.0.0"'
+                    ),
+                    "source_snapshot_id": f"{run_id}:subproject_releases",
+                    "collected_at": collected_at,
+                }
+            ],
+        ),
+    )
+    storage.write_partition(
+        data_dir,
+        "subproject_releases",
+        "ci_workflow_run",
+        partition_date,
+        run_id,
+        _realistic_subproject_releases_table(
+            "ci_workflow_run",
+            [
+                {
+                    "repo": "apache/demo-driver",
+                    "workflow_name": "Build",
+                    "workflow_path": ".github/workflows/main.yml",
+                    "status": "completed",
+                    "conclusion": "success",
+                    "run_number": 1310,
+                    "html_url": "https://github.com/apache/demo-driver/actions/runs/1",
+                    "run_started_at": collected_at,
+                    "source_snapshot_id": f"{run_id}:subproject_releases",
+                    "collected_at": collected_at,
+                }
+            ],
+        ),
+    )
+
+
+def test_realistic_subproject_releases_tab_renders_ga_jira_ci(tmp_path):
+    """issue #175: a subproject's own Releases tab renders its GA release
+    history, its unreleased-JIRA-version ticket counts, and its GitHub
+    Actions CI state -- through its own `templates/releases_subproject.
+    html`, never Cassandra's blocker-ladder/Jenkins/Butler template."""
+    index_path, data_dir, out_dir = _build_realistic_fixture(tmp_path)
+    _write_realistic_subproject_releases_data(
+        data_dir / "projects" / "demo-driver", REALISTIC_SUB_RUN_ID
+    )
+
+    generate_all_projects(index_path, data_dir, out_dir)
+
+    releases_html = (out_dir / "p" / "demo-driver" / "releases" / "index.html").read_text()
+    assert "4.19" in releases_html
+    assert "4.19.4" in releases_html
+    assert "5.0.0" in releases_html
+    assert "5" in releases_html  # open count
+    assert "10" in releases_html  # total count
+    assert "Build" in releases_html
+    assert "success" in releases_html
+    assert "https://github.com/apache/demo-driver/actions/runs/1" in releases_html
+    # Never Cassandra's own blocker-ladder/Jenkins/Butler vocabulary.
+    assert "Blocker ladder" not in releases_html
+    assert "Jenkins" not in releases_html
+    assert "Butler" not in releases_html
 
 
 def test_chaoss_cards_github_only_when_no_jira(tmp_path):

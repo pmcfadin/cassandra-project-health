@@ -38,4 +38,15 @@ releases:
   # archive.apache.org/dist distribution for this repo.
   archive_url: null
 
+# `releases_tab:` (issue #175): GitHub Actions CI only -- this project has
+# no JIRA tracker at all (no `issue_tracker:` section above), so
+# `collectors/subproject_releases.py`'s JIRA half is skipped entirely
+# (`SubprojectReleasesCollector.fetch_unreleased_versions` returns `[]`
+# when `config.issue_tracker is None`). Live-verified 2026-10-12: this
+# repo's default branch (`main`) has a real, repo-committed "CI" workflow
+# (`.github/workflows/ci.yml`) with recent runs -- the site shows its
+# latest conclusion.
+releases_tab:
+  type: jira_versions_github_actions
+
 shared_sources: [asf_roster, ponymail, governance]

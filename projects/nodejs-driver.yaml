@@ -35,4 +35,13 @@ releases:
   # same autoindex format collectors/release.py's `_parse_archive_listing` already parses.
   archive_url: https://archive.apache.org/dist/cassandra/cassandra-nodejs-driver/
 
+# `releases_tab:` (issue #175): unreleased CASSNODEJS fixVersions with
+# ticket counts + GitHub Actions CI. Live-verified 2026-10-12: this repo's
+# default branch (`trunk`) has two real, repo-committed workflows ("Bun and
+# Deno Integration Tests", "Unit and Integration Tests for Apache Cassandra
+# NodeJS Driver") with recent runs -- the site shows each one's latest
+# conclusion.
+releases_tab:
+  type: jira_versions_github_actions
+
 shared_sources: [asf_roster, ponymail, governance]

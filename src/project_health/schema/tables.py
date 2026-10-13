@@ -626,6 +626,90 @@ CI_TREND_POINT = pa.schema(
     ]
 )
 
+# --- Subproject Releases tab (issue #175) -----------------------------
+#
+# A non-Cassandra subproject's /releases/ page has a deliberately simpler
+# shape than Cassandra's own (`JIRA_VERSION`/`RELEASE_BLOCKER_ISSUE`/
+# `CI_JOB_STATUS`/`CI_TREND_POINT` above, issue #166): no blocker-ladder
+# placeholder scheme (verified live 2026-10-12 against CASSJAVA/CASSGO/
+# CASSPYTHON/CASSCPP/CASSNODEJS/CASSSIDECAR/CASSANALYTICS's own `/project/
+# <key>/versions` -- every unreleased version's `description` is null,
+# none follow Cassandra's "Placeholder for blockers to ..." convention),
+# no Jenkins/Butler (subprojects' CI is GitHub Actions, verified per repo
+# -- some have none at all). `collectors/subproject_releases.py`'s
+# `SubprojectReleasesCollector` populates both tables below; GA release
+# history itself is read straight from the EXISTING `release` table above
+# (git tags, issue #135) -- no new table needed for that half.
+
+SUBPROJECT_RELEASE_VERSION = pa.schema(
+    [
+        # JIRA's own version id -- stable across renames.
+        pa.field("version_id", pa.string(), nullable=False),
+        # Exact JIRA version name, e.g. "4.19.4", "2.x", "3.0".
+        pa.field("name", pa.string(), nullable=False),
+        # Verbatim JIRA description, quoted never paraphrased -- almost
+        # always null for a subproject's own versions (module comment
+        # above), but stored as-is on the rare version that has one rather
+        # than assumed null.
+        pa.field("description", pa.string(), nullable=True),
+        pa.field("release_date", pa.date32(), nullable=True),
+        pa.field("major_minor", pa.string(), nullable=True),
+        # Open (resolution=Unresolved) vs. total ticket count under this
+        # fixVersion, scoped by the project's own `issue_tracker.jql_filter`
+        # when set (accord/ccm share CASSANDRA's JIRA project -- issue
+        # #181's same AND-clause discipline `collectors/release_lines.py`
+        # already applies to its own fixVersion search). Plain counts
+        # (`maxResults=0`, JIRA's own `total`), not a stored issue list --
+        # the site links out to JIRA's own search for the ticket list
+        # rather than this project re-hosting it (`issues_url` below).
+        pa.field("open_count", pa.int64(), nullable=False),
+        pa.field("total_count", pa.int64(), nullable=False),
+        # Pre-built link to JIRA's own issue-navigator search for exactly
+        # this fixVersion (plus `jql_filter` when set) -- built at
+        # collection time, where `base_url`/`project_key`/`jql_filter` are
+        # in scope, since the page-context layer reads only raw tables, no
+        # project config (ARCHITECTURE.md §2.2).
+        pa.field("issues_url", pa.string(), nullable=False),
+        pa.field("source_snapshot_id", pa.string(), nullable=False),
+        pa.field("collected_at", TIMESTAMP_UTC, nullable=False),
+    ]
+)
+
+# One row per GitHub Actions workflow whose runs appear on the repo's
+# default branch (`/repos/{owner}/{repo}/actions/runs?branch=<default>`,
+# REST -- issue #175's own instruction, not GraphQL) -- the MOST RECENT
+# run only, per distinct `workflow_name`. A repo with no real,
+# repo-committed workflow (`workflow_path` starting `.github/workflows/`)
+# ever run on its default branch -- verified live 2026-10-12 for
+# apache/cassandra-java-driver, -python-driver, -cpp-driver, -accord, each
+# of which has only GitHub's own auto-generated `dynamic/...`-path
+# pseudo-workflows (Copilot review, Dependabot, pages-build-deployment) on
+# that branch, never a committed one -- has NO rows here at all; the site
+# renders "not tracked" for that case rather than guessing a CI system
+# (D25, issue #175's own instruction: "no guessing").
+CI_WORKFLOW_RUN = pa.schema(
+    [
+        pa.field("repo", pa.string(), nullable=False),
+        # GitHub's own run `name` (usually the workflow's `name:`), e.g.
+        # "CI", "Build", "Test".
+        pa.field("workflow_name", pa.string(), nullable=False),
+        # The run's own `path`, e.g. ".github/workflows/ci.yml" -- the
+        # structural signal (not a hand-maintained list) this collector
+        # uses to exclude GitHub's auto-generated `dynamic/...` pseudo-
+        # workflows (module comment above).
+        pa.field("workflow_path", pa.string(), nullable=False),
+        pa.field("status", pa.string(), nullable=True),
+        # GitHub's own reported conclusion string verbatim (e.g. "success",
+        # "failure", "cancelled", "skipped"), or null while still running.
+        pa.field("conclusion", pa.string(), nullable=True),
+        pa.field("run_number", pa.int64(), nullable=True),
+        pa.field("html_url", pa.string(), nullable=False),
+        pa.field("run_started_at", TIMESTAMP_UTC, nullable=True),
+        pa.field("source_snapshot_id", pa.string(), nullable=False),
+        pa.field("collected_at", TIMESTAMP_UTC, nullable=False),
+    ]
+)
+
 # --- GitHub profile cache (D6, issue #52) -------------------------------
 
 GITHUB_PROFILE = pa.schema(
@@ -1348,6 +1432,8 @@ TABLE_SCHEMAS: dict[str, pa.Schema] = {
     "release_blocker_issue": RELEASE_BLOCKER_ISSUE,
     "ci_job_status": CI_JOB_STATUS,
     "ci_trend_point": CI_TREND_POINT,
+    "subproject_release_version": SUBPROJECT_RELEASE_VERSION,
+    "ci_workflow_run": CI_WORKFLOW_RUN,
     "affiliation_period": AFFILIATION_PERIOD,
     "github_commit_author": GITHUB_COMMIT_AUTHOR,
     "github_profile": GITHUB_PROFILE,

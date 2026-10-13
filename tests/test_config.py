@@ -398,6 +398,11 @@ class TestCassandraConfigBeforeAfterEquality:
                 "releases": {"tag_prefix", "ga_major_only", "ga_require_patch"},
                 "github_issues": True,
                 "shared_sources": True,
+                # `releases_tab` (issue #175) is the same kind of new,
+                # inert-by-default field as the ones above --
+                # `projects/cassandra.yaml` deliberately never sets it (see
+                # `test_new_fields_are_inert_defaults_for_cassandra` below).
+                "releases_tab": True,
             }
         )
 
@@ -415,3 +420,4 @@ class TestCassandraConfigBeforeAfterEquality:
         assert config.releases.ga_require_patch is False
         assert config.github_issues is None
         assert config.shared_sources == []
+        assert config.releases_tab is None

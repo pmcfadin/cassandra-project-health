@@ -1,0 +1,25 @@
+{
+  "total_count": 2,
+  "workflow_runs": [
+    {
+      "name": "Running Copilot Code Review",
+      "path": "dynamic/agents/copilot-pull-request-reviewer",
+      "status": "completed",
+      "conclusion": "success",
+      "run_number": 4,
+      "html_url": "https://github.com/apache/cassandra-java-driver/actions/runs/33013099489",
+      "run_started_at": "2026-08-26T20:58:35Z",
+      "created_at": "2026-08-26T20:58:35Z"
+    },
+    {
+      "name": "Running Copilot Code Review",
+      "path": "dynamic/agents/copilot-pull-request-reviewer",
+      "status": "completed",
+      "conclusion": "success",
+      "run_number": 3,
+      "html_url": "https://github.com/apache/cassandra-java-driver/actions/runs/32764709541",
+      "run_started_at": "2026-08-24T18:50:45Z",
+      "created_at": "2026-08-24T18:50:45Z"
+    }
+  ]
+}

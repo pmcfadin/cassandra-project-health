@@ -3981,8 +3981,14 @@ class TestApplicableSources:
 
     def test_cassandra_config_is_unchanged_every_source_applicable(self, config):
         """Cassandra's own config configures every section and sets no
-        `shared_sources:` -- this must stay a behavior-preserving no-op."""
-        assert applicable_sources(config) == ALL_SOURCES
+        `shared_sources:` -- this must stay a behavior-preserving no-op,
+        EXCEPT `subproject_releases` (issue #175): `projects/cassandra.
+        yaml` deliberately never gets a `releases_tab:` section, so this
+        new source is never applicable for Cassandra -- its own Releases
+        tab keeps using `release_lines`/`ReleaseLinesCollector` unchanged,
+        and stays byte-identical, regardless of this addition."""
+        expected = tuple(s for s in ALL_SOURCES if s != "subproject_releases")
+        assert applicable_sources(config) == expected
 
     def test_java_driver_config_excludes_shared_sources(self):
         """projects/java-driver.yaml sets `shared_sources: [asf_roster,

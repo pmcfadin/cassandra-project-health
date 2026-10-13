@@ -5,6 +5,19 @@ newest-first; a future version bump adds a new dated entry at the top.
 
 ## 2026-10-12
 
+### Releases tab for subprojects (issue #175, epic #168)
+
+Each subproject now has its own Releases tab at `/p/<id>/releases/`: GA release history from
+its own git tags (grouped by release line, latest first), unreleased JIRA versions with their
+open/total ticket count and a link to JIRA's own search (for the seven subprojects with their
+own JIRA project; Accord and CCM show only tickets matching their own JIRA component filter;
+easy-stress has no JIRA tracker), and the latest GitHub Actions run per workflow on the
+repository's default branch. Three subprojects (Java driver, Python driver, C/C++ driver) and
+Accord have no real, repository-committed GitHub Actions workflow running on their default
+branch at all (verified live 2026-10-12) and show "not tracked" for CI rather than a guess.
+This is a separate, simpler page builder from Cassandra's own Releases tab (no blocker-ladder
+scheme, no Jenkins/Butler); Cassandra's own Releases tab is unchanged.
+
 ### Multi-project site (epic #168): Cassandra + 10 subprojects
 
 The site now covers Apache Cassandra and ten subprojects (Java, Go, Python, C/C++ and Node.js

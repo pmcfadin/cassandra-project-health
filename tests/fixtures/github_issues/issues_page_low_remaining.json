@@ -1,0 +1,23 @@
+{
+  "data": {
+    "rateLimit": { "limit": 5000, "remaining": 5, "resetAt": "2026-09-25T22:00:00Z", "cost": 5 },
+    "repository": {
+      "issues": {
+        "pageInfo": { "hasNextPage": true, "endCursor": "cursorLOW" },
+        "nodes": [
+          {
+            "id": "I_kwDOtest0099",
+            "number": 300,
+            "state": "OPEN",
+            "author": { "login": "alice-dev" },
+            "createdAt": "2026-02-01T00:00:00Z",
+            "updatedAt": "2026-02-01T00:00:00Z",
+            "closedAt": null,
+            "labels": { "nodes": [] },
+            "comments": { "nodes": [] }
+          }
+        ]
+      }
+    }
+  }
+}

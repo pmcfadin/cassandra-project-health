@@ -54,6 +54,9 @@ EXPECTED_METRIC_IDS = {
     "release_regularity",
     "time_since_last_release",
     "days_between_releases",
+    # issue #174
+    "time_to_first_response_gh_issue",
+    "issue_closure_ratio_gh",
     # issue #159
     "first_to_second_conversion_rate",
     "funnel_stage_conversion",

@@ -127,6 +127,11 @@ DEFINITION_VERSIONS: dict[str, str] = {
     "release_regularity": "1.0",
     "time_since_last_release": "1.0",
     "days_between_releases": "1.0",
+    # issue #174 (metrics/github_issues.py): GitHub Issues responsiveness +
+    # CHAOSS Change Request Closure Ratio analogue, for projects with
+    # `github_issues:` configured.
+    "time_to_first_response_gh_issue": "1.0",
+    "issue_closure_ratio_gh": "1.0",
     # issue #159 (metrics/contributor_pipeline.py): the five
     # contributor-pipeline metrics METRICS.md always named but never
     # implemented -- first-to-second conversion, the multi-stage funnel,
@@ -293,6 +298,10 @@ def _connect(tables: dict[str, pa.Table]) -> duckdb.DuckDBPyConnection:
         # issue #135: GA release history (release cadence dimension) --
         # see metrics/release_cadence.py.
         "release",
+        # issue #174 (metrics/github_issues.py): GitHub-native Issues
+        # tracker metadata, for projects with `github_issues:` configured.
+        "gh_issue",
+        "gh_issue_comment",
     ):
         con.register(name, _table_or_empty(tables, name))
     con.execute(
@@ -2410,6 +2419,7 @@ def compute_all(
     # cleanly.
     from project_health.metrics.contributor_pipeline import compute_contributor_pipeline
     from project_health.metrics.dev_metrics import compute_dev_metrics
+    from project_health.metrics.github_issues import compute_github_issue_metrics
     from project_health.metrics.release_cadence import compute_release_cadence
 
     con = _connect(tables)
@@ -2516,6 +2526,13 @@ def compute_all(
         # issue #135 (metrics/release_cadence.py): release cadence
         # dimension's three metrics, computed from the `release` raw table.
         rows.extend(compute_release_cadence(con, as_of, run_id, computed_at))
+        # issue #174 (metrics/github_issues.py): GitHub Issues responsiveness
+        # + closure ratio, computed from the `gh_issue`/`gh_issue_comment`
+        # raw tables -- empty (zero rows) for a project with no
+        # `github_issues:` configured, same "always registered, zero data
+        # for a project that doesn't have this source" treatment as every
+        # other M0 metric.
+        rows.extend(compute_github_issue_metrics(con, as_of, run_id, computed_at))
         # issue #159 (metrics/contributor_pipeline.py): first-to-second
         # conversion, the multi-stage funnel, KM tenure survival, churn
         # rate, and sustained-contributor headcount.

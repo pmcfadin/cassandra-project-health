@@ -624,3 +624,85 @@ def test_chaoss_cards_github_only_when_no_jira(tmp_path):
     }
     assert "Patch Available" not in by_key["change_request_closure_ratio"]["mapping_note"]
     assert CHAOSS_STARTER_METRICS  # sanity: the catalogue itself still loads
+
+
+def test_chaoss_cards_show_github_issues_series_when_configured(tmp_path):
+    """issue #174: a project with `github_issues:` configured (gocql-driver/
+    ccm-shaped: dev@ shared, has its own JIRA tracker, AND GitHub Issues)
+    gets a third 'GitHub issues' series on both multi-venue CHAOSS Starter
+    cards -- and a project without it (every existing fixture/test above,
+    `has_github_issues` defaulting to `False`) never shows it."""
+    from project_health.site.generate import _build_series, _chaoss_starter_cards
+    from project_health.site.metrics_meta import M0_METRICS
+    from project_health.site.manifest import RunManifest
+
+    rows = _realistic_subproject_metric_rows(REALISTIC_SUB_RUN_ID)
+    months = [date(2026, m, 1) for m in range(1, 7)]
+    for metric_id, start_value, step in (
+        ("time_to_first_response_gh_issue", 6.0, -0.1),
+        ("issue_closure_ratio_gh", 0.55, 0.01),
+    ):
+        for i, month_start in enumerate(months):
+            month_end = date(month_start.year, month_start.month, 28)
+            rows.append(
+                {
+                    "metric_id": metric_id,
+                    "definition_version": "1.0",
+                    "window_start": month_start,
+                    "window_end": month_end,
+                    "value": float(start_value) + step * i,
+                    "n": 18,
+                    "flag": "ok",
+                    "run_id": REALISTIC_SUB_RUN_ID,
+                    "computed_at": datetime(2026, 7, 1, tzinfo=UTC),
+                    "details_json": None,
+                }
+            )
+    table = _realistic_metric_value_table(rows)
+    series_by_id = _build_series(table, M0_METRICS)
+    manifest = RunManifest(run_id=REALISTIC_SUB_RUN_ID, pipeline_code_sha="a" * 40, sources={})
+
+    cards = _chaoss_starter_cards(
+        series_by_id,
+        date(2026, 6, 1),
+        manifest,
+        project_display_name="Gocql Driver",
+        dev_mailing_list_shared=True,
+        has_jira=True,
+        has_github_issues=True,
+        cassandra_home_href="../../index.html",
+    )
+    by_key = {c["key"]: c for c in cards}
+
+    ttfr_labels = {s["label"] for s in by_key["time_to_first_response"]["series"]}
+    assert ttfr_labels == {"GitHub PR", "JIRA", "GitHub issues"}
+    assert "chaoss-time_to_first_response-time_to_first_response_gh_issue" in {
+        s["chart_id"] for s in by_key["time_to_first_response"]["series"]
+    }
+    assert by_key["time_to_first_response"]["mapping_note"] == (
+        "Computed for Gocql Driver from three venues, shown separately: GitHub PR "
+        "time to first review, JIRA time to first response, and GitHub issues time "
+        "to first response."
+    )
+
+    closure_labels = {s["label"] for s in by_key["change_request_closure_ratio"]["series"]}
+    assert closure_labels == {"GitHub PR", "JIRA patch", "GitHub issues"}
+    assert "GitHub issues" in by_key["change_request_closure_ratio"]["mapping_note"]
+
+    # Without has_github_issues=True (every other caller's default), the
+    # series/mapping_note never mention it -- regression guard that the new
+    # kwarg is opt-in, not silently always-on.
+    cards_without = _chaoss_starter_cards(
+        series_by_id,
+        date(2026, 6, 1),
+        manifest,
+        project_display_name="Gocql Driver",
+        dev_mailing_list_shared=True,
+        has_jira=True,
+        cassandra_home_href="../../index.html",
+    )
+    by_key_without = {c["key"]: c for c in cards_without}
+    assert "GitHub issues" not in by_key_without["time_to_first_response"]["mapping_note"]
+    assert "time_to_first_response_gh_issue" not in [
+        s["chart_id"] for s in by_key_without["time_to_first_response"]["series"]
+    ]

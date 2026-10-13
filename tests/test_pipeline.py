@@ -3981,8 +3981,21 @@ class TestApplicableSources:
 
     def test_cassandra_config_is_unchanged_every_source_applicable(self, config):
         """Cassandra's own config configures every section and sets no
-        `shared_sources:` -- this must stay a behavior-preserving no-op."""
-        assert applicable_sources(config) == ALL_SOURCES
+        `shared_sources:` -- this must stay a behavior-preserving no-op,
+        except for `github_issues` (issue #174): Cassandra itself has no
+        `github_issues:` section (it isn't a GitHub-Issues-tracked repo),
+        so that one source is correctly excluded here."""
+        assert applicable_sources(config) == tuple(
+            source for source in ALL_SOURCES if source != "github_issues"
+        )
+
+    def test_gocql_driver_and_easy_stress_configs_include_github_issues(self):
+        """issue #174: gocql-driver/ccm (alongside JIRA) and easy-stress
+        (GitHub Issues only) all configure `github_issues:` -- that source
+        must be applicable for each of them."""
+        for project_id in ("gocql-driver", "ccm", "easy-stress"):
+            project_config = load_project(f"projects/{project_id}.yaml")
+            assert "github_issues" in applicable_sources(project_config)
 
     def test_java_driver_config_excludes_shared_sources(self):
         """projects/java-driver.yaml sets `shared_sources: [asf_roster,

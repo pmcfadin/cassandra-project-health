@@ -1,0 +1,41 @@
+{
+  "data": {
+    "rateLimit": { "limit": 5000, "remaining": 4940, "resetAt": "2026-09-25T22:00:00Z", "cost": 5 },
+    "repository": {
+      "issues": {
+        "pageInfo": { "hasNextPage": false, "endCursor": "cursorBBB" },
+        "nodes": [
+          {
+            "id": "I_kwDOtest0003",
+            "number": 202,
+            "state": "OPEN",
+            "author": { "login": "carol-committer" },
+            "createdAt": "2026-01-04T00:00:00Z",
+            "updatedAt": "2026-01-05T00:00:00Z",
+            "closedAt": null,
+            "labels": { "nodes": [{ "name": "question" }] },
+            "comments": {
+              "nodes": [
+                {
+                  "id": "IC_kwDOtest1002",
+                  "createdAt": "2026-01-04T05:00:00Z",
+                  "author": { "login": "carol-committer" }
+                },
+                {
+                  "id": "IC_kwDOtest1003",
+                  "createdAt": "2026-01-04T08:00:00Z",
+                  "author": { "login": "github-actions[bot]" }
+                },
+                {
+                  "id": "IC_kwDOtest1004",
+                  "createdAt": "2026-01-04T10:00:00Z",
+                  "author": { "login": "bob-reviewer" }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    }
+  }
+}

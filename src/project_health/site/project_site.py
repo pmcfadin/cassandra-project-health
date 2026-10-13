@@ -136,6 +136,17 @@ class DiscoveredProject:
     has_jira: bool
     data_dir: Path
     run_id: str
+    # Whether this project has GitHub Issues configured (`github_issues:`
+    # with a non-empty `repos:` list -- issue #169's `GitHubIssuesConfig`,
+    # issue #174) -- a plain per-project config fact, like `has_jira`, that
+    # the CHAOSS Starter Project Health landing cards
+    # (`generate.py::_chaoss_starter_cards`) need to know whether to show
+    # a "GitHub issues" venue series for Time to First Response / Change
+    # Request Closure Ratio. Some subprojects have it ALONGSIDE `has_jira`
+    # (gocql-driver, ccm); easy-stress has it as its ONLY tracker. Defaults
+    # to `False` so every pre-#174 `DiscoveredProject(...)` construction
+    # (tests included) keeps working unchanged.
+    has_github_issues: bool = False
 
 
 @dataclass(frozen=True)
@@ -212,6 +223,9 @@ def discover_projects(
             project_config.issue_tracker is not None
             and project_config.issue_tracker.type == "jira"
         )
+        has_github_issues = bool(
+            project_config.github_issues is not None and project_config.github_issues.repos
+        )
         discovered.append(
             DiscoveredProject(
                 id=entry.id,
@@ -225,6 +239,7 @@ def discover_projects(
                 ),
                 releases_available=releases_available,
                 has_jira=has_jira,
+                has_github_issues=has_github_issues,
                 data_dir=project_data_dir,
                 run_id=run_id,
             )

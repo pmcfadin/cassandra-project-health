@@ -58,6 +58,11 @@ _VEGA_FORMAT = {
     # isn't an integer headcount either (e.g. mean reviewers per PR, 2.3) --
     # one decimal place, no unit suffix.
     "avg": ".1f",
+    # 'hours' (issue #174): a latency statistic reported in hours rather
+    # than this project's usual days unit (time_to_first_response_gh_issue
+    # -- GitHub-Issues-tracked repos typically get a first response within
+    # hours, where a days-scale number would round away the signal).
+    "hours": ".1f",
 }
 
 # Y-axis tick label formats (issue #16 follow-up to #8: the axis showed a
@@ -72,6 +77,7 @@ _AXIS_FORMAT = {
     "percent": ".0%",
     "days": ".1f",
     "avg": ".1f",
+    "hours": ".1f",
 }
 
 # A Vega-Lite axis `labelExpr` suffix appended after `_AXIS_FORMAT` renders
@@ -80,6 +86,7 @@ _AXIS_FORMAT = {
 # "40%" or "0.350", which are already self-describing).
 _AXIS_LABEL_SUFFIX = {
     "days": " d",
+    "hours": " h",
 }
 
 
@@ -259,6 +266,8 @@ class MetricMeta:
             return format_days(value)
         if self.value_kind == "avg":
             return f"{value:.1f}"
+        if self.value_kind == "hours":
+            return f"{value:.1f} h"
         raise ValueError(f"unknown value_kind {self.value_kind!r}")
 
     @property
@@ -297,6 +306,8 @@ class MetricMeta:
             return f"{self.name} (days)"
         if self.value_kind == "avg":
             return f"{self.name} (avg per PR)"
+        if self.value_kind == "hours":
+            return f"{self.name} (hours)"
         return self.name
 
 
@@ -1096,6 +1107,51 @@ M0_METRICS: dict[str, MetricMeta] = {
             ),
         ),
     ),
+    # issue #174 (epic #168 6a): GitHub-native Issues tracker metrics, for
+    # projects with `github_issues:` configured (easy-stress, gocql-driver,
+    # ccm) -- see `metrics/github_issues.py`'s own module docstring.
+    "time_to_first_response_gh_issue": MetricMeta(
+        metric_id="time_to_first_response_gh_issue",
+        name="Time to First Response (GitHub issues)",
+        dimension="responsiveness",
+        tier="established",
+        window="monthly",
+        definition=(
+            "Median hours from a GitHub issue's creation to its first comment by "
+            "someone other than the issue's own author."
+        ),
+        direction_of_good="lower",
+        value_kind="hours",
+        page="community",
+        sources=("github_issues",),
+        prior_art=(
+            PriorArt(
+                "CHAOSS: Time to First Response",
+                "https://www.chaoss.community/kb/metric-time-to-first-response/",
+            ),
+        ),
+    ),
+    "issue_closure_ratio_gh": MetricMeta(
+        metric_id="issue_closure_ratio_gh",
+        name="Change Request Closure Ratio — GitHub Issues",
+        dimension="responsiveness",
+        tier="proxy",
+        window="monthly",
+        definition=(
+            "GitHub issues closed divided by GitHub issues opened in the month (CHAOSS "
+            "Change Request Closure Ratio, applied to a GitHub Issues tracker)."
+        ),
+        direction_of_good="higher",
+        value_kind="ratio",
+        page="community",
+        sources=("github_issues",),
+        prior_art=(
+            PriorArt(
+                "CHAOSS: Change Request Closure Ratio",
+                "https://chaoss.community/kb/metric-change-request-closure-ratio/",
+            ),
+        ),
+    ),
     # issue #135: release cadence metrics (METRICS.md §6), published as plain
     # CHAOSS-mapped metrics per DECISIONS.md D29 (no composite/dimension
     # score). All four read the `release` raw table only (collectors/
@@ -1790,6 +1846,8 @@ COMMUNITY_METRIC_SECTION: dict[str, str] = {
     "stale_pr_rate": "responsiveness",
     "change_request_closure_ratio_pr": "responsiveness",
     "change_request_closure_ratio_jira_patch": "responsiveness",
+    "time_to_first_response_gh_issue": "responsiveness",
+    "issue_closure_ratio_gh": "responsiveness",
     "open_pr_backlog_total": "responsiveness",
     "open_pr_backlog_drafts": "responsiveness",
     "open_pr_backlog_age_lt_30d": "responsiveness",
@@ -1974,6 +2032,14 @@ CHAOSS_STARTER_METRICS: tuple[ChaossStarterMetric, ...] = (
             ChaossStarterSeries(metric_id="pr_time_to_first_review", label="GitHub PR"),
             ChaossStarterSeries(metric_id="time_to_first_response_jira", label="JIRA"),
             ChaossStarterSeries(metric_id="time_to_first_reply_devlist", label="dev@"),
+            # issue #174: shown only for a project with `github_issues:`
+            # configured -- `generate.py::_chaoss_starter_cards` excludes
+            # this series (and rewrites mapping_note) unless
+            # `has_github_issues=True`, so Cassandra's own card (no
+            # `github_issues:` section) is unaffected.
+            ChaossStarterSeries(
+                metric_id="time_to_first_response_gh_issue", label="GitHub issues"
+            ),
         ),
     ),
     ChaossStarterMetric(
@@ -1991,6 +2057,8 @@ CHAOSS_STARTER_METRICS: tuple[ChaossStarterMetric, ...] = (
             ChaossStarterSeries(
                 metric_id="change_request_closure_ratio_jira_patch", label="JIRA patch"
             ),
+            # issue #174: same has_github_issues-gated inclusion as above.
+            ChaossStarterSeries(metric_id="issue_closure_ratio_gh", label="GitHub issues"),
         ),
     ),
     ChaossStarterMetric(

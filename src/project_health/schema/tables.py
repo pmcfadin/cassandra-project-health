@@ -814,6 +814,65 @@ PR_ISSUE_LINK = pa.schema(
     ]
 )
 
+# `GH_ISSUE` / `GH_ISSUE_COMMENT` (issue #174, epic #168 6a): GitHub-native
+# Issues tracker metadata for a project whose `github_issues:` config
+# (issue #169's `GitHubIssuesConfig`) names one or more repos -- some
+# subprojects use GitHub Issues as their ONLY tracker (easy-stress, no
+# `issue_tracker:` at all), others have it enabled ALONGSIDE a JIRA
+# `issue_tracker:` (gocql-driver, ccm). Collected by
+# `collectors/github_issues.py` via the GraphQL `repository.issues`
+# connection (never `pullRequests` -- that's `collectors/github.py`'s own
+# table), which deliberately reuses `collectors/github.py`'s own
+# rate-limit-floor helpers (`effective_floor`/`floor_reached`) and the same
+# per-repo opaque-cursor watermark strategy, rather than re-deriving either.
+#
+# Same "metadata only, D1" discipline as `PR`/`PR_COMMENT`: no issue title,
+# no issue body, no comment body, ever -- state/author/labels/timestamps
+# only. `GH_ISSUE_COMMENT` carries comment *metadata* (author, timestamp)
+# exactly like JIRA's own `ISSUE_COMMENT` table, so
+# `metrics/github_issues.py` can compute `time_to_first_response_gh_issue`
+# the same way `metrics/dev_metrics.py::_time_to_first_response_jira`
+# computes its JIRA counterpart: first non-author, non-bot comment per
+# issue. Bot exclusion (both tables) happens at COLLECTION time via
+# `bot_patterns` entries with `field: github_login` -- the same convention
+# `collectors/github.py` already uses for `pr`/`pr_review`/`pr_comment`,
+# not JIRA's "collect raw, filter at metrics-compute time" convention.
+GH_ISSUE = pa.schema(
+    [
+        pa.field("repo", pa.string(), nullable=False),
+        pa.field("number", pa.int64(), nullable=False),
+        # state: 'OPEN' | 'CLOSED' (GitHub GraphQL IssueState)
+        pa.field("state", pa.string(), nullable=False),
+        # filled in by identity resolution (#6); null as written by collectors
+        pa.field("author_identity_id", pa.string(), nullable=True),
+        pa.field("author_raw_type", pa.string(), nullable=False),
+        pa.field("author_raw_value", pa.string(), nullable=True),
+        # Label names only (metadata, never the issue title/body) -- empty
+        # list, never null, for an issue with no labels.
+        pa.field("labels", pa.list_(pa.string()), nullable=True),
+        pa.field("created_at", TIMESTAMP_UTC, nullable=False),
+        pa.field("updated_at", TIMESTAMP_UTC, nullable=False),
+        pa.field("closed_at", TIMESTAMP_UTC, nullable=True),
+        pa.field("source_snapshot_id", pa.string(), nullable=False),
+    ]
+)
+
+GH_ISSUE_COMMENT = pa.schema(
+    [
+        # GitHub GraphQL global node id of the IssueComment
+        pa.field("comment_id", pa.string(), nullable=False),
+        pa.field("repo", pa.string(), nullable=False),
+        pa.field("issue_number", pa.int64(), nullable=False),
+        # filled in by identity resolution (#6); null as written by collectors
+        pa.field("author_identity_id", pa.string(), nullable=True),
+        pa.field("author_raw_type", pa.string(), nullable=False),
+        # null when GitHub returns a comment with no author (deleted account)
+        pa.field("author_raw_value", pa.string(), nullable=True),
+        pa.field("created_at", TIMESTAMP_UTC, nullable=False),
+        pa.field("source_snapshot_id", pa.string(), nullable=False),
+    ]
+)
+
 # --- Governance compliance engine (issue #36, D14/D15) ---------------------
 #
 # `COMMIT_COMPLIANCE` is the per-(commit, check) scoring output of
@@ -1359,6 +1418,8 @@ TABLE_SCHEMAS: dict[str, pa.Schema] = {
     "pr_review": PR_REVIEW,
     "pr_comment": PR_COMMENT,
     "pr_issue_link": PR_ISSUE_LINK,
+    "gh_issue": GH_ISSUE,
+    "gh_issue_comment": GH_ISSUE_COMMENT,
     "commit_compliance": COMMIT_COMPLIANCE,
     "commit_fact": COMMIT_FACT,
     "commit_evidence": COMMIT_EVIDENCE,

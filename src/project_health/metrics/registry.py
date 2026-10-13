@@ -70,6 +70,9 @@ _VERSIONS: dict[str, str] = {
     "release_regularity": "1.0",
     "time_since_last_release": "1.0",
     "days_between_releases": "1.0",
+    # issue #174 (metrics/github_issues.py)
+    "time_to_first_response_gh_issue": "1.0",
+    "issue_closure_ratio_gh": "1.0",
     # issue #159 (metrics/contributor_pipeline.py)
     "first_to_second_conversion_rate": "1.0",
     "funnel_stage_conversion": "1.0",
@@ -121,6 +124,12 @@ _INITIAL_ISSUE_135_CHANGELOG_NOTE = (
     "against archive.apache.org directory existence) and its four metrics "
     "(metrics/release_cadence.py), published as plain CHAOSS-mapped metrics per D29 (no "
     "composite/dimension scoring)."
+)
+_INITIAL_ISSUE_174_CHANGELOG_NOTE = (
+    "Initial implementation (issue #174, epic #168 6a): GitHub-native Issues tracker "
+    "support for projects with `github_issues:` configured (easy-stress, gocql-driver, "
+    "ccm) -- collectors/github_issues.py (gh_issue/gh_issue_comment) and "
+    "metrics/github_issues.py."
 )
 
 _MEDIAN_RESOLUTION_LATENCY_JIRA_CHANGELOG_NOTE = (
@@ -178,6 +187,8 @@ _CHANGELOG_NOTES: dict[str, str] = {
     "release_regularity": _INITIAL_ISSUE_135_CHANGELOG_NOTE,
     "time_since_last_release": _INITIAL_ISSUE_135_CHANGELOG_NOTE,
     "days_between_releases": _INITIAL_ISSUE_135_CHANGELOG_NOTE,
+    "time_to_first_response_gh_issue": _INITIAL_ISSUE_174_CHANGELOG_NOTE,
+    "issue_closure_ratio_gh": _INITIAL_ISSUE_174_CHANGELOG_NOTE,
     "first_to_second_conversion_rate": _INITIAL_ISSUE_159_CHANGELOG_NOTE,
     "funnel_stage_conversion": _INITIAL_ISSUE_159_CHANGELOG_NOTE,
     "contributor_tenure_survival": _INITIAL_ISSUE_159_CHANGELOG_NOTE,
@@ -755,6 +766,41 @@ _DESCRIPTIONS: dict[str, str] = {
         "updated monthly. CHAOSS equivalent: no exact match; the closest published CHAOSS "
         "Knowledge Base entry is 'Release Frequency' (verified live 2026-10-09), which measures "
         "count-over-time rather than inter-release gap length directly. METRICS.md §6."
+    ),
+    # issue #174 (epic #168 6a, metrics/github_issues.py): GitHub-native Issues tracker
+    # responsiveness + closure ratio, for projects with `github_issues:` configured
+    # (easy-stress, gocql-driver, ccm) -- the GitHub-Issues-tracker analogue of
+    # time_to_first_response_jira/change_request_closure_ratio_{pr,jira_patch}.
+    "time_to_first_response_gh_issue": (
+        "Median and P90 hours from a GitHub issue's creation to the first comment authored "
+        "by someone other than the issue's own author, among `github_issues`-configured "
+        "repos, for issues opened in each completed calendar month (the 'opened in window' "
+        "framing, same as time_to_first_response_jira; details_json.closed_in_window carries "
+        "the same statistic bucketed by the qualifying comment's own month instead). "
+        "Reported in hours, not this project's usual days -- a GitHub-Issues-tracked repo "
+        "(easy-stress, gocql-driver, ccm) typically gets a first response within hours. "
+        "Bot authors/commenters are excluded at collection time (collectors/github_issues.py's "
+        "own bot_patterns filtering), not at metrics-compute time. Tier: established. "
+        "Dimension: responsiveness. Role: supporting (time_to_first_response_jira/"
+        "pr_time_to_first_review already hold this dimension's key slots; this is a "
+        "GitHub-Issues-specific series shown alongside them on projects that have it). "
+        "Direction of good: lower. Window: monthly. METRICS.md §0.6 latency floor (n=5) "
+        "applies. CHAOSS: Time to First Response, applied to a GitHub Issues tracker "
+        "instead of GitHub PRs/JIRA. METRICS.md §4."
+    ),
+    "issue_closure_ratio_gh": (
+        "CHAOSS 'Change Request Closure Ratio' (closed/opened in the period), GitHub-Issues "
+        "series: for each completed calendar month, the count of GitHub issues closed in "
+        "that month divided by the count of GitHub issues opened (created) in that same "
+        "month, among `github_issues`-configured repos. details_json carries n_opened and "
+        "n_closed. Dense monthly. n is the opened count; a month with zero opened issues is "
+        "insufficient_data, never a false zero. The value is not bounded at 1.0 -- a ratio "
+        "above 1 can reflect a one-time backlog cleanup rather than sustained closure keeping "
+        "pace with new issues, same caveat as change_request_closure_ratio_pr. Tier: proxy. "
+        "Dimension: responsiveness. Role: supporting. Direction of good: higher. Window: "
+        "monthly. METRICS.md §0.6 rate/ratio floor (n=5) applies. CHAOSS: Change Request "
+        "Closure Ratio, applied to a GitHub Issues tracker's issues rather than pull "
+        "requests/JIRA patch submissions. DECISIONS.md D29, METRICS.md §4."
     ),
     # issue #159 (metrics/contributor_pipeline.py): the five
     # contributor-pipeline metrics METRICS.md always named but never implemented.

@@ -1676,6 +1676,34 @@ def _summary_card_context(
 _CHAOSS_DEVLIST_METRIC_ID = "time_to_first_reply_devlist"
 _CHAOSS_JIRA_RESPONSE_METRIC_ID = "time_to_first_response_jira"
 _CHAOSS_JIRA_PATCH_METRIC_ID = "change_request_closure_ratio_jira_patch"
+# issue #174: GitHub-Issues-tracker venue series, shown only for a project
+# with `github_issues:` configured (easy-stress, gocql-driver, ccm) -- the
+# same "excluded unless the project actually has this venue" treatment the
+# three ids above already get, just inverted (Cassandra itself has no
+# `github_issues:` section, so these stay excluded by default).
+_CHAOSS_GH_ISSUE_TTFR_METRIC_ID = "time_to_first_response_gh_issue"
+_CHAOSS_GH_ISSUE_CLOSURE_METRIC_ID = "issue_closure_ratio_gh"
+
+
+def _join_venue_phrases(phrases: list[str]) -> str:
+    """"from <n> venue(s)[, shown separately]: A[, B[, and C]]." -- the
+    formulaic half of `time_to_first_response`'s mapping_note (issue #174
+    fixup: generalized from four hand-written venue-count branches to one
+    formula so adding a venue dimension -- GitHub issues -- doesn't require
+    doubling the branch count again). `phrases` is the ordered list of
+    venues this project actually has data for; always at least one (every
+    subproject has GitHub PRs)."""
+    n = len(phrases)
+    if n == 1:
+        return f"from one venue: {phrases[0]}."
+    if n == 2:
+        return f"from two venues, shown separately: {phrases[0]} and {phrases[1]}."
+    count_word = {3: "three", 4: "four"}.get(n, str(n))
+    return (
+        f"from {count_word} venues, shown separately: "
+        + ", ".join(phrases[:-1])
+        + f", and {phrases[-1]}."
+    )
 
 
 def _chaoss_starter_cards(
@@ -1686,14 +1714,16 @@ def _chaoss_starter_cards(
     project_display_name: str = "Cassandra",
     dev_mailing_list_shared: bool = False,
     has_jira: bool = True,
+    has_github_issues: bool = False,
     cassandra_home_href: str | None = None,
 ) -> list[dict[str, Any]]:
-    # Every one of the three new keyword args defaults to Cassandra's own
-    # values (not shared, has JIRA), so a Cassandra render (`project_
-    # display_name == "Cassandra"`, true for both `project=None` and a
-    # Cassandra `ProjectSiteContext`) never exercises the branches below --
-    # `excluded_metric_ids`/`shared_notes` stay empty and `mapping_note`
-    # stays `meta.mapping_note`, byte-identical to before this fixup.
+    # Every one of the four keyword args defaults to Cassandra's own values
+    # (not shared, has JIRA, no GitHub Issues tracker), so a Cassandra
+    # render (`project_display_name == "Cassandra"`, true for both
+    # `project=None` and a Cassandra `ProjectSiteContext`) never exercises
+    # the branches below -- `excluded_metric_ids`/`shared_notes` stay empty
+    # and `mapping_note` stays `meta.mapping_note`, byte-identical to
+    # before this fixup.
     is_subproject = project_display_name != "Cassandra"
     cards = []
     for meta in CHAOSS_STARTER_METRICS:
@@ -1716,35 +1746,42 @@ def _chaoss_starter_cards(
                     )
             if not has_jira:
                 excluded_metric_ids.add(_CHAOSS_JIRA_RESPONSE_METRIC_ID)
+            if not has_github_issues:
+                excluded_metric_ids.add(_CHAOSS_GH_ISSUE_TTFR_METRIC_ID)
             if is_subproject:
-                if dev_mailing_list_shared and has_jira:
-                    mapping_note = (
-                        f"Computed for {project_display_name} from two venues, shown "
-                        "separately: GitHub PR time to first review and JIRA time to "
-                        "first response."
-                    )
-                elif dev_mailing_list_shared and not has_jira:
-                    mapping_note = (
-                        f"Computed for {project_display_name} from one venue: GitHub "
-                        "PR time to first review."
-                    )
-                elif not dev_mailing_list_shared and not has_jira:
-                    mapping_note = (
-                        f"Computed for {project_display_name} from two venues, shown "
-                        "separately: GitHub PR time to first review and dev@ time to "
-                        "first reply."
-                    )
-                else:
-                    mapping_note = meta.mapping_note.replace("Cassandra", project_display_name)
+                venues = ["GitHub PR time to first review"]
+                if has_jira:
+                    venues.append("JIRA time to first response")
+                if not dev_mailing_list_shared:
+                    venues.append("dev@ time to first reply")
+                if has_github_issues:
+                    venues.append("GitHub issues time to first response")
+                mapping_note = (
+                    f"Computed for {project_display_name} " + _join_venue_phrases(venues)
+                )
         elif meta.key == "change_request_closure_ratio":
             if not has_jira:
                 excluded_metric_ids.add(_CHAOSS_JIRA_PATCH_METRIC_ID)
+            if not has_github_issues:
+                excluded_metric_ids.add(_CHAOSS_GH_ISSUE_CLOSURE_METRIC_ID)
             if is_subproject:
-                mapping_note = (
-                    meta.mapping_note.replace("Cassandra", project_display_name)
-                    if has_jira
-                    else f"Computed for {project_display_name} from GitHub pull requests."
-                )
+                if has_jira and has_github_issues:
+                    mapping_note = (
+                        f"Computed for {project_display_name} from three venues, shown "
+                        "separately, since reviewed changes are committed via JIRA as "
+                        "well as GitHub: GitHub pull requests, JIRA issues entering "
+                        f"Patch Available ({project_display_name}'s patch-submission "
+                        "equivalent of a change request), and GitHub issues."
+                    )
+                elif has_jira:
+                    mapping_note = meta.mapping_note.replace("Cassandra", project_display_name)
+                elif has_github_issues:
+                    mapping_note = (
+                        f"Computed for {project_display_name} from two venues, shown "
+                        "separately: GitHub pull requests and GitHub issues."
+                    )
+                else:
+                    mapping_note = f"Computed for {project_display_name} from GitHub pull requests."
         elif is_subproject:
             mapping_note = meta.mapping_note.replace("Cassandra", project_display_name)
 
@@ -2020,6 +2057,9 @@ def _render_pages(
             current_project.conversations_shared if current_project is not None else False
         ),
         has_jira=(current_project.has_jira if current_project is not None else True),
+        has_github_issues=(
+            current_project.has_github_issues if current_project is not None else False
+        ),
         cassandra_home_href=cassandra_home_href,
     )
     home_html = env.get_template("home.html").render(

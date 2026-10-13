@@ -163,7 +163,13 @@ from project_health.metrics.engine import _bot_identifiers, _connect
 from project_health.metrics.windows import add_months, month_end, month_start, trailing_12m_window
 from project_health.schema import get_schema, validate
 
-DEFINITION_VERSION = "1.0"
+# issue #173, DECISIONS.md D31: 1.0 -> 1.1 -- the "GitHub PR review/comment
+# on a linked PR" qualifying-event source above reads `pr`/`pr_review`/
+# `pr_comment`, now filtered to `config.pull_requests.repos`
+# (`pipeline.py::_filter_to_configured_pr_repos`); a linked PR from a repo
+# removed from (or newly added to) that list changes which blended
+# first-response event wins for some submissions.
+DEFINITION_VERSION = "1.1"
 
 TIER_FIRST = "first"
 TIER_2_5 = "tier_2_5"

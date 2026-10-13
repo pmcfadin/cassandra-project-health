@@ -95,11 +95,12 @@
     "repos": [
       "apache/cassandra",
       "apache/cassandra-dtest",
-      "apache/cassandra-java-driver",
-      "apache/cassandra-website",
-      "apache/cassandra-sidecar",
-      "apache/cassandra-analytics",
-      "apache/cassandra-accord"
+      "apache/cassandra-in-jvm-dtest-api",
+      "apache/cassandra-harry",
+      "apache/cassandra-simulator",
+      "apache/cassandra-builds",
+      "apache/cassandra-diff",
+      "apache/cassandra-website"
     ],
     "type": "github"
   },

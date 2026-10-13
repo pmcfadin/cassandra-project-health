@@ -78,6 +78,21 @@ HEADCOUNT_METRIC_IDS = {
 # still-1.0 metric.
 OTHER_1_1_METRIC_IDS = {"median_resolution_latency_jira"}
 
+# issue #173, DECISIONS.md D31: every GitHub-PR-sourced metric whose
+# population spans `pull_requests.repos` (now filtered to the configured
+# repo set, pipeline.py::_filter_to_configured_pr_repos) bumped 1.0 -> 1.1
+# in lockstep with engine.py's `DEFINITION_VERSIONS`. `time_to_first_
+# response_jira`/`change_request_closure_ratio_jira_patch` are JIRA-sourced
+# and stay 1.0 -- a fourth, distinct version bucket.
+DEBLEND_1_1_METRIC_IDS = {
+    "pr_merge_lead_time",
+    "pr_time_to_first_review",
+    "pr_time_to_close",
+    "pr_review_engagement",
+    "stale_pr_rate",
+    "change_request_closure_ratio_pr",
+}
+
 
 def test_registry_lists_exactly_the_registered_metrics():
     assert set(METRIC_IDS) == EXPECTED_METRIC_IDS
@@ -112,8 +127,17 @@ def test_build_registry_stamps_headcount_metrics_1_1_and_others_1_0():
         assert row["changelog_note"]
         other_1_1_notes.add(row["changelog_note"])
 
+    deblend_notes = set()
+    for metric_id in DEBLEND_1_1_METRIC_IDS:
+        row = rows_by_id[metric_id]
+        assert row["version"] == "1.1"
+        assert row["changelog_note"]
+        deblend_notes.add(row["changelog_note"])
+
     other_notes = set()
-    for metric_id in EXPECTED_METRIC_IDS - HEADCOUNT_METRIC_IDS - OTHER_1_1_METRIC_IDS:
+    for metric_id in (
+        EXPECTED_METRIC_IDS - HEADCOUNT_METRIC_IDS - OTHER_1_1_METRIC_IDS - DEBLEND_1_1_METRIC_IDS
+    ):
         row = rows_by_id[metric_id]
         assert row["version"] == "1.0"
         assert row["changelog_note"]
@@ -130,8 +154,16 @@ def test_build_registry_stamps_headcount_metrics_1_1_and_others_1_0():
     # a distinct explanation from both other buckets.
     assert other_1_1_notes.isdisjoint(headcount_notes)
     assert other_1_1_notes.isdisjoint(other_notes)
+    assert other_1_1_notes.isdisjoint(deblend_notes)
     for note in other_1_1_notes:
         assert "bulk_closure" in note.lower() or "bulk-closure" in note.lower()
+
+    # issue #173: the de-blend note is a distinct explanation again -- about
+    # the repo population change, not the floor or the bulk-closure annotation.
+    assert deblend_notes.isdisjoint(headcount_notes)
+    assert deblend_notes.isdisjoint(other_notes)
+    for note in deblend_notes:
+        assert "pull_requests.repos" in note
 
 
 def test_build_registry_is_a_pure_function_of_changed_at():

@@ -433,6 +433,65 @@ DataFusion 0.020 -> 0.840 days (datafusion's own prior number was `codecov-comme
 leak); Kafka, Spark, and Pulsar moved by single-digit percent (0.450->0.580, 0.308->0.338,
 0.155->0.156) since those three bots touch a much smaller share of their PRs.
 
+## D31. Multi-project site + de-blend Cassandra's own PR metrics (issue #173, epic #168)
+
+Owner decision (2026-10-12): now that `apache/cassandra-java-driver`, `apache/cassandra-
+sidecar`, `apache/cassandra-analytics`, and `apache/cassandra-accord` each have their own
+page on the multi-project site (`projects/index.yaml`, epic #168), their PRs no longer belong
+blended into Cassandra's own GitHub-PR metrics -- a reader comparing "Cassandra's" PR time-to-
+first-review against the driver's own page on the same site would otherwise find the driver's
+PRs counted twice, once on its own page and once folded silently into Cassandra's.
+
+- **`projects/cassandra.yaml`'s `pull_requests.repos`** drops the four moved repos and adds
+  five repos that were never configured before but share Cassandra's own JIRA-centric review
+  workflow and had no other page to move to: `apache/cassandra-in-jvm-dtest-api`,
+  `apache/cassandra-harry`, `apache/cassandra-simulator`, `apache/cassandra-builds`,
+  `apache/cassandra-diff` -- alongside the unchanged `apache/cassandra`, `apache/cassandra-
+  dtest`, `apache/cassandra-website`. All eight verified live (`gh api repos/apache/<name>`,
+  2026-10-12): exist, unarchived, a live default branch. The five newly added repos have never
+  been collected for this project before, so they start a full first-run backfill (~230 PRs
+  combined, confirmed against GitHub's search API) -- `collectors/github.py::GitHubCollector.
+  collect()`'s own watermark contract already treats "repo missing from the watermark mapping"
+  as "start a full backfill for that repo" (module docstring), and `pipeline._collect_github_
+  pr_issue_link_backfill`'s per-repo cursor/done-flag blobs do the same (`dict.get(repo, None)`
+  defaults to not-yet-started) -- no collector code changed to support this.
+- **De-blend is a compute-time read filter, not a raw-storage change (D3).** Raw `github/pr`,
+  `pr_review`, `pr_comment`, `pr_issue_link` partitions stay append-only forever, including the
+  rows already collected for the four now-removed repos -- `pipeline.py::run_pipeline` filters
+  all four tables to `config.pull_requests.repos` immediately after dedup, before any metric
+  (`metrics/engine.py::compute_all`'s `dev_metrics`/`review_responsiveness`, `metrics/pr_backlog.
+  py`) ever sees them (`pipeline._filter_to_configured_pr_repos`). A repo re-added to the config
+  later would see its already-collected history flow straight back in, no re-collection needed.
+  `peers/pipeline.py`'s own Cassandra-comparison read (already hard-filtered to exactly
+  `apache/cassandra`) and `metrics/pr_backlog.py`'s `PRIMARY_REPO`-scoped ids (already scoped to
+  `apache/cassandra` only, per that module's own pre-existing "Scoped to apache/cassandra"
+  design note) were never blended across `pull_requests.repos` in the first place, so both are
+  unaffected by this change; `pr_backlog.py`'s *other-repo* breakdown rows (one row set per
+  non-primary repo actually present in `pr`) do change, since the repo set itself changes.
+  `governance/engine.py`'s `check_run` table is scoped to `config.repos[0]` (the primary repo
+  alone, never blended with `pull_requests.repos`) and needed no change either.
+- **Definition-version bumps (D2 rule 6, "nothing changes silently"):** every metric whose
+  population is GitHub-PR-sourced and spans `pull_requests.repos` moves 1.0 -> 1.1 --
+  `pr_merge_lead_time`, `pr_time_to_first_review`, `pr_time_to_close`, `pr_review_engagement`,
+  `stale_pr_rate`, `change_request_closure_ratio_pr` (`metrics/engine.py::DEFINITION_VERSIONS`,
+  kept in lockstep with `metrics/registry.py::_VERSIONS`'s own separately-maintained copy),
+  `review_responsiveness.py`'s module-wide `DEFINITION_VERSION` (its blended first-response
+  detection can source a qualifying event from a `pr_review`/`pr_comment` row on a linked PR),
+  and `pr_backlog.py`'s module-wide `DEFINITION_VERSION` (its other-repo breakdown's repo set
+  changes). `time_to_first_response_jira`, `change_request_closure_ratio_jira_patch` (JIRA-
+  sourced) and `time_to_first_response_pr` (`metrics/peer_metrics.py`'s peer-comparison metric,
+  already hard-filtered to `apache/cassandra` only) are unaffected and keep their versions.
+- **Checked `site/corrections_page.py`/`site/methodology_page.py` for a "list of changes" to
+  update (D2.6): neither renders one.** `corrections_page.py` is a static "how to request a
+  correction" page with no metric content; `methodology_page.py`'s metric catalogue
+  (`metrics_meta.metric_catalogue`) lists each metric's name/definition/tier/window, never a
+  `definition_version` number or a per-repo population description -- so no page content
+  changes silently stale here. "Nothing changes silently" is still satisfied: every metric's
+  own rendered series already carries its live `definition_version` (`site/generate.py`'s
+  `_build_series`, max version present across its rows), and this entry plus the CHANGELOG.md
+  entry are the disclosure this kind of change gets, same as every prior `DEFINITION_VERSIONS`
+  bump in this file (D2 rule 6).
+
 ## Open question: corrections response-time SLA (issue #160)
 
 Not yet decided by the owner. The `/corrections/` page (issue #160) states plainly that there

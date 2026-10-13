@@ -113,14 +113,24 @@ DEFINITION_VERSIONS: dict[str, str] = {
     "mailing_list_distinct_senders_monthly_dev": "1.0",
     "mailing_list_distinct_senders_monthly_user": "1.0",
     # issue #54 (metrics/dev_metrics.py) -- see that module's own docstring
-    "pr_merge_lead_time": "1.0",
-    "pr_time_to_first_review": "1.0",
-    "pr_time_to_close": "1.0",
-    "pr_review_engagement": "1.0",
+    # issue #173, DECISIONS.md D31: the four below are sourced from `pr`/
+    # `pr_review`, which is now filtered to `config.pull_requests.repos`
+    # (`pipeline.py::_filter_to_configured_pr_repos`) -- their population
+    # changes for Cassandra (driver/sidecar/analytics/accord PRs no longer
+    # blended in; cassandra-in-jvm-dtest-api/-harry/-simulator/-builds/-diff
+    # now are), so each is bumped 1.0 -> 1.1. `time_to_first_response_jira`/
+    # `change_request_closure_ratio_jira_patch` are JIRA-sourced and
+    # unaffected.
+    "pr_merge_lead_time": "1.1",
+    "pr_time_to_first_review": "1.1",
+    "pr_time_to_close": "1.1",
+    "pr_review_engagement": "1.1",
     "time_to_first_response_jira": "1.0",
-    "stale_pr_rate": "1.0",
+    "stale_pr_rate": "1.1",
     # issue #136, DECISIONS.md D29: CHAOSS "Change Request Closure Ratio"
-    "change_request_closure_ratio_pr": "1.0",
+    # issue #173: `_pr` series is GitHub-PR-sourced (bumped 1.0 -> 1.1, same
+    # reason as above); `_jira_patch` is JIRA-sourced and unaffected.
+    "change_request_closure_ratio_pr": "1.1",
     "change_request_closure_ratio_jira_patch": "1.0",
     # issue #135 (metrics/release_cadence.py)
     "release_frequency": "1.0",
@@ -128,8 +138,9 @@ DEFINITION_VERSIONS: dict[str, str] = {
     "time_since_last_release": "1.0",
     "days_between_releases": "1.0",
     # issue #174 (metrics/github_issues.py): GitHub Issues responsiveness +
-    # CHAOSS Change Request Closure Ratio analogue, for projects with
-    # `github_issues:` configured.
+    # closure ratio (NOT a Change Request Closure Ratio analogue -- a
+    # GitHub issue is never a change request, fixup/orchestrator review of
+    # PR #184), for projects with `github_issues:` configured.
     "time_to_first_response_gh_issue": "1.0",
     "issue_closure_ratio_gh": "1.0",
     # issue #159 (metrics/contributor_pipeline.py): the five

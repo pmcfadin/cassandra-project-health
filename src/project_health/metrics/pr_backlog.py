@@ -102,13 +102,16 @@ The 12 `open_pr_backlog_*` ids above (`TOTAL`/`DRAFTS`/`AGE_METRIC_IDS`/
 `pull_requests.repos` entry `projects/cassandra.yaml` configures. Two
 reasons, both from real-data review: (1) the issue's own verified
 orchestrator snapshot (549 open PRs) is itself `apache/cassandra`-only,
-so combining in the other 6 configured repos' PRs made this module's own
+so combining in the other configured repos' PRs made this module's own
 headline number silently stop matching the number it was built to
 reproduce; (2) the linked-ticket-state bucket is meaningless outside
-`apache/cassandra` -- `apache/cassandra-java-driver` uses its own JIRA
-project (`CASSJAVA`), `apache/cassandra-sidecar`/`-analytics` likewise
-have their own, and some configured repos (e.g. `-website`, `-dtest`)
-reference `apache/cassandra`'s own CASSANDRA-NNNNN keys in their titles
+`apache/cassandra` -- issue #173/DECISIONS.md D31 de-blended the repos that
+had their own JIRA project (`apache/cassandra-java-driver`'s `CASSJAVA`,
+`apache/cassandra-sidecar`/`-analytics` likewise) onto their own
+multi-project pages entirely, but the repos still configured here
+(e.g. `-website`, `-dtest`, `-harry`, `-simulator`, `-builds`, `-diff`,
+`-in-jvm-dtest-api`) reference `apache/cassandra`'s own CASSANDRA-NNNNN keys
+in their titles
 at best inconsistently -- a PR from any of those repos would read as
 `no_ticket_key` for a reason that has nothing to do with whether its
 *own* project tracks it, inflating that bucket with repos it was never
@@ -150,7 +153,14 @@ from project_health.metrics.engine import _connect, _dense_months
 from project_health.metrics.windows import month_end, month_start
 from project_health.schema import get_schema, validate
 
-DEFINITION_VERSION = "1.0"
+# issue #173, DECISIONS.md D31: 1.0 -> 1.1 -- the 12 `PRIMARY_REPO`-scoped
+# ids are unaffected (always `apache/cassandra`-only, never blended), but
+# `_other_repo_rows`'s per-repo breakdown is read from whatever distinct
+# `pr.repo` values exist in the now-filtered `pr` table
+# (`pipeline.py::_filter_to_configured_pr_repos`): the former driver/
+# sidecar/analytics/accord rows disappear and cassandra-in-jvm-dtest-api/
+# -harry/-simulator/-builds/-diff rows newly appear.
+DEFINITION_VERSION = "1.1"
 
 # The `open_pr_backlog_*` ids below are scoped to this one repo (see module
 # docstring "Scoped to apache/cassandra"). Every other repo

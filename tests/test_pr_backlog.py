@@ -671,6 +671,9 @@ def test_build_pr_backlog_registry_covers_every_metric_id():
     assert set(rows_by_id) == set(ALL_METRIC_IDS)
     for metric_id in ALL_METRIC_IDS:
         row = rows_by_id[metric_id]
-        assert row["version"] == "1.0"
+        # issue #173, DECISIONS.md D31: 1.0 -> 1.1 -- the other-repo
+        # breakdown's repo set changed when `pull_requests.repos` was
+        # de-blended (see pr_backlog.py's own `DEFINITION_VERSION` comment).
+        assert row["version"] == "1.1"
         assert row["description"]
         assert row["changelog_note"]

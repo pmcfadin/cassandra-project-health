@@ -59,6 +59,40 @@ issues also count in Cassandra's figures), and its own git tags. The dev@/user@ 
 roster and governance are shared by the whole PMC and are shown once, on Cassandra's pages.
 Cassandra's own figures are unchanged by this entry (its PR repo set is unchanged until issue #173).
 
+### De-blend Cassandra's PR metrics from subproject repos (issue #173, DECISIONS.md D31)
+
+`projects/cassandra.yaml`'s `pull_requests.repos` no longer blends in `apache/cassandra-java-
+driver`, `-sidecar`, `-analytics`, or `-accord` -- each now has its own multi-project page (the
+entry above), so a reader comparing a subproject's own PR numbers against "Cassandra's" would
+otherwise find that subproject's PRs counted twice. Five repos that share Cassandra's own
+JIRA-centric review workflow and had no other page to move to are added instead:
+`apache/cassandra-in-jvm-dtest-api`, `-harry`, `-simulator`, `-builds`, `-diff` (first-time
+collection for these five; raw storage for the four removed repos is untouched -- the filter is
+read-time only, `pipeline.py::_filter_to_configured_pr_repos`).
+
+Definition-version bumps (every metric whose population spans `pull_requests.repos`): `pr_merge_
+lead_time`, `pr_time_to_first_review`, `pr_time_to_close`, `pr_review_engagement`, `stale_pr_rate`,
+`change_request_closure_ratio_pr` (1.0 -> 1.1, `metrics/engine.py::DEFINITION_VERSIONS`);
+`review_responsiveness.py`'s and `pr_backlog.py`'s own module-wide `DEFINITION_VERSION` (1.0 ->
+1.1 each). `time_to_first_response_jira`, `change_request_closure_ratio_jira_patch` (JIRA-sourced)
+and `time_to_first_response_pr` (peer-comparison, already hard-filtered to `apache/cassandra`
+only) are unaffected.
+
+Before/after, computed against the same real `data`-branch snapshot (2026-10-12T22:06:05Z) with
+main's code vs. this issue's code, `as_of` held fixed so only the code differs (full table in
+PR #173's description): September 2026 (the latest fully-completed month at that snapshot)
+`pr_merge_lead_time` n 19 -> 2 (now `insufficient_data` -- too few Cassandra-only merges that
+month), `pr_time_to_first_review` 1.073d (n=82) -> 0.727d (n=66), `pr_time_to_close` 4.967d
+(n=102) -> 4.794d (n=80), `pr_review_engagement` 1.407 (n=108) -> 1.451 (n=82), `change_request_
+closure_ratio_pr` 0.600 (n=170) -> 0.541 (n=148); `stale_pr_rate` (as of 2026-10-12) 25.9%
+(n=721 open) -> 24.7% (n=616 open). Independently cross-checked against the raw `github/pr`
+parquet directly with DuckDB (not through this project's own dedupe code): September 2026 PRs
+opened under the old 7-repo set totalled 169, under the new 8-repo set 147 -- a drop of 22,
+exactly the sum of the four removed repos' own September PR counts (java-driver 5 + sidecar 5 +
+analytics 11 + accord 1 = 22); the five newly-added repos contributed 0 (not yet collected, as
+expected for a first-time backfill). JIRA-sourced metrics (`time_to_first_response_jira`,
+`change_request_closure_ratio_jira_patch`) were confirmed byte-identical before/after, as expected.
+
 ### Fix: JIRA issue dedupe kept reporter-less rows (time_to_first_response_jira and other reporter-based JIRA metrics)
 
 The Patch Available backfill re-emits issue rows without `reporter`. When such a row tied the

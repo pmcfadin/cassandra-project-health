@@ -47,6 +47,7 @@ from project_health.pipeline import (
     _dedupe_release_rows,
     _dedupe_roster_entries,
     _dedupe_security_advisories,
+    _filter_to_configured_pr_repos,
     _github_pr_issue_link_backfill_budget,
     _not_applicable_reason,
     applicable_sources,
@@ -3164,10 +3165,13 @@ class TestGitHubIntegration:
         assert result.exit_code == 0
         github = result.manifest["sources"]["github"]
         assert github["status"] == "ok"
-        # projects/cassandra.yaml configures 7 pull_requests.repos; the single
-        # mock GraphQL page is served once per repo -> 7 PRs, 7 reviews.
-        assert github["records_collected"] == 7
-        assert github["review_count"] == 7
+        # issue #173: projects/cassandra.yaml now configures 8
+        # pull_requests.repos (was 7 -- driver/sidecar/analytics/accord
+        # dropped, in-jvm-dtest-api/harry/simulator/builds/diff added); the
+        # single mock GraphQL page is served once per repo -> 8 PRs, 8
+        # reviews.
+        assert github["records_collected"] == 8
+        assert github["review_count"] == 8
         assert set(github["repos"].values()) == {"ok"}
 
         assert list((data_dir / "raw" / "github" / "pr").glob("date=*/part-*.parquet"))
@@ -3340,6 +3344,95 @@ class TestGitHubDedupe:
     def test_dedupe_functions_are_noop_on_empty_tables(self):
         assert _dedupe_pr_rows(get_schema("pr").empty_table()).num_rows == 0
         assert _dedupe_pr_review_rows(get_schema("pr_review").empty_table()).num_rows == 0
+
+
+class TestFilterToConfiguredPrRepos:
+    """`_filter_to_configured_pr_repos` (issue #173, DECISIONS.md D31):
+    `pr`/`pr_review`/`pr_comment`/`pr_issue_link` rows for a repo not in
+    `config.pull_requests.repos` must never reach a metric -- raw storage
+    stays append-only (D3); this is a read-time filter only."""
+
+    def _config_with_repos(self, config, repos: list[str]):
+        return config.model_copy(
+            update={"pull_requests": FlexibleSection(type="github", repos=repos)}
+        )
+
+    def test_drops_rows_for_an_unconfigured_repo(self, config):
+        scoped_config = self._config_with_repos(config, ["apache/cassandra"])
+        schema = get_schema("pr")
+        base = {
+            "state": "OPEN",
+            "is_draft": False,
+            "merged": False,
+            "author_identity_id": None,
+            "author_raw_type": "github_login",
+            "author_raw_value": "alice-dev",
+            "title_hash": "hash-1",
+            "created_at": datetime(2026, 1, 1, tzinfo=timezone.utc),
+            "updated_at": datetime(2026, 1, 1, tzinfo=timezone.utc),
+            "closed_at": None,
+            "merged_at": None,
+            "additions": None,
+            "deletions": None,
+            "changed_files": None,
+            "source_snapshot_id": "run-1",
+        }
+        table = pa.Table.from_pylist(
+            [
+                {**base, "repo": "apache/cassandra", "number": 1},
+                # Not in `scoped_config.pull_requests.repos` -- e.g. a repo
+                # de-blended from Cassandra's own PR metrics (issue #173) or
+                # never configured for this project at all.
+                {**base, "repo": "apache/cassandra-java-driver", "number": 2},
+            ],
+            schema=schema,
+        )
+
+        filtered = _filter_to_configured_pr_repos(table, scoped_config)
+
+        assert filtered.num_rows == 1
+        assert filtered.to_pylist()[0]["repo"] == "apache/cassandra"
+
+    def test_keeps_rows_for_every_configured_repo(self, config):
+        scoped_config = self._config_with_repos(
+            config, ["apache/cassandra", "apache/cassandra-dtest"]
+        )
+        schema = get_schema("pr_review")
+        base = {
+            "pr_number": 1,
+            "reviewer_identity_id": None,
+            "reviewer_raw_type": "github_login",
+            "reviewer_raw_value": "bob-reviewer",
+            "state": "APPROVED",
+            "submitted_at": datetime(2026, 1, 1, tzinfo=timezone.utc),
+            "source_snapshot_id": "run-1",
+        }
+        table = pa.Table.from_pylist(
+            [
+                {**base, "repo": "apache/cassandra", "review_id": "PRR_1"},
+                {**base, "repo": "apache/cassandra-dtest", "review_id": "PRR_2"},
+            ],
+            schema=schema,
+        )
+
+        filtered = _filter_to_configured_pr_repos(table, scoped_config)
+
+        assert sorted(filtered.column("repo").to_pylist()) == [
+            "apache/cassandra",
+            "apache/cassandra-dtest",
+        ]
+
+    def test_noop_on_empty_table(self, config):
+        assert (
+            _filter_to_configured_pr_repos(get_schema("pr").empty_table(), config).num_rows == 0
+        )
+
+    def test_noop_when_no_repos_column(self, config):
+        # `comment_backfill_checked`-shaped tables have no `repo` column at
+        # all -- the filter must pass them through unchanged rather than
+        # raising a KeyError.
+        table = get_schema("comment_backfill_checked").empty_table()
+        assert _filter_to_configured_pr_repos(table, config).num_rows == 0
 
 
 # --- `pr_issue_link` historical backfill (issue #105) -----------------------

@@ -56,14 +56,20 @@ _VERSIONS: dict[str, str] = {
     "mailing_list_distinct_senders_monthly_dev": "1.0",
     "mailing_list_distinct_senders_monthly_user": "1.0",
     # issue #54
-    "pr_merge_lead_time": "1.0",
-    "pr_time_to_first_review": "1.0",
-    "pr_time_to_close": "1.0",
-    "pr_review_engagement": "1.0",
+    # issue #173, DECISIONS.md D31: the five below are sourced from `pr`/
+    # `pr_review`, now filtered to `config.pull_requests.repos` -- bumped
+    # 1.0 -> 1.1 in lockstep with engine.py's `DEFINITION_VERSIONS`.
+    # `time_to_first_response_jira` is JIRA-sourced and unaffected.
+    "pr_merge_lead_time": "1.1",
+    "pr_time_to_first_review": "1.1",
+    "pr_time_to_close": "1.1",
+    "pr_review_engagement": "1.1",
     "time_to_first_response_jira": "1.0",
-    "stale_pr_rate": "1.0",
+    "stale_pr_rate": "1.1",
     # issue #136, DECISIONS.md D29
-    "change_request_closure_ratio_pr": "1.0",
+    # issue #173: `_pr` is GitHub-PR-sourced (bumped 1.0 -> 1.1, same reason
+    # as above); `_jira_patch` is JIRA-sourced and unaffected.
+    "change_request_closure_ratio_pr": "1.1",
     "change_request_closure_ratio_jira_patch": "1.0",
     # issue #135
     "release_frequency": "1.0",
@@ -107,6 +113,14 @@ _INITIAL_ISSUE_54_CHANGELOG_NOTE = "Initial implementation (issue #54)."
 _INITIAL_ISSUE_136_CHANGELOG_NOTE = (
     "Initial implementation (issue #136, DECISIONS.md D29 -- CHAOSS Change Request Closure "
     "Ratio)."
+)
+_ISSUE_173_DEBLEND_CHANGELOG_NOTE = (
+    "1.0 -> 1.1 (issue #173, DECISIONS.md D31, 2026-10-12): population is `pr`/`pr_review`, now "
+    "filtered to projects/cassandra.yaml's pull_requests.repos at read time "
+    "(pipeline.py::_filter_to_configured_pr_repos) -- apache/cassandra-java-driver, -sidecar, "
+    "-analytics, and -accord dropped (each now has its own multi-project page), "
+    "apache/cassandra-in-jvm-dtest-api, -harry, -simulator, -builds, -diff added. Raw storage is "
+    "unaffected (D3, append-only); value/n/flag formula itself is unchanged."
 )
 _INITIAL_ISSUE_159_CHANGELOG_NOTE = (
     "Initial implementation (issue #159): the five contributor-pipeline metrics METRICS.md "
@@ -175,13 +189,13 @@ _CHANGELOG_NOTES: dict[str, str] = {
     "mailing_list_new_threads_monthly_user": _INITIAL_ISSUE_158_CHANGELOG_NOTE,
     "mailing_list_distinct_senders_monthly_dev": _INITIAL_ISSUE_158_CHANGELOG_NOTE,
     "mailing_list_distinct_senders_monthly_user": _INITIAL_ISSUE_158_CHANGELOG_NOTE,
-    "pr_merge_lead_time": _INITIAL_ISSUE_54_CHANGELOG_NOTE,
-    "pr_time_to_first_review": _INITIAL_ISSUE_54_CHANGELOG_NOTE,
-    "pr_time_to_close": _INITIAL_ISSUE_54_CHANGELOG_NOTE,
-    "pr_review_engagement": _INITIAL_ISSUE_54_CHANGELOG_NOTE,
+    "pr_merge_lead_time": _ISSUE_173_DEBLEND_CHANGELOG_NOTE,
+    "pr_time_to_first_review": _ISSUE_173_DEBLEND_CHANGELOG_NOTE,
+    "pr_time_to_close": _ISSUE_173_DEBLEND_CHANGELOG_NOTE,
+    "pr_review_engagement": _ISSUE_173_DEBLEND_CHANGELOG_NOTE,
     "time_to_first_response_jira": _INITIAL_ISSUE_54_CHANGELOG_NOTE,
-    "stale_pr_rate": _INITIAL_ISSUE_54_CHANGELOG_NOTE,
-    "change_request_closure_ratio_pr": _INITIAL_ISSUE_136_CHANGELOG_NOTE,
+    "stale_pr_rate": _ISSUE_173_DEBLEND_CHANGELOG_NOTE,
+    "change_request_closure_ratio_pr": _ISSUE_173_DEBLEND_CHANGELOG_NOTE,
     "change_request_closure_ratio_jira_patch": _INITIAL_ISSUE_136_CHANGELOG_NOTE,
     "release_frequency": _INITIAL_ISSUE_135_CHANGELOG_NOTE,
     "release_regularity": _INITIAL_ISSUE_135_CHANGELOG_NOTE,

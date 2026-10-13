@@ -1,0 +1,158 @@
+{% extends "base.html" %}
+{% import "_sections.html" as sections %}
+{% block title %}Releases — {{ project_title }}{% endblock %}
+{% block content %}
+<h2>Releases</h2>
+
+{% if available %}
+<p class="page-intro">
+  GA release history from this repository's own git tags, unreleased JIRA versions with
+  their open/total ticket counts (where this project has its own JIRA), and the latest run
+  of each GitHub Actions workflow this repository defines, on the default branch. This page
+  states plain facts only — it never judges whether a release is ready.
+</p>
+
+<section class="releases-ga" aria-labelledby="releases-ga-heading">
+  <h3 id="releases-ga-heading">GA releases</h3>
+  {% if ga_available %}
+  <div class="gov-table-wrap">
+  <table class="security-table releases-summary-table">
+    <thead>
+      <tr>
+        <th scope="col">Line</th>
+        <th scope="col">Latest release</th>
+        <th scope="col">Earlier releases on this line</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for line in ga_lines_recent %}
+      <tr>
+        <th scope="row">{{ line.line }}</th>
+        <td>{{ line.latest.version }} ({{ line.latest.release_date }})</td>
+        <td>
+          {% if line.history | length > 1 %}
+          {{ line.history[1:] | map(attribute="version") | join(", ") }}
+          {% else %}
+          —
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% if ga_lines_older %}
+  <details>
+    <summary>Older release lines ({{ ga_lines_older | length }})</summary>
+    <div class="gov-table-wrap">
+    <table class="security-table releases-summary-table">
+      <thead>
+        <tr>
+          <th scope="col">Line</th>
+          <th scope="col">Latest release</th>
+          <th scope="col">Earlier releases on this line</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for line in ga_lines_older %}
+        <tr>
+          <th scope="row">{{ line.line }}</th>
+          <td>{{ line.latest.version }} ({{ line.latest.release_date }})</td>
+          <td>
+            {% if line.history | length > 1 %}
+            {{ line.history[1:] | map(attribute="version") | join(", ") }}
+            {% else %}
+            —
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    </div>
+  </details>
+  {% endif %}
+  {% else %}
+  <p class="card-empty-state">No GA release history recorded for this repository yet.</p>
+  {% endif %}
+</section>
+
+<section class="releases-jira" aria-labelledby="releases-jira-heading">
+  <h3 id="releases-jira-heading">Unreleased JIRA versions</h3>
+  {% if not has_jira %}
+  <p class="card-empty-state">This project has no JIRA issue tracker of its own.</p>
+  {% elif jira_versions %}
+  <div class="gov-table-wrap">
+  <table class="security-table releases-summary-table">
+    <thead>
+      <tr>
+        <th scope="col">Version</th>
+        <th scope="col">Open tickets</th>
+        <th scope="col">Total tickets</th>
+        <th scope="col">Git tag</th>
+        <th scope="col">Description</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for v in jira_versions %}
+      <tr>
+        <th scope="row"><a href="{{ v.issues_url }}">{{ v.name }}</a></th>
+        <td>{{ v.open_count }}</td>
+        <td>{{ v.total_count }}</td>
+        <td>
+          {% if v.git_tag %}
+          Git tag: {{ v.git_tag.version }} ({{ v.git_tag.release_date }}) — JIRA version not marked released
+          {% else %}
+          —
+          {% endif %}
+        </td>
+        <td>{% if v.description %}&ldquo;{{ v.description }}&rdquo;{% else %}—{% endif %}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% else %}
+  <p class="card-empty-state">No unreleased JIRA version currently has any ticket filed against it.</p>
+  {% endif %}
+</section>
+
+<section class="releases-ci" aria-labelledby="releases-ci-heading">
+  <h3 id="releases-ci-heading">Continuous integration</h3>
+  {% if ci_tracked %}
+  <div class="gov-table-wrap">
+  <table class="security-table releases-summary-table">
+    <thead>
+      <tr>
+        <th scope="col">Workflow</th>
+        <th scope="col">Last run</th>
+        <th scope="col">Date</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for w in ci_workflows %}
+      <tr>
+        <th scope="row">{{ w.workflow_name }}</th>
+        <td><a href="{{ w.html_url }}">{{ w.conclusion if w.conclusion else w.status }}</a></td>
+        <td>{{ w.run_started_at if w.run_started_at else "—" }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% else %}
+  <p class="card-empty-state">No GitHub Actions CI run found on the default branch. CI hosted elsewhere (e.g. ASF Jenkins) is not tracked here.</p>
+  {% endif %}
+</section>
+
+{% call sections.section("sources-and-limits", "Sources & limits", None, None, chaoss_label="") %}
+  <p>{{ sources_and_limits }}</p>
+{% endcall %}
+
+{% else %}
+<p class="card-empty-state">
+  Release data isn't published yet — it appears once the nightly run has collected GA
+  release history, JIRA versions, and GitHub Actions CI state at least once.
+</p>
+{% endif %}
+{% endblock %}

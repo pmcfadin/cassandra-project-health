@@ -48,4 +48,15 @@ pull_requests:
 # https://archive.apache.org/dist/cassandra/accord/ both 404 -- no
 # archive.apache.org/dist distribution either.)
 
+# `releases_tab:` (issue #175): CASSANDRA fixVersions scoped by this
+# project's own `issue_tracker.jql_filter` (`component = Accord`) above --
+# same AND-clause discipline issue #181 already requires of `collectors/
+# release_lines.py`'s fixVersion search -- plus GitHub Actions CI.
+# Live-verified 2026-10-12: apache/cassandra-accord's default branch
+# (`trunk`) has ZERO GitHub Actions workflows at all (`gh api repos/apache/
+# cassandra-accord/actions/workflows` returns `total_count: 0`) -- the site
+# renders "not tracked" for CI, a verified fact, not a guess.
+releases_tab:
+  type: jira_versions_github_actions
+
 shared_sources: [asf_roster, ponymail, governance]

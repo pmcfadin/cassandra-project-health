@@ -352,6 +352,19 @@ class ProjectConfig(BaseModel):
     # `collectors/release_lines.py`. JIRA versions/issues reuse
     # `issue_tracker.base_url`/`.project_key`, not a field here.
     release_lines: FlexibleSection | None = None
+    # `releases_tab:` (issue #175) -- a non-Cassandra subproject's own,
+    # deliberately simpler Releases-tab collector (`collectors/
+    # subproject_releases.py`): unreleased JIRA fixVersions with open/total
+    # ticket counts (reusing `issue_tracker.base_url`/`.project_key`/
+    # `.jql_filter`, not a field here -- same split `release_lines`/`JIRA_
+    # VERSION` already use) plus the latest GitHub Actions run per workflow
+    # on the repo's default branch. A `FlexibleSection` like `release_lines`
+    # above, present ONLY on a subproject's own `projects/<id>.yaml` --
+    # deliberately absent from `projects/cassandra.yaml` (which keeps using
+    # `release_lines:`/`ReleaseLinesCollector` unchanged) so this source is
+    # never attempted for Cassandra and its own Releases tab stays
+    # byte-identical.
+    releases_tab: FlexibleSection | None = None
     affiliations_file: str | None = None
     # D6, issue #52: a reviewed email-domain -> organization map (see
     # normalize/affiliation.py). Optional -- a project with no reviewed

@@ -140,6 +140,7 @@ from project_health.collectors.jira import (
 from project_health.collectors.ponymail import PonyMailCollector
 from project_health.collectors.release import ReleaseCollector
 from project_health.collectors.release_lines import ReleaseLinesCollector
+from project_health.collectors.subproject_releases import SubprojectReleasesCollector
 from project_health.collectors.security import SecurityCollector
 from project_health.config import ProjectConfig
 from project_health.metrics import (
@@ -213,6 +214,11 @@ ALL_SOURCES: tuple[str, ...] = (
     "release",
     # issue #166: Releases tab (JIRA blocker ladder + Butler + Jenkins CI).
     "release_lines",
+    # issue #175: a non-Cassandra subproject's own, simpler Releases tab
+    # (unreleased JIRA versions with ticket counts + GitHub Actions CI) --
+    # see `_collect_subproject_releases` and `config.ProjectConfig.
+    # releases_tab`.
+    "subproject_releases",
     "github_commit_authors",
     "github_profile",
     # issue #54: wires collectors/github.py (merged as part of issue #51,
@@ -233,6 +239,7 @@ _SOURCE_CONFIG_ATTR: dict[str, str] = {
     "ponymail": "mailing_lists",
     "release": "releases",
     "release_lines": "release_lines",
+    "subproject_releases": "releases_tab",
     "github": "pull_requests",
     # Governance's own collection needs the same commit-trailer <-> JIRA
     # custom-field cross-check `JiraCollector`/`ReleaseLinesCollector` need
@@ -3468,6 +3475,76 @@ def _collect_release_lines(
         collector.close()
 
 
+def _collect_subproject_releases(
+    config: ProjectConfig,
+    data_dir: Path,
+    run_id: str,
+    started_at: datetime,
+    collector_factory: Callable[[ProjectConfig], SubprojectReleasesCollector] | None,
+) -> dict[str, Any]:
+    """Collect a non-Cassandra subproject's own Releases tab (issue #175):
+    unreleased JIRA fixVersions with open/total ticket counts, plus the
+    latest GitHub Actions run per workflow on the repo's default branch.
+
+    Same independent-per-sub-source degrade discipline as `_collect_
+    release_lines` immediately above (its own docstring) -- a sub-table's
+    partition is written only when that sub-source succeeded this run, so
+    an outage never overwrites the last good partition with an empty one.
+    """
+    snapshot_id = f"{run_id}:subproject_releases"
+    _log("source_collect_started", source="subproject_releases")
+    collector = (collector_factory or SubprojectReleasesCollector)(config)
+    try:
+        result = collector.collect(snapshot_id=snapshot_id)
+        partition_date = started_at.date()
+        if result.jira_ok:
+            storage.write_partition(
+                data_dir,
+                "subproject_releases",
+                "subproject_release_version",
+                partition_date,
+                run_id,
+                result.jira_version,
+            )
+        if result.actions_ok:
+            storage.write_partition(
+                data_dir,
+                "subproject_releases",
+                "ci_workflow_run",
+                partition_date,
+                run_id,
+                result.ci_workflow_run,
+            )
+        overall_status = "ok" if (result.jira_ok and result.actions_ok) else "degraded"
+        _log(
+            "source_collect_succeeded" if overall_status == "ok" else "source_collect_degraded",
+            source="subproject_releases",
+            jira_ok=result.jira_ok,
+            actions_ok=result.actions_ok,
+            jira_version_count=result.jira_version_count,
+            ci_workflow_run_count=result.ci_workflow_run_count,
+            errors=result.errors,
+        )
+        return {
+            "status": overall_status,
+            "jira_status": "ok" if result.jira_ok else "failed",
+            "actions_status": "ok" if result.actions_ok else "failed",
+            "records_collected": result.jira_version_count + result.ci_workflow_run_count,
+            "errors": result.errors,
+        }
+    except Exception as exc:  # noqa: BLE001 - a source outage must never abort the run (§7.3)
+        _log("source_collect_failed", source="subproject_releases", error=str(exc))
+        return {
+            "status": "failed",
+            "jira_status": "failed",
+            "actions_status": "failed",
+            "records_collected": 0,
+            "reason": str(exc),
+        }
+    finally:
+        collector.close()
+
+
 def _collect_github_commit_authors(
     config: ProjectConfig,
     data_dir: Path,
@@ -3873,6 +3950,9 @@ def run_pipeline(
     release_lines_collector_factory: (
         Callable[[ProjectConfig], ReleaseLinesCollector] | None
     ) = None,
+    subproject_releases_collector_factory: (
+        Callable[[ProjectConfig], SubprojectReleasesCollector] | None
+    ) = None,
     github_commit_author_collector_factory: (
         Callable[[ProjectConfig], GitHubCommitAuthorCollector] | None
     ) = None,
@@ -4018,6 +4098,10 @@ def run_pipeline(
     if "release_lines" in active_sources:
         source_results["release_lines"] = _collect_release_lines(
             config, data_dir, run_id, started_at, release_lines_collector_factory
+        )
+    if "subproject_releases" in active_sources:
+        source_results["subproject_releases"] = _collect_subproject_releases(
+            config, data_dir, run_id, started_at, subproject_releases_collector_factory
         )
     if "github_commit_authors" in active_sources:
         source_results["github_commit_authors"] = _collect_github_commit_authors(

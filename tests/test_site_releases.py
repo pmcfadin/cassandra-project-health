@@ -25,6 +25,7 @@ import pyarrow.parquet as pq
 from project_health import storage
 from project_health.schema import get_schema, validate
 from project_health.site.generate import generate
+from project_health.site.project_site import DiscoveredProject, ProjectSiteContext
 
 RUN_ID = "2026-10-12-abc123"
 CODE_SHA = "abc123def4567890abc123def4567890abc1234"
@@ -885,3 +886,73 @@ class TestVerdictVocabulary:
         text = _visible_text(home_html).lower()
         for banned in ("ready", "not ready", "verdict", "healthy", "unhealthy"):
             assert re.search(rf"\b{re.escape(banned)}\b", text) is None, banned
+
+
+class TestCassandraByteIdenticalAfterSubprojectReleasesTab:
+    """issue #175: a non-Cassandra subproject's Releases tab is now a
+    deliberately different builder/template (`build_subproject_releases_
+    context`/`templates/releases_subproject.html`, chosen in `site/
+    generate.py` by `project_is_cassandra`) -- Cassandra's own render path
+    (`build_releases_context`/`templates/releases.html`, this whole test
+    module) must be completely untouched by that addition. Builds the
+    SAME real, non-empty release_lines fixture `TestFullSiteGeneration`
+    above uses -- exercising Cassandra's actual "available=True" ladder/
+    Jenkins/Butler render, not just the no-data case `test_site_multi.py`'s
+    own byte-identical check covers -- through both the pre-#171
+    `project=None` call and a Cassandra-only multi-project
+    `ProjectSiteContext`, and asserts every rendered file is byte-for-byte
+    identical between the two."""
+
+    def test_full_output_tree_byte_identical(self, tmp_path):
+        data_dir = tmp_path / "data"
+        _write_main_snapshot(data_dir)
+        _write_manifest(data_dir)
+        _write_release_lines_partitions(data_dir)
+        _write_release_table(data_dir)
+
+        legacy_out = tmp_path / "legacy_out"
+        generate(data_dir, RUN_ID, legacy_out, now=BUILD_TIME)
+
+        cassandra_project = DiscoveredProject(
+            id="cassandra",
+            display_name="Apache Cassandra",
+            root_path="",
+            is_cassandra=True,
+            conversations_shared=False,
+            governance_shared=False,
+            releases_available=True,
+            has_jira=True,
+            data_dir=data_dir,
+            run_id=RUN_ID,
+        )
+        multi_out = tmp_path / "multi_out"
+        generate(
+            data_dir,
+            RUN_ID,
+            multi_out,
+            now=BUILD_TIME,
+            project=ProjectSiteContext(current=cassandra_project, available=(cassandra_project,)),
+        )
+
+        legacy_files = {
+            p.relative_to(legacy_out): p for p in sorted(legacy_out.rglob("*")) if p.is_file()
+        }
+        multi_files = {
+            p.relative_to(multi_out): p for p in sorted(multi_out.rglob("*")) if p.is_file()
+        }
+        assert set(legacy_files) == set(multi_files)
+        assert (legacy_out / "releases" / "index.html").is_file()
+        # `governance_page.py` stamps its own `generated_at` from the real
+        # wall clock (not this run's `now=BUILD_TIME`), unrelated to this
+        # issue's own Releases-tab change -- normalized out the same way
+        # `test_site_multi.py`'s own byte-identical check does, so this
+        # test's signal stays specific to the Releases page.
+        generated_at_re = re.compile(rb'"generated_at":\s*"[^"]*"')
+        for rel_path, legacy_path in legacy_files.items():
+            legacy_bytes = generated_at_re.sub(
+                b'"generated_at":"NORMALIZED"', legacy_path.read_bytes()
+            )
+            multi_bytes = generated_at_re.sub(
+                b'"generated_at":"NORMALIZED"', multi_files[rel_path].read_bytes()
+            )
+            assert legacy_bytes == multi_bytes, rel_path

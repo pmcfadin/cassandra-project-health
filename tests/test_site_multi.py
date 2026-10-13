@@ -1,9 +1,9 @@
 """Tests for multi-project site generation (issue #171, epic #168).
 
 Builds a two-project fixture directly against `project_health.site.
-generate.generate_all_projects` -- Cassandra at the data root (the
-pre-#171 layout, unchanged) plus one fake subproject under
-`projects/<id>/` (`data_layout.project_data_dir`, issue #169) -- the same
+generate.generate_all_projects` -- Cassandra under `projects/cassandra/`
+(issue #176) plus one fake subproject under `projects/<id>/`
+(`data_layout.project_data_dir`, issue #169) -- the same
 minimal "empty metrics snapshot + manifest" shape `tests/test_site.py` /
 `tests/test_site_releases.py` already use for a project with no real data
 yet.
@@ -31,7 +31,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import yaml
 
-from project_health import storage
+from project_health import data_layout, storage
 from project_health.schema import get_schema, validate
 from project_health.site.generate import generate, generate_all_projects
 from project_health.site.project_site import (
@@ -116,7 +116,7 @@ def _build_two_project_fixture(tmp_path: Path) -> tuple[Path, Path, Path]:
     tmp_path.mkdir(parents=True, exist_ok=True)
     index_path = _write_two_project_index(tmp_path)
     data_dir = tmp_path / "data"
-    _write_project_data(data_dir, CASSANDRA_RUN_ID)
+    _write_project_data(data_layout.project_data_dir(data_dir, "cassandra"), CASSANDRA_RUN_ID)
     _write_project_data(data_dir / "projects" / "demo-sub", SUB_RUN_ID)
     out_dir = tmp_path / "out"
     return index_path, data_dir, out_dir
@@ -252,7 +252,7 @@ def _build_realistic_fixture(tmp_path: Path) -> tuple[Path, Path, Path]:
     tmp_path.mkdir(parents=True, exist_ok=True)
     index_path = _write_realistic_index(tmp_path)
     data_dir = tmp_path / "data"
-    _write_project_data(data_dir, CASSANDRA_RUN_ID)
+    _write_project_data(data_layout.project_data_dir(data_dir, "cassandra"), CASSANDRA_RUN_ID)
     _write_realistic_subproject_data(data_dir / "projects" / "demo-driver", REALISTIC_SUB_RUN_ID)
     out_dir = tmp_path / "out"
     return index_path, data_dir, out_dir
@@ -438,7 +438,7 @@ def test_switcher_absent_with_one_project_present_with_two(tmp_path):
         yaml.safe_dump([{"id": "cassandra", "config": "cassandra.yaml", "enabled": True}])
     )
     data_dir = single_index / "data"
-    _write_project_data(data_dir, CASSANDRA_RUN_ID)
+    _write_project_data(data_layout.project_data_dir(data_dir, "cassandra"), CASSANDRA_RUN_ID)
     single_out = single_index / "out"
     generate_all_projects(single_index / "index.yaml", data_dir, single_out)
     single_home = (single_out / "index.html").read_text()

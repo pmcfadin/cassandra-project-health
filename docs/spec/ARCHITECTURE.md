@@ -339,6 +339,32 @@ data branch root
 └── manifests/<run_id>.json                                 # run manifest (§5)
 ```
 
+**Current layout (epic #168, issues #169/#176):** the shape above was this project's original, single-project
+design; the real `data` branch has since grown into a multi-project layout, every project (Cassandra included,
+as of issue #176) under its own `projects/<id>/`, with the issue #145 peer-context data (apache/kafka, apache/
+spark, apache/flink, apache/pulsar, apache/datafusion) in its own sibling `peers/` root:
+
+```
+data branch root
+├── projects/
+│   ├── cassandra/
+│   │   ├── raw/<source>/<table>/date=YYYY-MM-DD/part-*.parquet
+│   │   ├── snapshots/<run_id>/metrics.parquet          # plus snapshots/conversation_patterns/ (D26, issue #118)
+│   │   ├── manifests/<run_id>.json
+│   │   └── state/watermarks.json, latest_run.json, ...
+│   └── <subproject-id>/                                 # same raw/snapshots/manifests/state shape
+└── peers/
+    ├── raw/peers/<id>/<git|github|release>/...
+    ├── snapshots/peers/<run_id>/<project_id>/{metric_value,pr_backlog,settlement}.{parquet,json}
+    ├── manifests/peers-<run_id>.json
+    └── state/watermarks.json, peers/rotation.json
+```
+
+`project_health.data_layout.project_data_dir(root, project_id)` / `peers_data_dir(root)` resolve these roots
+in code; `scripts/migrate_data_layout.py` (`.github/workflows/migrate-data-layout.yml`) performed the one-time
+move of a pre-#176 branch (Cassandra's own data, and the peer-context data nested inside it, both rooted
+directly at the branch's top level) into this shape, preserving each moved file's git history (`git mv`).
+
 **Size estimate for Cassandra**, using the live data probe against actual sources (`docs/spec/data-probe.md`,
 2026-09-25) rather than the brief's rough figures — all confirmed **[verified]**:
 

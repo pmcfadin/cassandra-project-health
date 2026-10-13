@@ -45,6 +45,7 @@ from project_health.classify.subsample import (
     run_pilot_subsample,
 )
 from project_health.config import load_project, load_project_index, resolve_index_config_path
+from project_health import data_layout
 from project_health.governance.policy import DEFAULT_POLICY_PATH
 from project_health.governance.verify_sources import verify_policy_sources
 from project_health.label.label_set import LabelSetError
@@ -486,6 +487,20 @@ def _build_parser() -> argparse.ArgumentParser:
         "--data-dir", required=True, help="Destination data dir (this subproject's own data root)"
     )
 
+    check_data_layout_parser = subparsers.add_parser(
+        "check-data-layout",
+        help=(
+            "Issue #176: fail fast (nonzero exit, clear message) if a data-branch checkout "
+            "still has pre-migration Cassandra and/or peer-context data at its legacy top-level "
+            "paths without a matching migrated projects/cassandra/ and/or peers/ directory -- "
+            "run by nightly.yml/peers.yml right after checking out the data branch, so a "
+            "not-yet-migrated branch is never silently treated as 'no data yet' and re-backfilled."
+        ),
+    )
+    check_data_layout_parser.add_argument(
+        "--root", required=True, help="The data branch's own checkout root"
+    )
+
     verify_policy_sources_parser = subparsers.add_parser(
         "verify-policy-sources",
         help=(
@@ -513,7 +528,23 @@ def _build_parser() -> argparse.ArgumentParser:
         "--peers", default="projects/peers.yaml", help="Path to a projects/peers.yaml file"
     )
     peers_collect_parser.add_argument(
-        "--data-dir", required=True, help="Root of the raw/snapshots/manifests data layout"
+        "--data-dir",
+        required=True,
+        help=(
+            "Root of the peer-context raw/snapshots/manifests/state data layout -- issue #176: "
+            "the data branch's own peers/ directory (data_layout.peers_data_dir), not the data "
+            "branch's root"
+        ),
+    )
+    peers_collect_parser.add_argument(
+        "--cassandra-data-dir",
+        default=None,
+        help=(
+            "Issue #176: Cassandra's own data dir (data_layout.project_data_dir(root, "
+            "'cassandra')) to read its raw git/github/release tables from for the comparison "
+            "metrics -- never written. Defaults to --data-dir (pre-#176 behavior, where both "
+            "shared one root); the real peers.yml workflow always passes this explicitly."
+        ),
     )
     peers_collect_parser.add_argument(
         "--workdir", required=True, help="Scratch directory for each peer's disk-safe git clone"
@@ -740,6 +771,7 @@ def _cmd_peers_collect(args: argparse.Namespace) -> int:
         workdir=args.workdir,
         run_id=args.run_id,
         min_free_disk_bytes=min_free_disk_bytes,
+        cassandra_data_dir=args.cassandra_data_dir,
     )
     print(json.dumps(report.to_json_dict(), indent=2, sort_keys=True))
     return 0
@@ -1040,6 +1072,17 @@ def _cmd_publish_conversation_aggregates(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_check_data_layout(args: argparse.Namespace) -> int:
+    try:
+        data_layout.assert_cassandra_migrated(args.root)
+        data_layout.assert_peers_migrated(args.root)
+    except data_layout.LegacyDataLayoutError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    print(f"check-data-layout: {args.root} OK (migrated, or nothing to migrate yet)")
+    return 0
+
+
 def _cmd_verify_policy_sources(args: argparse.Namespace) -> int:
     results = verify_policy_sources(args.policy)
     failed = [r for r in results if not r.ok]
@@ -1107,6 +1150,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_site(args)
     if args.command == "seed-subproject":
         return _cmd_seed_subproject(args)
+    if args.command == "check-data-layout":
+        return _cmd_check_data_layout(args)
     if args.command == "verify-policy-sources":
         return _cmd_verify_policy_sources(args)
     if args.command == "private-run":

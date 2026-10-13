@@ -104,7 +104,9 @@ jobs:
           fi
 
       # ARCHITECTURE.md §4.2: the orphan `data` branch, checked out into
-      # ./data, holding raw/, snapshots/, manifests/, state/.
+      # ./data, holding every project's own raw/snapshots/manifests/state
+      # under `projects/<id>/` (issue #176: Cassandra included) plus the
+      # issue #145 peer-context data under `peers/`.
       - name: Checkout data branch
         if: steps.data-branch.outputs.exists == 'true'
         uses: actions/checkout@v7
@@ -121,7 +123,14 @@ jobs:
           git init -q -b data
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          mkdir -p raw snapshots manifests state
+          # Issue #176: Cassandra's own raw/snapshots/manifests/state live
+          # under projects/cassandra/ (the same `projects/<id>/` shape every
+          # other project already used) -- never at this branch's own root
+          # -- and the issue #145 peer-context data lives under its own
+          # peers/, sibling to projects/.
+          mkdir -p projects/cassandra/raw projects/cassandra/snapshots \
+            projects/cassandra/manifests projects/cassandra/state \
+            peers/raw peers/snapshots peers/manifests peers/state
           cat > README.md <<'EOF'
           # data
 
@@ -129,21 +138,31 @@ jobs:
           (ARCHITECTURE.md §4.2). Not part of `main`'s history.
 
           ```
-          raw/<source>/<table>/date=YYYY-MM-DD/part-*.parquet   # append-only, one partition per run
-          snapshots/<run_id>/metrics.parquet                     # full computed-metric output for that run
-          manifests/<run_id>.json                                 # run manifest (ARCHITECTURE.md §5)
-          state/                                                  # per-source watermarks + last-good-run pointers
+          projects/<id>/raw/<source>/<table>/date=YYYY-MM-DD/part-*.parquet  # append-only, one partition per run
+          projects/<id>/snapshots/<run_id>/metrics.parquet                   # full computed-metric output for that run
+          projects/<id>/manifests/<run_id>.json                              # run manifest (ARCHITECTURE.md §5)
+          projects/<id>/state/                                               # per-source watermarks + last-good-run pointers
+          peers/                                                             # issue #145 peer-context data (own raw/snapshots/manifests/state)
           ```
+
+          Cassandra is `projects/cassandra/` -- every project (Cassandra
+          included, issue #176) uses this same `projects/<id>/` shape.
 
           Written by `.github/workflows/nightly.yml`. Do not edit by hand.
           EOF
-          touch raw/.gitkeep snapshots/.gitkeep manifests/.gitkeep state/.gitkeep
-          git add README.md raw/.gitkeep snapshots/.gitkeep manifests/.gitkeep state/.gitkeep
+          touch projects/cassandra/raw/.gitkeep projects/cassandra/snapshots/.gitkeep \
+            projects/cassandra/manifests/.gitkeep projects/cassandra/state/.gitkeep \
+            peers/raw/.gitkeep peers/snapshots/.gitkeep peers/manifests/.gitkeep peers/state/.gitkeep
+          git add README.md projects peers
           git commit -q -m "chore: initialize orphan data branch"
           git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
           git push -q origin data
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify data layout migration
+        working-directory: main
+        run: project-health check-data-layout --root ../data
 
       # Issue #172: Cassandra's own run stays exactly as it was -- same
       # flags, same data dir -- except it no longer renders the site itself
@@ -169,7 +188,7 @@ jobs:
         run: |
           project-health run \
             --project projects/cassandra.yaml \
-            --data-dir ../data \
+            --data-dir ../data/projects/cassandra \
             --workdir ../work/apache-cassandra \
             --identity-overrides identity_overrides.yaml \
             --trigger "${{ github.event_name }}"
@@ -189,7 +208,8 @@ jobs:
       # Before each subproject's own run: `seed-subproject` (idempotent,
       # see src/project_health/seed_subproject.py) copies that subproject's
       # GitHub PR/review/comment rows + cursor out of Cassandra's own
-      # already-collected `raw/github` tables, if Cassandra's
+      # already-collected `raw/github` tables (issue #176: now under
+      # `projects/cassandra/`, not this branch's own root), if Cassandra's
       # `pull_requests.repos` happens to cover that subproject's repo --
       # sparing a newly-enabled subproject's first run from re-fetching PR
       # history on this same shared token budget. A no-op (same `::warning::`
@@ -212,7 +232,7 @@ jobs:
             fi
             echo "::group::${project_id}"
             if ! project-health seed-subproject \
-              --from ../data \
+              --from ../data/projects/cassandra \
               --project "$config_path" \
               --data-dir "../data/projects/${project_id}"; then
               echo "::warning::seed-subproject failed for project '${project_id}'; continuing without seeding"
@@ -241,13 +261,18 @@ jobs:
           if ! git remote get-url origin > /dev/null 2>&1; then
             git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
           fi
-          # Issue #172: `projects/` (every subproject's own raw/snapshots/
-          # manifests/state tree, data_layout.project_data_dir) joins the
-          # existing four top-level dirs. `mkdir -p` first so `git add`
-          # never fails over a directory that doesn't exist yet (e.g. the
-          # very first night any subproject run produced no output at all).
-          mkdir -p raw snapshots manifests state projects
-          git add raw snapshots manifests state projects
+          # Issue #176: Cassandra's own raw/snapshots/manifests/state now
+          # live under `projects/cassandra/` (data_layout.project_data_dir),
+          # the same shape every other subproject already used (issue
+          # #172) -- so `projects/` covers every project's data, Cassandra
+          # included, and the issue #145 peer-context data has its own
+          # `peers/` root, sibling to `projects/`. Nothing is written at
+          # this branch's own top level anymore. `mkdir -p` first so
+          # `git add` never fails over a directory that doesn't exist yet
+          # (e.g. the very first night any project's run produced no
+          # output at all).
+          mkdir -p projects peers
+          git add projects peers
           if git diff --cached --quiet; then
             echo "No new data to commit"
           else

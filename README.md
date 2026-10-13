@@ -43,20 +43,23 @@ The command completes in ~2 minutes on first run (full git and JIRA crawl). Outp
 
 ## Data
 
-Collected data persists on the orphan `data` branch (not in main's history):
+Collected data persists on the orphan `data` branch (not in main's history). Every project (Cassandra
+included, as of issue #176) lives under its own `data/projects/<id>/`, with the peer-context data
+(DECISIONS.md D30) in its own sibling `data/peers/`:
 
 ```
-data/raw/<source>/<table>/date=YYYY-MM-DD/part-*.parquet    # append-only, one partition per run
-data/snapshots/<run_id>/metrics.parquet                      # full computed-metric output
-data/manifests/<run_id>.json                                 # run manifest with status, sources, errors
-data/state/                                                  # per-source watermarks and last-good-snapshot pointers
+data/projects/cassandra/raw/<source>/<table>/date=YYYY-MM-DD/part-*.parquet    # append-only, one partition per run
+data/projects/cassandra/snapshots/<run_id>/metrics.parquet                      # full computed-metric output
+data/projects/cassandra/manifests/<run_id>.json                                 # run manifest with status, sources, errors
+data/projects/cassandra/state/                                                  # per-source watermarks and last-good-snapshot pointers
+data/peers/                                                                     # peer-context data (own raw/snapshots/manifests/state)
 ```
 
 Inspect the latest manifest on the `data` branch:
 
 ```bash
 git fetch origin data
-LATEST=$(git ls-tree -r --name-only origin/data | grep '^manifests/' | sort | tail -1)
+LATEST=$(git ls-tree -r --name-only origin/data | grep '^projects/cassandra/manifests/' | sort | tail -1)
 git show "origin/data:$LATEST" | jq .
 ```
 

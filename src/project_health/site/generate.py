@@ -53,6 +53,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
+from project_health import data_layout
 from project_health import storage
 from project_health.metrics.contributor_pipeline import (
     LOW_CONFIDENCE_COHORT_FLOOR,
@@ -218,6 +219,7 @@ def generate(
     *,
     now: datetime | None = None,
     project: ProjectSiteContext | None = None,
+    peers_data_dir: str | Path | None = None,
 ) -> None:
     """Build the static site for `run_id` into `out_dir`.
 
@@ -235,9 +237,19 @@ def generate(
     see `project_site.py`'s own module docstring for how those calls differ
     (output directory, shared static/methodology/corrections, the header
     switcher, and the Conversations/Governance "shared" notice).
+
+    `peers_data_dir` (issue #176): the directory `/peers/` (Cassandra-only,
+    `CASSANDRA_ONLY_TABS`) reads its `snapshots/peers/<run_id>/` data from.
+    Defaults to `data_dir` -- the pre-#176 layout, where Cassandra's own
+    data and the peer-context data shared one root, still exactly what
+    every single-project call/test above passes. `generate_all_projects`
+    (the real multi-project build) passes `data_layout.peers_data_dir(root)`
+    explicitly, since `data_dir` here is Cassandra's own
+    `root/projects/cassandra`, a different directory from `root/peers`.
     """
     data_dir = Path(data_dir)
     out_dir = Path(out_dir)
+    peers_data_dir = Path(peers_data_dir) if peers_data_dir is not None else data_dir
     build_time = now if now is not None else datetime.now(UTC)
 
     manifest = load_manifest(data_dir, run_id)
@@ -288,7 +300,16 @@ def generate(
     # its pages reach the shared one via `site_root_prefix` instead.
     if project is None or project.current.is_cassandra:
         _copy_static(out_dir)
-    _render_pages(out_dir, series_by_id, manifest, build_time, data_dir, run_id, project)
+    _render_pages(
+        out_dir,
+        series_by_id,
+        manifest,
+        build_time,
+        data_dir,
+        run_id,
+        project,
+        peers_data_dir=peers_data_dir,
+    )
 
 
 def _read_metrics(data_dir: Path, run_id: str) -> pa.Table:
@@ -1901,6 +1922,7 @@ def _render_pages(
     data_dir: Path,
     run_id: str,
     project: ProjectSiteContext | None = None,
+    peers_data_dir: Path | None = None,
 ) -> None:
     """Render all four top-level pages (D13): `/`, `/community/`,
     `/conversations/`, `/governance/`, sharing `templates/base.html`'s nav
@@ -1977,7 +1999,7 @@ def _render_pages(
     # contexts immediately above. `common_ctx["peers_nav_available"]` gates
     # `base.html`'s own "Peers" nav link -- same "no snapshot -> no dangling
     # link" discipline D27 documents for the thread explorer.
-    peers_context = build_peers_context(data_dir)
+    peers_context = build_peers_context(peers_data_dir if peers_data_dir is not None else data_dir)
     # Issue #171: Peers and the thread explorer are a deliberate Cassandra-
     # only feature (`project_site.CASSANDRA_ONLY_TABS`) -- forced
     # unavailable for any other project regardless of what either builder
@@ -2513,10 +2535,23 @@ def generate_all_projects(
 
     discovered = project_site.discover_projects(index_path, data_dir)
     available = tuple(discovered)
+    # Issue #176: the peer-context data (`/peers/`, Cassandra-only) now lives
+    # under its own `root/peers/`, a different directory from any project's
+    # own `root/projects/<id>/` -- resolved once here and passed to every
+    # `generate()` call (harmless for a non-Cassandra project, which forces
+    # `peers_context` unavailable regardless, `generate()`'s own docstring).
+    peers_root = data_layout.peers_data_dir(data_dir)
     rendered: list[str] = []
     for disc in discovered:
         project_out_dir = out_dir if disc.is_cassandra else out_dir / "p" / disc.id
         site_project = ProjectSiteContext(current=disc, available=available)
-        generate(disc.data_dir, disc.run_id, project_out_dir, now=now, project=site_project)
+        generate(
+            disc.data_dir,
+            disc.run_id,
+            project_out_dir,
+            now=now,
+            project=site_project,
+            peers_data_dir=peers_root,
+        )
         rendered.append(disc.id)
     return rendered

@@ -64,6 +64,60 @@ def _patch_empty_github_passes(monkeypatch) -> None:
     )
 
 
+def _patch_empty_peer_collection(monkeypatch) -> None:
+    """Every (peer, pass) completes with zero rows (`_patch_empty_github_
+    passes`), every peer's git clone is a real, empty, throwaway repo (so
+    `GitCollector.collect` has something valid to walk), and every peer's
+    release discovery/verification is a no-op -- the shared fixture used by
+    tests below that don't care about the collected content itself, only
+    about which directory gets read/written where (issue #176)."""
+    import os
+    import subprocess
+
+    _patch_empty_github_passes(monkeypatch)
+
+    def fake_clone(remote_url, local_path, *, branch, shallow_since):
+        env = os.environ.copy()
+        env.update(
+            {
+                "GIT_AUTHOR_NAME": "Test",
+                "GIT_AUTHOR_EMAIL": "test@example.com",
+                "GIT_COMMITTER_NAME": "Test",
+                "GIT_COMMITTER_EMAIL": "test@example.com",
+            }
+        )
+        Path(local_path).mkdir(parents=True, exist_ok=True)
+        subprocess.run(
+            ["git", "init", "-b", branch], cwd=local_path, env=env, check=True, capture_output=True
+        )
+        subprocess.run(
+            ["git", "config", "commit.gpgsign", "false"],
+            cwd=local_path,
+            check=True,
+            capture_output=True,
+        )
+        (Path(local_path) / "f.txt").write_text("x")
+        subprocess.run(
+            ["git", "-C", str(local_path), "add", "f.txt"], check=True, capture_output=True
+        )
+        subprocess.run(
+            ["git", "-C", str(local_path), "commit", "-m", "init"],
+            env=env,
+            check=True,
+            capture_output=True,
+        )
+
+    monkeypatch.setattr(peer_collect.git_clone, "clone_shallow_bare", fake_clone)
+    monkeypatch.setattr(peer_collect, "fetch_ga_tags", lambda *a, **k: [])
+    monkeypatch.setattr(
+        peer_collect,
+        "verify_release_counts",
+        lambda *a, **k: VerificationResult(
+            source_type="jira", tag_derived_by_year={}, independent_by_year={}
+        ),
+    )
+
+
 def test_run_peers_collection_writes_snapshots_for_cassandra_and_every_peer(tmp_path, monkeypatch):
     peers_config = PeersConfig(
         peers=[_peer("kafka", "apache/kafka"), _peer("spark", "apache/spark")]
@@ -471,6 +525,69 @@ def test_rotation_state_persists_and_advances_across_runs(tmp_path, monkeypatch)
         peers_config, tmp_path, tmp_path / "work", "run4", token="x", as_of=date(2026, 1, 1)
     )
     assert seen_rotation_indices == [0, 1, 2, 0]
+
+
+def test_run_peers_collection_passes_cassandra_data_dir_to_table_reader(tmp_path, monkeypatch):
+    """Issue #176: once the peer-context data's own root (`data_dir`) and
+    Cassandra's own data dir (`cassandra_data_dir`) are two different
+    directories, Cassandra's raw-table reader must be called with
+    `cassandra_data_dir`, never `data_dir`."""
+    peers_config = PeersConfig(peers=[_peer("kafka", "apache/kafka")])
+    _patch_empty_peer_collection(monkeypatch)
+
+    seen_dirs: list[Path] = []
+    original = peer_pipeline._cassandra_tables_for_comparison
+
+    def spy(data_dir):
+        seen_dirs.append(Path(data_dir))
+        return original(data_dir)
+
+    monkeypatch.setattr(peer_pipeline, "_cassandra_tables_for_comparison", spy)
+
+    cassandra_data_dir = tmp_path / "projects" / "cassandra"
+    peers_root = tmp_path / "peers"
+
+    peer_pipeline.run_peers_collection(
+        peers_config,
+        peers_root,
+        peers_root / "work",
+        "run1",
+        token="x",
+        as_of=date(2026, 1, 1),
+        cassandra_data_dir=cassandra_data_dir,
+    )
+
+    assert seen_dirs == [cassandra_data_dir]
+    # Cassandra's computed comparison metrics still land under the
+    # peer-context data's own root -- never under `cassandra_data_dir`,
+    # which is read-only for this module (module docstring).
+    assert (peers_root / "snapshots" / "peers" / "run1" / "cassandra").is_dir()
+    assert not (cassandra_data_dir / "snapshots").exists()
+
+
+def test_run_peers_collection_defaults_cassandra_data_dir_to_data_dir(tmp_path, monkeypatch):
+    """Backward-compatible default: every pre-#176 caller/test (one shared
+    `data_dir` for both Cassandra's own tables and the peer-context data)
+    keeps working unchanged -- omitting `cassandra_data_dir` reads
+    Cassandra's tables from `data_dir` itself, exactly as before this
+    split existed."""
+    peers_config = PeersConfig(peers=[_peer("kafka", "apache/kafka")])
+    _patch_empty_peer_collection(monkeypatch)
+
+    seen_dirs: list[Path] = []
+    original = peer_pipeline._cassandra_tables_for_comparison
+
+    def spy(data_dir):
+        seen_dirs.append(Path(data_dir))
+        return original(data_dir)
+
+    monkeypatch.setattr(peer_pipeline, "_cassandra_tables_for_comparison", spy)
+
+    peer_pipeline.run_peers_collection(
+        peers_config, tmp_path, tmp_path / "work", "run1", token="x", as_of=date(2026, 1, 1)
+    )
+
+    assert seen_dirs == [Path(tmp_path)]
 
 
 def test_cassandra_tables_for_comparison_filters_to_primary_repo(tmp_path):

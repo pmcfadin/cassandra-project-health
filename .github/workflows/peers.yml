@@ -64,7 +64,10 @@ jobs:
           if ! git fetch -q --depth=1 "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" data 2>/dev/null; then
             echo "run=true" >> "$GITHUB_OUTPUT"; echo "no data branch yet"; exit 0
           fi
-          latest=$(git ls-tree --name-only FETCH_HEAD snapshots/peers/ | sort | tail -1)
+          # Issue #176: the peer-context snapshots moved from
+          # `snapshots/peers/` (this branch's own root) to `peers/snapshots/
+          # peers/` (peers' own `peers/` root).
+          latest=$(git ls-tree --name-only FETCH_HEAD peers/snapshots/peers/ | sort | tail -1)
           files=$(git ls-tree -r --name-only FETCH_HEAD "$latest" | grep '/settlement.json$' || true)
           if [ -z "$files" ]; then
             echo "run=true" >> "$GITHUB_OUTPUT"; echo "no settlement files"; exit 0
@@ -135,14 +138,25 @@ jobs:
           git init -q -b data
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          mkdir -p raw snapshots manifests state
-          touch raw/.gitkeep snapshots/.gitkeep manifests/.gitkeep state/.gitkeep
-          git add raw/.gitkeep snapshots/.gitkeep manifests/.gitkeep state/.gitkeep
+          # Issue #176: Cassandra's own data lives under projects/cassandra/,
+          # the peer-context data under its own peers/ -- same layout
+          # `nightly.yml`'s own first-run bootstrap creates.
+          mkdir -p projects/cassandra/raw projects/cassandra/snapshots \
+            projects/cassandra/manifests projects/cassandra/state \
+            peers/raw peers/snapshots peers/manifests peers/state
+          touch projects/cassandra/raw/.gitkeep projects/cassandra/snapshots/.gitkeep \
+            projects/cassandra/manifests/.gitkeep projects/cassandra/state/.gitkeep \
+            peers/raw/.gitkeep peers/snapshots/.gitkeep peers/manifests/.gitkeep peers/state/.gitkeep
+          git add projects peers
           git commit -q -m "chore: initialize orphan data branch"
           git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
           git push -q origin data
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify data layout migration
+        working-directory: main
+        run: project-health check-data-layout --root ../data
 
       - name: Run peer collection
         id: peers
@@ -156,7 +170,8 @@ jobs:
         run: |
           project-health peers-collect \
             --peers projects/peers.yaml \
-            --data-dir ../data \
+            --data-dir ../data/peers \
+            --cassandra-data-dir ../data/projects/cassandra \
             --workdir ../work/peers \
             --run-id "peers-$(date -u +%Y%m%dT%H%M%SZ)"
 
@@ -171,7 +186,12 @@ jobs:
           if ! git remote get-url origin > /dev/null 2>&1; then
             git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
           fi
-          git add raw/peers snapshots/peers manifests state
+          # Issue #176: every file this workflow writes now lives under its
+          # own peers/ root (raw/peers/, snapshots/peers/, manifests/, and
+          # state/, all nested one level under peers/) -- nothing at this
+          # branch's own top level anymore.
+          mkdir -p peers
+          git add peers
           if git diff --cached --quiet; then
             echo "No new peer data to commit"
           else

@@ -1,4 +1,4 @@
-"""Peer-context top-level orchestration (issue #145).
+"""Peer-context top-level orchestration (issue #145; data-dir split #176).
 
 `run_peers_collection` is what `.github/workflows/peers.yml` and a local
 real-data run both call: collect every peer's raw tables
@@ -6,13 +6,19 @@ real-data run both call: collect every peer's raw tables
 *and* every peer (`metrics.peer_metrics.compute_peer_metrics`), writing
 each project's computed output to its own
 `snapshots/peers/<run_id>/<project_id>/{metric_value,pr_backlog}.parquet`
-file. Cassandra's own raw tables (`raw/git/...`, `raw/github/...`,
-`raw/release/...`) are only ever *read* here, never written -- this module
-writes exclusively under `raw/peers/...` and `snapshots/peers/...`.
+file -- all under this module's own `data_dir` (issue #176:
+`data_layout.peers_data_dir(root)`, i.e. `root/peers`, in production).
+Cassandra's own raw tables (`raw/git/...`, `raw/github/...`,
+`raw/release/...`) are only ever *read* here, from a separate
+`cassandra_data_dir` (issue #176: `data_layout.project_data_dir(root,
+"cassandra")`, i.e. `root/projects/cassandra` -- never the same directory
+as `data_dir` in production, though every pre-#176 call/test still defaults
+it to `data_dir` for backward compatibility) -- never written.
 
 Site generation (`site/peers_page.py`) reads the latest
-`snapshots/peers/<run_id>/` directory; this module's own `PeersRunReport`
-is also what the real-data run (issue #145 acceptance) reports from.
+`snapshots/peers/<run_id>/` directory under this module's own `data_dir`;
+this module's own `PeersRunReport` is also what the real-data run (issue
+#145 acceptance) reports from.
 """
 
 from __future__ import annotations
@@ -250,6 +256,7 @@ def run_peers_collection(
     token: str | None = None,
     as_of: date | None = None,
     min_free_disk_bytes: int | None = DEFAULT_MIN_FREE_DISK_BYTES,
+    cassandra_data_dir: str | Path | None = None,
 ) -> PeersRunReport:
     """Collect every peer's raw tables, then compute + snapshot metrics for
     Cassandra and every peer. Never raises on one peer's collection
@@ -266,7 +273,18 @@ def run_peers_collection(
     rather than risking a clone that fills the disk -- resumable next run,
     same "stop cleanly, never a hard failure" discipline the GraphQL
     rate-limit floor already uses. `None` (the default) disables the check.
+
+    `cassandra_data_dir` (issue #176): where to *read* Cassandra's own raw
+    `git`/`github`/`release` tables from for the comparison metrics
+    (`_cassandra_tables_for_comparison`) -- never written. Defaults to
+    `data_dir` itself, matching this module's own pre-#176 behavior (peer-
+    context data and Cassandra's own data sharing one root) for every
+    existing caller/test; a post-#176 caller (the `peers-collect` CLI,
+    `peers.yml`) passes `data_dir=data_layout.peers_data_dir(root)` and
+    `cassandra_data_dir=data_layout.project_data_dir(root, "cassandra")`
+    explicitly, since those are now two different directories.
     """
+    cassandra_data_dir = cassandra_data_dir if cassandra_data_dir is not None else data_dir
     started_at = datetime.now(timezone.utc)
     as_of = as_of or started_at.date()
     partition_date = started_at.date()
@@ -334,7 +352,7 @@ def run_peers_collection(
 
     metrics_by_project: dict[str, dict[str, int]] = {}
 
-    cassandra_tables = _cassandra_tables_for_comparison(data_dir)
+    cassandra_tables = _cassandra_tables_for_comparison(cassandra_data_dir)
     cassandra_computed = compute_peer_metrics(
         cassandra_tables, as_of=as_of, run_id=run_id, computed_at=started_at
     )

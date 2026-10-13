@@ -174,9 +174,11 @@ calibration. The owner will share the page for feedback. This amends `COMMUNITY-
 per-person data, no quotes, no message links, §5.1/§5.2 floors, no composite score, no
 verdicts (D25).
 - **Publish path (aggregates only).** `project-health publish-conversation-aggregates --from
-  <private aggregates.json> --data-dir <data-branch checkout>` writes a **sanitized**
-  snapshot to `snapshots/conversation_patterns/<run date>.json` on the data branch
-  (`private_run/publish.py`). The sanitizer is an **allowlist** of keys (venue/year/quarter
+  <private aggregates.json> --data-dir <data-branch checkout>/projects/cassandra` writes a
+  **sanitized** snapshot to `snapshots/conversation_patterns/<run date>.json` under Cassandra's
+  own data dir (`projects/cassandra/` as of issue #176 -- a pre-#176 checkout instead passes
+  `--data-dir <data-branch checkout>` directly, since Cassandra's data lived at the branch's
+  root then) (`private_run/publish.py`). The sanitizer is an **allowlist** of keys (venue/year/quarter
   cells, per-label rates + CIs at 0.5/0.7/0.9, probability-index + floor, thread-level
   metrics, newcomer rows, counts of messages/authors/threads, coverage, truncated/skipped
   counts, frame definition text, sampler seed/K, classifier_version/model_id, benchmark

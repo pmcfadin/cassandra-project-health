@@ -33,7 +33,9 @@ After a run completes, inspect the run manifest on the `data` branch:
 
 ```bash
 git fetch origin data
-LATEST=$(git ls-tree -r --name-only origin/data | grep '^manifests/' | sort | tail -1)
+# Issue #176: Cassandra's own manifests moved from manifests/ (the data
+# branch's own root) to projects/cassandra/manifests/.
+LATEST=$(git ls-tree -r --name-only origin/data | grep '^projects/cassandra/manifests/' | sort | tail -1)
 git show "origin/data:$LATEST" | jq .
 ```
 
@@ -61,7 +63,7 @@ When a source collection fails after retries, the manifest marks it with `status
 
 To respond to a failed source:
 
-1. **Check the error** in the manifest: `git fetch origin data && git show origin/data:manifests/RUNID.json | jq '.sources.<source>'`
+1. **Check the error** in the manifest: `git fetch origin data && git show origin/data:projects/cassandra/manifests/RUNID.json | jq '.sources.<source>'`
 2. **Verify the data branch** commit succeeded: the raw data from the last good run is still available
 3. **Fix the issue** (e.g., update credentials, resolve network/rate-limit problems)
 4. **Manually trigger** another run: `gh workflow run nightly.yml --ref main`
@@ -72,4 +74,4 @@ The next successful run will record a new `last_good_snapshot` for that source a
 
 - **GitHub Actions**: https://github.com/pmcfadin/cassandra-project-health/actions/workflows/nightly.yml
 - **Data branch commits**: `git fetch origin data && git log origin/data --oneline | head -20`
-- **Latest status**: `git fetch origin data && LATEST=$(git ls-tree -r --name-only origin/data | grep '^manifests/' | sort | tail -1) && git show "origin/data:$LATEST" | jq '.status'`
+- **Latest status**: `git fetch origin data && LATEST=$(git ls-tree -r --name-only origin/data | grep '^projects/cassandra/manifests/' | sort | tail -1) && git show "origin/data:$LATEST" | jq '.status'`

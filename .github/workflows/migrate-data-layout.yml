@@ -1,0 +1,104 @@
+name: Migrate data layout
+
+# Issue #176, epic #168 ("Multi-project 7," the epic's last step): a
+# one-time, manually-dispatched move of the `data` branch's layout --
+# Cassandra's own raw/snapshots/manifests/state (today at the branch's own
+# root) into `projects/cassandra/` (the same `projects/<id>/` shape every
+# other project already uses), and the issue #145 peer-context data
+# (nested inside Cassandra's own tree) out into its own `peers/` root, with
+# its own `peers/state/watermarks.json` split out of Cassandra's.
+#
+# `workflow_dispatch` only -- never on a schedule, never on a push. This
+# is a single, deliberate, owner-triggered move, run once (re-running it
+# afterward is a safe no-op: `scripts/migrate_data_layout.py` detects an
+# already-migrated branch and does nothing). Shares `nightly.yml`/
+# `peers.yml`'s own `data-branch-writer` concurrency group -- this writes
+# to the same `data` branch they do, and must never run concurrently with
+# either.
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: data-branch-writer
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v7
+        with:
+          path: main
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v10.2.0
+        with:
+          python-version: '3.12'
+
+      - name: Install project-health
+        working-directory: main
+        run: |
+          uv sync --locked
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
+
+      - name: Check whether the data branch exists
+        id: data-branch
+        working-directory: main
+        run: |
+          if git ls-remote --exit-code --heads origin data > /dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Fail if there's no data branch to migrate
+        if: steps.data-branch.outputs.exists == 'false'
+        run: |
+          echo "::error::no data branch exists yet -- nothing to migrate" >&2
+          exit 1
+
+      - name: Checkout data branch
+        uses: actions/checkout@v7
+        with:
+          ref: data
+          path: data
+          # A real git checkout (not --depth=1): the migration script's
+          # `git mv` + rename-detection history needs the branch's full
+          # commit history available locally, and the push below needs a
+          # real local `data` branch ref to push from.
+          fetch-depth: 0
+
+      # The migration script itself runs `git commit` (when it actually
+      # changes anything) -- needs a configured git identity beforehand,
+      # same "config right after checkout, before anything that commits"
+      # order `nightly.yml`/`peers.yml`'s own data-branch steps use.
+      - name: Configure git identity for the data branch checkout
+        working-directory: data
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Run the migration script
+        id: migrate
+        working-directory: main
+        run: python scripts/migrate_data_layout.py --root ../data
+
+      - name: Push the data branch
+        working-directory: data
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if ! git remote get-url origin > /dev/null 2>&1; then
+            git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          fi
+          # The migration script itself commits only when it actually
+          # changed something (idempotent on an already-migrated branch,
+          # `scripts/migrate_data_layout.py`'s own module docstring) -- push
+          # unconditionally; a no-op migration pushes nothing new.
+          git push origin HEAD:data

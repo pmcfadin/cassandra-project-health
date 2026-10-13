@@ -767,6 +767,39 @@ def _dedupe_pr_issue_link_rows(table: pa.Table) -> pa.Table:
     return pa.Table.from_pylist(kept, schema=table.schema)
 
 
+def _filter_to_configured_pr_repos(table: pa.Table, config: ProjectConfig) -> pa.Table:
+    """Keep only rows whose `repo` is in `config.pull_requests.repos` (issue
+    #173, DECISIONS.md D31).
+
+    `storage.read_table(data_dir, "github", ...)` unions *every* raw
+    partition ever written for this project (D3's "never incremental") --
+    including, for Cassandra, PRs from repos a past `pull_requests.repos`
+    config once listed (e.g. `apache/cassandra-java-driver`,
+    `apache/cassandra-sidecar`, `apache/cassandra-analytics`,
+    `apache/cassandra-accord`) before those subprojects moved to their own
+    multi-project page (issue #168 epic) and were removed from Cassandra's
+    own `pull_requests.repos`. Raw storage stays append-only (D3) -- those
+    rows are never deleted or rewritten, only excluded here, at *read* time,
+    from what Cassandra's own metrics compute over. A repo re-added to
+    `pull_requests.repos` later would see its already-collected raw rows
+    flow straight back into metrics with no re-collection needed, the same
+    way every other read-time filter/dedupe in this module works.
+
+    Applies uniformly to every GitHub PR-sourced table this run reads for
+    metrics (`pr`, `pr_review`, `pr_comment`, `pr_issue_link`) -- not just
+    `pr` itself -- so a review/comment/issue-link row for an unconfigured
+    repo can never join back against a `pr` row that same filter already
+    dropped, and vice versa.
+    """
+    if table.num_rows == 0 or "repo" not in table.column_names:
+        return table
+    configured_repos = list(getattr(config.pull_requests, "repos", None) or [])
+    if not configured_repos:
+        return table
+    kept = [row for row in table.to_pylist() if row["repo"] in configured_repos]
+    return pa.Table.from_pylist(kept, schema=table.schema)
+
+
 def _dedupe_jira_changelog_rows(table: pa.Table) -> pa.Table:
     """Keep one row per distinct changelog history item (issue #102).
 
@@ -4048,19 +4081,28 @@ def run_pipeline(
         json.loads(ponymail_raw_watermark) if ponymail_raw_watermark else {}
     )
     # issue #54: GitHub PR/review data for metrics/dev_metrics.py's six
-    # metrics.
-    pr = _dedupe_pr_rows(storage.read_table(data_dir, "github", "pr"))
-    pr_review = _dedupe_pr_review_rows(storage.read_table(data_dir, "github", "pr_review"))
+    # metrics. issue #173: filtered to `config.pull_requests.repos` after
+    # dedup -- see `_filter_to_configured_pr_repos`'s docstring for why this
+    # is a read-time filter, not a raw-storage change.
+    pr = _filter_to_configured_pr_repos(
+        _dedupe_pr_rows(storage.read_table(data_dir, "github", "pr")), config
+    )
+    pr_review = _filter_to_configured_pr_repos(
+        _dedupe_pr_review_rows(storage.read_table(data_dir, "github", "pr_review")), config
+    )
     # issue #102: PR comment metadata is now also read -- review-responsiveness's
     # blended first-response detection needs a PR comment (not just a review) as
     # a qualifying GitHub-side event.
-    pr_comment = _dedupe_pr_comment_rows(storage.read_table(data_dir, "github", "pr_comment"))
+    pr_comment = _filter_to_configured_pr_repos(
+        _dedupe_pr_comment_rows(storage.read_table(data_dir, "github", "pr_comment")), config
+    )
     # issue #105: the `pr_issue_link` backfill's (repo, number, issue_key)
     # rows -- unioned with `pr.linked_issue_keys` in
     # `review_responsiveness.py::_build_submissions` for a PR collected
     # before that column existed.
-    pr_issue_link = _dedupe_pr_issue_link_rows(
-        storage.read_table(data_dir, "github", "pr_issue_link")
+    pr_issue_link = _filter_to_configured_pr_repos(
+        _dedupe_pr_issue_link_rows(storage.read_table(data_dir, "github", "pr_issue_link")),
+        config,
     )
     # issue #135: GA release history (release cadence dimension) -- always
     # recomputed from the entire accumulated raw cache (D3), same as every

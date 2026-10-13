@@ -379,7 +379,14 @@ class TestCassandraConfigBeforeAfterEquality:
     must not change Cassandra's own resolved config at all. The fixture was
     captured by running `load_project("projects/cassandra.yaml").model_dump()`
     against this repo's state immediately before this issue's changes (see
-    tests/fixtures/cassandra_project_config_dump.json)."""
+    tests/fixtures/cassandra_project_config_dump.json).
+
+    issue #173 (DECISIONS.md D31) deliberately updated the fixture's own
+    `pull_requests.repos` list to match `projects/cassandra.yaml`'s
+    de-blended repo set (driver/sidecar/analytics/accord dropped;
+    in-jvm-dtest-api/harry/simulator/builds/diff added) -- a real content
+    change this test is meant to catch going forward, not a regression of
+    the #169 `extends:` refactor this class otherwise guards."""
 
     def test_resolved_cassandra_config_matches_pre_169_fixture(self):
         fixture_path = Path(__file__).parent / "fixtures" / "cassandra_project_config_dump.json"

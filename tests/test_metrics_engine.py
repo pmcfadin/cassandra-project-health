@@ -26,6 +26,8 @@ from tests.fixtures.metrics.builders import (
     comment_backfill_checked,
     contribution_events,
     file_change_events,
+    gh_issue_comments,
+    gh_issues,
     identity_link_for,
     issue_comments,
     issues,
@@ -1382,6 +1384,12 @@ def _days(n: int):
     return timedelta(days=n)
 
 
+def _hours(n: float):
+    from datetime import timedelta
+
+    return timedelta(hours=n)
+
+
 # --- issue #134: bulk-closure annotation + trailing-12m cohort companion ----
 
 
@@ -2643,6 +2651,126 @@ def test_change_request_closure_ratio_jira_patch_golden():
     assert _details(jan) == {"n_opened": 5, "n_closed": 3}
 
     # February: no new Patch Available entries -> insufficient_data.
+    assert feb["n"] == 0
+    assert feb["value"] is None
+    assert feb["flag"] == "insufficient_data"
+
+
+# --- issue #174: time_to_first_response_gh_issue / issue_closure_ratio_gh --
+
+
+def test_time_to_first_response_gh_issue_golden():
+    issue_rows = []
+    comment_rows = []
+    for i, hours in enumerate([1, 2, 3, 4, 5]):
+        issue_rows.append(
+            {
+                "repo": "apache/cassandra-easy-stress",
+                "number": 100 + i,
+                "created_at": _ts(2024, 1, 1, hh=0),
+                "author_raw_value": "alice-dev",
+            }
+        )
+        comment_rows.append(
+            {
+                "repo": "apache/cassandra-easy-stress",
+                "issue_number": 100 + i,
+                "author_raw_value": "bob-reviewer",
+                "created_at": _ts(2024, 1, 1, hh=0) + _hours(hours),
+            }
+        )
+    # An issue whose only comment is by its own author -- must not count as
+    # a response (bots are never collected here at all -- collection-time
+    # exclusion, module docstring -- so no bot case is needed in this table).
+    issue_rows.append(
+        {
+            "repo": "apache/cassandra-easy-stress",
+            "number": 200,
+            "created_at": _ts(2024, 1, 1, hh=0),
+            "author_raw_value": "alice-dev",
+        }
+    )
+    comment_rows.append(
+        {
+            "repo": "apache/cassandra-easy-stress",
+            "issue_number": 200,
+            "author_raw_value": "alice-dev",
+            "created_at": _ts(2024, 1, 1, hh=6),
+        }
+    )
+
+    result = compute_all(
+        {"gh_issue": gh_issues(issue_rows), "gh_issue_comment": gh_issue_comments(comment_rows)},
+        as_of=AS_OF,
+        run_id=RUN_ID,
+        computed_at=COMPUTED_AT,
+        config=CONFIG,
+    )
+
+    rows = _rows_for(result, "time_to_first_response_gh_issue")
+    assert [r["window_start"] for r in rows] == [date(2024, 1, 1), date(2024, 2, 1)]
+    jan, feb = rows
+    assert feb["n"] == 0
+    assert feb["flag"] == "insufficient_data"
+    # Only the 5 issues with a genuine non-author response count; the
+    # self-comment issue is excluded.
+    assert jan["n"] == 5
+    assert jan["value"] == pytest.approx(3.0)  # median hours: 1,2,3,4,5
+    assert jan["flag"] == "ok"  # n == floor (5) clears it
+    details = _details(jan)
+    assert details["n_opened_in_window"] == 6  # all 6 issues opened in January
+    assert details["closed_in_window"]["n"] == 5
+
+
+def test_time_to_first_response_gh_issue_empty_tables_never_registers_missing():
+    """A project with no `github_issues:` configured passes empty
+    `gh_issue`/`gh_issue_comment` tables (the default, via `_table_or_empty`)
+    -- this metric must return zero rows cleanly rather than raising, same
+    'always registered, zero data for a project without this source'
+    treatment every other M0 metric gets."""
+    result = compute_all(
+        {},
+        as_of=AS_OF,
+        run_id=RUN_ID,
+        computed_at=COMPUTED_AT,
+        config=CONFIG,
+    )
+    assert _rows_for(result, "time_to_first_response_gh_issue") == []
+    assert _rows_for(result, "issue_closure_ratio_gh") == []
+
+
+def test_issue_closure_ratio_gh_golden():
+    # 5 issues opened in January 2024 (meets the n=5 floor); 3 close in
+    # January, 2 stay open.
+    issue_rows = [
+        {
+            "repo": "apache/cassandra-gocql-driver",
+            "number": n,
+            "created_at": _ts(2024, 1, n),
+            "closed_at": _ts(2024, 1, 20) if n in (1, 2, 3) else None,
+            "state": "CLOSED" if n in (1, 2, 3) else "OPEN",
+        }
+        for n in range(1, 6)
+    ]
+
+    result = compute_all(
+        {"gh_issue": gh_issues(issue_rows)},
+        as_of=AS_OF,
+        run_id=RUN_ID,
+        computed_at=COMPUTED_AT,
+        config=CONFIG,
+    )
+
+    rows = _rows_for(result, "issue_closure_ratio_gh")
+    assert [r["window_start"] for r in rows] == [date(2024, 1, 1), date(2024, 2, 1)]
+    jan, feb = rows
+
+    assert jan["n"] == 5
+    assert jan["value"] == pytest.approx(0.6)  # 3 closed / 5 opened
+    assert jan["flag"] == "ok"
+    assert _details(jan) == {"n_opened": 5, "n_closed": 3}
+
+    # February: no new issues opened -> insufficient_data.
     assert feb["n"] == 0
     assert feb["value"] is None
     assert feb["flag"] == "insufficient_data"

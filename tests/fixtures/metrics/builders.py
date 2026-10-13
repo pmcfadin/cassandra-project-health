@@ -278,6 +278,58 @@ def pr_comments(rows: list[dict]) -> pa.Table:
     return validate("pr_comment", pa.Table.from_pylist(built, schema=schema))
 
 
+def gh_issues(rows: list[dict]) -> pa.Table:
+    """Build a `gh_issue` table (issue #174).
+
+    Required per row: `repo`, `number`, `created_at`. Optional: `state`
+    (default `"OPEN"`), `author_raw_value` (default `"alice-dev"`),
+    `labels` (default `[]`), `updated_at` (default `created_at`),
+    `closed_at`, `source_snapshot_id`.
+    """
+    built = [
+        {
+            "repo": row["repo"],
+            "number": row["number"],
+            "state": row.get("state", "OPEN"),
+            "author_identity_id": None,
+            "author_raw_type": "github_login",
+            "author_raw_value": row.get("author_raw_value", "alice-dev"),
+            "labels": row.get("labels", []),
+            "created_at": row["created_at"],
+            "updated_at": row.get("updated_at", row["created_at"]),
+            "closed_at": row.get("closed_at"),
+            "source_snapshot_id": row.get("source_snapshot_id", "snap-1"),
+        }
+        for row in rows
+    ]
+    schema = get_schema("gh_issue")
+    return validate("gh_issue", pa.Table.from_pylist(built, schema=schema))
+
+
+def gh_issue_comments(rows: list[dict]) -> pa.Table:
+    """Build a `gh_issue_comment` table (issue #174).
+
+    Required per row: `repo`, `issue_number`, `created_at`. Optional:
+    `comment_id`, `author_raw_value` (default `"bob-reviewer"`),
+    `source_snapshot_id`.
+    """
+    built = [
+        {
+            "comment_id": row.get("comment_id", f"gh-comment-{i}"),
+            "repo": row["repo"],
+            "issue_number": row["issue_number"],
+            "author_identity_id": None,
+            "author_raw_type": "github_login",
+            "author_raw_value": row.get("author_raw_value", "bob-reviewer"),
+            "created_at": row["created_at"],
+            "source_snapshot_id": row.get("source_snapshot_id", "snap-1"),
+        }
+        for i, row in enumerate(rows)
+    ]
+    schema = get_schema("gh_issue_comment")
+    return validate("gh_issue_comment", pa.Table.from_pylist(built, schema=schema))
+
+
 def pr_issue_link(rows: list[dict]) -> pa.Table:
     """Build a `pr_issue_link` table (issue #105).
 

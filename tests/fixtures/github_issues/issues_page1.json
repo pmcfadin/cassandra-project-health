@@ -1,0 +1,42 @@
+{
+  "data": {
+    "rateLimit": { "limit": 5000, "remaining": 4950, "resetAt": "2026-09-25T22:00:00Z", "cost": 5 },
+    "repository": {
+      "issues": {
+        "pageInfo": { "hasNextPage": true, "endCursor": "cursorAAA" },
+        "nodes": [
+          {
+            "id": "I_kwDOtest0001",
+            "number": 200,
+            "state": "OPEN",
+            "author": { "login": "alice-dev" },
+            "createdAt": "2026-01-01T10:00:00Z",
+            "updatedAt": "2026-01-02T10:00:00Z",
+            "closedAt": null,
+            "labels": { "nodes": [{ "name": "bug" }, { "name": "help wanted" }] },
+            "comments": {
+              "nodes": [
+                {
+                  "id": "IC_kwDOtest1001",
+                  "createdAt": "2026-01-01T12:00:00Z",
+                  "author": { "login": "bob-reviewer" }
+                }
+              ]
+            }
+          },
+          {
+            "id": "I_kwDOtest0002",
+            "number": 201,
+            "state": "CLOSED",
+            "author": { "login": "dependabot[bot]" },
+            "createdAt": "2026-01-03T00:00:00Z",
+            "updatedAt": "2026-01-03T01:00:00Z",
+            "closedAt": "2026-01-03T01:00:00Z",
+            "labels": { "nodes": [] },
+            "comments": { "nodes": [] }
+          }
+        ]
+      }
+    }
+  }
+}

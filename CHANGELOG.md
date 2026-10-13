@@ -3,6 +3,50 @@
 Metric-definition changelog (ARCHITECTURE.md §4.4 / D2 rule 6: "nothing changes silently"). Entries are ordered
 newest-first; a future version bump adds a new dated entry at the top.
 
+## 2026-10-13
+
+### New metric_ids time_to_first_response_gh_issue (1.0) / issue_closure_ratio_gh (1.0) -- GitHub Issues tracker (issue #174, epic #168 6a)
+
+A new collector, `collectors/github_issues.py`, fetches GitHub-native Issues metadata (state,
+author, labels, created/closed timestamps, and comment author/timestamp -- never a title or
+body, D1) via GraphQL for every project with `github_issues:` configured (issue #169):
+easy-stress (its only tracker), gocql-driver and ccm (alongside their own JIRA tracker). Two new
+raw tables, `gh_issue`/`gh_issue_comment`; a new `github_issues` pipeline source, applicable only
+when a project's config has a `github_issues:` section. Reuses `collectors/github.py`'s own
+rate-limit-floor arithmetic (`github_rate_limit_effective_floor`/`_floor_reached`, extracted to
+module-level functions) and the same per-repo opaque-cursor watermark strategy, rather than
+re-deriving either; bot exclusion happens at collection time via `bot_patterns`, matching
+`collectors/github.py`'s own convention (not JIRA's collect-then-filter convention).
+
+`time_to_first_response_gh_issue` is the GitHub-Issues-tracker analogue of
+`time_to_first_response_jira`: median/P90 **hours** (not days -- GitHub-Issues-tracked repos
+typically get a first response within hours) from issue creation to the first non-author
+comment, for issues opened in each completed calendar month, same low-n/`insufficient_data`
+floor behavior. CHAOSS equivalent: [Issue Response Time](https://chaoss.community/kb/metric-issue-response-time/)
+(exact match), also covered by the Starter Project Health model's umbrella
+[Time to First Response](https://www.chaoss.community/kb/metric-time-to-first-response/) metric.
+
+`issue_closure_ratio_gh` is a closed/opened-per-month ratio over GitHub issues -- **not** the
+GitHub-Issues analogue of `change_request_closure_ratio_pr`/`_jira_patch` (fixup, orchestrator
+review of PR #184): a GitHub issue is never a change request, so this metric never appears on
+the landing page's Change Request Closure Ratio card. CHAOSS has no exact "issue closure ratio"
+metric; cited as adapted from [Issues Closed](https://chaoss.community/kb/metric-issues-closed/)
+(a plain per-period count in CHAOSS's own definition, not a ratio) rather than the
+Change-Request-specific metric this entry originally, incorrectly, cited.
+
+The Home CHAOSS Starter Project Health Time to First Response card now shows a "GitHub issues"
+series, with venue-list copy mentioning it, only for a project with `github_issues:` configured
+-- Cassandra itself has no GitHub Issues tracker and is unaffected. The Change Request Closure
+Ratio card never shows a GitHub-issues series, for any project. The Community page's
+Responsiveness section lists both new metrics alongside their JIRA/PR counterparts.
+
+Live-verified 2026-10-12: easy-stress collected exactly 44 issues (matching `gh api graphql`'s
+own `issues { totalCount }`); gocql-driver sampled cleanly against its real totalCount (798).
+Comment metadata (author, timestamp -- never body) for several easy-stress issues cross-checked
+by hand against `gh issue view --json comments,createdAt,author` and matched exactly; a GitHub
+PR (#20, mis-assumed to be an issue during verification) was correctly excluded by the
+GraphQL `issues` connection, confirming "issues, not PRs".
+
 ## 2026-10-12
 
 ### Releases tab for subprojects (issue #175, epic #168)

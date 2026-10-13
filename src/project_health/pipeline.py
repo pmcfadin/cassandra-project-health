@@ -127,6 +127,7 @@ from project_health.collectors.github import (
     resolve_github_token,
 )
 from project_health.collectors.reviewer_trailer import PARSER_VERSION
+from project_health.collectors.github_issues import GitHubIssuesCollector
 from project_health.collectors.github_commit_authors import GitHubCommitAuthorCollector
 from project_health.collectors.github_profile import GitHubProfileCollector
 from project_health.collectors.jira import (
@@ -224,6 +225,10 @@ ALL_SOURCES: tuple[str, ...] = (
     # issue #54: wires collectors/github.py (merged as part of issue #51,
     # PR #58) into the pipeline for the first time -- see _collect_github.
     "github",
+    # issue #174 (epic #168 6a): GitHub-native Issues tracker, for projects
+    # whose `github_issues:` config names one or more repos -- see
+    # _collect_github_issues.
+    "github_issues",
 )
 
 # issue #170: which of `ALL_SOURCES` this `source` depends on a config
@@ -241,6 +246,9 @@ _SOURCE_CONFIG_ATTR: dict[str, str] = {
     "release_lines": "release_lines",
     "subproject_releases": "releases_tab",
     "github": "pull_requests",
+    # issue #174: a project with no `github_issues:` section at all (most
+    # subprojects, and Cassandra itself) never attempts this source.
+    "github_issues": "github_issues",
     # Governance's own collection needs the same commit-trailer <-> JIRA
     # custom-field cross-check `JiraCollector`/`ReleaseLinesCollector` need
     # (ARCHITECTURE.md §3.1) -- without it, the compliance engine has no
@@ -774,6 +782,37 @@ def _dedupe_pr_issue_link_rows(table: pa.Table) -> pa.Table:
     return pa.Table.from_pylist(kept, schema=table.schema)
 
 
+def _dedupe_gh_issue_rows(table: pa.Table) -> pa.Table:
+    """Keep the latest `updated_at` row per `(repo, number)` (issue #174) --
+    same "re-fetched issue re-emits its whole node" dedupe `_dedupe_pr_rows`
+    uses for GitHub PRs (`collectors/github_issues.py`'s own opaque-cursor
+    watermark can re-fetch an issue whose `updatedAt` moved since the prior
+    run)."""
+    if table.num_rows == 0:
+        return table
+    best: dict[tuple[str, int], dict[str, Any]] = {}
+    for row in table.to_pylist():
+        key = (row["repo"], row["number"])
+        current = best.get(key)
+        if current is None or row["updated_at"] > current["updated_at"]:
+            best[key] = row
+    kept = sorted(best.values(), key=lambda r: (r["repo"], r["number"]))
+    return pa.Table.from_pylist(kept, schema=table.schema)
+
+
+def _dedupe_gh_issue_comment_rows(table: pa.Table) -> pa.Table:
+    """Keep one row per `comment_id` (issue #174) -- same natural-key dedupe
+    as `_dedupe_pr_comment_rows`/`_dedupe_issue_comment_rows`, for the same
+    "re-fetched issue re-emits its entire comment list" reason."""
+    if table.num_rows == 0:
+        return table
+    best: dict[str, dict[str, Any]] = {}
+    for row in table.to_pylist():
+        best.setdefault(row["comment_id"], row)
+    kept = sorted(best.values(), key=lambda r: r["comment_id"])
+    return pa.Table.from_pylist(kept, schema=table.schema)
+
+
 def _filter_to_configured_pr_repos(table: pa.Table, config: ProjectConfig) -> pa.Table:
     """Keep only rows whose `repo` is in `config.pull_requests.repos` (issue
     #173, DECISIONS.md D31).
@@ -796,7 +835,10 @@ def _filter_to_configured_pr_repos(table: pa.Table, config: ProjectConfig) -> pa
     metrics (`pr`, `pr_review`, `pr_comment`, `pr_issue_link`) -- not just
     `pr` itself -- so a review/comment/issue-link row for an unconfigured
     repo can never join back against a `pr` row that same filter already
-    dropped, and vice versa.
+    dropped, and vice versa. Never applied to `gh_issue`/`gh_issue_comment`
+    (issue #174) -- those are a distinct GitHub Issues tracker source,
+    configured independently via `config.github_issues.repos`, not
+    `pull_requests.repos`, and this issue's scope is PR tables only.
     """
     if table.num_rows == 0 or "repo" not in table.column_names:
         return table
@@ -1842,6 +1884,81 @@ def _collect_github(
         _github_pr_issue_link_backfill_budget(config),
         pr_issue_link_backfill_factory or collector_factory,
     )
+    return source_result
+
+
+def _collect_github_issues(
+    config: ProjectConfig,
+    data_dir: Path,
+    run_id: str,
+    started_at: datetime,
+    max_issues_per_repo: int | None,
+    collector_factory: Callable[[ProjectConfig], GitHubIssuesCollector] | None,
+) -> dict[str, Any]:
+    """Collect GitHub Issues metadata (issue #174, epic #168 6a) --
+    `collectors/github_issues.py`'s collector, for every project whose
+    `github_issues:` config names one or more repos.
+
+    Per-repo watermarks are stored as one JSON object under the
+    `github_issues` source key in `state/watermarks.json` -- same
+    read-modify-write contract as `_collect_github`'s own `github` key.
+    """
+    raw_watermark = storage.read_watermark(data_dir, "github_issues")
+    watermarks: dict[str, str | None] = json.loads(raw_watermark) if raw_watermark else {}
+    snapshot_id = f"{run_id}:github_issues"
+
+    _log("source_collect_started", source="github_issues", watermarks=watermarks)
+    collector = (collector_factory or _default_github_issues_collector)(config)
+    try:
+        result = collector.collect(
+            watermarks=watermarks,
+            snapshot_id=snapshot_id,
+            max_issues_per_repo=max_issues_per_repo,
+        )
+        partition_date = started_at.date()
+        storage.write_partition(
+            data_dir, "github_issues", "gh_issue", partition_date, run_id, result.issues
+        )
+        storage.write_partition(
+            data_dir, "github_issues", "gh_issue_comment", partition_date, run_id, result.comments
+        )
+        next_watermarks = {repo: outcome.next_watermark for repo, outcome in result.repos.items()}
+        storage.write_watermark(
+            data_dir, "github_issues", json.dumps(next_watermarks, sort_keys=True)
+        )
+        # 'failed' means at least one repo hit a hard CollectionError -- still
+        # record last_good_snapshot when it's merely 'partial' (a clean,
+        # resumable rate-limit stop, not an outage), same as `_collect_github`.
+        if result.status != "failed":
+            record_last_good_snapshot(data_dir, "github_issues", run_id)
+        repo_statuses = {repo: outcome.status for repo, outcome in result.repos.items()}
+        _log(
+            "source_collect_succeeded",
+            source="github_issues",
+            status=result.status,
+            issue_count=result.issues.num_rows,
+            comment_count=result.comments.num_rows,
+            repos=repo_statuses,
+        )
+        source_result: dict[str, Any] = {
+            "status": result.status,
+            "watermark": next_watermarks,
+            "records_collected": result.issues.num_rows,
+            "comment_count": result.comments.num_rows,
+            "repos": repo_statuses,
+        }
+    except Exception as exc:  # noqa: BLE001 - a source outage must never abort the run (§7.3)
+        _log("source_collect_failed", source="github_issues", error=str(exc))
+        source_result = {
+            "status": "failed",
+            "watermark": watermarks,
+            "records_collected": 0,
+            "last_good_snapshot": read_last_good_snapshot(data_dir, "github_issues"),
+            "reason": str(exc),
+        }
+    finally:
+        collector.close()
+
     return source_result
 
 
@@ -3674,6 +3791,19 @@ def _default_github_collector(config: ProjectConfig) -> GitHubCollector:
     return GitHubCollector(config, rate_limit_floor=floor, rate_limit_floor_fraction=fraction)
 
 
+def _default_github_issues_collector(config: ProjectConfig) -> GitHubIssuesCollector:
+    """The default `GitHubIssuesCollector(config)` construction (issue
+    #174), with this project's own `rate_limit_floor`/
+    `rate_limit_floor_fraction` applied -- reuses the exact same `github:`
+    config block/budget knob `_default_github_collector` reads
+    (`_github_rate_limit_budget`), since both collectors share the same
+    GraphQL rate-limit pool."""
+    floor, fraction = _github_rate_limit_budget(config)
+    return GitHubIssuesCollector(
+        config, rate_limit_floor=floor, rate_limit_floor_fraction=fraction
+    )
+
+
 def _default_github_commit_author_collector(config: ProjectConfig) -> GitHubCommitAuthorCollector:
     """The default `GitHubCommitAuthorCollector(config)` construction, with
     this project's own `rate_limit_floor` (issue #170, same `github:`
@@ -3934,6 +4064,14 @@ def run_pipeline(
     # plain `GitHubCollector`) when omitted, mirroring `jira_patch_available_
     # backfill_factory`'s own default-to-the-ordinary-factory pattern above.
     github_pr_issue_link_backfill_factory: Callable[[ProjectConfig], GitHubCollector] | None = None,
+    # issue #174: injects an offline-testable stand-in for
+    # `GitHubIssuesCollector` -- same offline-test injection pattern as
+    # `github_collector_factory` above.
+    github_issues_collector_factory: Callable[[ProjectConfig], GitHubIssuesCollector] | None = None,
+    # issue #174: caps issue nodes fetched per repo this run (testing / smoke
+    # runs), same role `max_prs_per_repo` plays for `_collect_github`.
+    # Production callers leave this None.
+    max_issues_per_repo: int | None = None,
     asf_roster_collector_factory: Callable[[ProjectConfig], AsfRosterCollector] | None = None,
     ponymail_collector_factory: Callable[[ProjectConfig], PonyMailCollector] | None = None,
     # --- Governance compliance engine (issue #36) ---------------------------
@@ -4074,6 +4212,15 @@ def run_pipeline(
             github_collector_factory,
             github_pr_issue_link_backfill_factory or github_collector_factory,
         )
+    if "github_issues" in active_sources:
+        source_results["github_issues"] = _collect_github_issues(
+            config,
+            data_dir,
+            run_id,
+            started_at,
+            max_issues_per_repo,
+            github_issues_collector_factory,
+        )
     if "asf_roster" in active_sources:
         source_results["asf_roster"] = _collect_asf_roster(
             config, data_dir, run_id, started_at, asf_roster_collector_factory
@@ -4192,6 +4339,15 @@ def run_pipeline(
     # recomputed from the entire accumulated raw cache (D3), same as every
     # other table read above.
     release = _dedupe_release_rows(storage.read_table(data_dir, "release", "release"))
+    # issue #174: GitHub Issues metadata, for projects with `github_issues:`
+    # configured -- feeds `metrics/github_issues.py`'s
+    # time_to_first_response_gh_issue/issue_closure_ratio_gh. Always read
+    # (D3), same as every other table above -- empty for a project with no
+    # `github_issues:` source ever collected.
+    gh_issue = _dedupe_gh_issue_rows(storage.read_table(data_dir, "github_issues", "gh_issue"))
+    gh_issue_comment = _dedupe_gh_issue_comment_rows(
+        storage.read_table(data_dir, "github_issues", "gh_issue_comment")
+    )
 
     overrides = []
     if identity_overrides_path is not None and Path(identity_overrides_path).is_file():
@@ -4266,6 +4422,8 @@ def run_pipeline(
                 "comment_backfill_checked": comment_backfill_checked,
                 "jira_changelog": jira_changelog,
                 "release": release,
+                "gh_issue": gh_issue,
+                "gh_issue_comment": gh_issue_comment,
             },
             as_of=started_at.date(),
             run_id=run_id,

@@ -16,7 +16,12 @@ import pyarrow as pa
 from project_health.peers import collect as peer_collect
 from project_health.peers import pipeline as peer_pipeline
 from project_health.peers import rotation as peer_rotation
-from project_health.peers.config import JiraReleaseVerification, PeerProject, PeersConfig
+from project_health.peers.config import (
+    CollectionConfig,
+    JiraReleaseVerification,
+    PeerProject,
+    PeersConfig,
+)
 from project_health.peers.github import PassResult, PassState
 from project_health.peers.release import VerificationResult
 from project_health.schema import get_schema
@@ -314,6 +319,62 @@ def test_run_peers_collection_writes_settlement_per_peer(tmp_path, monkeypatch):
     manifest = json.loads((tmp_path / "manifests" / "peers-run1.json").read_text())
     assert manifest["peer_settlement"]["kafka"]["created_desc"] is True
     assert manifest["peer_settlement"]["spark"]["created_desc"] is False
+
+
+def test_sticky_settlement_survives_across_runs_via_run_peers_collection(tmp_path, monkeypatch):
+    """End-to-end version of the real backfill bug (issue #150 fixup):
+    `open_prs` completes cleanly on run 1, then run 2's own redo of that
+    same pass (`open_prs` is "cheap to redo in full," `peers/github.py`'s
+    own module docstring) goes `page_capped` -- the resulting settlement
+    must stay `True`, never flip back to `False` just because a refresh
+    happens to be in progress. `skip_rerun_within_hours=None` so run 2
+    actually calls the pass runner again rather than skipping it as
+    "recently completed" (a separate optimization, not what this test is
+    checking)."""
+    peer = _peer("kafka", "apache/kafka")
+    peers_config = PeersConfig(
+        peers=[peer], collection=CollectionConfig(skip_rerun_within_hours=None)
+    )
+
+    _patch_empty_peer_collection(monkeypatch)
+
+    call_count = {"n": 0}
+
+    def fake_open_prs(collector, repo_label, state, bot_patterns, snapshot_id, **kwargs):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            return _empty_pass_result()  # run 1: completes cleanly
+        return PassResult(
+            pr_rows=[],
+            review_rows=[],
+            comment_rows=[],
+            bot_prs_excluded=0,
+            bot_reviews_excluded=0,
+            bot_comments_excluded=0,
+            status="page_capped",
+            next_state=PassState(cursor="page-2"),
+        )
+
+    monkeypatch.setattr(peer_collect, "run_open_prs_pass", fake_open_prs)
+
+    report1 = peer_pipeline.run_peers_collection(
+        peers_config, tmp_path, tmp_path / "work", "run1", token="x", as_of=date(2026, 1, 1)
+    )
+    assert report1.peer_settlement["kafka"]["open_prs"] is True
+
+    report2 = peer_pipeline.run_peers_collection(
+        peers_config, tmp_path, tmp_path / "work", "run2", token="x", as_of=date(2026, 1, 1)
+    )
+    assert call_count["n"] == 2, "run 2 must actually redo open_prs, not skip it"
+    assert report2.peer_settlement["kafka"]["open_prs"] is True, (
+        "open_prs going page_capped on its own redo must not unsettle a pass that already "
+        "completed once"
+    )
+
+    settlement_path = tmp_path / "snapshots" / "peers" / "run2" / "kafka" / "settlement.json"
+    payload = json.loads(settlement_path.read_text())
+    assert payload["open_prs"] is True
+    assert payload["_last_completed_at"]["open_prs"] is not None
 
 
 def test_disk_budget_skips_remaining_peers(tmp_path, monkeypatch):
@@ -680,3 +741,65 @@ def test_peer_tables_dedupes_release_rows_written_by_two_runs(tmp_path):
 
     tables = peer_pipeline._peer_tables(tmp_path, "kafka")
     assert tables["release"].num_rows == 1
+
+
+def test_peer_tables_backlog_not_undercounted_after_partial_refresh(tmp_path):
+    """Issue #150 fixup's own audit: `open_prs` is redone in full every
+    run, and a run cut off mid-walk (page_capped) only writes whatever PR
+    rows its own pages reached *this* run -- it never deletes or replaces
+    an earlier run's partition. `_peer_tables`'s read-time dedupe
+    (`pipeline._dedupe_pr_rows`, latest `updated_at` per `(repo, number)`,
+    read across *every* partition `storage.read_table` has ever written,
+    not merely the latest run's own) means an earlier completed run's PR
+    rows are never lost just because the current run's own redo didn't
+    reach them again. Simulates exactly that sequence -- a completed run
+    capturing PRs #1/#2, then a page-capped run that only reaches newly
+    opened PR #3 -- and checks the open-PR-backlog total stays 3, not 1,
+    confirming a partial refresh does not undercount."""
+    from project_health.metrics.pr_backlog import TOTAL, compute_pr_backlog, other_repo_metric_id
+    from tests.fixtures.metrics.builders import prs
+
+    source = peer_collect.peer_source("kafka", "github")
+    repo = "apache/kafka"
+
+    # Run 1: open_prs pass completes in full -- both currently-open PRs captured.
+    run1_table = prs(
+        [
+            {"repo": repo, "number": 1, "created_at": datetime(2026, 1, 1, tzinfo=timezone.utc)},
+            {"repo": repo, "number": 2, "created_at": datetime(2026, 1, 2, tzinfo=timezone.utc)},
+        ]
+    )
+    storage.write_partition(tmp_path, source, "pr", date(2026, 1, 3), "run1", run1_table)
+
+    # Run 2: a *partial* (page-capped) redo of open_prs only reaches newly
+    # opened PR #3 on its one allotted page before the budget cap hits --
+    # it never re-fetches #1/#2 this run, but it also never deletes their
+    # already-written rows; it simply writes whatever it *did* see.
+    run2_table = prs(
+        [{"repo": repo, "number": 3, "created_at": datetime(2026, 2, 1, tzinfo=timezone.utc)}]
+    )
+    storage.write_partition(tmp_path, source, "pr", date(2026, 2, 2), "run2", run2_table)
+
+    tables = peer_pipeline._peer_tables(tmp_path, "kafka")
+    # All three PRs -- #1/#2 from the completed run, #3 from the partial
+    # run's own one page -- are still present after the partial refresh.
+    assert sorted(tables["pr"].column("number").to_pylist()) == [1, 2, 3]
+
+    backlog = compute_pr_backlog(
+        tables,
+        as_of=date(2026, 3, 1),
+        run_id="run2",
+        computed_at=datetime(2026, 3, 1, tzinfo=timezone.utc),
+    )
+    total_id = other_repo_metric_id(TOTAL, repo)
+    feb_rows = [
+        row
+        for row in backlog.to_pylist()
+        if row["metric_id"] == total_id and row["window_start"] == date(2026, 2, 1)
+    ]
+    assert len(feb_rows) == 1
+    assert feb_rows[0]["value"] == 3.0, (
+        "a page-capped refresh must not undercount PRs an earlier completed run already "
+        "captured -- the backlog total must come from the full accumulated+deduped history, "
+        "not only the rows this run's own (possibly partial) pass happened to see"
+    )

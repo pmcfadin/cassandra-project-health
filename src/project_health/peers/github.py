@@ -136,11 +136,25 @@ class PassState:
       be recomputed from whatever page a resume happens to be on) until
       the backfill finally completes, at which point it is promoted to
       `high_watermark`.
+    - `last_completed_at` (issue #150 fixup): an ISO-8601 UTC timestamp,
+      set by `peers/collect.py` (never by the three `run_*_pass` functions
+      below, which have no concept of "now") whenever this pass finishes a
+      run with `status == "completed"`. Unlike `cursor`/`newest_seen`, this
+      field is never cleared by a later partial/page-capped run of the same
+      pass -- it is the one field `peer_pass_settlement` trusts to answer
+      "has this pass *ever* completed" without being fooled by a refresh
+      currently in progress (`collect.py`'s own module comment on
+      `peer_pass_settlement` has the full story). `None` means "no run of
+      this pass has completed since sticky settlement shipped" -- which,
+      for a watermark written before this field existed, is read as
+      *unknown*, not *never*; `peer_pass_settlement`'s own backward-
+      compatibility fallback (not this class) covers that case.
     """
 
     cursor: str | None = None
     high_watermark: str | None = None
     newest_seen: str | None = None
+    last_completed_at: str | None = None
 
     def to_json(self) -> str:
         return json.dumps(
@@ -148,6 +162,7 @@ class PassState:
                 "cursor": self.cursor,
                 "high_watermark": self.high_watermark,
                 "newest_seen": self.newest_seen,
+                "last_completed_at": self.last_completed_at,
             }
         )
 
@@ -160,6 +175,10 @@ class PassState:
             cursor=data.get("cursor"),
             high_watermark=data.get("high_watermark"),
             newest_seen=data.get("newest_seen"),
+            # Absent on any watermark written before this field existed --
+            # `.get` defaults it to `None`, same "absent field" backward
+            # compatibility every other `PassState` field already gets.
+            last_completed_at=data.get("last_completed_at"),
         )
 
 

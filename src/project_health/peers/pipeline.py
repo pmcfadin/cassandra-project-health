@@ -28,6 +28,7 @@ import shutil
 from dataclasses import asdict, dataclass, field
 from datetime import date, datetime, timezone
 from pathlib import Path
+from typing import Any
 
 import pyarrow as pa
 import pyarrow.compute as pc
@@ -229,7 +230,12 @@ def _write_snapshot(
 
 
 def _write_settlement(
-    data_dir: str | Path, run_id: str, project_id: str, settlement: dict[str, bool]
+    data_dir: str | Path,
+    run_id: str,
+    project_id: str,
+    settlement: dict[str, bool],
+    *,
+    last_completed_at: dict[str, str | None] | None = None,
 ) -> None:
     """Issue #150: `peer.collect.peer_pass_settlement`'s own per-pass dict,
     written alongside that peer's `metric_value`/`pr_backlog` snapshot
@@ -241,10 +247,24 @@ def _write_settlement(
     `nightly.yml`'s ordinary incremental collector, not this module's
     three-pass peer backfill, so no watermark-based gating applies to it at
     all (`site/peers_page.py`'s own missing-file default treats this
-    exactly like "fully settled")."""
+    exactly like "fully settled").
+
+    `last_completed_at` (issue #150 fixup, sticky settlement): each pass's
+    own `peer.collect.peer_pass_last_completed_at`, written under the
+    reserved `_last_completed_at` key -- never one of `PASS_NAMES`, so
+    every existing reader that only ever looks up a `PASS_NAMES` key
+    (`site/peers_page.py::_read_settlement`, `peers.yml`'s own `gate` job,
+    which just greps this file's raw text for the substring `'false'`)
+    stays correct without any change of its own. Purely additive: lets
+    `site/peers_page.py` show *when* a currently-gated (or currently-
+    settled-but-aging) GitHub-derived metric last had a fully completed
+    collection pass behind it, instead of only a bare yes/no."""
     out_dir = Path(data_dir) / "snapshots" / "peers" / run_id / project_id
     out_dir.mkdir(parents=True, exist_ok=True)
-    (out_dir / "settlement.json").write_text(json.dumps(settlement, indent=2, sort_keys=True))
+    payload: dict[str, Any] = dict(settlement)
+    if last_completed_at is not None:
+        payload["_last_completed_at"] = last_completed_at
+    (out_dir / "settlement.json").write_text(json.dumps(payload, indent=2, sort_keys=True))
 
 
 def run_peers_collection(
@@ -315,6 +335,7 @@ def run_peers_collection(
         token=token,
         as_of=as_of,
         rotation_start_index=rotation_start_index,
+        now=started_at,
     )
     peer_rotation.write_next_start_index(
         data_dir,
@@ -375,9 +396,22 @@ def run_peers_collection(
         # `collect_and_write_github` call just persisted -- the true,
         # up-to-the-end-of-this-run settlement state, not the pre-run
         # snapshot that call used for its own budget-allocation decisions.
-        settlement = peer_collect.peer_pass_settlement(data_dir, peer)
+        # Issue #150 fixup: sticky, bounded by this peers.yaml run's own
+        # `settlement_freshness_days`, evaluated as of this same
+        # `started_at` so every peer's settlement this run shares one
+        # "now" (same freshness reference `collect_and_write_github`'s own
+        # settled-peer budget decisions used earlier in this same run).
+        settlement = peer_collect.peer_pass_settlement(
+            data_dir,
+            peer,
+            freshness_days=peers_config.collection.settlement_freshness_days,
+            now=started_at,
+        )
+        last_completed_at = peer_collect.peer_pass_last_completed_at(data_dir, peer)
         peer_settlement[peer.id] = settlement
-        _write_settlement(data_dir, run_id, peer.id, settlement)
+        _write_settlement(
+            data_dir, run_id, peer.id, settlement, last_completed_at=last_completed_at
+        )
 
     completed_at = datetime.now(timezone.utc)
     report = PeersRunReport(

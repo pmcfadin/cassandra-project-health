@@ -2,11 +2,11 @@
   "git": "769f4bc525cb47bffd0322f164b0ff3abdccbd5a",
   "git:file_change_event": "769f4bc525cb47bffd0322f164b0ff3abdccbd5a",
   "git:review_event_parser_version": "2",
-  "github": "{\"apache/cassandra-analytics\": \"Y3Vyc29yOnYyOpK0MjAyNi0xMC0xM1QyMzoxMDo1OVrO9O60mw==\"}",
+  "github": "{\"apache/cassandra-analytics\": \"Y3Vyc29yOnYyOpK0MjAyNi0xMC0xNFQwNzozODoyOVrO9O60mw==\"}",
   "github:pr_issue_link_backfill_cursor": "{\"apache/cassandra-analytics\": \"Y3Vyc29yOnYyOpK0MjAyNi0xMC0wOFQwMDo0MToyNlrPAAAAARzsZw0=\"}",
   "github:pr_issue_link_backfill_done": "{\"apache/cassandra-analytics\": true}",
   "github_commit_authors:github_commit_author": "769f4bc525cb47bffd0322f164b0ff3abdccbd5a 220",
-  "jira": "2026-10-13T23:11:16+00:00",
+  "jira": "2026-10-14T07:38:50+00:00",
   "jira:patch_available_backfill_covered": "104",
   "jira:patch_available_backfill_cursor": "CASSANALYTICS-202",
   "jira:patch_available_backfill_total": "104"

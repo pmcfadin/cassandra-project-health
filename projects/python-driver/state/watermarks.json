@@ -6,7 +6,7 @@
   "github:pr_issue_link_backfill_cursor": "{\"apache/cassandra-python-driver\": \"Y3Vyc29yOnYyOpK0MjAyNi0xMC0xMlQxMzowNDo1OVrPAAAAAR_hTuo=\"}",
   "github:pr_issue_link_backfill_done": "{\"apache/cassandra-python-driver\": true}",
   "github_commit_authors:github_commit_author": "8cd395bb0b816beacdec61da8938e9224fdeef4f 6117",
-  "jira": "2026-10-12T21:29:47+00:00",
+  "jira": "2026-10-14T02:52:23+00:00",
   "jira:patch_available_backfill_covered": "3",
   "jira:patch_available_backfill_cursor": "CASSPYTHON-23",
   "jira:patch_available_backfill_total": "3"

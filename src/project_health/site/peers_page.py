@@ -191,12 +191,57 @@ def _read_settlement(data_dir: Path, run_id: str, project_id: str) -> dict[str, 
     return {pass_name: bool(raw.get(pass_name, True)) for pass_name in PASS_NAMES}
 
 
+def _read_last_completed_at(data_dir: Path, run_id: str, project_id: str) -> dict[str, str | None]:
+    """`project_id`'s own `_last_completed_at` map (`peers.pipeline.
+    _write_settlement`'s own reserved key, issue #150 fixup) -- `None` for
+    every pass if the file is missing, unreadable, or (Cassandra, or any
+    peer snapshot written before this fixup shipped) simply never carries
+    that key. Purely informational, same "never gates anything" contract
+    as `peer.collect.peer_pass_last_completed_at`."""
+    no_dates = {pass_name: None for pass_name in PASS_NAMES}
+    path = data_dir / "snapshots" / "peers" / run_id / project_id / "settlement.json"
+    if not path.is_file():
+        return no_dates
+    try:
+        raw = json.loads(path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return no_dates
+    if not isinstance(raw, dict):
+        return no_dates
+    dates = raw.get("_last_completed_at")
+    if not isinstance(dates, dict):
+        return no_dates
+    return {pass_name: dates.get(pass_name) for pass_name in PASS_NAMES}
+
+
 def _passes_complete(settlement: dict[str, bool]) -> int:
     return sum(1 for settled in settlement.values() if settled)
 
 
-def _collecting_label(passes_complete: int) -> str:
-    return f"Collecting — {passes_complete} of {len(PASS_NAMES)} passes complete"
+def _collecting_label(
+    passes_complete: int,
+    *,
+    gating_pass: str | None = None,
+    last_completed_at: dict[str, str | None] | None = None,
+) -> str:
+    """"Collecting -- N of 3 passes complete" (issue #150), plus, when
+    `gating_pass` names the one pass gating *this* metric and that pass has
+    completed before (even if it's since gone stale beyond
+    `settlement_freshness_days` -- that's exactly why this label is
+    showing at all), the date of that pass's own last completed run --
+    issue #150 fixup's "show the as of date" requirement, so "Collecting"
+    never reads as "zero data, forever" when perfectly good (if aging)
+    data from an earlier completed pass actually exists."""
+    label = f"Collecting — {passes_complete} of {len(PASS_NAMES)} passes complete"
+    if gating_pass is None or not last_completed_at:
+        return label
+    completed_at = last_completed_at.get(gating_pass)
+    if not completed_at:
+        return label
+    # Date only (not the full timestamp) -- same granularity the rest of
+    # this page's own "As of" column already uses for a metric's own
+    # `window_end`.
+    return f"{label} ({gating_pass} last completed {completed_at[:10]})"
 
 
 def _read_optional_table(path: Path, schema_table_name: str) -> pa.Table:
@@ -428,6 +473,15 @@ def build_peers_context(data_dir: str | Path, run_id: str | None = None) -> dict
         project_id: _passes_complete(settlement)
         for project_id, settlement in settlement_by_project.items()
     }
+    # Issue #150 fixup: each project's own per-pass `last_completed_at`
+    # (`_last_completed_at` in `settlement.json`) -- used only to annotate
+    # a gated metric's "Collecting" label with when its own gating pass
+    # last actually completed (`_collecting_label`'s own `gating_pass`
+    # argument); never used to decide gating itself.
+    last_completed_at_by_project: dict[str, dict[str, str | None]] = {
+        project_id: _read_last_completed_at(data_dir, run_id, project_id)
+        for project_id, _ in _PEER_ORDER
+    }
 
     def _gated_projects(gating_pass: str | None) -> set[str]:
         if gating_pass is None:
@@ -440,7 +494,8 @@ def build_peers_context(data_dir: str | Path, run_id: str | None = None) -> dict
 
     sections = []
     for metric_id, title, value_label, chaoss_url, chaoss_label in METRIC_ORDER:
-        gated_projects = _gated_projects(GITHUB_METRIC_GATING_PASS.get(metric_id))
+        gating_pass = GITHUB_METRIC_GATING_PASS.get(metric_id)
+        gated_projects = _gated_projects(gating_pass)
         summary_items = [
             _peer_headline_item(
                 display_name,
@@ -450,7 +505,11 @@ def build_peers_context(data_dir: str | Path, run_id: str | None = None) -> dict
                     if r["metric_id"] == metric_id
                 ],
                 collecting_label=(
-                    _collecting_label(passes_complete_by_project[project_id])
+                    _collecting_label(
+                        passes_complete_by_project[project_id],
+                        gating_pass=gating_pass,
+                        last_completed_at=last_completed_at_by_project[project_id],
+                    )
                     if project_id in gated_projects
                     else None
                 ),
@@ -500,13 +559,18 @@ def build_peers_context(data_dir: str | Path, run_id: str | None = None) -> dict
             for r in rows
             if r["metric_id"] == total_id
         ]
-    backlog_gated_projects = _gated_projects(GITHUB_METRIC_GATING_PASS["open_pr_backlog_total"])
+    backlog_gating_pass = GITHUB_METRIC_GATING_PASS["open_pr_backlog_total"]
+    backlog_gated_projects = _gated_projects(backlog_gating_pass)
     backlog_summary_items = [
         _peer_headline_item(
             display_name,
             backlog_series.get(project_id, []),
             collecting_label=(
-                _collecting_label(passes_complete_by_project[project_id])
+                _collecting_label(
+                    passes_complete_by_project[project_id],
+                    gating_pass=backlog_gating_pass,
+                    last_completed_at=last_completed_at_by_project[project_id],
+                )
                 if project_id in backlog_gated_projects
                 else None
             ),
@@ -551,13 +615,21 @@ def build_peers_context(data_dir: str | Path, run_id: str | None = None) -> dict
 
         cells = []
         as_of_month = None
-        collecting_label = _collecting_label(passes_complete_by_project[project_id])
+        project_last_completed_at = last_completed_at_by_project[project_id]
+
+        def _project_collecting_label(gating_pass: str | None) -> str:
+            return _collecting_label(
+                passes_complete_by_project[project_id],
+                gating_pass=gating_pass,
+                last_completed_at=project_last_completed_at,
+            )
+
         for metric_id, _title, _value_label, _chaoss_url, _chaoss_label in METRIC_ORDER:
             gating_pass = GITHUB_METRIC_GATING_PASS.get(metric_id)
             if gating_pass is not None and not settlement_by_project[project_id].get(
                 gating_pass, True
             ):
-                cells.append(collecting_label)
+                cells.append(_project_collecting_label(gating_pass))
                 continue
             series = sorted(rows_by_metric.get(metric_id, []), key=lambda r: r["window_start"])
             latest = series[-1] if series else None
@@ -578,7 +650,7 @@ def build_peers_context(data_dir: str | Path, run_id: str | None = None) -> dict
         if not settlement_by_project[project_id].get(
             GITHUB_METRIC_GATING_PASS["open_pr_backlog_total"], True
         ):
-            cells.append(collecting_label)
+            cells.append(_project_collecting_label(GITHUB_METRIC_GATING_PASS["open_pr_backlog_total"]))
         else:
             backlog_value = None
             if backlog_latest and backlog_latest["value"] is not None:

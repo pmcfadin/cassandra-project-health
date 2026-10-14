@@ -1765,6 +1765,46 @@ Cassandra is never gated either: its GitHub collection is `nightly.yml`'s ordina
 collector, already caught up for months, with no three-pass backfill of its own to be
 incomplete.
 
+#### Sticky settlement (fixup, live backfill finding 2026-10-13)
+
+`open_prs`/`closed_search` are redone *in full* on every run once they've completed once
+(`peers/github.py`'s own module docstring -- both are cheap to redo, bounded by "how many PRs
+are open right now"/"how many closed in the window," not by total repo history). The original
+gating rule read a pass as settled only while its watermark's `cursor` was `null` *right now* --
+correct for a pass that has never completed, but wrong for one simply mid-*another* redo: a
+real 30-pass local backfill found `open_prs` settlement for kafka/flink/pulsar/spark/datafusion
+flipping between `true`/`false` on almost every single pass, since CI's page-capped budget means
+some peer's own redo is mid-walk on essentially every run.
+
+Settlement is now **sticky**: each pass's watermark carries its own `last_completed_at`
+timestamp (`PassState`, stamped by `collect_and_write_github`'s `_stamp_last_completed_at` the
+moment that pass finishes a run with `status == 'completed'`, never cleared by a later
+partial/page-capped run of the same pass). `peer_pass_settlement` reads "has this pass *ever*
+completed," not "is it mid-walk right now" -- a refresh in progress never unsettles a pass that
+already has a good, complete snapshot behind it. Bounded by `projects/peers.yaml`'s
+`collection.settlement_freshness_days` (default 14, `null` disables the bound) so a pass that's
+genuinely gone stale for that long still falls back to "Collecting" rather than showing an
+arbitrarily old snapshot forever; when gated for this reason, the "Collecting" label itself
+names the exact date that pass last completed (its own `_last_completed_at` entry in
+`settlement.json`), so "Collecting" never reads as "zero data, forever."
+
+A watermark written before this field existed (`last_completed_at` absent) falls back to the
+original rule with no freshness bound at all (no timestamp to bound it by) -- "absent field +
+`cursor` `null` = completed as today." The migration case this covers explicitly: a peer already
+has such a legacy-completed watermark on the `data` branch, and the first run after this fixup
+ships gives that pass its turn again, which itself goes `page_capped` before finishing -- without
+special handling this would silently lose the "already completed once" fact the instant `cursor`
+stops being `null`, reproducing the exact bug one run after the fix ships. `collect.py`'s own
+`_stamp_last_completed_at` detects this case (a legacy watermark whose `cursor` was `null`,
+`raw_before is not None` -- i.e. this is not a genuinely first-ever run) and stamps a real
+`last_completed_at` of "now" before persisting, so it stays settled through that run and every
+one after.
+
+`collection.skip_rerun_within_hours` (default 20) is the matching waste-reduction half: a pass
+that completed within that many hours is skipped outright on its own next turn -- no API call,
+no page spent -- freeing this run's shared page budget for whichever peer/pass hasn't caught up
+yet, `created_desc` backfills especially, instead of redoing a pass that just finished.
+
 ### Budget reserve (issue #150, live, 2026-10-10)
 
 This workflow and `nightly.yml` share one GitHub token's one hourly GraphQL point budget. A

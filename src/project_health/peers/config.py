@@ -65,6 +65,41 @@ DEFAULT_MAX_PAGES_PER_PASS = 20
 # the real `github_rate_limit_floor` stop below.
 DEFAULT_GITHUB_PAGE_BUDGET_PER_RUN = 96
 
+# Issue #150 fixup (this issue, live backfill finding 2026-10-13): a peer's
+# `open_prs`/`closed_search` pass genuinely does complete, in full, from
+# time to time -- but `peer_pass_settlement`'s old rule (`PassState.cursor
+# is not None` -> unsettled) treated *any* later partial/page-capped run of
+# that same pass as if it had never completed at all, even though a
+# perfectly good, complete snapshot already existed. On CI's page-capped
+# budget, some peer is mid-refresh on essentially every run, so this flipped
+# `/peers/`'s Change Request Closure Ratio (gated on `closed_search`) and
+# Open PR backlog (gated on `open_prs`) between visible and hidden on
+# almost every single run -- see `peers/collect.py::peer_pass_settlement`'s
+# own module comment for the full mechanism and fix.
+#
+# `settlement_freshness_days` makes that fix's "sticky" settlement bounded
+# rather than unconditionally permanent: once a pass completes, it stays
+# settled through later partial runs for up to this many days since its own
+# `last_completed_at` -- long enough to ride out several page-capped runs in
+# a row (this workflow's own cadence, `.github/workflows/peers.yml`), short
+# enough that a pass that's gone genuinely stale (no completed run in two
+# weeks) eventually falls back to "Collecting" rather than silently showing
+# an arbitrarily old snapshot forever. `None` disables the freshness bound
+# entirely (sticky forever, once completed).
+DEFAULT_SETTLEMENT_FRESHNESS_DAYS = 14
+
+# Same fixup: a pass that completed within this many hours is skipped
+# outright on this run's own turn -- no API call, no page spent -- instead
+# of redoing a "cheap to redo in full" pass (`peers/github.py`'s own
+# module docstring) that just finished. This is the "reduce waste" half of
+# the fix: a peer whose `open_prs`/`closed_search` already completed today
+# needs none of this run's shared page budget, freeing it for whichever
+# peer/pass hasn't caught up yet (`created_desc` backfills in particular).
+# Deliberately just under 24h, not exactly 24h, so a daily cron run a few
+# minutes early two days running still re-checks rather than drifting later
+# and later each day.
+DEFAULT_SKIP_RERUN_WITHIN_HOURS = 20
+
 
 class BotPatternConfig(BaseModel):
     """One entry in `collection.bot_patterns` -- same shape as
@@ -164,6 +199,12 @@ class CollectionConfig(BaseModel):
     # whichever peers aren't already "done" this run (see
     # `DEFAULT_GITHUB_PAGE_BUDGET_PER_RUN`'s own comment above).
     github_page_budget_per_run: int = DEFAULT_GITHUB_PAGE_BUDGET_PER_RUN
+    # Issue #150 fixup: how long a completed `open_prs`/`closed_search`/
+    # `created_desc` pass stays "settled" through later partial runs, and
+    # how soon after completing it's skipped outright on its own next turn
+    # -- see the two `DEFAULT_*` constants' own comments above.
+    settlement_freshness_days: int | None = DEFAULT_SETTLEMENT_FRESHNESS_DAYS
+    skip_rerun_within_hours: int | None = DEFAULT_SKIP_RERUN_WITHIN_HOURS
     bot_patterns: list[BotPatternConfig] = Field(default_factory=list)
 
 

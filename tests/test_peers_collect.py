@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import os
 import subprocess
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 
@@ -689,3 +689,298 @@ def test_collect_and_write_releases_writes_partition_and_verifies(tmp_path, monk
     release_table = storage.read_table(tmp_path, release_source, "release")
     assert release_table.num_rows == 1
     assert release_table.column("repo").to_pylist() == ["apache/kafka"]
+
+
+# --- issue #150 fixup: sticky settlement ------------------------------------
+#
+# The bug: `open_prs`/`closed_search` are redone in full every run
+# ("cheap to redo"), and a later run's own redo going partial/page-capped
+# left `cursor` non-null, which the old rule read as "unsettled" even
+# though a complete, usable snapshot from an earlier run already existed.
+# Real backfill evidence (30 hourly passes): settlement for kafka/flink/
+# pulsar/spark/datafusion's `open_prs` flipped between true/false on almost
+# every single pass. These tests exercise `peer_pass_settlement`'s sticky
+# fix directly against hand-built `PassState` JSON (the same shape a real
+# watermark file holds), and `collect_and_write_github`'s own stamping/
+# skip-rerun behavior end to end.
+
+
+def test_sticky_settlement_survives_a_later_partial_refresh(tmp_path):
+    """Once a pass has completed (`last_completed_at` set), a later run
+    going partial/page-capped must not unsettle it -- the exact flip issue
+    #150's fixup reports from the real backfill."""
+    peer = _peer("kafka", "apache/kafka")
+    source = peer_collect.peer_source("kafka", "github")
+    now = datetime(2026, 10, 13, tzinfo=timezone.utc)
+
+    # open_prs completed a full run yesterday...
+    yesterday = (now - timedelta(days=1)).isoformat()
+    completed_state = PassState(cursor=None, last_completed_at=yesterday)
+    storage.write_watermark(tmp_path, source, completed_state.to_json(), table="pr_pass_open_prs")
+    assert peer_collect.peer_pass_settlement(tmp_path, peer, now=now)["open_prs"] is True
+
+    # ...then today's redo gets page-capped mid-walk (cursor non-null again).
+    partial_state = PassState(cursor="page-2-cursor", last_completed_at=yesterday)
+    storage.write_watermark(tmp_path, source, partial_state.to_json(), table="pr_pass_open_prs")
+
+    settlement = peer_collect.peer_pass_settlement(tmp_path, peer, now=now)
+    assert settlement["open_prs"] is True, "refresh in progress must not unsettle a completed pass"
+
+
+def test_sticky_settlement_bounded_by_freshness_days(tmp_path):
+    """`last_completed_at` more than `freshness_days` old falls back to
+    'Collecting' -- sticky is bounded, not permanent, so a pass that's
+    truly gone stale doesn't show an arbitrarily old snapshot forever."""
+    peer = _peer("kafka", "apache/kafka")
+    source = peer_collect.peer_source("kafka", "github")
+    now = datetime(2026, 10, 13, tzinfo=timezone.utc)
+
+    stale_at = (now - timedelta(days=20)).isoformat()
+    stale_state = PassState(cursor="resuming", last_completed_at=stale_at)
+    storage.write_watermark(tmp_path, source, stale_state.to_json(), table="pr_pass_closed_search")
+
+    assert (
+        peer_collect.peer_pass_settlement(tmp_path, peer, freshness_days=14, now=now)[
+            "closed_search"
+        ]
+        is False
+    )
+    # No bound at all (freshness_days=None) -- sticky forever.
+    assert (
+        peer_collect.peer_pass_settlement(tmp_path, peer, freshness_days=None, now=now)[
+            "closed_search"
+        ]
+        is True
+    )
+    # Still within the window -- settled.
+    fresh_at = (now - timedelta(days=10)).isoformat()
+    fresh_state = PassState(cursor="resuming", last_completed_at=fresh_at)
+    storage.write_watermark(tmp_path, source, fresh_state.to_json(), table="pr_pass_closed_search")
+    assert (
+        peer_collect.peer_pass_settlement(tmp_path, peer, freshness_days=14, now=now)[
+            "closed_search"
+        ]
+        is True
+    )
+
+
+def test_legacy_watermark_without_last_completed_at_still_settled(tmp_path):
+    """Backward compatibility (issue #150 fixup's own acceptance): a
+    watermark written before sticky settlement shipped has no
+    `last_completed_at` field at all -- `absent field + cursor None =
+    completed as today`, with no freshness bound applied (there's no
+    timestamp to bound it by)."""
+    peer = _peer("kafka", "apache/kafka")
+    source = peer_collect.peer_source("kafka", "github")
+    legacy_json = '{"cursor": null, "high_watermark": null, "newest_seen": null}'
+    storage.write_watermark(tmp_path, source, legacy_json, table="pr_pass_open_prs")
+
+    assert PassState.from_json(legacy_json).last_completed_at is None
+    assert peer_collect.peer_pass_settlement(tmp_path, peer)["open_prs"] is True
+    # Even far in the future -- no freshness bound can apply without a timestamp.
+    far_future = datetime(2099, 1, 1, tzinfo=timezone.utc)
+    assert (
+        peer_collect.peer_pass_settlement(tmp_path, peer, freshness_days=14, now=far_future)[
+            "open_prs"
+        ]
+        is True
+    )
+
+
+def test_migration_from_legacy_watermark_stays_settled_through_a_partial_rerun(
+    tmp_path, monkeypatch
+):
+    """The real migration scenario this fixup is built for: a peer already
+    has a legacy-completed watermark (no `last_completed_at`) on the data
+    branch. The first run after this fix ships gives that pass its turn
+    again, and that turn itself goes `page_capped` (budget ran out before
+    finishing the redo) -- without the migration shim in
+    `_stamp_last_completed_at`, this would silently lose the "already
+    completed once" fact the instant `cursor` stops being `None`, exactly
+    reproducing the reported bug one run after the fix ships. With the
+    shim, it must stay settled."""
+    peer = _peer("kafka", "apache/kafka")
+    peers_config = PeersConfig(peers=[peer])
+    source = peer_collect.peer_source("kafka", "github")
+
+    # Legacy: open_prs completed under the pre-fix code (no last_completed_at).
+    storage.write_watermark(tmp_path, source, PassState().to_json(), table="pr_pass_open_prs")
+    storage.write_watermark(
+        tmp_path,
+        source,
+        PassState(high_watermark="2024-01-01T00:00:00+00:00").to_json(),
+        table="pr_pass_created_desc",
+    )
+    storage.write_watermark(tmp_path, source, PassState().to_json(), table="pr_pass_closed_search")
+
+    assert peer_collect.peer_pass_settlement(tmp_path, peer)["open_prs"] is True
+
+    def fake_open_prs(collector, repo_label, state, bot_patterns, snapshot_id, **kwargs):
+        # This run's own redo of open_prs gets page-capped mid-walk.
+        return PassResult(
+            pr_rows=[],
+            review_rows=[],
+            comment_rows=[],
+            bot_prs_excluded=0,
+            bot_reviews_excluded=0,
+            bot_comments_excluded=0,
+            status="page_capped",
+            next_state=PassState(cursor="page-2"),
+        )
+
+    monkeypatch.setattr(peer_collect, "run_created_desc_pass", lambda *a, **k: _empty_pass_result())
+    monkeypatch.setattr(peer_collect, "run_open_prs_pass", fake_open_prs)
+    monkeypatch.setattr(
+        peer_collect, "run_closed_search_pass", lambda *a, **k: _empty_pass_result()
+    )
+
+    peer_collect.collect_and_write_github(
+        peers_config, tmp_path, "run1", date(2026, 1, 1), token="x"
+    )
+
+    stored = storage.read_watermark(tmp_path, source, table="pr_pass_open_prs")
+    stored_state = PassState.from_json(stored)
+    assert stored_state.cursor == "page-2"
+    assert stored_state.last_completed_at is not None, (
+        "the legacy 'completed' fact must be stamped into a real timestamp "
+        "the moment this pass's own redo stops being a no-op cursor-None state"
+    )
+
+    # Settlement must still read 'settled' right after this partial rerun.
+    assert peer_collect.peer_pass_settlement(tmp_path, peer)["open_prs"] is True
+
+
+def test_first_ever_partial_run_is_not_falsely_sticky_settled(tmp_path, monkeypatch):
+    """The scenario the migration shim must NOT cover: a pass that has
+    *never* run before at all (no watermark key ever written) goes
+    partial/page-capped on its very first attempt. An empty `PassState()`
+    is indistinguishable from a legacy-completed one by its fields alone --
+    only `raw_before is None` (this function's own signal) tells a
+    genuinely first-ever run apart from a legacy-completed one, and a
+    first-ever partial run must stay unsettled, never sticky-settled from a
+    completion that never actually happened."""
+    peer = _peer("kafka", "apache/kafka")
+    peers_config = PeersConfig(peers=[peer])
+    source = peer_collect.peer_source("kafka", "github")
+
+    def fake_open_prs(collector, repo_label, state, bot_patterns, snapshot_id, **kwargs):
+        assert state == PassState()  # genuinely never run before
+        return PassResult(
+            pr_rows=[],
+            review_rows=[],
+            comment_rows=[],
+            bot_prs_excluded=0,
+            bot_reviews_excluded=0,
+            bot_comments_excluded=0,
+            status="page_capped",
+            next_state=PassState(cursor="page-1"),
+        )
+
+    monkeypatch.setattr(peer_collect, "run_created_desc_pass", lambda *a, **k: _empty_pass_result())
+    monkeypatch.setattr(peer_collect, "run_open_prs_pass", fake_open_prs)
+    monkeypatch.setattr(
+        peer_collect, "run_closed_search_pass", lambda *a, **k: _empty_pass_result()
+    )
+
+    peer_collect.collect_and_write_github(
+        peers_config, tmp_path, "run1", date(2026, 1, 1), token="x"
+    )
+
+    stored_state = PassState.from_json(
+        storage.read_watermark(tmp_path, source, table="pr_pass_open_prs")
+    )
+    assert stored_state.last_completed_at is None
+    assert peer_collect.peer_pass_settlement(tmp_path, peer)["open_prs"] is False
+
+
+def test_skip_rerun_within_hours_avoids_calling_a_recently_completed_pass(tmp_path, monkeypatch):
+    """Issue #150 fixup's 'reduce waste' half: a pass that completed very
+    recently is skipped outright this run -- no API call, no page spent --
+    freeing this run's shared budget for whichever peer/pass hasn't caught
+    up yet."""
+    peer = _peer("kafka", "apache/kafka")
+    peers_config = PeersConfig(
+        peers=[peer], collection=CollectionConfig(skip_rerun_within_hours=20)
+    )
+    source = peer_collect.peer_source("kafka", "github")
+    now = datetime(2026, 10, 13, 12, 0, tzinfo=timezone.utc)
+
+    recently_completed = PassState(
+        cursor=None, last_completed_at=(now - timedelta(hours=2)).isoformat()
+    )
+    storage.write_watermark(
+        tmp_path, source, recently_completed.to_json(), table="pr_pass_open_prs"
+    )
+
+    calls: list[str] = []
+
+    def tracking_open_prs(*a, **k):
+        calls.append("open_prs")
+        return _empty_pass_result()
+
+    monkeypatch.setattr(peer_collect, "run_created_desc_pass", lambda *a, **k: _empty_pass_result())
+    monkeypatch.setattr(peer_collect, "run_open_prs_pass", tracking_open_prs)
+    monkeypatch.setattr(
+        peer_collect, "run_closed_search_pass", lambda *a, **k: _empty_pass_result()
+    )
+
+    report = peer_collect.collect_and_write_github(
+        peers_config, tmp_path, "run1", date(2026, 1, 1), token="x", now=now
+    )
+
+    assert calls == [], "a pass that completed 2h ago (well within 20h) must be skipped outright"
+    statuses = {(o.peer_id, o.pass_name): o.status for o in report.pass_outcomes}
+    assert statuses[("kafka", "open_prs")] == "completed"
+    assert statuses[("kafka", "open_prs")] != "skipped"  # not the 'budget exhausted' skip
+
+
+def test_skip_rerun_does_not_apply_once_outside_the_window(tmp_path, monkeypatch):
+    """The mirror of the previous test -- once `last_completed_at` is
+    older than `skip_rerun_within_hours`, the pass is actually re-run."""
+    peer = _peer("kafka", "apache/kafka")
+    peers_config = PeersConfig(
+        peers=[peer], collection=CollectionConfig(skip_rerun_within_hours=20)
+    )
+    source = peer_collect.peer_source("kafka", "github")
+    now = datetime(2026, 10, 13, 12, 0, tzinfo=timezone.utc)
+
+    completed_yesterday = PassState(
+        cursor=None, last_completed_at=(now - timedelta(hours=30)).isoformat()
+    )
+    storage.write_watermark(
+        tmp_path, source, completed_yesterday.to_json(), table="pr_pass_open_prs"
+    )
+
+    calls: list[str] = []
+
+    def tracking_open_prs(*a, **k):
+        calls.append("open_prs")
+        return _empty_pass_result()
+
+    monkeypatch.setattr(peer_collect, "run_created_desc_pass", lambda *a, **k: _empty_pass_result())
+    monkeypatch.setattr(peer_collect, "run_open_prs_pass", tracking_open_prs)
+    monkeypatch.setattr(
+        peer_collect, "run_closed_search_pass", lambda *a, **k: _empty_pass_result()
+    )
+
+    peer_collect.collect_and_write_github(
+        peers_config, tmp_path, "run1", date(2026, 1, 1), token="x", now=now
+    )
+
+    assert calls == ["open_prs"]
+
+
+def test_peer_pass_last_completed_at_reads_stamped_timestamps(tmp_path):
+    peer = _peer("kafka", "apache/kafka")
+    source = peer_collect.peer_source("kafka", "github")
+    storage.write_watermark(
+        tmp_path,
+        source,
+        PassState(last_completed_at="2026-09-01T00:00:00+00:00").to_json(),
+        table="pr_pass_open_prs",
+    )
+
+    last_completed_at = peer_collect.peer_pass_last_completed_at(tmp_path, peer)
+    assert last_completed_at["open_prs"] == "2026-09-01T00:00:00+00:00"
+    assert last_completed_at["created_desc"] is None
+    assert last_completed_at["closed_search"] is None

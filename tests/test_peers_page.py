@@ -278,6 +278,51 @@ def test_git_release_derived_metrics_are_never_gated(populated_data_dir):
         assert not isinstance(flink_row["cells"][col], str)
 
 
+def test_collecting_label_shows_gating_pass_last_completed_date(populated_data_dir):
+    """Issue #150 fixup's "show the as of date" requirement: when a peer is
+    gated (unsettled, e.g. stale beyond `settlement_freshness_days`), the
+    "Collecting" label names the exact date its own gating pass last
+    completed -- so a reader never reads "Collecting" as "zero data,
+    forever" when a perfectly good, if aging, snapshot actually exists."""
+    _write_settlement(
+        populated_data_dir,
+        "run1",
+        "flink",
+        {
+            "created_desc": True,
+            "open_prs": False,
+            "closed_search": False,
+            "_last_completed_at": {
+                "created_desc": "2026-09-01T00:00:00+00:00",
+                "open_prs": "2026-08-15T12:00:00+00:00",
+                "closed_search": None,
+            },
+        },
+    )
+
+    context = build_peers_context(populated_data_dir, run_id="run1")
+
+    backlog_section = next(
+        c for c in context["peer_sections"] if c["id"] == "open_pr_backlog_total"
+    )
+    flink_backlog_item = next(
+        i for i in backlog_section["summary_items"] if i["name"] == "Apache Flink"
+    )
+    assert flink_backlog_item["empty_label"] == (
+        "Collecting — 1 of 3 passes complete (open_prs last completed 2026-08-15)"
+    )
+
+    # closed_search has never completed at all (`None`) -- no date to show,
+    # just the bare label.
+    closure_section = next(
+        c for c in context["peer_sections"] if c["id"] == "change_request_closure_ratio_pr"
+    )
+    flink_closure_item = next(
+        i for i in closure_section["summary_items"] if i["name"] == "Apache Flink"
+    )
+    assert flink_closure_item["empty_label"] == "Collecting — 1 of 3 passes complete"
+
+
 def test_cassandra_and_peers_without_settlement_file_default_fully_settled(populated_data_dir):
     """A peer (or Cassandra) with no `settlement.json` at all -- every peer
     snapshot written before issue #150 shipped, and Cassandra always --

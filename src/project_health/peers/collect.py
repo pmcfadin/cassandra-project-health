@@ -26,8 +26,8 @@ from __future__ import annotations
 
 import subprocess
 import uuid
-from dataclasses import dataclass, field
-from datetime import date, datetime, timezone
+from dataclasses import dataclass, field, replace
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import pyarrow as pa
@@ -38,8 +38,14 @@ from project_health.collectors.reviewer_trailer import ReviewerExtractor
 from project_health.config import BotPattern
 from project_health.metrics.windows import add_months, month_start
 from project_health.peers import git_clone
-from project_health.peers.config import BotPatternConfig, PeerProject, PeersConfig
+from project_health.peers.config import (
+    DEFAULT_SETTLEMENT_FRESHNESS_DAYS,
+    BotPatternConfig,
+    PeerProject,
+    PeersConfig,
+)
 from project_health.peers.github import (
+    PassResult,
     PassState,
     build_peer_github_config,
     run_closed_search_pass,
@@ -160,7 +166,53 @@ def _pass_watermark_table(pass_name: str) -> str:
     return f"pr_pass_{pass_name}"
 
 
-def peer_pass_settlement(data_dir: str | Path, peer: PeerProject) -> dict[str, bool]:
+def _pass_settled(
+    pass_name: str,
+    state: PassState,
+    *,
+    freshness_days: int | None,
+    now: datetime,
+) -> bool:
+    """One pass's own settledness rule, given its already-loaded `state`
+    (issue #150 fixup -- see `peer_pass_settlement`'s module comment for
+    the bug this replaces).
+
+    `state.last_completed_at` is the sticky signal: once set, it is never
+    cleared by a later partial/page-capped run of the same pass (`peers/
+    github.py`'s own `PassState` docstring, `collect_and_write_github`'s
+    `_stamp_last_completed_at`) -- so a pass that completed once stays
+    settled through any number of subsequent in-progress runs, bounded
+    only by `freshness_days` (`None` disables the bound -- sticky forever).
+
+    A watermark written before this field existed has `last_completed_at
+    is None` -- read as *unknown*, not *never*, and resolved by falling
+    back to the exact pre-fix rule (`cursor is None`, plus `high_watermark`
+    for `created_desc`) with no freshness bound at all, since there is no
+    timestamp to bound it by ("absent field + cursor None = completed as
+    today," this issue's own backward-compatibility requirement). The very
+    next run that gives this (peer, pass) its turn stamps a real
+    `last_completed_at` (`_stamp_last_completed_at`), after which this
+    fallback never applies to it again.
+    """
+    if state.last_completed_at is not None:
+        if freshness_days is None:
+            return True
+        completed_at = datetime.fromisoformat(state.last_completed_at)
+        return now - completed_at <= timedelta(days=freshness_days)
+    if state.cursor is not None:
+        return False
+    if pass_name == "created_desc" and state.high_watermark is None:
+        return False
+    return True
+
+
+def peer_pass_settlement(
+    data_dir: str | Path,
+    peer: PeerProject,
+    *,
+    freshness_days: int | None = DEFAULT_SETTLEMENT_FRESHNESS_DAYS,
+    now: datetime | None = None,
+) -> dict[str, bool]:
     """Per-(peer, pass) settledness, keyed by `PASS_NAMES` (issue #150: the
     `/peers/` page needs to know, pass by pass, which of a peer's
     GitHub-derived metrics are safe to render -- `created_desc` reached the
@@ -168,20 +220,48 @@ def peer_pass_settlement(data_dir: str | Path, peer: PeerProject) -> dict[str, b
     completing gates Change Request Closure Ratio, `open_prs` completing
     gates the Open PR backlog).
 
+    ## The bug this fixes (issue #150 fixup, live backfill finding
+    2026-10-13)
+
+    The original rule treated `PassState.cursor is not None` as
+    unconditionally "unsettled" -- correct for a pass that has *never*
+    completed, but wrong for one that completed once and is simply
+    mid-*another* refresh: `open_prs`/`closed_search` are redone in full
+    every run (`peers/github.py`'s own module docstring, "cheap to redo"),
+    and a page-capped or rate-limited *redo* leaves `cursor` non-null even
+    though a perfectly good, complete snapshot from an earlier run already
+    exists. On CI's page-capped budget, some peer is mid-refresh on
+    essentially every run -- real backfill evidence (30 hourly passes):
+    `open_prs` settlement for datafusion/flink/kafka/pulsar/spark flipped
+    between `true`/`false` on almost every single pass, with no two
+    consecutive passes agreeing on which peers were "settled." Since
+    `/peers/` gates Change Request Closure Ratio on `closed_search` and
+    Open PR backlog on `open_prs`, this hid those two metrics for whichever
+    peers happened to be mid-refresh on any given run -- not because their
+    data was actually stale, but because this function conflated "a refresh
+    is in progress" with "no good data exists."
+
+    Fix: settlement is now **sticky** -- it looks at whether the pass has
+    *ever* completed (`state.last_completed_at`, stamped by
+    `collect_and_write_github`'s `_stamp_last_completed_at` the moment any
+    run of that pass finishes with `status == 'completed'`), not whether
+    it happens to be mid-walk *right now*. A refresh in progress never
+    unsettles a pass that already has a valid completed snapshot. Bounded
+    by `freshness_days` (`projects/peers.yaml`'s `collection.
+    settlement_freshness_days`, default 14) so a pass that's gone stale for
+    that long -- no completed run in that whole window -- does eventually
+    fall back to "Collecting," rather than showing an arbitrarily old
+    snapshot forever; `None` disables the bound.
+
     A pass whose watermark was never written at all (`storage.
     read_watermark` returns `None` -- this peer's turn never got far enough
-    for this pass to run even once, e.g. an earlier pass this same run hit
-    the shared budget floor first) is **never** "settled," for every pass,
-    not only `created_desc` -- unlike `open_prs`/`closed_search`'s own
-    *resumability* semantics (`PassState.cursor is None` also means "ran to
-    completion," since both are cheap to redo in full), a pass that has
-    literally never executed has produced zero rows, which is the opposite
-    of "safe to show a number for." `created_desc` additionally needs
-    `high_watermark` set -- its own `cursor is None` alone is ambiguous
-    between "never run" and "completed its first full backfill," and only
-    `high_watermark` distinguishes the two (module comment on `PassState`).
+    for this pass to run even once) is **never** "settled" regardless of
+    any of the above -- it has produced zero rows, the opposite of "safe to
+    show a number for." See `_pass_settled` for the exact per-pass rule
+    once a watermark does exist.
     """
     source = peer_source(peer.id, "github")
+    now = now or datetime.now(timezone.utc)
     settlement: dict[str, bool] = {}
     for pass_name in PASS_NAMES:
         raw = storage.read_watermark(data_dir, source, table=_pass_watermark_table(pass_name))
@@ -189,22 +269,114 @@ def peer_pass_settlement(data_dir: str | Path, peer: PeerProject) -> dict[str, b
             settlement[pass_name] = False
             continue
         state = PassState.from_json(raw)
-        if state.cursor is not None:
-            settlement[pass_name] = False
-        elif pass_name == "created_desc" and state.high_watermark is None:
-            settlement[pass_name] = False
-        else:
-            settlement[pass_name] = True
+        settlement[pass_name] = _pass_settled(
+            pass_name, state, freshness_days=freshness_days, now=now
+        )
     return settlement
 
 
-def _peer_is_settled(data_dir: str | Path, peer: PeerProject) -> bool:
+def peer_pass_last_completed_at(data_dir: str | Path, peer: PeerProject) -> dict[str, str | None]:
+    """Per-(peer, pass) `PassState.last_completed_at`, keyed by
+    `PASS_NAMES` (issue #150 fixup) -- the raw ISO-8601 timestamp each
+    pass's watermark currently carries, `None` if that pass's watermark
+    was never written, never written with a `last_completed_at` at all
+    (a legacy, pre-fix watermark this run hasn't touched yet), or never
+    actually completed. Purely informational -- `peer_pass_settlement`,
+    not this function, is what gates a metric; this is what lets
+    `peers.pipeline`/`site.peers_page` show *when* a gated pass last
+    produced the snapshot a reader is (or isn't) currently seeing."""
+    source = peer_source(peer.id, "github")
+    last_completed_at: dict[str, str | None] = {}
+    for pass_name in PASS_NAMES:
+        raw = storage.read_watermark(data_dir, source, table=_pass_watermark_table(pass_name))
+        last_completed_at[pass_name] = PassState.from_json(raw).last_completed_at if raw else None
+    return last_completed_at
+
+
+def _peer_is_settled(
+    data_dir: str | Path,
+    peer: PeerProject,
+    *,
+    freshness_days: int | None = DEFAULT_SETTLEMENT_FRESHNESS_DAYS,
+    now: datetime | None = None,
+) -> bool:
     """`True` if every one of `peer`'s three passes' persisted watermarks
     show no resumable work outstanding (issue #148: "peers whose passes
     are all complete ... are skipped cheaply") -- `all(peer_pass_settlement
     (...).values())`, see that function's own docstring for the exact
     per-pass rule."""
-    return all(peer_pass_settlement(data_dir, peer).values())
+    settlement = peer_pass_settlement(data_dir, peer, freshness_days=freshness_days, now=now)
+    return all(settlement.values())
+
+
+def _stamp_last_completed_at(
+    pass_name: str, raw_before: str | None, result: PassResult, now: datetime
+) -> PassState:
+    """Attach `last_completed_at` to `result.next_state` before it's
+    persisted (issue #150 fixup) -- the one piece of sticky-settlement
+    bookkeeping the three `run_*_pass` functions in `peers/github.py`
+    themselves know nothing about (they have no `now`, and no concept of
+    "settled" at all; `PassState`'s own docstring).
+
+    - `status == 'completed'`: stamp `now` -- a fresh, real completion.
+    - `status in ('partial', 'page_capped')`: carry forward whichever
+      `last_completed_at` this (peer, pass) already had (`raw_before`'s own
+      `PassState`, if any) -- this is the sticky half of the fix: a refresh
+      currently in progress must never erase the fact that an earlier run
+      already completed this pass once.
+    - Otherwise (`'rate_limited'`/`'failed'`): `result.next_state` already
+      *is* the untouched input `state` (`run_*_pass`'s own contract,
+      "leave state untouched, retry next run") -- nothing to stamp, it
+      already carries whatever `last_completed_at` it had.
+
+    One more case the "carry forward" branch handles, deliberately:
+    `raw_before` is a **legacy** watermark -- written before this field
+    existed, so `last_completed_at` is `None` on it even though `cursor is
+    None` (plus, for `created_desc`, `high_watermark` set) already meant
+    "completed" under the pre-fix rule. The *first* time collection gives
+    that (peer, pass) its turn again, and that turn doesn't itself finish
+    (`'partial'`/`'page_capped'`), this stamps `now` rather than leaving
+    `last_completed_at` as `None` -- "absent field + cursor None =
+    completed as today," this issue's own backward-compatibility
+    requirement, turned into this fix's own real, persisted timestamp
+    instead of staying an inference forever. Deliberately **not** applied
+    when `raw_before is None` (this pass has never actually run before at
+    all) -- an empty `PassState()` is indistinguishable from a legacy
+    "completed" one by its fields alone, and only `raw_before is None`
+    (no watermark key ever written) tells the two apart; a genuinely
+    first-ever run that goes partial must stay unsettled, not sticky-settled
+    from a completion that never happened.
+    """
+    if result.status == "completed":
+        return replace(result.next_state, last_completed_at=now.isoformat())
+    if result.status not in ("partial", "page_capped"):
+        return result.next_state
+
+    inherited = result.next_state.last_completed_at
+    if inherited is None and raw_before is not None:
+        state_before = PassState.from_json(raw_before)
+        if state_before.last_completed_at is not None:
+            inherited = state_before.last_completed_at
+        elif state_before.cursor is None and (
+            pass_name != "created_desc" or state_before.high_watermark is not None
+        ):
+            inherited = now.isoformat()
+    return replace(result.next_state, last_completed_at=inherited)
+
+
+def _recently_completed(
+    state: PassState, now: datetime, skip_rerun_within_hours: int | None
+) -> bool:
+    """`True` if `state.last_completed_at` is set and within
+    `skip_rerun_within_hours` of `now` (issue #150 fixup's "reduce waste"
+    half) -- `collect_and_write_github` skips this (peer, pass)'s turn
+    entirely (no API call, no page spent) when this is `True`, instead of
+    redoing a pass that just finished. `skip_rerun_within_hours=None`
+    disables this entirely (always re-run)."""
+    if not skip_rerun_within_hours or state.last_completed_at is None:
+        return False
+    completed_at = datetime.fromisoformat(state.last_completed_at)
+    return now - completed_at < timedelta(hours=skip_rerun_within_hours)
 
 
 # A fully "settled" peer (module comment above) only needs a minimal
@@ -226,6 +398,7 @@ def collect_and_write_github(
     as_of: date | None = None,
     transport=None,
     rotation_start_index: int = 0,
+    now: datetime | None = None,
 ) -> PeerGithubCollectionReport:
     """Run every peer repo's three PR-collection passes (module comment
     above), sharing one `GitHubCollector`/one rate-limit-floor budget, then
@@ -236,7 +409,8 @@ def collect_and_write_github(
     existing `_dedupe_pr_rows`/etc., the same way a re-fetched PR's
     cross-*run* overlap already is) and persist each pass's own resumable
     `PassState` (`storage.write_watermark`, `table=_pass_watermark_table
-    (pass_name)`).
+    (pass_name)`), stamped with sticky-settlement's own `last_completed_at`
+    (`_stamp_last_completed_at`, issue #150 fixup).
 
     Issue #148 -- two additional fairness layers, both on top of (never
     replacing) the existing per-(peer, pass) `max_pages_per_pass` ceiling
@@ -254,9 +428,20 @@ def collect_and_write_github(
       recomputed before each not-done peer's turn, so a peer that finishes
       early (uses fewer pages than its share) leaves more of the shared
       budget for whichever peers haven't had their turn yet.
+
+    Issue #150 fixup -- a third fairness/waste layer, `skip_rerun_within_
+    hours` (`collection.skip_rerun_within_hours`): a (peer, pass) whose
+    `last_completed_at` is recent enough is skipped outright this run, no
+    API call and no page spent (`_recently_completed`) -- freeing this
+    run's shared page budget for whichever peer/pass hasn't caught up yet,
+    `created_desc` backfills especially, instead of redoing a pass that's
+    "cheap to redo" but was never actually free.
     """
     as_of = as_of or datetime.now(timezone.utc).date()
     window_start = pr_window_start(as_of)
+    now = now or datetime.now(timezone.utc)
+    freshness_days = peers_config.collection.settlement_freshness_days
+    skip_rerun_within_hours = peers_config.collection.skip_rerun_within_hours
 
     config = build_peer_github_config(peers_config.peers, peers_config.collection.bot_patterns)
     pass_outcomes: list[PeerGithubPassOutcome] = []
@@ -265,7 +450,10 @@ def collect_and_write_github(
 
     ordered_peers = peer_rotation.rotate(peers_config.peers, rotation_start_index)
     configured_max_pages = peers_config.collection.max_pages_per_pass
-    settled_by_peer = {peer.id: _peer_is_settled(data_dir, peer) for peer in ordered_peers}
+    settled_by_peer = {
+        peer.id: _peer_is_settled(data_dir, peer, freshness_days=freshness_days, now=now)
+        for peer in ordered_peers
+    }
     settled_peers = [peer.id for peer in ordered_peers if settled_by_peer[peer.id]]
     peers_not_done_remaining = sum(1 for peer in ordered_peers if not settled_by_peer[peer.id])
     page_budget_remaining = peers_config.collection.github_page_budget_per_run
@@ -313,9 +501,30 @@ def collect_and_write_github(
                     )
                     continue
 
-                state = PassState.from_json(
-                    storage.read_watermark(data_dir, source, table=_pass_watermark_table(pass_name))
+                raw_before = storage.read_watermark(
+                    data_dir, source, table=_pass_watermark_table(pass_name)
                 )
+                state = PassState.from_json(raw_before)
+
+                if _recently_completed(state, now, skip_rerun_within_hours):
+                    # Issue #150 fixup: already completed within the
+                    # configured freshness/skip window -- no API call, no
+                    # page spent, watermark left exactly as it is (already
+                    # settled, nothing to carry forward).
+                    pass_outcomes.append(
+                        PeerGithubPassOutcome(
+                            peer_id=peer.id,
+                            pass_name=pass_name,
+                            status="completed",
+                            pr_count=0,
+                            review_count=0,
+                            comment_count=0,
+                            pages_fetched=0,
+                            error=None,
+                        )
+                    )
+                    continue
+
                 max_pages = peer_max_pages
                 if pass_name == "created_desc":
                     result = run_created_desc_pass(
@@ -347,10 +556,11 @@ def collect_and_write_github(
                         max_pages=max_pages,
                     )
 
+                stamped_state = _stamp_last_completed_at(pass_name, raw_before, result, now)
                 storage.write_watermark(
                     data_dir,
                     source,
-                    result.next_state.to_json(),
+                    stamped_state.to_json(),
                     table=_pass_watermark_table(pass_name),
                 )
                 pr_rows.extend(result.pr_rows)

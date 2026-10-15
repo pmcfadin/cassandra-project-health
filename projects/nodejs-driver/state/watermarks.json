@@ -2,11 +2,11 @@
   "git": "4620e5417e7de2fc0dc3d31c683cb028b484092f",
   "git:file_change_event": "4620e5417e7de2fc0dc3d31c683cb028b484092f",
   "git:review_event_parser_version": "2",
-  "github": "{\"apache/cassandra-nodejs-driver\": \"Y3Vyc29yOnYyOpK0MjAyNi0xMC0xMVQwOTozNzo0OFrPAAAAAR8sEr8=\"}",
+  "github": "{\"apache/cassandra-nodejs-driver\": \"Y3Vyc29yOnYyOpK0MjAyNi0xMC0xNFQxOTo1MTozMVrPAAAAAR1wi6c=\"}",
   "github:pr_issue_link_backfill_cursor": "{\"apache/cassandra-nodejs-driver\": \"Y3Vyc29yOnYyOpK0MjAyNi0xMC0xMVQwOTowODozNFrPAAAAAR8sEr8=\"}",
   "github:pr_issue_link_backfill_done": "{\"apache/cassandra-nodejs-driver\": true}",
   "github_commit_authors:github_commit_author": "4620e5417e7de2fc0dc3d31c683cb028b484092f 1497",
-  "jira": "2026-10-08T17:20:13+00:00",
+  "jira": "2026-10-14T19:30:13+00:00",
   "jira:patch_available_backfill_covered": "0",
   "jira:patch_available_backfill_total": "0"
 }

@@ -2,7 +2,7 @@
   "git": "94c308f18566b3409f5b50e772804d6fecf439f4",
   "git:file_change_event": "94c308f18566b3409f5b50e772804d6fecf439f4",
   "git:review_event_parser_version": "2",
-  "github": "{\"apache/cassandra-gocql-driver\": \"Y3Vyc29yOnYyOpK0MjAyNi0xMC0xNlQyMjoxMTo0MlrPAAAAASMmP1A=\"}",
+  "github": "{\"apache/cassandra-gocql-driver\": \"Y3Vyc29yOnYyOpK0MjAyNi0xMC0xOFQxODo1NjozMlrPAAAAAQQ7YJk=\"}",
   "github:pr_issue_link_backfill_cursor": "{\"apache/cassandra-gocql-driver\": \"Y3Vyc29yOnYyOpK0MjAyNi0wOS0zMFQxMjo0NDoyM1rPAAAAAReVMJ0=\"}",
   "github:pr_issue_link_backfill_done": "{\"apache/cassandra-gocql-driver\": true}",
   "github_commit_authors:github_commit_author": "94c308f18566b3409f5b50e772804d6fecf439f4 2222",

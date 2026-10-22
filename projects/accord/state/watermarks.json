@@ -6,7 +6,7 @@
   "github:pr_issue_link_backfill_cursor": "{\"apache/cassandra-accord\": \"Y3Vyc29yOnYyOpK0MjAyNi0wOS0xNVQxMToyNzo0M1rPAAAAAQ5krzo=\"}",
   "github:pr_issue_link_backfill_done": "{\"apache/cassandra-accord\": true}",
   "github_commit_authors:github_commit_author": "ce855de13902e7e3ebfa4356d265f0c49be1bb8e 296",
-  "jira": "2026-10-17T14:00:43+00:00",
+  "jira": "2026-10-22T11:53:14+00:00",
   "jira:patch_available_backfill_covered": "204",
   "jira:patch_available_backfill_cursor": "CASSANDRA-21716",
   "jira:patch_available_backfill_total": "204"

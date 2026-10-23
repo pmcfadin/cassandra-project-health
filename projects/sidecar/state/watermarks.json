@@ -2,11 +2,11 @@
   "git": "f8fee7b91c3e64725d467124b13de88fbb3afe9f",
   "git:file_change_event": "f8fee7b91c3e64725d467124b13de88fbb3afe9f",
   "git:review_event_parser_version": "2",
-  "github": "{\"apache/cassandra-sidecar\": \"Y3Vyc29yOnYyOpK0MjAyNi0xMC0yMlQwNTo1NToxMlrPAAAAARyz1I4=\"}",
+  "github": "{\"apache/cassandra-sidecar\": \"Y3Vyc29yOnYyOpK0MjAyNi0xMC0yM1QwNTo1MzowOVrPAAAAARL4u0A=\"}",
   "github:pr_issue_link_backfill_cursor": "{\"apache/cassandra-sidecar\": \"Y3Vyc29yOnYyOpK0MjAyNi0xMC0xMFQyMDoxNzozMVrPAAAAAR7yLc0=\"}",
   "github:pr_issue_link_backfill_done": "{\"apache/cassandra-sidecar\": true}",
   "github_commit_authors:github_commit_author": "f8fee7b91c3e64725d467124b13de88fbb3afe9f 377",
-  "jira": "2026-10-22T05:55:27+00:00",
+  "jira": "2026-10-23T05:54:41+00:00",
   "jira:patch_available_backfill_covered": "342",
   "jira:patch_available_backfill_cursor": "CASSSIDECAR-508",
   "jira:patch_available_backfill_total": "342"

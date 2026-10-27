@@ -7,7 +7,7 @@
   "github:pr_issue_link_backfill_done": "{\"apache/cassandra-ccm\": true}",
   "github_commit_authors:github_commit_author": "7efd4c6cabd85499e53a475be81e028d59bcb15b 1350",
   "github_issues": "{\"apache/cassandra-ccm\": \"Y3Vyc29yOnYyOpK0MjAyNi0wMy0xOFQxNDo0MjozNVrO9BrdwA==\"}",
-  "jira": "2026-10-26T11:49:31+00:00",
+  "jira": "2026-10-26T21:23:10+00:00",
   "jira:patch_available_backfill_covered": "5",
   "jira:patch_available_backfill_cursor": "CASSANDRA-21805",
   "jira:patch_available_backfill_total": "4"

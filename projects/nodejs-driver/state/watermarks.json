@@ -6,7 +6,7 @@
   "github:pr_issue_link_backfill_cursor": "{\"apache/cassandra-nodejs-driver\": \"Y3Vyc29yOnYyOpK0MjAyNi0xMC0xMVQwOTowODozNFrPAAAAAR8sEr8=\"}",
   "github:pr_issue_link_backfill_done": "{\"apache/cassandra-nodejs-driver\": true}",
   "github_commit_authors:github_commit_author": "4620e5417e7de2fc0dc3d31c683cb028b484092f 1497",
-  "jira": "2026-10-15T17:08:30+00:00",
+  "jira": "2026-10-27T21:20:29+00:00",
   "jira:patch_available_backfill_covered": "0",
   "jira:patch_available_backfill_total": "0"
 }

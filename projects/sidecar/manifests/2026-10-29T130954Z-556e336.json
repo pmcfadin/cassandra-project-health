@@ -1,0 +1,173 @@
+{
+  "completed_at": "2026-10-29T13:10:16.678246+00:00",
+  "data_branch_commit": null,
+  "leaderboard": {
+    "activity_types": [
+      "commits",
+      "jira_issues_resolved",
+      "reviews"
+    ],
+    "rows": 66,
+    "status": "ok"
+  },
+  "metrics_computed": [
+    "active_contributors_monthly@1.1",
+    "change_request_closure_ratio_jira_patch@1.0",
+    "change_request_closure_ratio_pr@1.1",
+    "contributor_absence_factor@1.0",
+    "contributor_churn_rate@1.0",
+    "contributor_hhi@1.0",
+    "contributor_tenure_survival@1.0",
+    "days_between_releases@1.0",
+    "elephant_factor@1.0",
+    "first_to_second_conversion_rate@1.0",
+    "funnel_stage_conversion@1.0",
+    "mailing_list_distinct_senders_monthly_dev@1.0",
+    "mailing_list_distinct_senders_monthly_user@1.0",
+    "mailing_list_messages_monthly_dev@1.0",
+    "mailing_list_messages_monthly_user@1.0",
+    "mailing_list_new_threads_monthly_dev@1.0",
+    "mailing_list_new_threads_monthly_user@1.0",
+    "median_resolution_latency_jira@1.1",
+    "median_resolution_latency_jira_cohort_12m@1.0",
+    "new_contributors_monthly@1.1",
+    "organizational_hhi@1.0",
+    "pr_merge_lead_time@1.1",
+    "pr_review_engagement@1.1",
+    "pr_time_to_close@1.1",
+    "pr_time_to_first_review@1.1",
+    "release_frequency@1.0",
+    "release_regularity@1.0",
+    "reviewer_hhi@1.0",
+    "single_org_share@1.0",
+    "stale_jira_rate@1.0",
+    "stale_pr_rate@1.1",
+    "sustained_contributor_count@1.0",
+    "time_since_last_release@1.0",
+    "time_to_first_reply_devlist@1.0",
+    "time_to_first_reply_userlist@1.0",
+    "time_to_first_response_jira@1.0",
+    "truck_factor@1.0",
+    "unanswered_thread_rate_devlist@1.0",
+    "unanswered_thread_rate_userlist@1.0",
+    "unique_reviewers_monthly@1.1",
+    "unknown_affiliation_rate@1.0"
+  ],
+  "metrics_missing": [],
+  "metrics_not_applicable": [
+    "issue_closure_ratio_gh",
+    "pmc_joins_quarterly",
+    "time_to_first_response_gh_issue"
+  ],
+  "metrics_skipped_insufficient_data": [],
+  "pipeline_code_sha": "556e33686c76ef417693b69c7a16442d9651de19",
+  "run_id": "2026-10-29T130954Z-556e336",
+  "site_deploy_status": null,
+  "sources": {
+    "asf_roster": {
+      "reason": "asf_roster is a PMC-wide shared source for this project (see projects/<id>.yaml's shared_sources)",
+      "status": "not_applicable"
+    },
+    "git": {
+      "commit_trailer_reparse": {
+        "parser_version": 2,
+        "status": "skipped"
+      },
+      "file_changes_collected": 0,
+      "placeholder_reviewer_commits": 0,
+      "records_collected": 0,
+      "status": "ok",
+      "watermark": "sha:f8fee7b91c3e64725d467124b13de88fbb3afe9f"
+    },
+    "github": {
+      "comment_count": 17,
+      "pr_issue_link_backfill": {
+        "done": true,
+        "link_rows": 0,
+        "pages_fetched": 0,
+        "prs_processed": 0,
+        "repos": {
+          "apache/cassandra-sidecar": "done"
+        }
+      },
+      "records_collected": 1,
+      "repos": {
+        "apache/cassandra-sidecar": "ok"
+      },
+      "review_count": 9,
+      "status": "ok",
+      "watermark": {
+        "apache/cassandra-sidecar": "Y3Vyc29yOnYyOpK0MjAyNi0xMC0yOVQxMjowNzoyM1rPAAAAASyDmFs="
+      }
+    },
+    "github_commit_authors": {
+      "commits_seen": 0,
+      "reason": null,
+      "records_collected": 0,
+      "status": "ok",
+      "watermark": "f8fee7b91c3e64725d467124b13de88fbb3afe9f 377"
+    },
+    "github_issues": {
+      "reason": "projects/<id>.yaml has no `github_issues:` section configured",
+      "status": "not_applicable"
+    },
+    "github_profile": {
+      "new_logins_seen": 0,
+      "records_collected": 0,
+      "status": "ok"
+    },
+    "governance": {
+      "reason": "governance is a PMC-wide shared source for this project (see projects/<id>.yaml's shared_sources)",
+      "status": "not_applicable"
+    },
+    "jira": {
+      "backfill": {
+        "calls_made": 0,
+        "checked": 0,
+        "pending": 0
+      },
+      "comment_count": 4,
+      "patch_available_backfill": {
+        "changelog_rows": 0,
+        "comment_rows": 0,
+        "done": true,
+        "issues_processed": 0,
+        "n_covered": 343,
+        "n_total": 342,
+        "pages_fetched": 1
+      },
+      "records_collected": 2,
+      "status": "ok",
+      "watermark": "2026-10-29T12:07:28+00:00"
+    },
+    "ponymail": {
+      "reason": "ponymail is a PMC-wide shared source for this project (see projects/<id>.yaml's shared_sources)",
+      "status": "not_applicable"
+    },
+    "release": {
+      "archive_checked": true,
+      "records_collected": 4,
+      "status": "ok"
+    },
+    "release_lines": {
+      "reason": "projects/<id>.yaml has no `release_lines:` section configured",
+      "status": "not_applicable"
+    },
+    "security": {
+      "advisories_collected": 16,
+      "records_collected": 30,
+      "scorecard_checks_collected": 14,
+      "status": "ok"
+    },
+    "subproject_releases": {
+      "actions_status": "ok",
+      "errors": {},
+      "jira_status": "ok",
+      "records_collected": 5,
+      "status": "ok"
+    }
+  },
+  "started_at": "2026-10-29T13:09:54.902043+00:00",
+  "status": "ok",
+  "trigger": "schedule"
+}

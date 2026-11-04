@@ -1,0 +1,462 @@
+{
+  "completed_at": "2026-11-04T00:28:41.556719+00:00",
+  "disk_budget_skipped_peers": [],
+  "git_reports": [
+    {
+      "clone_bytes": 27913454,
+      "commits_collected": 18,
+      "error": null,
+      "peer_id": "kafka"
+    },
+    {
+      "clone_bytes": 54178861,
+      "commits_collected": 26,
+      "error": null,
+      "peer_id": "spark"
+    },
+    {
+      "clone_bytes": 26553476,
+      "commits_collected": 4,
+      "error": null,
+      "peer_id": "flink"
+    },
+    {
+      "clone_bytes": 15028891,
+      "commits_collected": 26,
+      "error": null,
+      "peer_id": "pulsar"
+    },
+    {
+      "clone_bytes": 26419382,
+      "commits_collected": 17,
+      "error": null,
+      "peer_id": "datafusion"
+    }
+  ],
+  "github_overall_status": "partial",
+  "github_pass_outcomes": [
+    {
+      "comment_count": 164,
+      "error": null,
+      "issue_count": null,
+      "pages_fetched": 1,
+      "pass_name": "created_desc",
+      "peer_id": "spark",
+      "pr_count": 49,
+      "review_count": 84,
+      "status": "page_capped"
+    },
+    {
+      "comment_count": 1245,
+      "error": null,
+      "issue_count": null,
+      "pages_fetched": 1,
+      "pass_name": "open_prs",
+      "peer_id": "spark",
+      "pr_count": 50,
+      "review_count": 554,
+      "status": "page_capped"
+    },
+    {
+      "comment_count": 622,
+      "error": null,
+      "issue_count": 15833,
+      "pages_fetched": 1,
+      "pass_name": "closed_search",
+      "peer_id": "spark",
+      "pr_count": 87,
+      "review_count": 362,
+      "status": "page_capped"
+    },
+    {
+      "comment_count": 29,
+      "error": null,
+      "issue_count": null,
+      "pages_fetched": 1,
+      "pass_name": "created_desc",
+      "peer_id": "flink",
+      "pr_count": 48,
+      "review_count": 33,
+      "status": "completed"
+    },
+    {
+      "comment_count": 2276,
+      "error": null,
+      "issue_count": null,
+      "pages_fetched": 9,
+      "pass_name": "open_prs",
+      "peer_id": "flink",
+      "pr_count": 422,
+      "review_count": 1259,
+      "status": "completed"
+    },
+    {
+      "comment_count": 3228,
+      "error": null,
+      "issue_count": 7021,
+      "pages_fetched": 8,
+      "pass_name": "closed_search",
+      "peer_id": "flink",
+      "pr_count": 688,
+      "review_count": 2536,
+      "status": "completed"
+    },
+    {
+      "comment_count": 735,
+      "error": null,
+      "issue_count": null,
+      "pages_fetched": 9,
+      "pass_name": "created_desc",
+      "peer_id": "pulsar",
+      "pr_count": 404,
+      "review_count": 921,
+      "status": "completed"
+    },
+    {
+      "comment_count": 240,
+      "error": null,
+      "issue_count": null,
+      "pages_fetched": 2,
+      "pass_name": "open_prs",
+      "peer_id": "pulsar",
+      "pr_count": 83,
+      "review_count": 216,
+      "status": "completed"
+    },
+    {
+      "comment_count": 2331,
+      "error": null,
+      "issue_count": 4311,
+      "pages_fetched": 9,
+      "pass_name": "closed_search",
+      "peer_id": "pulsar",
+      "pr_count": 800,
+      "review_count": 2384,
+      "status": "completed"
+    },
+    {
+      "comment_count": 131,
+      "error": null,
+      "issue_count": null,
+      "pages_fetched": 1,
+      "pass_name": "created_desc",
+      "peer_id": "datafusion",
+      "pr_count": 42,
+      "review_count": 59,
+      "status": "page_capped"
+    },
+    {
+      "comment_count": 706,
+      "error": null,
+      "issue_count": null,
+      "pages_fetched": 1,
+      "pass_name": "open_prs",
+      "peer_id": "datafusion",
+      "pr_count": 50,
+      "review_count": 203,
+      "status": "page_capped"
+    },
+    {
+      "comment_count": 274,
+      "error": null,
+      "issue_count": 12156,
+      "pages_fetched": 1,
+      "pass_name": "closed_search",
+      "peer_id": "datafusion",
+      "pr_count": 73,
+      "review_count": 191,
+      "status": "page_capped"
+    },
+    {
+      "comment_count": 24,
+      "error": null,
+      "issue_count": null,
+      "pages_fetched": 1,
+      "pass_name": "created_desc",
+      "peer_id": "kafka",
+      "pr_count": 32,
+      "review_count": 31,
+      "status": "completed"
+    },
+    {
+      "comment_count": 138,
+      "error": null,
+      "issue_count": null,
+      "pages_fetched": 1,
+      "pass_name": "open_prs",
+      "peer_id": "kafka",
+      "pr_count": 50,
+      "review_count": 61,
+      "status": "page_capped"
+    },
+    {
+      "comment_count": 344,
+      "error": null,
+      "issue_count": 10083,
+      "pages_fetched": 1,
+      "pass_name": "closed_search",
+      "peer_id": "kafka",
+      "pr_count": 90,
+      "review_count": 284,
+      "status": "page_capped"
+    }
+  ],
+  "github_peer_order": [
+    "spark",
+    "flink",
+    "pulsar",
+    "datafusion",
+    "kafka"
+  ],
+  "github_rotation_start_index": 1,
+  "github_settled_peers": [
+    "spark",
+    "datafusion",
+    "kafka"
+  ],
+  "metrics_by_project": {
+    "cassandra": {
+      "metric_value_rows": 1177,
+      "pr_backlog_rows": 2184
+    },
+    "datafusion": {
+      "metric_value_rows": 329,
+      "pr_backlog_rows": 273
+    },
+    "flink": {
+      "metric_value_rows": 630,
+      "pr_backlog_rows": 336
+    },
+    "kafka": {
+      "metric_value_rows": 596,
+      "pr_backlog_rows": 273
+    },
+    "pulsar": {
+      "metric_value_rows": 568,
+      "pr_backlog_rows": 532
+    },
+    "spark": {
+      "metric_value_rows": 699,
+      "pr_backlog_rows": 455
+    }
+  },
+  "peak_clone_bytes": 54178861,
+  "peer_settlement": {
+    "datafusion": {
+      "closed_search": true,
+      "created_desc": true,
+      "open_prs": true
+    },
+    "flink": {
+      "closed_search": true,
+      "created_desc": true,
+      "open_prs": true
+    },
+    "kafka": {
+      "closed_search": true,
+      "created_desc": true,
+      "open_prs": true
+    },
+    "pulsar": {
+      "closed_search": true,
+      "created_desc": true,
+      "open_prs": true
+    },
+    "spark": {
+      "closed_search": true,
+      "created_desc": true,
+      "open_prs": true
+    }
+  },
+  "per_peer_pr_counts": {
+    "datafusion": 165,
+    "flink": 1158,
+    "kafka": 172,
+    "pulsar": 1287,
+    "spark": 186
+  },
+  "release_reports": [
+    {
+      "peer_id": "kafka",
+      "release_count": 72,
+      "verification": {
+        "fetch_error": null,
+        "independent_by_year": {
+          "2011": 1,
+          "2012": 3,
+          "2013": 1,
+          "2014": 2,
+          "2015": 4,
+          "2016": 5,
+          "2017": 6,
+          "2018": 9,
+          "2019": 7,
+          "2020": 5,
+          "2021": 8,
+          "2022": 12,
+          "2023": 8,
+          "2024": 7,
+          "2025": 5,
+          "2026": 10
+        },
+        "source_type": "jira",
+        "tag_derived_by_year": {
+          "2013": 1,
+          "2014": 1,
+          "2017": 1,
+          "2018": 7,
+          "2019": 7,
+          "2020": 6,
+          "2021": 7,
+          "2022": 13,
+          "2023": 7,
+          "2024": 7,
+          "2025": 5,
+          "2026": 10
+        }
+      }
+    },
+    {
+      "peer_id": "spark",
+      "release_count": 101,
+      "verification": {
+        "fetch_error": null,
+        "independent_by_year": {
+          "2012": 5,
+          "2013": 7,
+          "2014": 9,
+          "2015": 9,
+          "2016": 8,
+          "2017": 4,
+          "2018": 7,
+          "2019": 6,
+          "2020": 5,
+          "2021": 7,
+          "2022": 6,
+          "2023": 8,
+          "2024": 6,
+          "2025": 16,
+          "2026": 17
+        },
+        "source_type": "jira",
+        "tag_derived_by_year": {
+          "2012": 5,
+          "2013": 4,
+          "2014": 8,
+          "2015": 10,
+          "2016": 7,
+          "2017": 4,
+          "2018": 6,
+          "2019": 7,
+          "2020": 5,
+          "2021": 6,
+          "2022": 6,
+          "2023": 8,
+          "2024": 6,
+          "2025": 6,
+          "2026": 13
+        }
+      }
+    },
+    {
+      "peer_id": "flink",
+      "release_count": 120,
+      "verification": {
+        "fetch_error": null,
+        "independent_by_year": {
+          "2014": 6,
+          "2015": 6,
+          "2016": 9,
+          "2017": 6,
+          "2018": 16,
+          "2019": 12,
+          "2020": 18,
+          "2021": 21,
+          "2022": 33,
+          "2023": 39,
+          "2024": 33,
+          "2025": 27,
+          "2026": 24
+        },
+        "source_type": "jira",
+        "tag_derived_by_year": {
+          "2014": 4,
+          "2015": 6,
+          "2016": 10,
+          "2017": 7,
+          "2018": 16,
+          "2019": 8,
+          "2020": 10,
+          "2021": 20,
+          "2022": 10,
+          "2023": 9,
+          "2024": 3,
+          "2025": 10,
+          "2026": 7
+        }
+      }
+    },
+    {
+      "peer_id": "pulsar",
+      "release_count": 131,
+      "verification": {
+        "fetch_error": null,
+        "independent_by_year": {
+          "2016": 6,
+          "2017": 19,
+          "2018": 7,
+          "2019": 7,
+          "2020": 6,
+          "2021": 7,
+          "2022": 9,
+          "2023": 12,
+          "2024": 23,
+          "2025": 23,
+          "2026": 19
+        },
+        "source_type": "github_releases",
+        "tag_derived_by_year": {
+          "2016": 6,
+          "2017": 16,
+          "2018": 2,
+          "2019": 6,
+          "2020": 7,
+          "2021": 11,
+          "2022": 11,
+          "2023": 12,
+          "2024": 20,
+          "2025": 23,
+          "2026": 17
+        }
+      }
+    },
+    {
+      "peer_id": "datafusion",
+      "release_count": 74,
+      "verification": {
+        "fetch_error": null,
+        "independent_by_year": {
+          "2020": 2,
+          "2021": 1,
+          "2022": 5,
+          "2023": 13,
+          "2024": 10,
+          "2025": 8,
+          "2026": 7
+        },
+        "source_type": "pypi",
+        "tag_derived_by_year": {
+          "2021": 3,
+          "2022": 9,
+          "2023": 21,
+          "2024": 14,
+          "2025": 14,
+          "2026": 13
+        }
+      }
+    }
+  ],
+  "run_id": "peers-20261104T001647Z",
+  "started_at": "2026-11-04T00:16:48.377139+00:00",
+  "wall_time_seconds": 713.17958
+}

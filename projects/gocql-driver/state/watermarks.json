@@ -6,7 +6,7 @@
   "github:pr_issue_link_backfill_cursor": "{\"apache/cassandra-gocql-driver\": \"Y3Vyc29yOnYyOpK0MjAyNi0wOS0zMFQxMjo0NDoyM1rPAAAAAReVMJ0=\"}",
   "github:pr_issue_link_backfill_done": "{\"apache/cassandra-gocql-driver\": true}",
   "github_commit_authors:github_commit_author": "94c308f18566b3409f5b50e772804d6fecf439f4 2222",
-  "github_issues": "{\"apache/cassandra-gocql-driver\": \"Y3Vyc29yOnYyOpK0MjAyNi0xMS0xOFQxODoxOTo0OVrOCSyWxg==\"}",
+  "github_issues": "{\"apache/cassandra-gocql-driver\": \"Y3Vyc29yOnYyOpK0MjAyNi0xMS0xOVQxOTo0NTo0OVrPAAAAAYNKAbc=\"}",
   "jira": "2026-11-19T10:42:08+00:00",
   "jira:patch_available_backfill_covered": "106",
   "jira:patch_available_backfill_cursor": "CASSGO-147",
